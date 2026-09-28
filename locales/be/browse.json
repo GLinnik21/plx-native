@@ -463,9 +463,14 @@
   "browse.diagnostics.plex_pass": "{version} · Plex Pass",
   "browse.library.no_collections": "У бібліятэцы «{library}» няма калекцый",
   "browse.collection.loading": "Загрузка калекцыі…",
-  "browse.collection.empty": "Гэтая калекцыя пустая",
-  "browse.collection.unavailable": "Гэтая калекцыя недаступная",
+  "browse.collection.empty": "Нічога з гэтай калекцыі няма ў вашых бібліятэках",
+  "browse.collection.unavailable": "Гэтая калекцыя недаступная для гэтага профілю",
+  "browse.collection.unavailable_reason": "Яе бібліятэка не адкрыта для вас, або ўладальнік сервера абмежаваў да яе доступ.",
   "browse.collection.kind": "Калекцыя",
   "browse.collection.meta": "{items} · Калекцыя",
-  "browse.collection.season_mark": "СЕЗОН {number}"
+  "browse.collection.season_mark": "СЕЗОН {number}",
+  "browse.collection.items": "Элементы",
+  "browse.collection.order.release": "Па даце выхаду",
+  "browse.collection.order.title": "Па алфавіце",
+  "browse.collection.order.custom": "Уласны парадак"
 }

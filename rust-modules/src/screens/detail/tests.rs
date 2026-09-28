@@ -3138,6 +3138,7 @@ fn collection_movie(sid: ServerId) -> Detail {
             section: 1,
             tag: 812,
             members: ["m1", "m2", "m3", "m4"].iter().map(|rk| collection_member(sid, rk)).collect(),
+            count: 4,
         }),
         related: ["r1", "r2"].iter().map(|rk| collection_member(sid, rk)).collect(),
         ..Default::default()

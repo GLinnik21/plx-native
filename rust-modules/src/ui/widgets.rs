@@ -641,7 +641,7 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
                 // A collection with no artwork of its own: nothing will ever resolve, so a skeleton
                 // would read as loading forever. It wears its mark and name instead, and no state
                 // mark — a collection has no watch state (`poster_mark`).
-                crate::ui::collection_tile::draw(p, r, rad, name);
+                crate::ui::collection_tile::draw(p, frame, r, rad, name);
                 return;
             }
             if t != 0 {

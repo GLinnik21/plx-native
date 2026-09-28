@@ -267,6 +267,7 @@ fn an_optimistic_watch_flip_reaches_the_collection_shelf() {
             section: 1,
             tag: 5,
             members: vec![member("m1"), member("m2")],
+            count: 2,
         }),
         ..Default::default()
     }));

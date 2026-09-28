@@ -1945,12 +1945,16 @@
     "description": "Collection page read-out while its first answer is pending"
   },
   "browse.collection.empty": {
-    "value": "This collection is empty",
-    "description": "Collection page read-out when the collection has no items"
+    "value": "Nothing in this collection is in your libraries",
+    "description": "Collection page read-out when none of the collection's members is in the viewer's libraries (an empty collection)"
   },
   "browse.collection.unavailable": {
-    "value": "This collection is not available",
-    "description": "Collection page read-out when the server refuses or no longer has the collection"
+    "value": "This collection isn’t available to this profile",
+    "description": "Collection page verdict when the server refuses or no longer has the collection"
+  },
+  "browse.collection.unavailable_reason": {
+    "value": "Its library isn’t shared with you, or the server owner has restricted it.",
+    "description": "Reason under the collection page's unavailable verdict"
   },
   "browse.collection.kind": {
     "value": "Collection",
@@ -1969,5 +1973,21 @@
       "number": "i64"
     },
     "description": "Upper-case mark drawn on a season poster inside a collection"
+  },
+  "browse.collection.items": {
+    "value": "Items",
+    "description": "Heading over the collection page's member grid"
+  },
+  "browse.collection.order.release": {
+    "value": "Release order",
+    "description": "Annotation after the collection page's Items heading: members are listed by release date"
+  },
+  "browse.collection.order.title": {
+    "value": "Alphabetical",
+    "description": "Annotation after the collection page's Items heading: members are listed alphabetically"
+  },
+  "browse.collection.order.custom": {
+    "value": "Custom order",
+    "description": "Annotation after the collection page's Items heading: members are in the order the collection's owner set"
   }
 }

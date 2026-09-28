@@ -1057,6 +1057,9 @@ pub(crate) struct CollectionShelf {
     pub(crate) tag: i64,
     /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_MAX`].
     pub(crate) members: Vec<Related>,
+    /// Every member the collection holds — the heading's "· N" — which `members` may cap.
+    #[serde(default)]
+    pub(crate) count: usize,
 }
 
 impl CollectionShelf {
@@ -3059,13 +3062,18 @@ fn collection_shelf(
 ) -> Option<CollectionShelf> {
     let (section, tag) = crate::plex::collections::related_collection_hub(&h.hub_identifier, &h.key)?;
     let mut seen = std::collections::HashSet::new();
-    let members: Vec<Related> = h
+    let listed: Vec<&crate::plex::Metadata> = h
         .metadata
         .iter()
         .filter(|x| {
             crate::pms::listable(&x.kind) && !x.rating_key.is_empty()
                 && seen.insert(x.rating_key.as_str())
         })
+        .collect();
+    // The heading's count is the collection's, not the shelf's: the hub's total when the server
+    // sent one, else every member it listed — both before the shelf's cap.
+    let count = h.total().max(listed.len());
+    let members: Vec<Related> = listed.into_iter()
         .take(COLLECTION_MAX)
         .map(|x| crate::pms::parse_item(x, sid))
         .collect();
@@ -3074,7 +3082,7 @@ fn collection_shelf(
     }
     // A key that named no section falls back to the members' own library.
     let section = if section > 0 { section } else { members.iter().map(|m| m.sec).find(|s| *s > 0).unwrap_or(0) };
-    Some(CollectionShelf { title: h.title.clone(), section, tag, members })
+    Some(CollectionShelf { title: h.title.clone(), section, tag, members, count })
 }
 
 /// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for

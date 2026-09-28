@@ -449,9 +449,14 @@
   "browse.diagnostics.plex_pass": "{version} · Plex Pass",
   "browse.library.no_collections": "No hay colecciones en {library}",
   "browse.collection.loading": "Cargando la colección…",
-  "browse.collection.empty": "Esta colección está vacía",
-  "browse.collection.unavailable": "Esta colección no está disponible",
+  "browse.collection.empty": "Nada de esta colección está en tus bibliotecas",
+  "browse.collection.unavailable": "Esta colección no está disponible para este perfil",
+  "browse.collection.unavailable_reason": "Su biblioteca no está compartida contigo o el propietario del servidor la ha restringido.",
   "browse.collection.kind": "Colección",
   "browse.collection.meta": "{items} · Colección",
-  "browse.collection.season_mark": "TEMPORADA {number}"
+  "browse.collection.season_mark": "TEMPORADA {number}",
+  "browse.collection.items": "Elementos",
+  "browse.collection.order.release": "Por fecha de estreno",
+  "browse.collection.order.title": "Por orden alfabético",
+  "browse.collection.order.custom": "Orden personalizado"
 }

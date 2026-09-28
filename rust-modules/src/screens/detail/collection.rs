@@ -65,7 +65,7 @@ pub(crate) fn target(d: &Detail) -> Option<crate::screens::registry::ContentArg>
 }
 
 pub(crate) fn heading(c: &CollectionShelf) -> LinkedHeading<'_> {
-    LinkedHeading::heading(&c.title, "")
+    LinkedHeading::heading(&c.title, "").total(c.count)
 }
 
 /// The heading's face at `top` (the section's top on the caller's scroll basis), `lift` being the

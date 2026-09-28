@@ -192,3 +192,13 @@ rerecord` against shape `12097267434420408384` and passed Targets and Resolve wi
 counters. The closed alphabet gains the Settings root's shortened crash-report sub-line
 ("Your crash report identifier and how to have reports deleted."), which the fit-to-slot
 translation pass introduced and the Settings recording now measures.
+
+The linked heading's member count (#205) gives a Home shelf and a hub row the hub's `totalSize`,
+carried by both the hubs record (`HubsResultV1`'s shelves) and the hubs initial state
+(`HubsInitialV1`'s hub rows), so the recorded Home result is no longer byte-identical. Before the
+two shape descriptors named the new field, the anchors loaded and diverged on that result
+(`result_diffs=1 effect_diffs=1`, all three, both modes). Once they did, the anchors recorded
+against `12097267434420408384` were observed being refused (`replay: REFUSED — invalid or
+incompatible recording`, all three, both modes), then all three were re-recorded with
+`tools/plxnative-rec rerecord` against shape `10638452537178981056` and passed Targets and Resolve
+with zero difference counters.

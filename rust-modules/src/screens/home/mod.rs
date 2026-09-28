@@ -693,11 +693,12 @@ impl HomeScreen {
         self.rows.get(row)?.link.as_ref()
     }
 
-    /// The linked heading of `row`: title case, the hub's own title and source annotation.
+    /// The linked heading of `row`: title case, the hub's own title, its collection's member count
+    /// and its source annotation.
     fn heading_widget<'a>(&self, view: HubsView<'a>, row: usize) -> Option<LinkedHeading<'a>> {
         self.linked(row)?;
         let hub = self.hub(view, row)?;
-        Some(LinkedHeading::heading(hub.title, hub.source))
+        Some(LinkedHeading::heading(hub.title, hub.source).total(hub.total))
     }
 
     /// The heading's face: its cap top rides the row exactly as an unlinked heading does.

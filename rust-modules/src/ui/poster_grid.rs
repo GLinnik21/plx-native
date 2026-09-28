@@ -127,6 +127,22 @@ pub(crate) fn reveal_row(current: f32, row: usize, len: usize, top: f32) -> f32 
         max_scroll(len, top, &bands))
 }
 
+/// The scroll that shows row `row` focused on a page whose rows SNAP to a content edge (the
+/// Collection page, `Collections.dc.html` C2): the minimal reveal of the row's posters and open
+/// caption band, rounded UP to the scroll that puts some row's top exactly at `edge`, so the page
+/// never rests with a row cut by the edge. Row 0 reveals the document's head (scroll 0), as the
+/// Library's `row_reveal(0)` does; no rounding passes `row` itself, so the focused row always shows.
+pub(crate) fn snap_row(current: f32, row: usize, len: usize, top: f32, edge: f32) -> f32 {
+    if row == 0 || len == 0 { return 0.0; }
+    let bands = settled(Some(row));
+    let focused_top = row_top(row, top, &bands);
+    let min = card_row::reveal(current, focused_top + CARD_H + UNDER_LABEL_H - (SCR_H - MARGIN_Y),
+        focused_top - edge, f32::INFINITY);
+    if min <= 0.0 { return 0.0; }
+    (0..=row).map(|k| row_top(k, top, &bands) - edge).find(|&at| at >= min - 0.5)
+        .unwrap_or(focused_top - edge)
+}
+
 /// The D-pad neighbour of card `index` in a `len`-card grid of `cols` columns. Down from above a
 /// short last row lands on its last card rather than stopping where no card sits directly below.
 pub(crate) fn neighbour(index: usize, len: usize, cols: usize, dir: crate::ui::screen::Dir) -> Option<usize> {
@@ -163,6 +179,22 @@ mod tests {
         assert!(b.x + b.w <= SCR_W - MARGIN_X + 0.01);
         assert_eq!(next.x, a.x);
         assert!((next.y - a.y - ROW_PITCH).abs() < 0.01);
+    }
+
+    /// C2: a row focused below the first scrolls the page so a row's top rests exactly on the
+    /// content edge — the row above the focused one, when both fit — and never cuts a row; row 0
+    /// shows the head again.
+    #[test]
+    fn a_snapped_page_rests_a_row_on_the_content_edge() {
+        let (top, edge, len) = (520.0, 96.0, 18);
+        let at = snap_row(0.0, 1, len, top, edge);
+        assert_eq!(cell(0, top, at, &settled(Some(1))).y, edge, "row 0 rests on the edge");
+        let focused = cell(6, top, at, &settled(Some(1)));
+        assert!(focused.y + CARD_H + UNDER_LABEL_H <= SCR_H - MARGIN_Y, "and the focused row shows whole");
+        let at2 = snap_row(at, 2, len, top, edge);
+        assert_eq!(cell(6, top, at2, &settled(Some(2))).y, edge, "down again: the next row takes the edge");
+        assert_eq!(snap_row(at2, 1, len, top, edge), at2, "up to a row already on screen: no move");
+        assert_eq!(snap_row(at2, 0, len, top, edge), 0.0, "row 0 reveals the head");
     }
 
     /// The focused row's caption band opens and pushes only the rows below it; a revealed

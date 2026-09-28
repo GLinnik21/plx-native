@@ -4,7 +4,7 @@
 
 use std::ffi::CString;
 
-use crate::collection::{Collection, CollectionStatus, CollectionTarget, PAGE_SIZE};
+use crate::collection::{Collection, CollectionOrder, CollectionStatus, CollectionTarget, PAGE_SIZE};
 use crate::plex::collections::CollectionRef;
 use crate::pms::PmsMovie;
 use crate::stores::collection::CollectionCmd;
@@ -32,40 +32,75 @@ const GRID_GROUP: GroupId = GroupId(0);
 const HEADER_GROUP: GroupId = GroupId(1);
 const STATUS_GROUP: GroupId = GroupId(2);
 
-const HEADER_TOP: f32 = MARGIN_Y;
-const ART_W: f32 = CARD_W;
-const ART_H: f32 = CARD_H;
-const ART_RES: (std::os::raw::c_int, std::os::raw::c_int) = (250, 375);
+// ── The page's geometry: `Collections.dc.html` C1, measured from its DOM (a 1920×1080 stage).
+
+/// The page's content edge: the header's top, and the line a scrolled row snaps to (C2). The
+/// mock's `left:96px; top:96px` — the page reads inside the same 96 on every side.
+const CONTENT_TOP: f32 = MARGIN_X;
+const HEADER_TOP: f32 = CONTENT_TOP;
+/// `.tl { width:200px; height:300px }` — the collection's art, a 2:3 tile.
+const ART_W: f32 = 200.0;
+const ART_H: f32 = 300.0;
+const ART_RES: (std::os::raw::c_int, std::os::raw::c_int) = (200, 300);
 const HEADER_GAP: f32 = theme::space::XL;
+/// `left:360px` — the text column, one XL gap past the art.
 const COL_X: f32 = MARGIN_X + ART_W + HEADER_GAP;
-const TEXT_W: f32 = SCR_W - MARGIN_X - COL_X;
-const META_GAP: f32 = theme::space::MD;
-const SUMMARY_GAP: f32 = theme::space::LG;
+/// `width:1344px`.
+const TEXT_W: f32 = 1344.0;
+/// Cap tops below the title's (which is `HEADER_TOP`): the LABEL meta line's box sits 16px under
+/// the DISPLAY title's, and the BODY summary's 24px under the meta's — C1's CSS resolved to the
+/// shipped face's cap bands (meta cap top 161, summary cap top 221).
+const META_DY: f32 = 65.0;
+const SUMMARY_DY: f32 = 125.0;
 const SUMMARY_LINES: usize = 3;
-const SUMMARY_LEAD: f32 = 38.0;
+/// `line-height:40px` — person.rs's biography, whose reading block this is.
+const SUMMARY_LEAD: f32 = 40.0;
 const MORE_GAP: f32 = theme::space::LG;
-const GRID_TOP: f32 = HEADER_TOP + ART_H + theme::space::XL;
-const STATUS_TOP: f32 = GRID_TOP;
+/// The "Items · Release order" heading's cap top (`.hd { top:443px }`, a HEADLINE run).
+const ITEMS_HEADING_Y: f32 = 447.0;
+/// The first row's poster top (`.tl { top:520px }`).
+const GRID_TOP: f32 = 520.0;
+/// C4a: the quiet read-outs' region, where the grid would be (`left:96; right:96; top:460;
+/// height:475`), its copy centred in it.
+const STATUS_FRAME: Rect = Rect { x: MARGIN_X, y: 460.0, w: SCR_W - 2.0 * MARGIN_X, h: 475.0 };
 const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Located { Header, Retry, Card(usize) }
 
 fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measure) -> TextView<'a> {
-    TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
+    TextView::new(summary, theme::size::BODY, theme::TEXT_READING)
         .with_measure(measure)
         .leading(SUMMARY_LEAD)
         .max_lines(SUMMARY_LINES)
         .fade_for_more(MORE_GAP)
 }
 
-/// The header's member count, and whether the line is the kind alone: a count of zero is only an
-/// answer once the listing says so; before the header lands (and on a failed load) the line is
-/// the kind alone rather than a false "0 items".
+/// The header's member count, and whether the line is the kind alone: with no members counted —
+/// before the header lands, on a failed load, and for an empty collection (C4a's meta line reads
+/// "Collection") — the line is the kind alone rather than "0 items".
 fn meta_key(collection: &Collection) -> (i64, bool) {
     let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
     let count = count as i64;
-    (count, count == 0 && collection.status != CollectionStatus::Empty)
+    (count, count == 0)
+}
+
+/// The grid heading's annotation: the member order the collection's owner chose, when the
+/// server stated one.
+fn order_note(collection: &Collection) -> &'static str {
+    match collection.order {
+        Some(CollectionOrder::Release) => crate::i18n::msg::browse_collection_order_release(),
+        Some(CollectionOrder::Title) => crate::i18n::msg::browse_collection_order_title(),
+        Some(CollectionOrder::Custom) => crate::i18n::msg::browse_collection_order_custom(),
+        None => "",
+    }
+}
+
+/// How much of the page's head (art, text column, grid heading) is left at `scroll`: all of it at
+/// the top, none once the first row has risen to the content edge — so a scrolled page (C2)
+/// leaves no remnant of the head above its rows.
+fn head_alpha(scroll: f32) -> f32 {
+    (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
 }
 
 /// The header's meta line — "Collection · N items", or the kind alone ([`meta_key`]).
@@ -263,16 +298,19 @@ impl CollectionScreen {
             .map(|index| index / crate::ui::poster_grid::COLS)
     }
 
-    fn status_frame() -> Rect {
-        Rect::new(MARGIN_X, STATUS_TOP, SCR_W - 2.0 * MARGIN_X, SCR_H - STATUS_TOP - MARGIN_Y)
-    }
+    fn status_frame() -> Rect { STATUS_FRAME }
 
     /// The header text column's two anchors — the meta line's and the summary's cap tops — shared
     /// by [`Self::draw_header`] and [`Self::header_text_bottom`] so the read-out's glyph ceiling
     /// is the drawn header, not a copy of its arithmetic.
-    fn header_ys(measure: &dyn crate::ui::machine::Measure) -> (f32, f32) {
-        let meta_y = HEADER_TOP + measure.cap_h(theme::size::DISPLAY) + META_GAP;
-        (meta_y, meta_y + measure.cap_h(theme::size::BODY) + SUMMARY_GAP)
+    fn header_ys(_measure: &dyn crate::ui::machine::Measure) -> (f32, f32) {
+        (HEADER_TOP + META_DY, HEADER_TOP + SUMMARY_DY)
+    }
+
+    /// Whether the page shows its head. An unavailable collection (C4b) is a page-filling verdict
+    /// with no header: there is no collection to describe, only why it cannot be shown.
+    fn shows_head(collection: &Collection) -> bool {
+        collection.status != CollectionStatus::Unavailable
     }
 
     /// The lowest y the header's text column paints — the meta line, or the summary block under
@@ -280,21 +318,25 @@ impl CollectionScreen {
     /// strip, so this is the read-out's `glyph_ceiling`.
     fn header_text_bottom(collection: &Collection, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let (meta_y, summary_y) = Self::header_ys(measure);
-        if collection.summary.is_empty() { return meta_y + measure.line_h(theme::size::BODY); }
+        if collection.summary.is_empty() { return meta_y + measure.line_h(theme::size::LABEL); }
         summary_y + summary_view(&collection.summary, measure).measure_h(TEXT_W)
     }
 
-    /// The page's read-out, one per non-Ready status. Loading, Empty and Unavailable are quiet
-    /// answers centred in the grid's region; a transport failure is the page-placed `Failed`
-    /// read-out every page shares (`StatusOverlay::page`, `ui/CLAUDE.md` rule 4) — Home's and the
-    /// Library's untyped "can't reach" verdict, so their glyph too — with its glyph shrunk under
-    /// the live header rather than drawn over it.
+    /// The page's read-out, one per non-Ready status. Loading and Empty are quiet answers centred
+    /// in the grid's region (C4a); an unavailable collection (refused, not shared with this
+    /// profile, or gone) fills the page with the shared `Failed` verdict and its reason at the 372
+    /// anchor and no header (C4b) — BACK is the way out, so it offers no action; a transport
+    /// failure is the page-placed `Failed` read-out every page shares (`StatusOverlay::page`,
+    /// `ui/CLAUDE.md` rule 4) — Home's and the Library's untyped "can't reach" verdict, so their
+    /// glyph too — with its glyph shrunk under the live header rather than drawn over it.
     fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
         measure: &dyn crate::ui::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
             CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
             CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
-            CollectionStatus::Unavailable => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_unavailable_c(), StatusKind::Empty),
+            CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, crate::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
+                .page(crate::ui::icons::Icon::PersonBadgeXmark)
+                .reason(crate::i18n::msg::browse_collection_unavailable_reason_c()),
             CollectionStatus::Failed => {
                 let overlay = StatusOverlay::new(Rect::FULL, crate::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
                     .page(crate::ui::icons::Icon::ServerBadgeMinus).action(crate::i18n::msg::browse_action_retry_c());
@@ -333,8 +375,8 @@ impl CollectionScreen {
         }
         if let Some(index) = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) {
-            self.scroll_target = crate::ui::poster_grid::reveal_row(self.scroll.pos,
-                index / crate::ui::poster_grid::COLS, collection.items.len(), GRID_TOP);
+            self.scroll_target = crate::ui::poster_grid::snap_row(self.scroll.pos,
+                index / crate::ui::poster_grid::COLS, collection.items.len(), GRID_TOP, CONTENT_TOP);
         } else { self.scroll_target = 0.0; }
         // A focus the reader did not move (a restore, a landing) adopts its band settled; a D-pad
         // move opens it with motion from `FocusMoved`, as the Library grid does.
@@ -382,14 +424,31 @@ impl CollectionScreen {
         Rect::new(COL_X, HEADER_TOP - self.scroll.pos, TEXT_W, ART_H)
     }
 
+    /// The collection's art, scrolled with the document.
+    fn art_rect(&self) -> Rect {
+        Rect::new(MARGIN_X, HEADER_TOP - self.scroll.pos, ART_W, ART_H)
+    }
+
     fn draw_header(&self, p: Painter, collection: &Collection, focused: bool,
         measure: &dyn crate::ui::machine::Measure) {
         let dy = -self.scroll.pos;
-        if HEADER_TOP + ART_H + dy <= 0.0 { return; }
-        let art = Rect::new(MARGIN_X, HEADER_TOP + dy, ART_W, ART_H);
+        let alpha = head_alpha(self.scroll.pos);
+        if alpha <= 0.0 { return; }
+        let p = p.alpha(alpha);
+        let art = self.art_rect();
         let name = if collection.title.is_empty() { &collection.id.name } else { &collection.title };
-        widgets::card_named(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
-            Some(name), theme::CARD_RING_RAD, false, 1.0, 0.0);
+        if collection.header_ready() && collection.thumb.is_empty() {
+            // No artwork of its own (an empty collection has no composite either): the neutral
+            // tile the Library grid draws for the same collection — its mark and its name.
+            crate::ui::collection_tile::draw(p, art, art, theme::CARD_RING_RAD, name);
+        } else {
+            widgets::card_named(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
+                Some(name), theme::CARD_RING_RAD, false, 1.0, 0.0);
+        }
+        if collection.status == CollectionStatus::Ready {
+            card_row::draw_heading(p, crate::i18n::msg::browse_collection_items(), order_note(collection),
+                MARGIN_X, ITEMS_HEADING_Y + dy, SCR_W - 2.0 * MARGIN_X, measure);
+        }
         let title = measure.fit_line(name, TEXT_W, theme::size::DISPLAY, true);
         Label::new(title.as_ptr(), theme::size::DISPLAY, theme::TEXT_PRIMARY).bold()
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
@@ -400,7 +459,7 @@ impl CollectionScreen {
             built = meta_line(collection);
             &built
         };
-        Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)
+        Label::new(meta.as_ptr(), theme::size::LABEL, theme::TEXT_SECONDARY)
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, meta_y, TEXT_W, 0.0));
         if collection.summary.is_empty() { return; }
         let view = summary_view(&collection.summary, measure);
@@ -450,12 +509,18 @@ impl CollectionScreen {
         }
     }
 
+    /// Whether member `index`'s row rests wholly above the content edge — the row over the one a
+    /// snapped scroll put on the edge (C2), which would otherwise show its last few pixels there.
+    fn above_edge(&self, index: usize) -> bool {
+        self.cell(index).y + CARD_H <= CONTENT_TOP - (crate::ui::poster_grid::ROW_PITCH - CARD_H) + 0.5
+    }
+
     fn draw_grid<H: ContentLike + CollectionLike>(&self, f: &mut DrawFrame<'_, '_, H>, collection: &Collection) {
         let focus = f.focus.current.filter(|key| key.entry == self.entry);
         let current = focus.and_then(|key| self.item_index(collection, key.elem));
         let p = f.painter.alpha(f.page_alpha);
         for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
-            if current == Some(index) { continue; }
+            if current == Some(index) || self.above_edge(index) { continue; }
             if let Some(item) = collection.items.get(index) {
                 self.draw_card(p, item, &self.label_at(collection, index, item), index, false, 1.0, f.measure);
             }
@@ -645,8 +710,10 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
         self.ground.draw(p, Rect::FULL);
         let collection = self.collection(f.cx);
         if let Some(collection) = collection {
-            self.draw_header(p, collection, f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM), f.measure);
-            if self.summary_more {
+            if Self::shows_head(collection) {
+                self.draw_header(p, collection, f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM), f.measure);
+            }
+            if self.summary_more && Self::shows_head(collection) {
                 let rect = self.header_rect();
                 f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM },
                     rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus,
@@ -791,7 +858,7 @@ mod tests {
     /// The failed page's read-out is the shared page read-out (#268): page-placed, the untyped
     /// "can't reach" glyph Home and the Library carry, and never drawn over the live header —
     /// with a three-line summary the glyph shrinks or drops, without one it keeps its full size.
-    /// The quiet answers (Empty, Unavailable) stay in the grid's region and carry no glyph.
+    /// The quiet Empty answer stays in the grid's region and carries no glyph.
     #[test]
     fn a_failed_page_reads_out_with_the_shared_glyph_below_the_header() {
         let (mut store, _) = seeded();
@@ -811,12 +878,73 @@ mod tests {
             assert!(glyph.y >= bottom, "glyph top {} is above the summary's bottom {bottom}", glyph.y);
         }
 
-        for status in [CollectionStatus::Empty, CollectionStatus::Unavailable] {
-            store.edit_for_test(|c| c.status = status);
-            let overlay = CollectionScreen::status_overlay(store.view().current(), 0, &FixtureMeasure);
-            assert!(overlay.glyph_frame().is_none() && overlay.kind == StatusKind::Empty,
-                "{status:?} is a quiet answer, not a failure");
-        }
+        store.edit_for_test(|c| c.status = CollectionStatus::Empty);
+        let overlay = CollectionScreen::status_overlay(store.view().current(), 0, &FixtureMeasure);
+        assert!(overlay.glyph_frame().is_none() && overlay.kind == StatusKind::Empty,
+            "an empty collection is a quiet answer, not a failure");
+    }
+
+    /// C4a: an empty collection keeps its header — the kind alone on the meta line, not
+    /// "0 items" — and says so in the grid's region, centred where the mock centres it.
+    #[test]
+    fn an_empty_collection_reads_out_quietly_in_the_grids_region() {
+        let (mut store, _) = seeded();
+        store.edit_for_test(|c| { c.items.clear(); c.child_count = 0; c.total = 0; c.status = CollectionStatus::Empty; });
+        let c = store.view().current().unwrap();
+        assert_eq!(meta_key(c), (0, true), "the meta line is the kind alone");
+        assert!(CollectionScreen::shows_head(c));
+        let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
+        let f = overlay.frame;
+        assert_eq!((f.x, f.y, f.w, f.h), (96.0, 460.0, 1728.0, 475.0));
+        assert_eq!(overlay.caption, crate::i18n::msg::browse_collection_empty_c());
+    }
+
+    /// C4b: an unavailable collection is the page-filling Failed verdict at the shared anchor
+    /// with its reason and no way on but BACK — and no header, since there is nothing to head.
+    #[test]
+    fn an_unavailable_collection_fills_the_page_with_its_verdict_and_no_header() {
+        let (mut store, _) = seeded();
+        store.edit_for_test(|c| { c.items.clear(); c.status = CollectionStatus::Unavailable; });
+        let c = store.view().current().unwrap();
+        assert!(!CollectionScreen::shows_head(c));
+        let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
+        assert_eq!(overlay.kind, StatusKind::Failed);
+        let f = overlay.frame;
+        assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, SCR_W, SCR_H));
+        assert!(overlay.reason.is_some() && overlay.action.is_none());
+    }
+
+    /// C1: the header art is the mock's 200×300 tile at the content edge, the text column starts
+    /// at 360, and the first grid row's posters start at 520 under the "Items" heading.
+    #[test]
+    fn the_header_and_grid_sit_on_the_mocks_lines() {
+        let (store, mut screen) = seeded();
+        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let art = screen.art_rect();
+        assert_eq!((art.x, art.y, art.w, art.h), (96.0, 96.0, 200.0, 300.0));
+        let column = screen.header_rect();
+        assert_eq!((column.x, column.y, column.w), (360.0, 96.0, 1344.0));
+        assert_eq!(screen.cell(0).y, 520.0);
+        assert_eq!(screen.cell(0).x, MARGIN_X);
+        assert!(ITEMS_HEADING_Y + theme::size::HEADLINE as f32 <= GRID_TOP);
+    }
+
+    /// C2: scrolling to a lower row rests the first visible row on the content edge, with the
+    /// header gone and nothing of the row above it left showing.
+    #[test]
+    fn a_scrolled_page_rests_a_row_on_the_content_edge() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.items = (0..30).map(|i| item(&format!("m{i}"))).collect());
+        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let cols = crate::ui::poster_grid::COLS;
+        let scroll = crate::ui::poster_grid::snap_row(0.0, 2, 30, GRID_TOP, CONTENT_TOP);
+        assert!(scroll > 0.0);
+        screen.scroll.pos = scroll;
+        let rows: Vec<f32> = (0..30).step_by(cols).filter(|&i| !screen.above_edge(i))
+            .map(|i| screen.cell(i).y).collect();
+        assert!((rows[0] - CONTENT_TOP).abs() < 0.5, "first drawn row at {}", rows[0]);
+        assert_eq!(head_alpha(scroll), 0.0, "no remnant of the header");
+        assert_eq!(head_alpha(0.0), 1.0);
     }
 
     /// Down from above a short last row lands on its last member (the Library grid's rule)
@@ -901,9 +1029,20 @@ mod tests {
             if w > mark_budget { out.push(format!("{}: {mark:?} is {w:.0}px in {mark_budget:.0}px", language.tag())); }
             for meta in [msg::browse_collection_kind().to_owned(),
                 msg::browse_collection_meta(&crate::ui::fmt::item_count(99_999))] {
-                let w = m.width_str(&meta, theme::size::BODY, false);
+                let w = m.width_str(&meta, theme::size::LABEL, false);
                 if w > TEXT_W * HEADROOM { out.push(format!("{}: {meta:?} is {w:.0}px in {TEXT_W:.0}px", language.tag())); }
             }
+            // The one-line read-outs: the empty answer across its region, the unavailable verdict
+            // (TITLE bold) across the page's reading width.
+            let empty = msg::browse_collection_empty();
+            let w = m.width_str(empty, theme::size::BODY, false);
+            if w > STATUS_FRAME.w * HEADROOM { out.push(format!("{}: {empty:?} is {w:.0}px", language.tag())); }
+            let verdict = msg::browse_collection_unavailable();
+            let w = m.width_str(verdict, theme::size::TITLE, true);
+            if w > (SCR_W - 2.0 * MARGIN_X) * HEADROOM { out.push(format!("{}: {verdict:?} is {w:.0}px", language.tag())); }
+            let heading = format!("{} · {}", msg::browse_collection_items(), msg::browse_collection_order_release());
+            let w = m.width_str(&heading, theme::size::HEADLINE, true);
+            if w > (SCR_W - 2.0 * MARGIN_X) * HEADROOM { out.push(format!("{}: {heading:?} is {w:.0}px", language.tag())); }
         }
         assert!(out.is_empty(), "collection text the television would clip:\n  {}", out.join("\n  "));
     }

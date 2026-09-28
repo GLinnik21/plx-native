@@ -10,7 +10,7 @@ use super::test_support::land;
 fn home_group_identity_uses_provider_and_server_not_title_or_position() {
     let id = "home.movies.recent";
     let mut hub = HubRow { title: "Recent movies".into(), hub_id: id.into(),
-        key: String::new(), source: "Alice".into(), start: 0, len: 1 };
+        key: String::new(), source: "Alice".into(), total: 0, start: 0, len: 1 };
     let items = vec![row(0, "a"), row(1, "b"), row(0, "c")];
     let want = |slot| Some(HubIdentity::Identifier { sid: sid(slot), id, key: "" });
     assert_eq!(stable_hub_identity(&hub, &items), want(0));
@@ -102,7 +102,7 @@ fn a_mixed_section_hub_keeps_its_identity_when_the_leading_library_changes() {
 #[test]
 fn merged_home_deck_identity_survives_a_different_leading_server() {
     let mut hub = HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(),
-        key: String::new(), source: String::new(), start: 0, len: 1 };
+        key: String::new(), source: String::new(), total: 0, start: 0, len: 1 };
     let items = vec![row(0, "a"), row(1, "b")];
     assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::ContinueWatching));
     hub.start = 1;

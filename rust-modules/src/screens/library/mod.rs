@@ -1182,7 +1182,8 @@ impl LibraryScreen {
     fn heading_widget<'a, H: LibraryLike>(&self, index: usize, cx: &Cx<'a, H>) -> Option<crate::ui::linked_heading::LinkedHeading<'a>> {
         self.shelves.get(index)?.heading?;
         let shelf = H::section_hubs(cx).shelves().get(index)?;
-        Some(crate::ui::linked_heading::LinkedHeading::heading(&shelf.title, "").bounded(layout::GRID_RIGHT - MARGIN_X))
+        Some(crate::ui::linked_heading::LinkedHeading::heading(&shelf.title, "").total(shelf.total)
+            .bounded(layout::GRID_RIGHT - MARGIN_X))
     }
     /// The linked heading's face, cap top where an unlinked heading's would be.
     fn heading_rect<H: LibraryLike>(&self, index: usize, cx: &Cx<'_, H>, at: At) -> Option<Rect> {

@@ -31,7 +31,7 @@ pub(super) const FAN_H: u32 = 450;
 pub(super) const FAN_MEMBERS: usize = 3;
 /// The baked-image kind, versioned: change it whenever [`compose`]'s output changes so every
 /// persisted fan re-bakes instead of showing the old look until its stamp moves.
-pub(super) const FAN_KIND: &str = "fan.2";
+pub(super) const FAN_KIND: &str = "fan.3";
 
 /// The store key for a thumb that is a server composite; `None` for every other path.
 pub(super) fn fan_key(thumb: &str) -> Option<String> {
@@ -131,10 +131,6 @@ fn mock_px(v: f32) -> f32 {
     v * FAN_W as f32 / MOCK_TILE_W
 }
 
-/// `.mc { width:44%; height:44% }`. Percentages of a 2:3 tile, so the box is 110×165 mock px —
-/// itself exactly 2:3 — and a member's HEIGHT is 44% of the tile's height whichever way it is
-/// read (198 of 450 bake px, 132 wide). The poster is cover-fitted into that box, as before.
-const MEMBER_FRAC: f32 = 0.44;
 /// `.mc { border-radius:6px }`.
 const MEMBER_RADIUS_MOCK: f32 = 6.0;
 /// `.mc { box-shadow: 0 6px 14px rgba(0,0,0,.45) }` — offset, blur, alpha.
@@ -146,28 +142,14 @@ const RIM_W_MOCK: f32 = 1.0;
 const RIM_ALPHA: f32 = 0.18;
 /// `.scr { height:45%; background:linear-gradient(transparent, rgba(0,0,0,.55)) }`: the scrim
 /// starts at 55% of the height and darkens LINEARLY to 0.55 at the bottom edge.
-const SCRIM_FROM: f32 = 0.55;
+const SCRIM_FROM: f32 = crate::ui::collection_tile::FAN_SCRIM_FROM;
 const SCRIM_MAX: f32 = 0.55;
 
-/// sin(9°) and sin(8°): `.c1 { rotate(-9deg) }` and `.c2 { rotate(8deg) }`. Constants, so no
-/// transcendental is evaluated at bake time (`ci/allow/libm.txt`).
-const SIN_9: f32 = 0.156_434_46;
-const SIN_8: f32 = 0.139_173_1;
-
-/// Where a member lands, as the mock places it: `left`/`top` of its box as fractions of the tile,
-/// and the sine of its tilt (positive = clockwise on screen). CSS rotates about the box's centre.
-struct Placement {
-    left: f32,
-    top: f32,
-    sin: f32,
-}
-
-/// `.c1` — the collection's SECOND member, back left.
-const BACK_LEFT: Placement = Placement { left: 0.18, top: 0.14, sin: -SIN_9 };
-/// `.c2` — the THIRD member, back right, over `.c1`.
-const BACK_RIGHT: Placement = Placement { left: 0.40, top: 0.12, sin: SIN_8 };
-/// `.c3` — the FIRST member, upright, on top.
-const FRONT: Placement = Placement { left: 0.28, top: 0.10, sin: 0.0 };
+// The deck — where each member lands, its tilt and the deck's scale — is shared with the name's
+// placement (`ui::collection_tile::fan_member`), so the name's band is computed from the members
+// this bake actually draws.
+use crate::ui::collection_tile::{FanMember, FAN_BACK_LEFT as BACK_LEFT, FAN_BACK_RIGHT as BACK_RIGHT,
+    FAN_FRONT as FRONT};
 
 /// Composite the fan in the mock's paint order: the UltraBlur ground (`.ubg`), the scrim
 /// (`.scr`, UNDER the members), then `.c1`, `.c2`, `.c3`. `front` is the collection's first
@@ -230,20 +212,20 @@ fn ramp(v: f32, half: f32) -> f32 {
 /// inset rim over it, all rotated about the box's centre. Every edge is one signed distance to the
 /// rounded box in the member's own (rotated) frame, so the corners of the poster, its rim and its
 /// shadow are round together; the poster's edge is anti-aliased over one pixel.
-fn draw(dst: &mut Rgba, src: &Rgba, p: &Placement) {
+fn draw(dst: &mut Rgba, src: &Rgba, p: &FanMember) {
     if src.w == 0 || src.h == 0 {
         return;
     }
     let (wf, hf) = (dst.w as f32, dst.h as f32);
-    let (hw, hh) = (MEMBER_FRAC * wf / 2.0, MEMBER_FRAC * hf / 2.0);
-    let (cx, cy) = (p.left * wf + hw, p.top * hf + hh);
+    let placed = crate::ui::collection_tile::fan_member(p, wf, hf);
+    let (hw, hh, cx, cy) = (placed.hw, placed.hh, placed.cx, placed.cy);
     let r = mock_px(MEMBER_RADIUS_MOCK);
     let rim = mock_px(RIM_W_MOCK);
     let drop = mock_px(SHADOW_DY_MOCK);
     // CSS blurs a shadow with a Gaussian of σ = blur / 2. A smoothstep across the edge has the
     // Gaussian CDF's slope at the edge when its half-width is σ·0.75·√(2π) ≈ 1.88σ.
     let soft = 1.88 * mock_px(SHADOW_BLUR_MOCK) / 2.0;
-    let (sin, cos) = (p.sin, (1.0 - p.sin * p.sin).sqrt());
+    let (sin, cos) = (placed.sin, placed.cosine());
     let ex = hw * cos + hh * sin.abs() + soft + 1.0;
     let ey = hw * sin.abs() + hh * cos + soft + drop + 1.0;
     let x0 = (cx - ex).floor().max(0.0) as u32;

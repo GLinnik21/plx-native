@@ -22,6 +22,11 @@ const CHEVRON_INK: (f32, f32) = icons::ink_x(Icon::Chevron);
 const CHEVRON_BEARING_L: f32 = CHEVRON_SIZE * CHEVRON_INK.0;
 const CHEVRON_BEARING_R: f32 = CHEVRON_SIZE * (1.0 - CHEVRON_INK.1);
 
+/// The face's scale at focus progress `focus_t`: 1 at rest, `CTRL_FOCUS_SCALE` focused.
+fn focus_scale(focus_t: f32) -> f32 {
+    1.0 + (widgets::CTRL_FOCUS_SCALE - 1.0) * focus_t.clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Presentation {
     Entry,
@@ -46,6 +51,8 @@ pub(crate) struct LinkedMeasure {
     /// A bounded `Heading`'s elided runs, kept so the draw reuses the measure's elision. Empty for
     /// every other heading, whose flow draws straight from the strings at no elision cost.
     runs: Vec<Run>,
+    /// A `Heading`'s annotation as drawn: its member count, its source, or "N · source".
+    note: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +63,9 @@ pub(crate) struct LinkedHeading<'a> {
     /// The heading's room from its origin, chevron included — `card_row::draw_heading`'s
     /// `max_w`. `INFINITY` (the default) never elides.
     max_w: f32,
+    /// How many members the linked collection holds — the "· N" a `Heading` carries after its
+    /// title (`Collections.dc.html` D1/E1). 0 draws no count.
+    total: usize,
 }
 
 impl<'a> LinkedHeading<'a> {
@@ -67,6 +77,7 @@ impl<'a> LinkedHeading<'a> {
             count,
             presentation: Presentation::Entry,
             max_w: f32::INFINITY,
+            total: 0,
         }
     }
 
@@ -76,6 +87,7 @@ impl<'a> LinkedHeading<'a> {
             count,
             presentation: Presentation::Heading,
             max_w: f32::INFINITY,
+            total: 0,
         }
     }
 
@@ -87,12 +99,29 @@ impl<'a> LinkedHeading<'a> {
         self
     }
 
+    /// The linked collection's member count, drawn after a `Heading`'s title and before any
+    /// source annotation it was built with.
+    pub(crate) const fn total(mut self, total: usize) -> Self {
+        self.total = total;
+        self
+    }
+
+    /// A `Heading`'s annotation: the count, the source, or both, count first.
+    fn note(&self) -> String {
+        match (self.total, self.count.is_empty()) {
+            (0, _) => self.count.to_owned(),
+            (n, true) => n.to_string(),
+            (n, false) => format!("{n} \u{b7} {}", self.count),
+        }
+    }
+
     fn text_room(&self) -> f32 {
         self.max_w - (CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R)
     }
 
     pub(crate) fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
         let mut runs = Vec::new();
+        let note = if self.presentation == Presentation::Heading { self.note() } else { String::new() };
         let run_w = match self.presentation {
             Presentation::Entry => {
                 let mut w = measure.width_str(self.title, theme::size::LABEL, true);
@@ -108,7 +137,7 @@ impl<'a> LinkedHeading<'a> {
                 let keep = self.max_w.is_finite();
                 card_row::bounded_heading_flow(
                     self.title,
-                    self.count,
+                    &note,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -122,6 +151,7 @@ impl<'a> LinkedHeading<'a> {
         };
         LinkedMeasure {
             runs,
+            note,
             run_w,
             face_w: 2.0 * SIDE_PAD + run_w + CHEVRON_GAP + CHEVRON_SIZE
                 - CHEVRON_BEARING_L
@@ -132,29 +162,36 @@ impl<'a> LinkedHeading<'a> {
     /// `Entry` takes the face's top-left. `Heading` takes the title texture's resting top and
     /// centres its face on the cap band inside that texture; the face starts one side-padding rung
     /// to the left. Focus growth is left-anchored in both cases.
+    ///
+    /// The two grow differently because their content sits differently. `Entry`'s face scales
+    /// whole and centres its run (person.rs's Filmography pill). A focused `Heading` is the whole
+    /// pill scaled from its left edge (D1b/E1): its PADDING grows with the face while the text,
+    /// set at the fixed size rungs, keeps its width — so the air after the chevron stays the side
+    /// padding rather than collecting the whole width's 7% as empty face.
     pub(crate) fn face_rect(&self, x: f32, y: f32, focus_t: f32, m: &LinkedMeasure) -> Rect {
-        let scale = 1.0 + (widgets::CTRL_FOCUS_SCALE - 1.0) * focus_t.clamp(0.0, 1.0);
-        let base_y = match self.presentation {
-            Presentation::Entry => y,
+        let scale = focus_scale(focus_t);
+        match self.presentation {
+            Presentation::Entry => Rect::new(
+                x,
+                y - (FACE_H * scale - FACE_H) * 0.5,
+                m.face_w * scale,
+                FACE_H * scale,
+            ),
             Presentation::Heading => {
                 let (cap_top, cap_bottom) =
                     crate::text::text_cap_band(theme::size::HEADLINE, 1);
-                y + (cap_top + cap_bottom) * 0.5 - FACE_H * 0.5
+                let cy = y + (cap_top + cap_bottom) * 0.5;
+                Rect::new(
+                    x - SIDE_PAD,
+                    cy - FACE_H * scale * 0.5,
+                    m.face_w + 2.0 * SIDE_PAD * (scale - 1.0),
+                    FACE_H * scale,
+                )
             }
-        };
-        Rect::new(
-            x - if self.presentation == Presentation::Heading {
-                SIDE_PAD
-            } else {
-                0.0
-            },
-            base_y - (FACE_H * scale - FACE_H) * 0.5,
-            m.face_w * scale,
-            FACE_H * scale,
-        )
+        }
     }
 
-    fn content_x(&self, x: f32, face: Rect, m: &LinkedMeasure) -> f32 {
+    fn content_x(&self, face: Rect, m: &LinkedMeasure) -> f32 {
         match self.presentation {
             Presentation::Entry => {
                 face.x
@@ -163,7 +200,7 @@ impl<'a> LinkedHeading<'a> {
                         + CHEVRON_BEARING_R)
                         * 0.5
             }
-            Presentation::Heading => x,
+            Presentation::Heading => face.x + SIDE_PAD * face.h / FACE_H,
         }
     }
 
@@ -192,7 +229,7 @@ impl<'a> LinkedHeading<'a> {
             );
         }
 
-        let content_x = self.content_x(x, face, m);
+        let content_x = self.content_x(face, m);
         let mut rx = content_x;
         match self.presentation {
             Presentation::Entry => {
@@ -248,7 +285,7 @@ impl<'a> LinkedHeading<'a> {
                 let cap_y = y;
                 card_row::bounded_heading_flow(
                     self.title,
-                    self.count,
+                    &m.note,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -450,8 +487,41 @@ mod tests {
         assert!(focused.w > rest.w && focused.h > rest.h);
         assert_eq!(rest.cy(), y + (cap_top + cap_bottom) * 0.5);
         assert_eq!(focused.cy(), rest.cy());
-        assert_eq!(heading.content_x(x, rest, &m), 96.0);
-        assert_eq!(heading.content_x(x, focused, &m), 96.0);
+        assert_eq!(heading.content_x(rest, &m), 96.0);
+    }
+
+    /// **D1b/E1: the focused heading grows as ONE pill from its left edge** — its padding scales
+    /// with the face, so the air after the chevron stays the side padding (×1.07) rather than the
+    /// whole width's growth piling up as empty face after it.
+    #[test]
+    fn a_focused_heading_scales_its_padding_not_its_empty_face() {
+        let measure = FixtureMeasure;
+        let heading = LinkedHeading::heading("Starfall Saga Collection", "12");
+        let m = heading.measure(&measure);
+        let x = super::super::consts::MARGIN_X;
+        let s = widgets::CTRL_FOCUS_SCALE;
+        let face = heading.face_rect(x, 200.0, 1.0, &m);
+        let content = m.face_w - 2.0 * SIDE_PAD;
+        let left = heading.content_x(face, &m) - face.x;
+        let right = face.x + face.w - (heading.content_x(face, &m) + content);
+        assert_eq!(face.x, x - SIDE_PAD, "grown from the left edge");
+        assert!((left - SIDE_PAD * s).abs() < 0.01, "leading air {left}");
+        assert!((right - SIDE_PAD * s).abs() < 0.01, "air after the chevron {right}");
+    }
+
+    /// D1/E1: "Starfall Saga Collection · 12 ›" — the count rides after the title, ahead of any
+    /// source annotation, and a zero count draws none.
+    #[test]
+    fn a_heading_carries_its_collections_count() {
+        let measure = FixtureMeasure;
+        let plain = LinkedHeading::heading("Saga", "").measure(&measure);
+        let counted = LinkedHeading::heading("Saga", "").total(12);
+        assert_eq!(counted.measure(&measure).note, "12");
+        assert!(counted.measure(&measure).run_w > plain.run_w);
+        assert_eq!(LinkedHeading::heading("Saga", "friend").total(12).measure(&measure).note,
+            "12 \u{b7} friend");
+        assert_eq!(LinkedHeading::heading("Saga", "friend").measure(&measure).note, "friend");
+        assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).note, "");
     }
 
     #[test]
