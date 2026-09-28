@@ -91,8 +91,7 @@
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) mod view;
 pub(crate) mod recents;
@@ -457,20 +456,10 @@ struct Mail {
 /// crosses the mailbox.
 type Projection = [Vec<Item>; NKIND];
 
-/// One registry slot's worker-touched half: the single-flight claim plus the landing mailbox.
-/// Bundled into [`SearchAdapter`], which a production `Bridge` holds as one `Arc` per owner —
-/// `person.rs`'s `Fetch`/`PersonAdapter` is the idiom this copies.
-struct Fetch {
-    in_flight: AtomicBool,
-    slot: Mutex<Option<Mail>>,
-}
-
-impl Fetch {
-    const IDLE: Fetch = Fetch {
-        in_flight: AtomicBool::new(false),
-        slot: Mutex::new(None),
-    };
-}
+/// One registry slot's worker-touched half: the single-flight claim plus the landing mailbox
+/// ([`crate::stores::Fetch`], shared with Person and Collection). Bundled into [`SearchAdapter`],
+/// which a production `Bridge` holds as one `Arc` per owner.
+type Fetch = crate::stores::Fetch<Mail>;
 
 /// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, indexed
 /// by [`ServerId::raw`]. A worker captures a clone of the owning `Bridge`'s `Arc<SearchAdapter>`
@@ -837,22 +826,18 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
 /// the guard is the one piece of this machinery a test cannot reach through `set_query` —
 /// reaching it needs two overlapping real fetches.
 fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
-    let mut slot = adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner());
-    let beats = match slot.as_ref() {
-        None => true,
+    let fresh = what.is_some();
+    adapter.fetch[i].post(Mail { gen, what }, |old| match old {
         // A newer generation always wins — the monotone rule this mailbox exists for.
-        Some(m) if m.gen != gen => m.gen < gen,
+        m if m.gen != gen => m.gen < gen,
         // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
         // and is not a hard interlock, so two workers can be out for one source at one generation;
         // with the loser's `None` arriving first, the real response was dropped and the source then
         // sat out a ~2 s backoff holding a good answer. `record` already encodes this preference on
         // the other side of the pump — "a late failure cannot unsay an answer" — and `land` is what
         // decides which mail survives to be read at all.
-        Some(m) => m.what.is_none() && what.is_some(),
-    };
-    if beats {
-        *slot = Some(Mail { gen, what });
-    }
+        m => m.what.is_none() && fresh,
+    });
 }
 
 /// Invalidate everything in flight: bump the generation (a late landing is discarded), drop every
@@ -887,8 +872,7 @@ fn supersede_with_directory(
         None => snapshot_favs(state),
     }
     for i in 0..NSRC {
-        *adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+        adapter.fetch[i].clear();
         state.src[i] = Source::EMPTY;
     }
 }
@@ -1000,13 +984,12 @@ fn pump_with_optional_directory(
         // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
+        // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
+        // be — dropping a stale one without that is how the flag latches forever
         let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Search, || {
-            adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+            adapter.fetch[i].take()
         });
         if let Some(m) = taken {
-            // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
-            // be — dropping a stale one without this is how the flag latches forever
-            adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
             if m.gen == state.gen {
                 record(state, i, m.what);
                 landed = true;
@@ -1232,7 +1215,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
         return; // still settling — the keystroke burst is not over
     }
     let src = &state.src[i];
-    if adapter.fetch[i].in_flight.load(Ordering::SeqCst) || src.retry_cd > 0 {
+    if adapter.fetch[i].busy() || src.retry_cd > 0 {
         return;
     }
     if src.status == Status::Answered {
@@ -1249,7 +1232,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
-    adapter.fetch[i].in_flight.store(true, Ordering::SeqCst);
+    adapter.fetch[i].claim();
     crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::task::spawn_small("search", move || {
@@ -1269,7 +1252,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never searches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+        adapter.fetch[i].release();
     }
 }
 

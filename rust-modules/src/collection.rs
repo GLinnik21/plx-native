@@ -7,8 +7,7 @@ use crate::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) const PAGE_SIZE: usize = 60;
 const RETRY_FRAMES: u32 = 120;
@@ -139,13 +138,8 @@ impl CollectionState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut changed = self.refresh_if_client_changed(adapter);
         if self.retry_cd > 0 { self.retry_cd -= 1; }
-        let reply = if crate::app::bootstrap::stores::active() {
-            let reply = crate::app::bootstrap::stores::poll("collection", 0, || adapter.fetch.take());
-            if reply.is_some() { gate.landed(crate::stores::StoreId::Collection.ord()); }
-            reply
-        } else {
-            crate::stores::take_landing(gate, crate::stores::StoreId::Collection, || adapter.fetch.take())
-        };
+        let reply = crate::app::bootstrap::stores::take_store_landing(
+            gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch);
         if let Some(reply) = reply {
             crate::ui::idle::invalidate();
             if reply.gen == self.generation { changed |= self.apply(reply.what); }
@@ -361,34 +355,12 @@ pub(crate) fn validate_record(slot: u32, value: &serde_json::Value) -> Result<()
     Ok(())
 }
 
-struct Fetch { in_flight: AtomicBool, slot: Mutex<Option<Mail>> }
-
-impl Default for Fetch {
-    fn default() -> Self { Self { in_flight: AtomicBool::new(false), slot: Mutex::new(None) } }
-}
-
-impl Fetch {
-    fn busy(&self) -> bool { self.in_flight.load(Ordering::SeqCst) }
-    fn claim(&self) { self.in_flight.store(true, Ordering::SeqCst); }
-    fn release(&self) { self.in_flight.store(false, Ordering::SeqCst); }
-    fn take(&self) -> Option<Mail> {
-        let mail = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        self.release();
-        Some(mail)
-    }
-    fn clear(&self) {
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.release();
-    }
-}
-
 #[derive(Default)]
-pub(crate) struct CollectionAdapter { fetch: Fetch }
+pub(crate) struct CollectionAdapter { fetch: crate::stores::Fetch<Mail> }
 
 impl CollectionAdapter {
     fn land(&self, generation: u32, what: Landing) {
-        let mut slot = self.fetch.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_none_or(|old| old.gen < generation) { *slot = Some(Mail { gen: generation, what }); }
+        self.fetch.post(Mail { gen: generation, what }, |old| old.gen < generation);
     }
 
     #[cfg(test)]

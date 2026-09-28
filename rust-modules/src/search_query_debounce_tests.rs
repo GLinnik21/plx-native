@@ -233,7 +233,7 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
     let stale = owner.state.gen;
     owner.set_query("wallace"); // supersedes: the fetch above is now about a string nobody typed
 
-    owner.adapter.fetch[0].in_flight.store(true, Ordering::SeqCst);
+    owner.adapter.fetch[0].claim();
     hold_off(&mut owner);
     owner.land(0, stale, Some(answered(0, vec![media("Wallander")]).items));
     assert!(!owner.pump(0.0), "a superseded landing must not publish");
@@ -247,7 +247,7 @@ fn a_landing_from_the_previous_query_is_discarded_but_still_releases_the_fetch()
         "a discarded landing must not settle the spinner"
     );
     assert!(
-        !owner.adapter.fetch[0].in_flight.load(Ordering::SeqCst),
+        !owner.adapter.fetch[0].busy(),
         "the take must release the single-flight even for a landing it drops"
     );
     // …and it must not arm a backoff either, which would delay the CURRENT query's first answer
@@ -305,7 +305,7 @@ fn reset_clears_every_claim_backoff_and_answer() {
     let mut owner = Owner::default();
     owner.set_query("wallace");
     for i in 0..NSRC {
-        owner.adapter.fetch[i].in_flight.store(true, Ordering::SeqCst);
+        owner.adapter.fetch[i].claim();
         let s = &mut owner.state.src[i];
         *s = answered(0, vec![media("A Close Shave")]);
         s.retry_cd = RETRY_FRAMES;
@@ -315,7 +315,7 @@ fn reset_clears_every_claim_backoff_and_answer() {
 
     for i in 0..NSRC {
         assert!(
-            !owner.adapter.fetch[i].in_flight.load(Ordering::SeqCst),
+            !owner.adapter.fetch[i].busy(),
             "source {i} stayed latched — the screen wedges"
         );
         assert_eq!(owner.state.src[i].retry_cd, 0);

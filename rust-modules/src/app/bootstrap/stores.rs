@@ -103,6 +103,21 @@ fn person_completion(t: &mut Tape, slot: u32, data: &Value) -> Result<(), &'stat
     if *count == 0 { t.person.remove(&key); }
     Ok(())
 }
+/// A generation-stamped store's landing take, recorded or gated: under controlled bootstrap the
+/// tape answers ([`poll`]) and the landing is reported to the gate itself; otherwise the landing
+/// gate schedules the take. The one spelling of that choice for the Person and Collection stores.
+pub(crate) fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
+    gate: &crate::ui::landgate::Gate, id: crate::stores::StoreId, store: &str, slot: u32,
+    fetch: &crate::stores::Fetch<T>) -> Option<T> {
+    if active() {
+        let reply = poll(store, slot, || fetch.take());
+        if reply.is_some() { gate.landed(id.ord()); }
+        reply
+    } else {
+        crate::stores::take_landing(gate, id, || fetch.take())
+    }
+}
+
 /// Called at the original consumer, including its empty-poll path. Replay never calls take.
 pub(crate) fn poll<T: serde::Serialize + serde::de::DeserializeOwned>(
     store: &str, slot: u32, take: impl FnOnce() -> Option<T>) -> Option<T> {
