@@ -29,6 +29,7 @@ mod servers;
 // type across a crate) — declared here so those methods compile onto `Client`.
 mod hubs;
 mod library;
+pub(crate) mod collections;
 /// Whole-file text subtitles are bounded before transport allocation and parsing.
 pub(crate) const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;

@@ -126,6 +126,10 @@ pub(crate) unsafe fn activate_card(
     menu_play_await: &mut Option<MenuPlayAwait>,
     now: u32,
 ) {
+    if mm.kind == crate::pms::KIND_COLLECTION {
+        crate::log(&format!("collection: activation deferred rk={}", mm.rk));
+        return;
+    }
     let rk = mm.rk.clone();
     if want_play {
         match mm.kind {
@@ -330,6 +334,25 @@ mod activate_card_tests {
         assert!(menu_play_await.is_none(), "the ceiling must end the wait");
         assert!(pages.has_pending_navigation(),
             "…and land on the page rather than leaving the press with no effect at all");
+    }
+
+    #[test]
+    fn a_collection_card_is_inert_until_the_collection_page_exists() {
+        let _guard = crate::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::default();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
+        let mut pages = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let mut bridge = super::bridge::Bridge::for_test(|| 0);
+        let mut menu_play_await = None;
+        let collection = crate::pms::PmsMovie { rk: "50001".into(),
+            kind: crate::pms::KIND_COLLECTION, ..Default::default() };
+        unsafe { activate_card(&mut ps, &mut pa, &collection, false, 1000, None,
+            &mut pages, &mut bridge, &mut menu_play_await, 0); }
+        assert!(!pages.has_pending_navigation(), "a collection must not open movie Detail");
+        assert!(menu_play_await.is_none(), "a collection must not arm playback");
+        assert!(!crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
+            "a collection must not request movie metadata");
     }
 }
 

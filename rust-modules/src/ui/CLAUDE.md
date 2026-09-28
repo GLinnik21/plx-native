@@ -215,11 +215,13 @@ presentation in a design pass.
    fourth entry in the HUD control row (`player_hud.rs`'s `BTN_N`, currently 3).
 
 4. **Failure read-outs are never red — the app does not scold.** A failed verdict is inked bold at
-   `size::TITLE` in `theme::TEXT_SECONDARY` (primary only alongside the 96 px glyph), per the
-   design system's `StatusOverlay` contract. Home, Library and sign-in read-outs share ONE
-   placement: the verdict hangs from `FULL_ANCHOR_TOP` with the reason and action row stacked
-   directly under it. A read-out centred in its own container instead lands ~250 px low and reads
-   as a different component.
+   `size::TITLE` in `theme::TEXT_SECONDARY` (`TEXT_PRIMARY` only for the player's own 96 px glyph,
+   drawn by `player_hud`), per the design system's `StatusOverlay` contract. Home, Library and
+   sign-in read-outs share ONE placement: the verdict hangs from `FULL_ANCHOR_TOP` with the reason
+   and action row stacked directly under it — and, since the read-out glyph work, their own 112 px
+   `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument), a
+   second, unrelated glyph family, not the player's. A read-out centred in its own container
+   instead lands ~250 px low and reads as a different component.
 
 5. **Read the DS contract before inventing a control state.** Focus, hover and selected treatments
    come from the component's `.d.ts` in the design system, not from a lane's judgement. The Search

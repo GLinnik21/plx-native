@@ -2148,7 +2148,10 @@ fn status_read(
 /// (`screens::plaintext_question`, shared with the sign-in and a Library source's read-out).
 fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch) -> Option<StatusOverlay<'a>> {
     let (caption, kind, action) = status_read(view)?;
-    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    // Home's hub failure carries no typed cause of its own — it is the same untyped "can't reach
+    // the server" verdict as the Library's own, so the two share the glyph rather than one
+    // inventing a cause the other doesn't have.
+    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page(crate::ui::icons::Icon::ServerBadgeMinus);
     let mut action = action;
     if kind == StatusKind::Failed {
         if let (Some(verdict), Some(reason)) = (plaintext.verdict(), plaintext.reason()) {

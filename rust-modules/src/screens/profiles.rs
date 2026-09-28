@@ -218,8 +218,11 @@ const READOUT_GROUP: GroupId = GroupId(4);
 /// failed page read-out. `back` puts *Back* first and *Sign out* second; without it *Sign out* is
 /// the row's one control.
 fn readout_overlay(reason: &std::ffi::CStr, back: bool) -> StatusOverlay<'_> {
+    // A profile switch failing is `IncidentKind::ProfileSwitch` by construction — this screen
+    // never draws the read-out for any other cause — so the glyph is the fixed one that kind maps
+    // to rather than a re-derivation through an `IncidentContext` this screen doesn't hold.
     let o = StatusOverlay::new(Rect::FULL, crate::i18n::msg::settings_profiles_failed_c(), StatusKind::Failed)
-        .page()
+        .page(crate::ui::icons::Icon::PeopleBadgeAlert)
         .reason(reason);
     if back {
         o.action(crate::i18n::msg::settings_back_c()).secondary(Some(crate::i18n::msg::settings_account_sign_out_c()))

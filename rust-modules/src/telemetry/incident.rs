@@ -470,6 +470,28 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// **The [`LinkClass`] outcomes a plex.tv-facing incident always reads the same way**, shared by
+/// [`IncidentKind::PinCreate`] (`mint_pin`, `auth.rs`) and the `Discovery(Silent)`/`PlexTv` arm of
+/// [`IncidentContext::readout_glyph`] — the one place both used to spell out the same three arms
+/// separately, which is exactly how `PinCreate` drifted (it never grew them at all, and kept a
+/// fixed `WifiSlash` even once `self.link` recorded plex.tv actually answering). `Dns`/`Tls`/an
+/// `Answered*` status all say something SPECIFIC happened reaching or on plex.tv, so both callers
+/// agree here. `None` for `Timeout`/`TransportOther`/`Unknown` — the two callers diverge only on
+/// that "nothing specific happened" fallback, each picking its own glyph, so this returns `None`
+/// rather than guessing one. Exhaustive on [`LinkClass`], no wildcard arm.
+fn plextv_link_glyph(link: LinkClass) -> Option<crate::ui::icons::Icon> {
+    use crate::ui::icons::Icon;
+    match link {
+        LinkClass::Dns => Some(Icon::GlobeBadgeQuestion),
+        LinkClass::Tls => Some(Icon::LockBadgeAlert),
+        LinkClass::Answered2xx
+        | LinkClass::Answered4xx
+        | LinkClass::Answered5xx
+        | LinkClass::AnsweredOther => Some(Icon::CloudBadgeAlert),
+        LinkClass::Timeout | LinkClass::TransportOther | LinkClass::Unknown => None,
+    }
+}
+
 impl IncidentContext {
     /// A context for `kind`, classifying the last network call and stamping the time. The link
     /// counters, code generation and persistence evidence start empty; the `with_*` builders set
@@ -594,6 +616,185 @@ impl IncidentContext {
         self.keymanager_stage = protection.map(|p| p.failure.stage);
         self.service_error_code = protection.and_then(|p| p.failure.service_code);
         self
+    }
+
+    /// **The one glyph a page-filling `Failed` read-out draws above its verdict, decided from the
+    /// SAME evidence as the caption** (`auth::discovery_failure`'s table), so the two can never
+    /// disagree — this is not a second, string-matched opinion about what went wrong.
+    ///
+    /// Exhaustive on [`IncidentKind`] and, where discovery needs it, on [`DiscoveryClass`] and
+    /// [`LinkClass`] — no wildcard arm, so a new variant is a compile error here rather than a
+    /// silent fallthrough. The owner-approved mapping (`docs` carries none of this; it lives only
+    /// here and at the call sites that read it):
+    ///
+    /// * [`IncidentKind::PinExpired`] / [`IncidentKind::LinkStalled`] — the wait ran out —
+    ///   `ClockBadgeAlert`.
+    /// * [`IncidentKind::PinCreate`] — `mint_pin` (`auth.rs`) keeps its last plex.tv response in
+    ///   `self.link` the same as discovery does, so this follows the SAME [`LinkClass`] table as
+    ///   the `Discovery(Silent)`/`PlexTv` arm below (`plextv_link_glyph`) rather than a fixed
+    ///   glyph: `Dns` → `GlobeBadgeQuestion`, `Tls` → `LockBadgeAlert`, an `Answered*` class
+    ///   (plex.tv answered, just not usably) → `CloudBadgeAlert`. Only its FALLBACK differs —
+    ///   `Timeout`/`TransportOther`/`Unknown`, or no link recorded at all (`mint_pin` never even
+    ///   got to ask) — `WifiSlash`, the genuine "can't get out" case, rather than the Discovery
+    ///   arm's `GlobeBadgeMinus`.
+    /// * [`IncidentKind::Authorization`] — plex.tv refused the token — `PersonBadgeXmark`.
+    /// * `Discovery(NoServers)` — the account has no server — `ServerBadgePlus`.
+    /// * `Discovery(Refused)` — a server answered and refused — `ServerBadgeXmark`.
+    /// * `Discovery(Silent)` targeting [`DiscoveryTarget::Servers`] — plex.tv named servers that
+    ///   never answered — `ServerBadgeMinus`; targeting [`DiscoveryTarget::PlexTv`] (or absent) —
+    ///   plex.tv itself did not answer, so the badge follows `plextv_link_glyph`, falling back to
+    ///   `GlobeBadgeMinus` (not `PinCreate`'s `WifiSlash`: discovery already ran, so SOME network
+    ///   reached somewhere, unlike `PinCreate`'s failure to even start).
+    /// * `Discovery(InsecureOnly)` — not in the owner's table; the closest honest read is "the
+    ///   server itself is the obstacle", the same shape as a Silent/Servers verdict, so this
+    ///   shares `ServerBadgeMinus` rather than inventing new art.
+    /// * [`IncidentKind::SaveFailed`] / [`IncidentKind::StoredLocked`] — the sign-in could not be
+    ///   kept or read back — `KeyBadgeAlert`.
+    /// * [`IncidentKind::ProfileSwitch`] — `PeopleBadgeAlert`.
+    /// * [`IncidentKind::ContentLoad`] — first content load failing reads exactly like Home's or
+    ///   the Library's own "can't reach" verdict — `ServerBadgeMinus`.
+    /// * [`IncidentKind::Internal`] — not in the owner's table either; the app's own machinery
+    ///   failed rather than any named server or link, so this takes `CloudBadgeAlert`, the same
+    ///   "something didn't work" mark an answered-but-broken plex.tv call wears, as the least
+    ///   specific honest choice among the twelve.
+    pub(crate) fn readout_glyph(&self) -> crate::ui::icons::Icon {
+        use crate::ui::icons::Icon;
+        match self.kind {
+            IncidentKind::PinExpired | IncidentKind::LinkStalled => Icon::ClockBadgeAlert,
+            IncidentKind::PinCreate => plextv_link_glyph(self.link).unwrap_or(Icon::WifiSlash),
+            IncidentKind::Authorization => Icon::PersonBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::NoServers) => Icon::ServerBadgePlus,
+            IncidentKind::Discovery(DiscoveryClass::Refused) => Icon::ServerBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::InsecureOnly) => Icon::ServerBadgeMinus,
+            IncidentKind::Discovery(DiscoveryClass::Silent) => {
+                match self.discovery.and_then(|d| d.target) {
+                    Some(DiscoveryTarget::Servers) => Icon::ServerBadgeMinus,
+                    Some(DiscoveryTarget::PlexTv) | None =>
+                        plextv_link_glyph(self.link).unwrap_or(Icon::GlobeBadgeMinus),
+                }
+            }
+            IncidentKind::SaveFailed | IncidentKind::StoredLocked => Icon::KeyBadgeAlert,
+            IncidentKind::ProfileSwitch => Icon::PeopleBadgeAlert,
+            IncidentKind::ContentLoad(ContentSource::Home | ContentSource::Libraries) => {
+                Icon::ServerBadgeMinus
+            }
+            IncidentKind::Internal(
+                InternalClass::AdmissionRefused
+                | InternalClass::WorkerRefused
+                | InternalClass::WorkerDropped
+                | InternalClass::CommitRefused
+                | InternalClass::ClientIdUnavailable
+                | InternalClass::Exhausted,
+            ) => Icon::CloudBadgeAlert,
+        }
+    }
+}
+
+#[cfg(test)]
+mod readout_glyph_tests {
+    use super::*;
+    use crate::ui::icons::Icon;
+
+    fn ctx(kind: IncidentKind) -> IncidentContext {
+        IncidentContext::new(kind, None)
+    }
+
+    fn with_link(mut c: IncidentContext, link: LinkClass) -> IncidentContext {
+        c.link = link;
+        c
+    }
+
+    fn with_target(mut c: IncidentContext, target: DiscoveryTarget) -> IncidentContext {
+        c.discovery = Some(DiscoveryEvidence { trigger: DiscoveryTrigger::Login, target: Some(target) });
+        c
+    }
+
+    /// One row per [`IncidentKind`] arm (plus the discovery target/link split), so a new cause
+    /// added to the enum without a row here fails loudly rather than silently inheriting whatever
+    /// arm happened to be last.
+    #[test]
+    fn every_incident_kind_maps_to_the_owner_approved_glyph() {
+        assert_eq!(ctx(IncidentKind::PinExpired).readout_glyph(), Icon::ClockBadgeAlert);
+        assert_eq!(ctx(IncidentKind::LinkStalled).readout_glyph(), Icon::ClockBadgeAlert);
+        // `PinCreate` follows the SAME plex.tv `LinkClass` table as the Silent/PlexTv discovery
+        // arm below — `mint_pin` (`auth.rs`) keeps its last response in `self.link` too, so an
+        // HTTP error or a malformed 2xx from plex.tv must not read as "no connection" (`WifiSlash`)
+        // — only its fallback (no specific link recorded) does.
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        for answered in [
+            LinkClass::Answered2xx,
+            LinkClass::Answered4xx,
+            LinkClass::Answered5xx,
+            LinkClass::AnsweredOther,
+        ] {
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), answered).readout_glyph(), Icon::CloudBadgeAlert,
+                "PinCreate with link={answered:?} must not read as no-connection");
+        }
+        for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), other).readout_glyph(), Icon::WifiSlash);
+        }
+        // No link recorded at all (the context's own default) is the genuine "never got to ask" case.
+        assert_eq!(ctx(IncidentKind::PinCreate).readout_glyph(), Icon::WifiSlash);
+        assert_eq!(ctx(IncidentKind::Authorization).readout_glyph(), Icon::PersonBadgeXmark);
+        assert_eq!(
+            ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)).readout_glyph(),
+            Icon::ServerBadgePlus
+        );
+        assert_eq!(
+            ctx(IncidentKind::Discovery(DiscoveryClass::Refused)).readout_glyph(),
+            Icon::ServerBadgeXmark
+        );
+        assert_eq!(
+            ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)).readout_glyph(),
+            Icon::ServerBadgeMinus
+        );
+        assert_eq!(
+            with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::Servers)
+                .readout_glyph(),
+            Icon::ServerBadgeMinus
+        );
+        let plextv = with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::PlexTv);
+        assert_eq!(with_link(plextv, LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
+        assert_eq!(with_link(plextv, LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        for answered in [
+            LinkClass::Answered2xx,
+            LinkClass::Answered4xx,
+            LinkClass::Answered5xx,
+            LinkClass::AnsweredOther,
+        ] {
+            assert_eq!(with_link(plextv, answered).readout_glyph(), Icon::CloudBadgeAlert);
+        }
+        for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
+            assert_eq!(with_link(plextv, other).readout_glyph(), Icon::GlobeBadgeMinus);
+        }
+        // No discovery target recorded at all (defensive: the field is `Option`) reads the same
+        // as `PlexTv` — the fallback branch above, exercised here with the default `Unknown` link.
+        assert_eq!(
+            ctx(IncidentKind::Discovery(DiscoveryClass::Silent)).readout_glyph(),
+            Icon::GlobeBadgeMinus
+        );
+        assert_eq!(ctx(IncidentKind::SaveFailed).readout_glyph(), Icon::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::StoredLocked).readout_glyph(), Icon::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::ProfileSwitch).readout_glyph(), Icon::PeopleBadgeAlert);
+        assert_eq!(
+            ctx(IncidentKind::ContentLoad(ContentSource::Home)).readout_glyph(),
+            Icon::ServerBadgeMinus
+        );
+        assert_eq!(
+            ctx(IncidentKind::ContentLoad(ContentSource::Libraries)).readout_glyph(),
+            Icon::ServerBadgeMinus
+        );
+        for internal in [
+            InternalClass::AdmissionRefused,
+            InternalClass::WorkerRefused,
+            InternalClass::WorkerDropped,
+            InternalClass::CommitRefused,
+            InternalClass::ClientIdUnavailable,
+            InternalClass::Exhausted,
+        ] {
+            assert_eq!(ctx(IncidentKind::Internal(internal)).readout_glyph(), Icon::CloudBadgeAlert);
+        }
     }
 }
 

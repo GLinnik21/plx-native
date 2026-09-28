@@ -428,7 +428,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
         let (caption, reason) = page.status_text(&cx);
         assert_eq!(reason.is_some(), !owner.is_empty());
         let mut overlay = crate::ui::widgets::StatusOverlay::new(page.status_frame(), &caption,
-            crate::ui::widgets::StatusKind::Failed).page().action(c"Try again");
+            crate::ui::widgets::StatusKind::Failed).page(crate::ui::icons::Icon::ServerBadgeMinus).action(c"Try again");
         if let Some(reason) = &reason { overlay = overlay.reason(reason); }
         let expected = overlay.action_frame_measured(cx.measure).unwrap();
         for at in [At::Drawn, At::SpringTarget] {
@@ -450,7 +450,7 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     use crate::ui::widgets::{StatusKind, StatusOverlay};
     let _guard = crate::testlock::serial();
     let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
-        .page()
+        .page(crate::ui::icons::Icon::ServerBadgeMinus)
         .action(c"Try again");
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
@@ -1227,6 +1227,63 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     assert_eq!(request(&mut page), (false, false), "the outgoing page remains visible until the fade floor");
     page.page_fade.mount();
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
+}
+
+/// **The page glyph and the Library's own live tab strip never overlap.** They used to (measured
+/// 254-216 = 38px, `status.rs`'s own comment: "the Library keeps its chrome live ABOVE the
+/// read-out" while the glyph box sat fixed at 216..328) whenever a failed section's page still
+/// carried other, populated tabs. `status_overlay` now passes `glyph_ceiling` at the tab strip's
+/// bottom (`CONTENT_TOP..CONTENT_TOP+CTRL_H` = library/layout's `CONTENT_TOP` =
+/// `ui::consts::GRID_TOP_Y` = 194, height `StatusOverlay::CTRL_H` = 60, so screen y 194..254)
+/// whenever `self.libraries` — the tabs — is non-empty, and `StatusOverlay::glyph_rect` shrinks
+/// the glyph box to clear it rather than let the two overlap. Without a live strip the glyph
+/// still draws at its natural, unshrunk 216..328 box — the fix must be a no-op there.
+#[test]
+fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
+    use crate::ui::widgets::StatusOverlay;
+    let _guard = crate::testlock::serial();
+    let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
+    assert_eq!(tab_strip_bottom, 254.0, "the tab strip band moved — re-measure the fix against it");
+
+    // A live strip: two pinned sections of the current kind. `favorite_sections_for` only
+    // populates `self.libraries` for 2+ candidates (see
+    // `favorite_library_row_uses_shared_strip_geometry_and_incoming_type` above; a single
+    // favourite clears it), so this is the minimal fixture that actually turns the strip on.
+    let sid = crate::plex::ServerId::from_raw(0);
+    let sections = vec![
+        crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+            row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } },
+        crate::browse::view::SectionView { sid: Some(sid), key: 2, kind: SecKind::Movie,
+            row: crate::browse::SrcRow { section: 1, title: "Anime".into(), pinned: true, ..Default::default() } },
+    ];
+    let mut fixture = Fixture::new();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Failed, -1);
+    let page = fixture.screen();
+    assert_eq!(page.readout, Readout::Failed);
+    assert!(!page.libraries.is_empty(), "fixture must actually produce a live tab strip, or this test proves nothing");
+    let cx = fixture.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
+    let glyph = overlay.glyph_frame().expect("a live strip still leaves room for a shrunk glyph at this ceiling");
+    assert!(glyph.y >= tab_strip_bottom,
+        "the glyph box (top y={}) must not start above the tab strip's bottom (y={tab_strip_bottom})", glyph.y);
+    assert!(glyph.h < StatusOverlay::GLYPH_SIZE, "the live strip must actually shrink the glyph below its natural \
+        {}px, or this fixture is not exercising `glyph_ceiling`", StatusOverlay::GLYPH_SIZE);
+
+    // No live strip (`Fixture::new`'s single, un-favourited-enough section clears
+    // `self.libraries`): the glyph is unaffected, at its natural, unshrunk position.
+    let mut solo = Fixture::new();
+    solo.listing = solo.listing.clone().with_fetch(SecFetch::Failed, -1);
+    let page = solo.screen();
+    assert!(page.libraries.is_empty(), "fixture must NOT have a live strip, or this half proves nothing");
+    let cx = solo.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
+    let glyph = overlay.glyph_frame().expect("no ceiling at all must never omit the glyph");
+    assert_eq!(glyph.y, StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE,
+        "without a live strip the glyph keeps its natural, unshrunk position");
+    assert_eq!(glyph.h, StatusOverlay::GLYPH_SIZE, "without a live strip the glyph keeps its natural, unshrunk size");
 }
 
 mod type_tests { include!("type_tests.rs"); }

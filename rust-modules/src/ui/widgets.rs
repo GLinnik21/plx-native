@@ -3370,6 +3370,16 @@ pub struct StatusOverlay<'a> {
     pub note_busy: bool,
     /// Placed on the PAGE rather than in its frame — see [`StatusOverlay::page`].
     pub page: bool,
+    /// The glyph a page-placed `Failed` read-out draws above its verdict — see
+    /// [`StatusOverlay::page`], the only way this is ever set. `None` for every read-out that is
+    /// not page-placed AND `Failed`, which is exactly the set the design says carries no glyph
+    /// (a container read-out, `Working`, `Empty`).
+    pub glyph: Option<crate::ui::icons::Icon>,
+    /// The lowest y some OTHER chrome already occupies on this page, if any — see
+    /// [`StatusOverlay::glyph_ceiling`]. `None` (the default, and what Home and sign-in pass)
+    /// means the glyph is free to draw at its natural size; the Library passes its live tab
+    /// strip's bottom only while that strip is on screen.
+    pub glyph_ceiling: Option<f32>,
     pub kind: StatusKind,
     pub phase: u32,
     /// which pill of the row holds focus — 0 the primary, 1 the `secondary`; `None` when focus is
@@ -3403,6 +3413,22 @@ impl<'a> StatusOverlay<'a> {
     /// [page-filling](Self::page) `Failed` read-out. Anchored from the top so the verdict stays
     /// put whatever grows below it.
     pub const FULL_ANCHOR_TOP: f32 = 372.0;
+    /// A [page-placed](Self::page) `Failed` read-out's glyph — square, this side.
+    pub const GLYPH_SIZE: f32 = 112.0;
+    /// The air between the glyph's bottom edge and [`Self::FULL_ANCHOR_TOP`] — the verdict's cap
+    /// top, so the glyph box's own top sits at `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE` (216 on
+    /// the 1920×1080 screen space every page-filling read-out shares).
+    pub const GLYPH_GAP: f32 = 44.0;
+    /// The air kept between the (possibly shrunk) glyph box's top edge and
+    /// [`Self::glyph_ceiling`], when one is set. Chrome touching the glyph reads as crowded even
+    /// where the two rects do not literally overlap, so the box stops short of the ceiling by
+    /// this much rather than right at it.
+    pub const GLYPH_CEILING_MARGIN: f32 = 12.0;
+    /// The smallest square a page glyph is still drawn at. A mark shrunk past this reads as a
+    /// blurry thumbnail rather than a considered smaller glyph, so [`Self::glyph_rect`] omits it
+    /// entirely below this size instead of drawing one — half the natural [`Self::GLYPH_SIZE`],
+    /// rounded to a size nanosvg still rasterizes cleanly.
+    pub const GLYPH_MIN_SIZE: f32 = 56.0;
 
     pub fn new(frame: Rect, caption: &'a core::ffi::CStr, kind: StatusKind) -> Self {
         Self {
@@ -3414,6 +3440,8 @@ impl<'a> StatusOverlay<'a> {
             note: None,
             note_busy: false,
             page: false,
+            glyph: None,
+            glyph_ceiling: None,
             kind,
             phase: 0,
             focus: None,
@@ -3438,11 +3466,33 @@ impl<'a> StatusOverlay<'a> {
     /// onboarding list, Search's results, the person page's shelves) does not, and keeps its
     /// container's centred layout. `Working` and `Empty` are unaffected: a spinner and a quiet
     /// answer stay centred in the region they are about.
-    pub fn page(mut self) -> Self {
+    ///
+    /// **Takes the glyph, not an optional builder** — a page-placed `Failed` read-out cannot be
+    /// built without saying what failed (spec "1A"). Every caller reads it off the SAME typed
+    /// cause its copy came from (`telemetry::incident::IncidentContext::readout_glyph`, or the
+    /// fixed `Icon::ServerBadgeMinus` Home and the Library share for their own untyped "can't
+    /// reach" verdict), so the glyph and the caption can never disagree. `Working`/`Empty` callers
+    /// still pass one (the read-out is built once and shared across kinds in more than one
+    /// screen), but it is discarded here: only a `Failed` verdict ever draws it.
+    pub fn page(mut self, glyph: crate::ui::icons::Icon) -> Self {
         if self.kind == StatusKind::Failed {
             self.page = true;
             self.frame = Rect::FULL;
+            self.glyph = Some(glyph);
         }
+        self
+    }
+    /// **Some OTHER chrome on this page already occupies down to this y — shrink the glyph to
+    /// clear it, rather than let the two overlap.** The Library keeps its tab strip live above a
+    /// failed section's read-out (a section failing is not the app failing), and that strip can
+    /// reach as low as y 254 while the glyph's natural box starts at 216 — an ~38px overlap if
+    /// nothing accounts for it. Only the glyph box (and the air above the verdict it sits in)
+    /// shrinks; [`Self::FULL_ANCHOR_TOP`] never moves, so the verdict, reason and action row are
+    /// unaffected. Below [`Self::GLYPH_MIN_SIZE`] the glyph is dropped rather than drawn as a
+    /// thumbnail. Home and sign-in pass no ceiling — they own the whole page above the verdict —
+    /// so this is a no-op for both.
+    pub fn glyph_ceiling(mut self, y: f32) -> Self {
+        self.glyph_ceiling = Some(y);
         self
     }
     /// **The verdict's face — rung, weight and ink — by kind**, the design system's
@@ -3450,7 +3500,10 @@ impl<'a> StatusOverlay<'a> {
     /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
     /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
     /// The one read-out whose verdict is `TEXT_PRIMARY` is the player's full-screen failure, which
-    /// carries the 96px glyph and is drawn by `player_hud`, not here.
+    /// carries its own 96px glyph and is drawn by `player_hud`, not here. A page-placed `Failed`
+    /// read-out (`page`, spec "1A") carries a DIFFERENT glyph — 112px, `TEXT_SECONDARY`, drawn by
+    /// this widget itself — so "the one read-out … carries the glyph" is no longer true of glyphs
+    /// in general, only of this specific `TEXT_PRIMARY`-verdict, `player_hud`-drawn pairing.
     pub(crate) fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
         match kind {
             StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
@@ -3481,6 +3534,56 @@ impl<'a> StatusOverlay<'a> {
     /// The two-line slot's height from one measured line: one line pitch plus the last line's box.
     fn reason_slot_h(&self, line_h: f32) -> f32 {
         self.reason_view(c"").line_h() + line_h
+    }
+    /// **The ONE place a page-placed `Failed` read-out's glyph box is computed** — square,
+    /// centred horizontally on `frame`, its bottom edge above [`Self::FULL_ANCHOR_TOP`] by a gap,
+    /// with no `ceiling`: [`Self::GLYPH_SIZE`] and [`Self::GLYPH_GAP`] exactly (216 on the shared
+    /// 1920×1080 screen space `frame` is `Rect::FULL` for every page-placed read-out).
+    ///
+    /// With a `ceiling` (`glyph_ceiling`'s y), the size and the gap shrink TOGETHER by whatever
+    /// factor makes the box's top edge land [`Self::GLYPH_CEILING_MARGIN`] below it, so the
+    /// verdict never moves and the glyph keeps its proportions rather than the gap alone
+    /// collapsing. Below [`Self::GLYPH_MIN_SIZE`] this returns `None` rather than a box — the
+    /// caller draws nothing for it. A test asks this directly rather than re-deriving it, the
+    /// same reason [`StatusBands`] exists for the blocks below it.
+    fn glyph_rect(frame: Rect, ceiling: Option<f32>) -> Option<Rect> {
+        let natural_span = Self::GLYPH_GAP + Self::GLYPH_SIZE;
+        let (gap, size) = match ceiling {
+            None => (Self::GLYPH_GAP, Self::GLYPH_SIZE),
+            Some(ceiling) => {
+                let available = Self::FULL_ANCHOR_TOP - (ceiling + Self::GLYPH_CEILING_MARGIN);
+                if available >= natural_span {
+                    (Self::GLYPH_GAP, Self::GLYPH_SIZE)
+                } else {
+                    let factor = (available / natural_span).max(0.0);
+                    // `size` is quantized to a whole pixel — `icons.rs::icon_raster_px` rasterizes
+                    // at an integer size, so a fractional box here would draw the exact right
+                    // float rect over a texture rasterized at a ROUNDED size, forcing a rescale
+                    // and going soft exactly where this shrink exists to stay crisp (`draw`'s own
+                    // `r.w.max(r.h).round()` already floors/rounds `px` before `tex_for`, but the
+                    // draw RECT itself stayed fractional). `floor`, not `round`: shrinking `size`
+                    // alone, without also shrinking `gap`, only ever gives the ceiling MORE
+                    // clearance than the un-quantized box already had, never less — `gap` stays
+                    // at its exact proportional value.
+                    (Self::GLYPH_GAP * factor, (Self::GLYPH_SIZE * factor).floor())
+                }
+            }
+        };
+        if size < Self::GLYPH_MIN_SIZE {
+            return None;
+        }
+        Some(Rect::new(
+            frame.cx() - size * 0.5,
+            Self::FULL_ANCHOR_TOP - gap - size,
+            size,
+            size,
+        ))
+    }
+    /// The glyph box a page-placed `Failed` read-out draws, or `None` — for a screen's own layout
+    /// test (the Library's chrome-collision check) without duplicating the geometry.
+    #[cfg(test)]
+    pub(crate) fn glyph_frame(&self) -> Option<Rect> {
+        self.glyph.filter(|_| self.page_placed()).and_then(|_| Self::glyph_rect(self.frame, self.glyph_ceiling))
     }
     /// Whether this read-out hangs from [`Self::FULL_ANCHOR_TOP`] — a `Failed` one its caller
     /// declared page-filling with [`Self::page`].
@@ -3712,6 +3815,11 @@ impl<'a> StatusOverlay<'a> {
             .phase(self.phase)
             .tint(tint)
             .draw(e, p);
+        }
+        if let Some(icon) = self.glyph.filter(|_| self.page_placed()) {
+            if let Some(rect) = Self::glyph_rect(self.frame, self.glyph_ceiling) {
+                crate::ui::icons::draw(p, icon, rect, theme::TEXT_SECONDARY);
+            }
         }
         let verdict = Label::new(self.caption.as_ptr(), cap_sz, tint).h(HAlign::Center);
         if cap_bold { verdict.bold() } else { verdict }.draw(p, b.cap);

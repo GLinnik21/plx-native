@@ -2562,7 +2562,8 @@ fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId) ->
     let mut seen = std::collections::HashSet::new();
     for h in &mc.hub {
         for x in &h.metadata {
-            if x.rating_key.is_empty() || !seen.insert(x.rating_key.clone()) {
+            if !crate::pms::listable(&x.kind) || x.rating_key.is_empty()
+                || !seen.insert(x.rating_key.clone()) {
                 continue;
             }
             // THE shared row mapping, not a three-field copy — see [`Related`]. `sid` is the

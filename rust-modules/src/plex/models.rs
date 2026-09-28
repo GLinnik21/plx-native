@@ -325,8 +325,13 @@ pub struct Metadata {
     pub view_offset: i64, // ms; resume point
     #[serde(rename = "lastViewedAt", default, deserialize_with = "de_i64")]
     pub last_viewed_at: i64, // unix secs; drives Continue Watching recency sort
+    /// Collection rows use this as their tag id (distinct from `ratingKey`).
     #[serde(default, deserialize_with = "de_i64")]
     pub index: i64, // season/episode number
+    #[serde(rename = "childCount", default, deserialize_with = "de_i64")]
+    pub child_count: i64,
+    #[serde(rename = "updatedAt", default, deserialize_with = "de_i64")]
+    pub updated_at: i64,
     #[serde(rename = "parentIndex", default, deserialize_with = "de_i64")]
     pub parent_index: i64,
     #[serde(rename = "parentRatingKey", default)]
@@ -345,6 +350,8 @@ pub struct Metadata {
     pub view_count: i64, // present only once watched ≥1× (absent = unwatched)
     #[serde(default)]
     pub thumb: String,
+    #[serde(rename = "parentThumb", default)]
+    pub parent_thumb: String,
     #[serde(default)]
     pub art: String,
     #[serde(rename = "grandparentThumb", default)]
@@ -361,6 +368,8 @@ pub struct Metadata {
     pub writer: Vec<Tag>,
     #[serde(rename = "Role", default)]
     pub role: Vec<Tag>,
+    #[serde(rename = "Collection", default)]
+    pub collection: Vec<Tag>,
     #[serde(rename = "Chapter", default)]
     pub chapter: Vec<Chapter>,
     #[serde(rename = "Marker", default)]
@@ -667,6 +676,10 @@ pub struct Tag {
     /// alternate `personId` (both forms verified live against the same record).
     #[serde(rename = "tagKey", default, deserialize_with = "de_str")]
     pub tag_key: String,
+    /// Collection identity shared by collection rows, search hits and member `Collection[]` tags.
+    /// Empty means absent, matching every other string field on this tolerant record.
+    #[serde(default, deserialize_with = "de_str")]
+    pub guid: String,
     /// The server's own ready-made listing filter for this tag, e.g. `"actor=161"` /
     /// `"director=459"` — append it to `/library/sections/{k}/all?` to list ONE section's items
     /// for this person. Carries the tag's ROLE in the library (actor vs director vs writer),
@@ -1239,14 +1252,13 @@ mod tests {
     /// The `Directory[]` row is a [`super::Tag`] — the SAME record the detail page's cast row is
     /// built from — and every field the search screen reads off one must survive the round trip.
     ///
-    /// Two of them are the reason a person hit and a collection hit cannot share a code path:
-    /// a person carries `tagKey` (the portable guid, and the only id `discover.provider.plex.tv`
-    /// answers to) and an ABSOLUTE `metadata-static.plex.tv` `thumb`; a collection carries
-    /// **neither**, nor a `ratingKey`. It is not identity-less — it has the server-local `id`,
-    /// `filter` and `key` — but it has nothing that means anything OFF this server, so a screen
-    /// that keys tags by `tagKey` silently loses every collection.
+    /// A person carries `tagKey` (the portable guid that `discover.provider.plex.tv` answers to)
+    /// and an ABSOLUTE `metadata-static.plex.tv` `thumb`; a collection instead carries its own
+    /// `collection://` guid plus a server-local tag `id`, `filter` and listing `key`, but no
+    /// `ratingKey` or artwork. A screen that keys every tag by person `tagKey` still silently loses
+    /// every collection.
     #[test]
-    fn a_person_hit_carries_a_portable_guid_and_a_collection_hit_carries_no_portable_identity() {
+    fn person_and_collection_hits_keep_their_distinct_portable_identities() {
         let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE)
             .expect("lenient parse")
             .media_container;
@@ -1275,13 +1287,17 @@ mod tests {
         assert_eq!((c.id, c.count), (6068, 6));
         assert_eq!(c.key, "/library/sections/1/all?collection=6068");
         assert_eq!(c.filter, "collection=6068");
-        assert_eq!(c.tag_key, "", "a collection has no portable guid");
+        assert_eq!(c.tag_key, "", "a collection guid is not a person tagKey");
+        assert_eq!(
+            c.guid,
+            "collection://10c9bd0a-40ce-400c-bf57-dfd4009bb216"
+        );
         assert_eq!(c.thumb, "", "…and no artwork of its own");
-        // so it is addressable on THIS server and nowhere else
+        // `is_person` consumes person identity only; collection resolution uses `guid`, then id.
         assert!(c.is_person("6068", ""), "the server-local id still matches");
         assert!(
             !c.is_person("", "5d776827151a60001f24ab18"),
-            "but no guid ever will"
+            "a person's tagKey cannot match a collection guid"
         );
 
         // …and a row the server sent no id for must not match a caller's literal "0" — the guard

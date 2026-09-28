@@ -173,7 +173,7 @@ pub(crate) const SHAPE: &str =
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
 /// home shelves carry. Kept as a predicate so the caller can decline to present an empty panel.
 pub(crate) fn has_actions(m: &PmsMovie) -> bool {
-    !m.rk.is_empty()
+    m.kind != crate::pms::KIND_COLLECTION && !m.rk.is_empty()
 }
 
 /// Why [`build`], [`build_episode`] and [`build_season`] all end in a length assertion.
@@ -189,7 +189,8 @@ const ACTS_PARALLEL: &str = "acts must stay one-to-one with the rows: a row with
 /// The rows, and the action each one commits. Order is the pinned design's:
 /// navigation (`Go to Episode` · `Go to Show`) — separator — state (the watch row or ROWS ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
-/// 3 episode). The state group is one row or two off [`state_rows`], so this list has no fixed
+/// 3 episode; 4 collection is refused before this list). The state group is one row or two off
+/// [`state_rows`], so this list has no fixed
 /// length and every index into it is resolved through `acts` — see [`ACTS_PARALLEL`].
 #[cfg(test)]
 fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
@@ -201,6 +202,9 @@ fn build_with(
     from_deck: bool,
     trailer: Option<&crate::metadata::Extra>,
 ) -> (Section, Vec<Option<Action>>) {
+    if m.kind == crate::pms::KIND_COLLECTION {
+        return (Section::new(""), Vec::new());
+    }
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
     let leaf = m.kind == 0 || m.kind == 3;
@@ -867,6 +871,16 @@ mod tests {
         );
         // a movie has no show, so no second navigation row
         assert!(!labels(&sec).contains(&"Go to Show".to_string()));
+    }
+
+    #[test]
+    fn a_collection_has_no_item_menu_actions() {
+        let collection = PmsMovie { rk: "42".into(), kind: crate::pms::KIND_COLLECTION,
+            ..Default::default() };
+        assert!(!has_actions(&collection), "a collection menu must not be openable before its page exists");
+        let (sec, acts) = build(&collection, false);
+        assert!(sec.rows.is_empty(), "no Go to Movie or watch-state rows");
+        assert!(acts.is_empty(), "an empty menu has no latent account writes");
     }
 
     /// A show or season never offers *Play from Start* — there is no single part to start — and
