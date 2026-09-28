@@ -176,3 +176,13 @@ memory, which moves the screen census again. The anchors recorded against `29556
 were observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three,
 both modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
 `12050413345652660670` and passed Targets and Resolve with zero difference counters.
+
+Merging the collections work into the localization branch combines both census moves: the
+captured language preference with the collection page, the Library's Collections type, linked
+shelf headings and the detail collection shelf. The anchors recorded against
+`12050413345652660670` were observed being refused (`replay: REFUSED — invalid or incompatible
+recording`, all three, both modes), then all three were re-recorded with `tools/plxnative-rec
+rerecord` against shape `12097267434420408384` and passed Targets and Resolve with zero difference
+counters. The closed alphabet gains the Settings root's shortened crash-report sub-line
+("Your crash report identifier and how to have reports deleted."), which the fit-to-slot
+translation pass introduced and the Settings recording now measures.
