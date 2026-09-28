@@ -38,15 +38,23 @@ pub(crate) fn glyph_px(w: f32) -> f32 {
     ((w * GLYPH_RATIO) / 4.0).round() * 4.0
 }
 
+/// The name column's wrap width for a tile `w` wide — floored to 4px, the mark's discipline,
+/// because the wrap is memoised per width: a focus pop that wrapped at every rounded pixel would
+/// insert a fresh entry each frame and churn the process-wide wrap cache every other text block
+/// shares. The column stays centred, so a resting 250px tile (a 200px column) is unchanged.
+fn name_w(w: f32) -> f32 {
+    ((w * (1.0 - 2.0 * INSET_RATIO)) / 4.0 + 1.0e-3).floor() * 4.0
+}
+
 /// Where the mark and the name's column sit in `r`: the pair is centred vertically as one block,
 /// the mark above, sized from the tile so a scaled (popped) tile scales its layout with it.
 pub(crate) fn layout(r: Rect, name_h: f32) -> (Rect, Rect) {
     let d = glyph_px(r.w);
     let gap = r.w * GAP_RATIO;
-    let inset = r.w * INSET_RATIO;
+    let w = name_w(r.w);
     let top = r.y + (r.h - (d + gap + name_h)) * 0.5;
     let glyph = Rect::new(r.cx() - d * 0.5, top, d, d);
-    let name = Rect::new(r.x + inset, top + d + gap, r.w - 2.0 * inset, name_h);
+    let name = Rect::new(r.cx() - w * 0.5, top + d + gap, w, name_h);
     (glyph, name)
 }
 
@@ -63,8 +71,7 @@ fn name_view(name: &str) -> TextView<'_> {
 pub(crate) fn draw(p: Painter, r: Rect, rad: f32, name: &str) {
     p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
     let view = name_view(name);
-    let inset = r.w * INSET_RATIO;
-    let name_h = if name.is_empty() { 0.0 } else { view.measure_h(r.w - 2.0 * inset) };
+    let name_h = if name.is_empty() { 0.0 } else { view.measure_h(name_w(r.w)) };
     let (glyph, column) = layout(r, name_h);
     icons::draw(p, Icon::Collection, glyph, theme::TEXT_TERTIARY);
     if !name.is_empty() {
@@ -87,6 +94,16 @@ mod tests {
         assert!((top_air - bottom_air).abs() < 0.01, "the block is centred: {top_air} vs {bottom_air}");
         assert!(name.y > glyph.y + glyph.h, "the name sits under the mark");
         assert!(name.x > r.x && name.x + name.w < r.x + r.w, "the name keeps its side inset");
+    }
+
+    #[test]
+    fn a_pop_wraps_the_name_at_a_handful_of_widths_and_rest_is_unchanged() {
+        assert_eq!(name_w(250.0), 200.0, "a resting grid poster keeps its 200px column");
+        let widths: std::collections::BTreeSet<i32> = (0..=20)
+            .map(|step| name_w(250.0 * (1.0 + step as f32 * 0.004)) as i32)
+            .collect();
+        assert!(widths.len() <= 5, "a 1.08 pop spans a handful of wrap widths: {widths:?}");
+        assert!(widths.iter().all(|w| w % 4 == 0));
     }
 
     #[test]

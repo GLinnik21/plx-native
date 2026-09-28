@@ -59,6 +59,24 @@ fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measu
         .fade_for_more(MORE_GAP)
 }
 
+/// The header's member count, and whether the line is the kind alone: a count of zero is only an
+/// answer once the listing says so; before the header lands (and on a failed load) the line is
+/// the kind alone rather than a false "0 items".
+fn meta_key(collection: &Collection) -> (i64, bool) {
+    let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
+    let count = count as i64;
+    (count, count == 0 && collection.status != CollectionStatus::Empty)
+}
+
+/// The header's meta line — "Collection · N items", or the kind alone ([`meta_key`]).
+fn meta_line(collection: &Collection) -> CString {
+    match meta_key(collection) {
+        (_, true) => crate::i18n::msg::browse_collection_kind_c().to_owned(),
+        (count, false) => CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count)))
+            .unwrap_or_default(),
+    }
+}
+
 pub(crate) fn member_label(item: &PmsMovie) -> String {
     match item.kind {
         2 if item.season_index > 0 => crate::i18n::msg::browse_collection_season_mark(item.season_index as i64),
@@ -91,6 +109,12 @@ pub(crate) struct CollectionScreen {
     /// [`Self::sync`] so a frame finds a card's element or index without scanning identities.
     /// Derived, not logical state.
     elems: Vec<u32>,
+    /// `labels[i]` is `items[i]`'s persistent poster label ([`member_label`]), built beside
+    /// [`Self::elems`] so a frame formats none. Derived, not logical state.
+    labels: Vec<String>,
+    /// The header's meta line and the `(count, kind-only)` it was built for ([`meta_line`]).
+    /// Derived, not logical state.
+    meta: ((i64, bool), CString),
     return_pending: bool,
     teardown_closed: bool,
     scroll: Spring,
@@ -128,7 +152,7 @@ impl CollectionScreen {
 
     pub(crate) fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
-            elems: Vec::new(), return_pending: false, teardown_closed: false,
+            elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()), return_pending: false, teardown_closed: false,
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
             bands: crate::ui::poster_grid::GridBands::new() }
@@ -154,6 +178,8 @@ impl CollectionScreen {
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         self.elems = self.cards.intern_all(
             collection.items.iter().map(|item| (item.sid, item.rk.as_str())), "collection");
+        self.labels = collection.items.iter().map(member_label).collect();
+        self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
         self.links_c.clear();
         if self.summary_more && !collection.items.is_empty() {
@@ -346,7 +372,8 @@ impl CollectionScreen {
         let Some(index) = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) else { return };
         let Some(item) = collection.items.get(index) else { return };
-        self.draw_card(f.painter.alpha(f.page_alpha), item, index, true, f.press.scale, f.measure);
+        let label = self.label_at(collection, index, item);
+        self.draw_card(f.painter.alpha(f.page_alpha), item, &label, index, true, f.press.scale, f.measure);
     }
 
     /// The header's focus rect — its text column — scrolled with the document: the header is the
@@ -368,14 +395,10 @@ impl CollectionScreen {
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
         let (meta_y, summary_y) = Self::header_ys(measure);
         let (meta_y, summary_y) = (meta_y + dy, summary_y + dy);
-        let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
-        // A count of zero is only an answer once the listing says so; before the header lands (and
-        // on a failed load) the line is the kind alone rather than a false "0 items".
-        let meta = if count == 0 && collection.status != CollectionStatus::Empty {
-            crate::i18n::msg::browse_collection_kind_c().to_owned()
-        } else {
-            CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count as i64)))
-                .unwrap_or_default()
+        let built;
+        let meta = if self.meta.0 == meta_key(collection) { &self.meta.1 } else {
+            built = meta_line(collection);
+            &built
         };
         Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, meta_y, TEXT_W, 0.0));
@@ -391,8 +414,18 @@ impl CollectionScreen {
         if self.summary_more { view.draw_more(p, COL_X, summary_y, TEXT_W, h, focused && self.header_marked); }
     }
 
-    fn draw_card(&self, p: Painter, item: &PmsMovie, index: usize, focused: bool, press: f32,
-        measure: &dyn crate::ui::machine::Measure) {
+    /// Card `index`'s persistent label: the one [`Self::sync`] built, or — for a landing the page
+    /// has not synced yet — formatted now.
+    fn label_at<'a>(&'a self, collection: &Collection, index: usize, item: &PmsMovie) -> std::borrow::Cow<'a, str> {
+        match self.labels.get(index).filter(|_| self.indexed(collection)) {
+            Some(label) => std::borrow::Cow::Borrowed(label),
+            None => std::borrow::Cow::Owned(member_label(item)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_card(&self, p: Painter, item: &PmsMovie, persistent: &str, index: usize, focused: bool,
+        press: f32, measure: &dyn crate::ui::machine::Measure) {
         let rect = self.card_rect(index, focused, press);
         let scale = rect.w / CARD_W;
         if !card_row::paint_visible(p, rect, scale, focused) { return; }
@@ -407,10 +440,9 @@ impl CollectionScreen {
             card_row::draw_tile(p, Art::Poster(Some(item)), rect, scale,
                 &crate::ui::poster_grid::STYLE, resume);
         }
-        let persistent = member_label(item);
         if !persistent.is_empty() {
             widgets::poster_label(p, rect,
-                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), &persistent, measure);
+                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), persistent, measure);
             if let Some(frac) = resume {
                 card_row::resume_bar(p, rect, frac,
                     crate::ui::poster_grid::STYLE.tile_radius(rect, scale));
@@ -424,10 +456,14 @@ impl CollectionScreen {
         let p = f.painter.alpha(f.page_alpha);
         for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
             if current == Some(index) { continue; }
-            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, false, 1.0, f.measure); }
+            if let Some(item) = collection.items.get(index) {
+                self.draw_card(p, item, &self.label_at(collection, index, item), index, false, 1.0, f.measure);
+            }
         }
         if let Some(index) = current {
-            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, true, f.press.scale, f.measure); }
+            if let Some(item) = collection.items.get(index) {
+                self.draw_card(p, item, &self.label_at(collection, index, item), index, true, f.press.scale, f.measure);
+            }
         }
         for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
             let Some(elem) = self.elem_at(collection, index) else { continue };

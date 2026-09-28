@@ -28,10 +28,24 @@ pub(crate) enum Presentation {
     Heading,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// One text run of a BOUNDED `Heading`, already elided: what [`LinkedHeading::draw`] paints
+/// without flowing and eliding the heading a second time.
+#[derive(Clone, Debug)]
+struct Run {
+    text: String,
+    dx: f32,
+    size: std::os::raw::c_int,
+    bold: std::os::raw::c_int,
+    ink: [f32; 4],
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct LinkedMeasure {
     run_w: f32,
     face_w: f32,
+    /// A bounded `Heading`'s elided runs, kept so the draw reuses the measure's elision. Empty for
+    /// every other heading, whose flow draws straight from the strings at no elision cost.
+    runs: Vec<Run>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +92,7 @@ impl<'a> LinkedHeading<'a> {
     }
 
     pub(crate) fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
+        let mut runs = Vec::new();
         let run_w = match self.presentation {
             Presentation::Entry => {
                 let mut w = measure.width_str(self.title, theme::size::LABEL, true);
@@ -89,15 +104,24 @@ impl<'a> LinkedHeading<'a> {
                 }
                 w
             }
-            Presentation::Heading => card_row::bounded_heading_flow(
-                self.title,
-                self.count,
-                self.text_room(),
-                measure,
-                |s, _, size, bold, _| measure.width_str(s, size, bold != 0),
-            ),
+            Presentation::Heading => {
+                let keep = self.max_w.is_finite();
+                card_row::bounded_heading_flow(
+                    self.title,
+                    self.count,
+                    self.text_room(),
+                    measure,
+                    |s, dx, size, bold, ink| {
+                        if keep {
+                            runs.push(Run { text: s.to_string(), dx, size, bold, ink });
+                        }
+                        measure.width_str(s, size, bold != 0)
+                    },
+                )
+            }
         };
         LinkedMeasure {
+            runs,
             run_w,
             face_w: 2.0 * SIDE_PAD + run_w + CHEVRON_GAP + CHEVRON_SIZE
                 - CHEVRON_BEARING_L
@@ -212,6 +236,13 @@ impl<'a> LinkedHeading<'a> {
                         },
                     );
                 }
+            }
+            Presentation::Heading if !m.runs.is_empty() => {
+                let ink = |own: [f32; 4]| if focused { ACCENT_INK } else { own };
+                for r in &m.runs {
+                    draw_cap(p, &r.text, content_x + r.dx, y, r.size, r.bold != 0, ink(r.ink));
+                }
+                rx += m.run_w;
             }
             Presentation::Heading => {
                 let cap_y = y;
