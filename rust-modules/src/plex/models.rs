@@ -648,6 +648,15 @@ pub struct Stream {
     pub is_default: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub selected: i64,
+    /// Audio stream only: PMS 1.43.4+ with Plex Pass says this track's loudness was analyzed and
+    /// the server can honor `normalizeLoudness=1` (and, paired with it, `boostDialog=1`) on the
+    /// universal transcoder for it (issue #266). `de_bool` because it arrives as `"1"` on some
+    /// endpoints and a real JSON bool on others; `default` because an old PMS or a video/subtitle
+    /// stream never sends the key at all, and absent must mean false, never "unknown but assume
+    /// yes" — offering the enhancement on a track the server can't actually normalize is exactly
+    /// the failure mode I2/I5 exist to prevent.
+    #[serde(rename = "canNormalizeLoudness", default, deserialize_with = "de_bool")]
+    pub can_normalize_loudness: bool,
 }
 
 /// A tag row — `Genre[]`, `Country[]`, `Role[]`, `Director[]`, `Writer[]`. The three PEOPLE
@@ -1488,5 +1497,27 @@ mod tests {
             .expect("parse")
             .media_container;
         assert!(mc.hub.is_empty());
+    }
+
+    /// `canNormalizeLoudness` (issue #266) arrives as a real bool, as the string PMS also uses for
+    /// its other flags, and — on an old server or a non-audio stream — not at all. Absent must
+    /// parse to `false`, never fail the whole part like a strict field would.
+    #[test]
+    fn stream_parses_can_normalize_loudness_forms() {
+        for (raw, want) in [
+            (r#"{"streamType":2,"canNormalizeLoudness":"1"}"#, true),
+            (r#"{"streamType":2,"canNormalizeLoudness":1}"#, true),
+            (r#"{"streamType":2,"canNormalizeLoudness":true}"#, true),
+            (r#"{"streamType":2}"#, false),
+            (r#"{"streamType":2,"canNormalizeLoudness":"0"}"#, false),
+        ] {
+            let part: super::MediaPart =
+                serde_json::from_slice(format!(r#"{{"Stream":[{raw}]}}"#).as_bytes())
+                    .expect("parse");
+            assert_eq!(
+                part.stream[0].can_normalize_loudness, want,
+                "input {raw}"
+            );
+        }
     }
 }

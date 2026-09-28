@@ -40,7 +40,7 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
     server.join().unwrap();
     assert!(plan.url.contains("/library/parts/36013/"));
-    assert!(plan.tsession.is_empty() && plan.ceiling.is_none() && !plan.remux);
+    assert!(plan.tsession.is_empty() && plan.contract.ceiling.is_none() && !plan.contract.remux);
     assert!(plan.auto_original.is_none() && !plan.auto_original_watched);
     assert_eq!(plan.direct_play_mode, DirectPlayMode::Forced);
     let decision = requests.iter().find(|r| r.contains("/decision?")).unwrap();
@@ -90,7 +90,7 @@ fn disabling_direct_play_keeps_codec_preserving_remux() {
     let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "eac3", &env);
     let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
     server.join().unwrap();
-    assert!(plan.remux && plan.url.contains("start.mkv") && !plan.tsession.is_empty());
+    assert!(plan.contract.remux && plan.url.contains("start.mkv") && !plan.tsession.is_empty());
     assert!(!requests.iter().any(|r| query_param(r, "directPlay") == Some("1")));
     crate::plex::reset_servers_for_test();
 }
@@ -116,7 +116,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());
     assert!(transcode_seek(&mut ps, 0).is_none());
     assert!(recover_auto_to_original(&mut ps, 0).is_none());
-    commit_audio_selection(&mut ps, 0, "truehd", 9, 8);
+    commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false });
     assert!(play_verdict(&ps).unwrap().contains("Return Direct Play to Auto"));
     assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);

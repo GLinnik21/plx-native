@@ -460,8 +460,7 @@ pub(crate) fn commit_track(
 ) {
     use crate::ui::track_menu::TrackCommit;
     match commit {
-        TrackCommit::Audio { ordinal, codec, stream_id, channels } =>
-            crate::route::commit_audio_selection(ps, ordinal, &codec, stream_id, channels),
+        TrackCommit::Audio(audio) => crate::route::commit_audio_selection(ps, audio),
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
             crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id);
             // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded

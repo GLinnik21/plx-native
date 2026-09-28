@@ -133,6 +133,43 @@ pub(super) fn next_encoder_generation() -> u64 {
 }
 
 
+/// The audio track a route has decided to carry, frozen at the moment of decision (issue #266's
+/// vocabulary). Used as `Option<CarriedAudio>` everywhere: `None` means "server default, facts
+/// unknown", and every reader fails CLOSED on it — an unknown track is never treated as
+/// loudness-capable or immersive just because nobody has said otherwise.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct CarriedAudio {
+    /// PMS `Stream.id` — the id this track is selected/burned by (`audioStreamID`,
+    /// `PUT /library/parts`).
+    pub(crate) sid: i64,
+    /// The demuxer-facing ordinal (`metadata::Stream.index` order) — what `set_audio_track` feeds
+    /// on a direct play. `-1` mirrors the pre-refactor "unknown" sentinel.
+    pub(crate) ordinal: i32,
+    pub(crate) codec: String,
+    pub(crate) channels: i64,
+    /// PMS 1.43.4+ Plex Pass: can the server honor `boostDialog`/`normalizeLoudness` for this
+    /// track (issue #266; wire field is `plex::Stream::can_normalize_loudness`).
+    pub(crate) can_normalize_loudness: bool,
+    /// Dolby Atmos (`metadata::Stream::has_atmos`) — the Load payload's `contents.immersive`.
+    pub(crate) immersive: bool,
+}
+
+impl CarriedAudio {
+    /// The only constructor: a track is carried by copying a `metadata::Stream` this resolve
+    /// actually fetched and looked at, never assembled field-by-field, so nothing can hand out
+    /// capability facts for a track nobody read.
+    pub(crate) fn from_stream(s: &crate::metadata::Stream, ordinal: i32) -> Self {
+        CarriedAudio {
+            sid: s.id,
+            ordinal,
+            codec: s.codec.clone(),
+            channels: s.channels,
+            can_normalize_loudness: s.can_normalize_loudness,
+            immersive: s.has_atmos(),
+        }
+    }
+}
+
 /// Everything needed to restore Auto's zero-video-encode state after HLS. `url` is the cold-start
 /// playback target; `probe_part` is the raw Part key used to bind runtime measurement and direct
 /// playback to the exact live HLS Streaming Resource. `direct` says whether the Part itself is
@@ -143,13 +180,12 @@ pub(super) struct AutoOriginalCandidate {
     pub(super) probe_part: String,
     pub(super) direct: bool,
     pub(super) vcodec: String,
-    pub(super) acodec: String,
     pub(super) fps: f64,
     pub(super) dovi: crate::metadata::Dovi,
     pub(super) dv_decision: crate::metadata::DvDecision,
-    pub(super) immersive: bool,
-    pub(super) audio_sid: i64,
-    pub(super) audio_ordinal: Option<i32>,
+    /// The audio track this candidate carries. `None` = server default, facts unknown (issue
+    /// #266 fails closed on it: no enhancement is ever offered without a known, capable track).
+    pub(super) audio: Option<CarriedAudio>,
     pub(super) subtitle_ordinal: Option<i32>,
 }
 
@@ -217,33 +253,31 @@ pub(super) fn classify_prime_decision(
 /// borrowed from the caller's locals; audio/subtitle ride the CURRENT selection) — so every
 /// (re)start of the item's transcode carries identical params.
 ///
-/// `ceiling` is an ARGUMENT rather than a read of [`quality`], for the same reason `remux` and
-/// `no_video_copy` are: [`build_stream`] runs on the resolve worker and must take it from
-/// [`ResolveEnv`], while [`retranscode`] runs on the main thread and reads the live selection. A
-/// read inside here would be a `static` touched from a worker.
+/// `contract` is an ARGUMENT rather than a read of [`quality`], for the same reason it always was
+/// (back when it was four separate fields — `remux`, `no_video_copy`, `ceiling`, `delivery`):
+/// [`build_stream`] runs on the resolve worker and must take it from [`ResolveEnv`], while
+/// [`retranscode`] runs on the main thread and reads the live selection. A read inside here would
+/// be a `static` touched from a worker. Folding the four (now five, with issue #266's
+/// [`AudioEnhancements`](crate::plex::AudioEnhancements)) into one [`EncodeContract`] argument is
+/// what keeps every caller stating the whole shape at once rather than four/five positional bools
+/// and options a reader has to keep straight by position.
 pub(super) fn transcode_spec<'a>(
     rk: &'a str,
     session: &'a str,
     encoder_session: &'a str,
-    remux: bool,
-    no_video_copy: bool,
     offset: crate::plex::TranscodeOffset,
     aud: i64,
     sub: i64,
-    ceiling: Option<crate::plex::Ceiling>,
-    delivery: crate::plex::TranscodeDelivery,
+    contract: crate::plex::EncodeContract,
 ) -> crate::plex::TranscodeSpec<'a> {
     crate::plex::TranscodeSpec {
         rating_key: rk,
         session,
         encoder_session,
-        delivery,
-        remux,
-        no_video_copy,
+        contract,
         audio_stream_id: aud,
         subtitle_stream_id: sub,
         offset,
-        ceiling,
     }
 }
 
@@ -728,23 +762,19 @@ pub(crate) struct Plan {
     /// is: it describes the FILE's own elementary stream.
     pub immersive: bool,
     pub audio_sid: i64,
-    pub remux: bool,
-    /// The selected transcode delivery. Direct play leaves the progressive default unused.
-    pub delivery: crate::plex::TranscodeDelivery,
-    /// This plan's transcode may not be satisfied by a video stream COPY — the flag rides all the
-    /// way to `plex::TranscodeSpec::no_video_copy`, and `apply_plan` stores it so a seek or an
-    /// audio switch rebuilds the same constraint. Set only where the refusal is about what the
-    /// pixels ARE (a Dolby Vision base layer we cannot display), never for a size or codec one:
-    /// those the server's own caps already express, and a copy that satisfies them is a free win.
-    pub no_video_copy: bool,
-    /// The fixed quality ceiling this plan resolved under (`None` = Original, including Auto's
-    /// proven Original state; adaptive Auto begins at whatever rung [`crate::abr::bootstrap`]
-    /// returned — 480p when nothing about the link is knowable for free, otherwise the catalog
-    /// entry its bounded source probe pays for) —
-    /// installed as [`Session::cur_ceiling`] so a seek or a track switch rebuilds the SAME query. Copied
-    /// straight from `env.quality.ceiling()`, for the same reason `sid` is copied from the env:
-    /// the worker must not re-read a preference the main thread can move underneath it.
-    pub ceiling: Option<crate::plex::Ceiling>,
+    /// The encode's flavor/delivery/ceiling/audio-DSP shape — see [`crate::plex::EncodeContract`].
+    /// Was four independent fields (`remux`, `delivery`, `no_video_copy`, `ceiling`) until issue
+    /// #266 needed a fifth that only ever means anything alongside `remux == true`; one value
+    /// installed as [`Session::cur_contract`] is what lets a seek or a track switch rebuild the
+    /// exact same query instead of four/five fields that could drift out of the coupling that
+    /// matters (`no_video_copy` only under re-encode, `ceiling` only under re-encode, `audio` only
+    /// under remux — see the field docs on `EncodeContract` itself).
+    pub contract: crate::plex::EncodeContract,
+    /// The audio track this plan carries, when it is Original-family and the track is known
+    /// (issue #266's `EnhancementFacts::carried`). `None` on every path this PR builds — the
+    /// resolve never sets it yet; it exists so the field and its projections have somewhere
+    /// honest to live before the offering policy (a later PR) starts writing it.
+    pub audio: Option<CarriedAudio>,
     /// What this plan MEASURED the source at — `(kbps, w, h)`, any of them `0` for "nobody said".
     /// Carried so [`set_quality`] can re-ask [`quality_policy`] for the item already playing when
     /// the user picks a different rung, instead of guessing. See [`Session::cur_src`].
@@ -1209,27 +1239,26 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         } else {
             0.0
         };
-        let immersive = direct
-            && plan
-                .playing
-                .as_ref()
-                .and_then(|p| {
-                    if aidx >= 0 {
-                        p.audio.get(aidx as usize)
-                    } else {
-                        p.audio.iter().find(|a| a.selected)
-                    }
-                })
-                .is_some_and(|a| a.has_atmos());
+        // The found `metadata::Stream` behind this pick, when there is one — same lookup
+        // `immersive` always used: an explicit ordinal indexes the container, otherwise fall back
+        // to the server's own `selected` track. Every `CarriedAudio` fact this candidate carries
+        // beyond `sid`/`codec` (channels, loudness capability, immersive) comes from here, and
+        // `None` when nothing was found means those facts stay unknown rather than guessed.
+        let found_audio_stream = plan.playing.as_ref().and_then(|p| {
+            if aidx >= 0 {
+                p.audio.get(aidx as usize)
+            } else {
+                p.audio.iter().find(|a| a.selected)
+            }
+        });
+        let immersive = direct && found_audio_stream.is_some_and(|a| a.has_atmos());
         let audio_ordinal = if direct && aidx >= 0 {
-            Some(
-                plan.playing
-                    .as_ref()
-                    .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
-                    .unwrap_or(aidx),
-            )
+            plan.playing
+                .as_ref()
+                .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
+                .unwrap_or(aidx)
         } else {
-            None
+            -1
         };
         let subtitle_ordinal = direct.then(|| sub_pick.map(|(_, ord)| ord)).flatten();
         plan.auto_original = Some(AutoOriginalCandidate {
@@ -1237,7 +1266,6 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             probe_part: part.to_owned(),
             direct,
             vcodec: vcodec.to_string(),
-            acodec: achosen,
             fps,
             dovi: if direct {
                 dovi
@@ -1249,9 +1277,15 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             } else {
                 crate::metadata::DvDecision::NONE
             },
-            immersive,
-            audio_sid: asid,
-            audio_ordinal,
+            audio: Some(CarriedAudio {
+                sid: asid,
+                ordinal: audio_ordinal,
+                codec: achosen,
+                channels: found_audio_stream.map_or(0, |a| a.channels),
+                can_normalize_loudness: found_audio_stream
+                    .is_some_and(|a| a.can_normalize_loudness),
+                immersive,
+            }),
             subtitle_ordinal,
         });
     }
@@ -1344,21 +1378,21 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             quality_policy(playback_quality, false, env.src_kbps, src_w, src_h),
         );
         directplay = false;
-        plan.delivery = crate::plex::TranscodeDelivery::FixedHls {
+        plan.contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         let rung = decision
             .as_ref()
             .map(|d| d.rung)
             .unwrap_or(crate::abr::Rung::P480);
-        plan.ceiling = Some(rung.ceiling());
+        plan.contract.ceiling = Some(rung.ceiling());
         crate::player::log(&format!(
             "route: Auto adaptive — source {source_transport_kbps}kbps {src_w}x{src_h}; starting {}kbps HLS ({:?})",
             rung.kbps(),
             decision.as_ref().map(|d| d.reason),
         ));
     } else {
-        plan.ceiling = playback_quality.ceiling();
+        plan.contract.ceiling = playback_quality.ceiling();
         if playback_quality == Quality::Auto {
             crate::player::log(&format!(
                 "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
@@ -1505,7 +1539,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
     } else if matches!(
-        plan.delivery,
+        plan.contract.delivery,
         crate::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         plan.vcodec = "h264".into();
@@ -1528,13 +1562,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `env.sid` routes the selection to the server the ITEM came from. Dropping either compiles
     // and passes: without the gate a relay stalls, without the sid a friend's audio pick is PUT
     // to our own server, which answers 200 and changes nothing on theirs.
-    plan.remux = remux;
-    plan.no_video_copy = no_video_copy;
-    // `plan.ceiling` is NOT set here — it was set for every flavour up at the decision, which is
-    // what the direct-play branch needed too. Spending it below is the third reader of the same
-    // reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild this query
-    // from `Session`, and one that dropped the ceiling would hand the encoder back the full
-    // 4K/60 Mbps bound the moment the user touched the scrubber.
+    plan.contract.remux = remux;
+    plan.contract.no_video_copy = no_video_copy;
+    // `plan.contract.ceiling` is NOT set here — it was set for every flavour up at the decision,
+    // which is what the direct-play branch needed too. Spending it below is the third reader of
+    // the same reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild
+    // this query from `Session`, and one that dropped the ceiling would hand the encoder back the
+    // full 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
     // `encode_audio_id` (the PMS selection, else show/account language, else that sibling).
@@ -1552,13 +1586,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         rk,
         &session,
         &session,
-        remux,
-        no_video_copy,
         crate::plex::TranscodeOffset::Fresh,
         encode_audio,
         env.sub_sid,
-        plan.ceiling,
-        plan.delivery,
+        plan.contract,
     );
     if let Some(mc) = client.transcode_decision(&sp) {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
@@ -2105,7 +2136,8 @@ pub(crate) enum Preview {
     /// Container-only REMUX — Plex's own "Direct Stream". The video (and usually the audio) is
     /// COPIED into progressive MKV because the container is not one the demuxer streams, or
     /// because no audio track direct-plays; the pixels arrive untouched, 4K and HDR10 intact.
-    /// `build_stream` spells this exact case `plan.remux = video_dp` on the transcode branch.
+    /// `build_stream` spells this exact case `plan.contract.remux = video_dp` on the transcode
+    /// branch.
     Remux,
     /// A real re-encode: the server decodes and re-encodes the video.
     Converts,

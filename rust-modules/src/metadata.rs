@@ -770,6 +770,18 @@ pub(crate) struct Stream {
     /// it names a DIFFERENT stream, and never as a reason to transcode. Read its doc before using
     /// this flag anywhere else.
     pub(crate) selected: bool,
+    /// Audio track only: PMS 1.43.4+ with Plex Pass says the server can honor
+    /// `boostDialog=1`/`normalizeLoudness=1` for this track on the transcoder (issue #266). Same
+    /// round-trip concern as `language_tag`: a `Detail` recorded before this field existed carries
+    /// no key for it, so `skip_serializing_if` keeps a false value off the wire and `default`
+    /// reads the recording back as false — never a confident "capable" for a fixture that never
+    /// said so.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) can_normalize_loudness: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Stream {
@@ -2092,6 +2104,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
             key: s.key.clone(),
             // the server's current pick for this part (a track chosen on another client)
             selected: s.selected != 0,
+            can_normalize_loudness: s.can_normalize_loudness,
         };
         match s.stream_type {
             1 => {
@@ -2149,6 +2162,40 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
         fps,
         hdr,
         dovi,
+    }
+}
+
+#[cfg(test)]
+mod convert_streams_tests {
+    use super::*;
+
+    /// `canNormalizeLoudness` (issue #266) must survive the wire-DTO → app-model copy, both ways:
+    /// a capable audio track stays capable, and an incapable one (or the video track, which never
+    /// carries the flag) stays false rather than inheriting some other stream's value.
+    #[test]
+    fn convert_streams_carries_loudness_capability() {
+        let wire = [
+            crate::plex::Stream {
+                stream_type: 2,
+                can_normalize_loudness: true,
+                ..Default::default()
+            },
+            crate::plex::Stream {
+                stream_type: 2,
+                can_normalize_loudness: false,
+                ..Default::default()
+            },
+            crate::plex::Stream {
+                stream_type: 1,
+                can_normalize_loudness: false,
+                ..Default::default()
+            },
+        ];
+        let s = convert_streams(&wire);
+        assert_eq!(s.audio.len(), 2);
+        assert!(s.audio[0].can_normalize_loudness);
+        assert!(!s.audio[1].can_normalize_loudness);
+        assert!(!s.video.expect("video track").can_normalize_loudness);
     }
 }
 

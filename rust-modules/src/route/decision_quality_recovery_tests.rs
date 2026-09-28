@@ -328,7 +328,11 @@ fn a_local_auto_original_is_supervised_exactly_like_a_remote_one() {
             sid,
             url: "https://example.invalid/source.mkv".into(),
             transport_kbps: 10_634,
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             auto_original_watched: true,
             ..Default::default()
         },
@@ -353,10 +357,13 @@ fn hls_controller_starts_at_the_rung_the_runtime_fallback_selected() {
     apply_plan(&mut ps, 
         Plan {
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ..Default::default()
+            },
             ..Default::default()
         },
         "rk-auto",
@@ -395,10 +402,13 @@ fn a_candidate_is_never_named_after_the_encoder_it_would_replace() {
             // seeds the live encoder. Before any switch they agree, as they do on the wire.
             sess: "sess-42".into(),
             tsession: "sess-42".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080M12.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080M12.ceiling()),
+                ..Default::default()
+            },
             ..Default::default()
         },
         "rk-auto",
@@ -552,10 +562,13 @@ fn a_transcode_seek_swaps_to_a_fresh_physical_session_and_retires_the_old_one() 
             sess: "playback-seek".into(),
             tsession: "playback-seek-abr-old".into(),
             url: "http://127.0.0.1/old/master.m3u8".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ..Default::default()
+            },
             ..Default::default()
         },
         "42",
@@ -645,10 +658,13 @@ fn a_failed_retranscode_decision_leaves_the_live_route_unchanged() {
             sess: "logical-playback".into(),
             tsession: "live-encoder".into(),
             url: "http://127.0.0.1/live/master.m3u8".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ..Default::default()
+            },
             vcodec: "h264".into(),
             acodec: "aac".into(),
             ..Default::default()
@@ -712,23 +728,23 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
             url: "http://fixture.invalid/720/master.m3u8?offset=100".into(),
             sess: "sess-live".into(),
             tsession: "encoder-bootstrap".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -807,23 +823,23 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: Some(2),
             }),
             ..Default::default()
@@ -883,23 +899,23 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: Some(2),
             }),
             ..Default::default()
@@ -1055,10 +1071,13 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
             sess: "remux-logical".into(),
             url: "http://fixture.invalid/hls/master.m3u8".into(),
             tsession: "remux-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             src_vcodec: "hevc".into(),
             src_acodec: "eac3".into(),
             vcodec: "h264".into(),
@@ -1069,13 +1088,10 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
                 probe_part: "/library/parts/1/file.mkv".into(),
                 direct: false,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1162,10 +1178,13 @@ fn a_missing_whole_file_bitrate_must_not_silently_delete_original_recovery() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
             // PMS said what the VIDEO runs at and did not say what the whole file does. That
             // is an ordinary answer, not a broken one.
             src_measure: (23_920, 3_840, 2_160),
@@ -1175,13 +1194,10 @@ fn a_missing_whole_file_bitrate_must_not_silently_delete_original_recovery() {
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1220,23 +1236,23 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1293,10 +1309,13 @@ fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "adopt-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(test_original_candidate(None)),
             ..Default::default()
@@ -1363,23 +1382,23 @@ fn a_quality_change_waits_for_an_original_handoff_to_commit() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "quality-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1446,22 +1465,22 @@ fn a_quality_change_survives_an_original_handoff_rollback() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "quality-rollback-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 0,
-                audio_ordinal: None,
+                audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1507,10 +1526,10 @@ fn a_failed_rollback_load_discards_trial_effects_before_the_next_trial() {
     { let s = &mut ps; {
         s.url = "http://fixture.invalid/hls/master.m3u8".into();
         s.tsession = "rollback-owner".into();
-        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls {
+        s.cur_contract.delivery = crate::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
-        s.cur_ceiling = Some(crate::abr::Rung::P1080High.ceiling());
+        s.cur_contract.ceiling = Some(crate::abr::Rung::P1080High.ceiling());
     } };
     install_active_hls(
         "rollback-owner",
@@ -1523,8 +1542,8 @@ fn a_failed_rollback_load_discards_trial_effects_before_the_next_trial() {
     { let s = &mut ps; {
         s.url = "https://example.invalid/first-source.mkv".into();
         s.tsession.clear();
-        s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
-        s.cur_ceiling = None;
+        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.ceiling = None;
     } };
     set_pending_original(&ps, first, true);
     set_quality(&mut ps, Quality::P480);
@@ -1546,8 +1565,8 @@ fn a_failed_rollback_load_discards_trial_effects_before_the_next_trial() {
     { let s = &mut ps; {
         s.url = "https://example.invalid/second-source.mkv".into();
         s.tsession.clear();
-        s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
-        s.cur_ceiling = None;
+        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.ceiling = None;
     } };
     set_pending_original(&ps, second, true);
     assert_eq!(rollback_seconds(&mut ps), Some(52));
@@ -1577,23 +1596,23 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "audio-rollback-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             audio_sid: 7,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1605,7 +1624,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
         Some(AutoOriginalReload::Direct)
     );
 
-    commit_audio_selection(&mut ps, 2, "aac", 99, 2);
+    commit_audio_selection(&mut ps, CarriedAudio { sid: 99, ordinal: 2, codec: "aac".into(), channels: 2, can_normalize_loudness: false, immersive: false });
     assert!(
         !pending_user_route_intent(UserRouteIntent::NativeAudioReload),
         "the temporary Direct actuator must not escape the Original trial",
@@ -1803,23 +1822,23 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
             sess: "direct-logical".into(),
             url: "http://fixture.invalid/hls/master.m3u8".into(),
             tsession: "direct-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 320,
             auto_original: Some(AutoOriginalCandidate {
                 url: logical_url,
                 probe_part: "/library/parts/1/file.mkv".into(),
                 direct: true,
                 vcodec: "h264".into(),
-                acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 0,
-                audio_ordinal: None,
+                audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -1984,22 +2003,22 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
             sess: "direct-stop-logical".into(),
             url: "http://fixture.invalid/hls/master.m3u8".into(),
             tsession: "direct-stop-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
             auto_original: Some(AutoOriginalCandidate {
                 url: candidate_url,
                 probe_part: "/library/parts/1/file.mkv".into(),
                 direct: true,
                 vcodec: "h264".into(),
-                acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 0,
-                audio_ordinal: None,
+                audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2047,22 +2066,22 @@ fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias
             sess: "missing-logical".into(),
             url: "http://fixture.invalid/hls/master.m3u8".into(),
             tsession: "missing-hls".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
             auto_original: Some(AutoOriginalCandidate {
                 url: "http://missing.invalid/source.mkv?X-Plex-Session-Identifier=missing-logical".into(),
                 probe_part: "/library/parts/1/file.mkv".into(),
                 direct: true,
                 vcodec: "h264".into(),
-                acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 0,
-                audio_ordinal: None,
+                audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2090,17 +2109,19 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         Plan {
             url: "https://example.invalid/hls/master.m3u8".into(),
             tsession: "encoder-1".into(),
-            delivery: crate::plex::TranscodeDelivery::FixedHls {
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
                 seconds_per_segment: 2,
             },
-            ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
             transport_kbps: 28_000,
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: p8(),
                 dv_decision: crate::metadata::DvDecision {
@@ -2111,9 +2132,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                         true,
                     ),
                 },
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(1),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 1, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2187,21 +2206,21 @@ fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
         Plan {
             sid,
             url: "https://example.invalid/source.mkv".into(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            ceiling: None,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             src_measure: (6_381, 3_832, 2_152),
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 14_778,
-                audio_ordinal: Some(0),
+                audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2243,8 +2262,11 @@ fn local_auto_keeps_hls_when_original_is_infeasible() {
         Plan {
             sid,
             tsession: "encoder-fixed".into(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            ceiling: Some(Quality::P720.ceiling().expect("fixed rung")),
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: Some(Quality::P720.ceiling().expect("fixed rung")),
+                ..Default::default()
+            },
             src_measure: (16_357, 3_840, 1_608),
             auto_original: None,
             ..Default::default()
@@ -2290,8 +2312,11 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
         Plan {
             url: "https://example.invalid/source.mkv".into(),
             tsession: String::new(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            ceiling: None,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             src_measure: (6_381, 3_832, 2_152),
             transport_kbps: 6_381,
             auto_original: Some(AutoOriginalCandidate {
@@ -2299,13 +2324,10 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 14_778,
-                audio_ordinal: Some(0),
+                audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2332,8 +2354,8 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
     // The route state the pump owns after that first transition lands.
     { let s = &mut ps; {
         s.tsession = "encoder-1080".into();
-        s.cur_remux = false;
-        s.cur_no_video_copy = false;
+        s.cur_contract.remux = false;
+        s.cur_contract.no_video_copy = false;
     } };
     install_active_encoder("encoder-1080");
 
@@ -2397,8 +2419,11 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
         Plan {
             sid,
             url: "https://example.invalid/source.mkv".into(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            ceiling: None,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             src_measure: (23_920, 3_840, 2_160),
             transport_kbps: 23_920,
             auto_original: Some(AutoOriginalCandidate {
@@ -2406,13 +2431,10 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "eac3".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: true,
-                audio_sid: 42,
-                audio_ordinal: Some(0),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "eac3".into(), channels: 0, can_normalize_loudness: false, immersive: true }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2474,7 +2496,11 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
         Plan {
             sid,
             url: "https://example.invalid/source.mkv".into(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             src_measure: (3_000, 1_280, 720),
             transport_kbps: 3_256,
             auto_original_watched: true,
@@ -2483,13 +2509,10 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "h264".into(),
-                acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 42,
-                audio_ordinal: Some(0),
+                audio: Some(CarriedAudio { sid: 42, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: None,
             }),
             ..Default::default()
@@ -2532,8 +2555,11 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
         Plan {
             url: "https://example.invalid/source.mkv".into(),
             tsession: String::new(),
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            ceiling: None,
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                ..Default::default()
+            },
             src_measure: (6_381, 3_832, 2_152),
             transport_kbps: 6_381,
             auto_original: Some(AutoOriginalCandidate {
@@ -2541,13 +2567,10 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
                 probe_part: "https://example.invalid/source.mkv".into(),
                 direct: true,
                 vcodec: "hevc".into(),
-                acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
                 dv_decision: crate::metadata::DvDecision::NONE,
-                immersive: false,
-                audio_sid: 14_778,
-                audio_ordinal: Some(0),
+                audio: Some(CarriedAudio { sid: 14_778, ordinal: 0, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
                 subtitle_ordinal: Some(3),
             }),
             ..Default::default()
@@ -2559,8 +2582,8 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
     set_quality(&mut ps, Quality::P480);
     { let s = &mut ps; {
         s.tsession = "encoder-480".into();
-        s.cur_remux = false;
-        s.cur_no_video_copy = false;
+        s.cur_contract.remux = false;
+        s.cur_contract.no_video_copy = false;
     } };
     install_active_encoder("encoder-480");
 

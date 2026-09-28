@@ -94,7 +94,9 @@ pub(crate) struct TrackMenuState {
 /// panel cannot distinguish from "unchanged" without knowing what the renderer currently has).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackCommit {
-    Audio { ordinal: c_int, codec: String, stream_id: i64, channels: i64 },
+    /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
+    /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
+    Audio(crate::route::CarriedAudio),
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
@@ -281,12 +283,7 @@ impl TrackMenuState {
                         feature: crate::diag::schema::Feature::AudioTrack,
                     });
                     return TrackOk::Commit {
-                        commit: TrackCommit::Audio {
-                            ordinal: ord,
-                            codec: s.codec.clone(),
-                            stream_id: s.id,
-                            channels: s.channels,
-                        },
+                        commit: TrackCommit::Audio(crate::route::CarriedAudio::from_stream(s, ord)),
                         keep_open: false,
                     };
                 }
@@ -825,6 +822,16 @@ mod tests {
         store
     }
 
+    /// A store with `audio` installed as the playing item's audio list — the audio-tab
+    /// counterpart to [`store_with`].
+    fn store_with_audio(audio: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        let mut item = metadata::PlayingItem::with_subs(Vec::new());
+        item.audio = audio;
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        store
+    }
+
     fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> metadata::Stream {
         metadata::Stream {
             id,
@@ -1298,6 +1305,73 @@ mod tests {
         assert_eq!(n.sub(9), "", "past the end is empty, not a panic");
         // the empty store — every read before a demuxer has opened, and every read on the host
         assert_eq!(TrackNames::new().sub(0), "");
+    }
+
+    // ---- track_menu: audio OK commits a frozen CarriedAudio (issue #266) ----------------------
+
+    /// Picking a different audio row must commit the exact `CarriedAudio` snapshot
+    /// `CarriedAudio::from_stream` builds from the row's own `metadata::Stream` — not a bare
+    /// stream id, which is what the pre-refactor `TrackCommit::Audio(i32, String, i64, i64)`
+    /// forced every caller to reassemble by hand.
+    #[test]
+    fn audio_commit_carries_carried_audio() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = store_with_audio(vec![
+            crate::metadata::Stream {
+                id: 10,
+                index: 0,
+                codec: "aac".into(),
+                channels: 2,
+                default: true,
+                ..Default::default()
+            },
+            crate::metadata::Stream {
+                id: 20,
+                index: 1,
+                codec: "eac3".into(),
+                channels: 8,
+                profile: "dolby digital plus + dolby atmos".into(),
+                can_normalize_loudness: true,
+                ..Default::default()
+            },
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        assert_eq!(menu.active_audio(), 0, "the default track opens checked");
+
+        menu.focus_row(1);
+        let outcome = menu.on_ok(store.view());
+        assert_eq!(
+            outcome,
+            TrackOk::Commit {
+                commit: TrackCommit::Audio(crate::route::CarriedAudio {
+                    sid: 20,
+                    ordinal: 1,
+                    codec: "eac3".into(),
+                    channels: 8,
+                    can_normalize_loudness: true,
+                    immersive: true,
+                }),
+                keep_open: false,
+            }
+        );
+    }
+
+    /// Re-picking the already-active row is not a change: no commit, same as the pre-refactor
+    /// behaviour this test protects against a regression in.
+    #[test]
+    fn audio_reselecting_the_active_row_dismisses_without_a_commit() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = store_with_audio(vec![crate::metadata::Stream {
+            id: 10,
+            index: 0,
+            codec: "aac".into(),
+            channels: 2,
+            default: true,
+            ..Default::default()
+        }]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        menu.focus_row(0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Dismiss);
     }
 }
 

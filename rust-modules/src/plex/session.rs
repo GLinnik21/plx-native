@@ -614,6 +614,14 @@ pub struct Session {
     /// entry — and an entry that cannot be read is "never asked", the closed direction.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub(crate) plaintext_consent: Vec<PlaintextConsent>,
+    /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
+    /// normalization. `NONE` on every path this PR builds — the offering policy that ever turns
+    /// a toggle on lands in a later PR — so this is skipped on write and every session persisted
+    /// before the field existed round-trips byte-identical to what it wrote before. Soft-parsed
+    /// like every preference in this struct: an unknown shape costs the preference, never the
+    /// credentials.
+    #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
+    pub(crate) audio_enhancements: crate::plex::AudioEnhancements,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
 
@@ -658,6 +666,8 @@ struct CanonicalSessionPreferences {
     subtitle_tone: SubtitleTone,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
+    #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
+    audio_enhancements: crate::plex::AudioEnhancements,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -685,6 +695,7 @@ impl Default for CanonicalSessionPreferences {
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
             plaintext_consent: Vec::new(),
+            audio_enhancements: crate::plex::AudioEnhancements::NONE,
             extensions: BTreeMap::new(),
         }
     }
@@ -729,6 +740,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
         plaintext_consent: session.plaintext_consent.clone(),
+        audio_enhancements: session.audio_enhancements,
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -795,6 +807,7 @@ pub(crate) fn join_canonical(
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
         plaintext_consent: preferences.plaintext_consent,
+        audio_enhancements: preferences.audio_enhancements,
         profiles,
         extensions: auth.extensions,
     })
@@ -820,6 +833,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
         plaintext_consent: preferences.plaintext_consent,
+        audio_enhancements: preferences.audio_enhancements,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -1763,6 +1777,18 @@ where
     Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
 }
 
+/// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
+/// off rather than failing the enclosing [`Session`].
+fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::plex::AudioEnhancements, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(crate::plex::AudioEnhancements::NONE);
+    };
+    Ok(serde_json::from_value::<crate::plex::AudioEnhancements>(v).unwrap_or(crate::plex::AudioEnhancements::NONE))
+}
+
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -1911,6 +1937,16 @@ impl Session {
     pub(crate) fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
         let mut next = self.clone();
         next.subtitle_tone = tone;
+        next
+    }
+
+    pub(crate) fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {
+        self.audio_enhancements
+    }
+
+    pub(crate) fn with_audio_enhancements(&self, enhancements: crate::plex::AudioEnhancements) -> Self {
+        let mut next = self.clone();
+        next.audio_enhancements = enhancements;
         next
     }
 
@@ -4804,5 +4840,147 @@ mod direct_play_mode_tests {
             let prefs: CanonicalSessionPreferences = serde_json::from_value(split_public(&session).unwrap().preferences).unwrap();
             assert_eq!(prefs.direct_play_mode, mode);
         }
+    }
+}
+
+/// Issue #266 (PR1): `Session::audio_enhancements` — the persisted Plex Pass DSP preference.
+/// This PR never sets a toggle on from any production code path; these tests establish the
+/// field's own contract in isolation (soft-parse, omit-when-NONE, round-trip) so a later PR's
+/// offering policy has a settled place to write into.
+#[cfg(test)]
+mod audio_enhancements_tests {
+    use super::*;
+
+    #[test]
+    fn audio_enhancements_absent_key_is_none() {
+        let session: Session = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(session.audio_enhancements(), crate::plex::AudioEnhancements::NONE);
+    }
+
+    #[test]
+    fn audio_enhancements_garbage_is_none() {
+        for value in [
+            serde_json::json!({"audio_enhancements": null}),
+            serde_json::json!({"audio_enhancements": "future"}),
+            serde_json::json!({"audio_enhancements": 17}),
+            serde_json::json!({"audio_enhancements": {"boost_dialog": "yes"}}),
+            serde_json::json!({"audio_enhancements": []}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+                panic!("{value}: a malformed audio_enhancements value must not fail the whole session: {e}")
+            });
+            assert_eq!(
+                session.audio_enhancements(),
+                crate::plex::AudioEnhancements::NONE,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_enhancements_none_not_serialized() {
+        let session = Session::default();
+        assert_eq!(session.audio_enhancements(), crate::plex::AudioEnhancements::NONE);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(
+            !json.contains("audio_enhancements"),
+            "a NONE preference must stay omitted, exactly like every other preference in this \
+             struct, so a session written before this field existed serializes unchanged: {json}"
+        );
+        let prefs_json = serde_json::to_string(
+            &serde_json::to_value(&CanonicalSessionPreferences {
+                language: session.language,
+                playback_quality: session.playback_quality,
+                direct_play_mode: session.direct_play_mode,
+                auto_sign_in: session.auto_sign_in,
+                last_library: session.last_library.clone(),
+                library_sorts: session.library_sorts.clone(),
+                last_hero_blur: session.last_hero_blur,
+                trailer_autoplay: session.trailer_autoplay,
+                subtitle_tone: session.subtitle_tone,
+                plaintext_consent: session.plaintext_consent.clone(),
+                audio_enhancements: session.audio_enhancements,
+                extensions: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !prefs_json.contains("audio_enhancements"),
+            "the canonical public preferences payload must omit it too: {prefs_json}"
+        );
+    }
+
+    #[test]
+    fn audio_enhancements_round_trip() {
+        for enh in [
+            crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+        ] {
+            let session = Session::default().with_audio_enhancements(enh);
+            assert_eq!(session.audio_enhancements(), enh);
+
+            // Legacy fallback format: the whole `Session` serialized directly.
+            let round: Session =
+                serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+            assert_eq!(round.audio_enhancements(), enh);
+            let json = serde_json::to_string(&session).unwrap();
+            assert!(json.contains("audio_enhancements"), "{json}");
+
+            // Canonical split/join format: the public-preferences half.
+            let (public, protected) = split_canonical(&session).unwrap();
+            let joined = join_canonical(&public, &protected).unwrap();
+            assert_eq!(joined.audio_enhancements(), enh);
+        }
+    }
+
+    /// Real fixture-shaped session credentials predate #266 (`committed_credentials` in every
+    /// `tests/fixtures/replay/*/manifest.json` carries exactly the auth-half fields
+    /// `CanonicalSessionAuth` expects: `account_token`, `client_id`, `home_users`, `server`,
+    /// `sources`, `user`). Building a `Session` from one and re-serializing it must never grow
+    /// an `audio_enhancements` key — the whole point of `skip_serializing_if` — so replaying a
+    /// fixture recorded before this PR stays byte-stable rather than drifting the moment this
+    /// field is read back in.
+    #[test]
+    fn replay_manifest_session_is_byte_stable() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest_dir.parent().expect("rust-modules has a parent directory");
+        let replay_dir = repo.join("tests/fixtures/replay");
+        let entries = std::fs::read_dir(&replay_dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", replay_dir.display()));
+        let mut checked = 0;
+        for entry in entries {
+            let entry = entry.expect("readable fixture directory entry");
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(&manifest_path)
+                .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
+            let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
+            let Some(committed) = manifest.pointer("/init/data/session/committed_credentials")
+            else {
+                continue;
+            };
+            let session: Session = serde_json::from_value(committed.clone())
+                .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
+            assert_eq!(
+                session.audio_enhancements(),
+                crate::plex::AudioEnhancements::NONE,
+                "{}: a fixture predating #266 must default both toggles off",
+                manifest_path.display()
+            );
+            let reserialized = serde_json::to_string(&session)
+                .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
+            assert!(
+                !reserialized.contains("audio_enhancements"),
+                "{}: NONE must stay omitted, not just default-valued",
+                manifest_path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "expected at least one replay fixture manifest to exercise");
     }
 }
