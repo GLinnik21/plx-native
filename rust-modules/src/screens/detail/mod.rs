@@ -2333,7 +2333,11 @@ impl DetailScreen {
             hero::CD,
         ];
         let picture = crate::player::preview::view().picture;
-        let may_read = !picture && may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
+        // A text-recording pass (the transition's prewarm, or a headless sweep) drew no pixels
+        // under this row, so a read-back there would sample some other page's ground.
+        let may_read = !picture
+            && !p.is_recording()
+            && may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
         let palette = if picture {
             ControlPalette::default()
         } else {

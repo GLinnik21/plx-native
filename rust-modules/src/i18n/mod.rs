@@ -248,9 +248,37 @@ pub(crate) fn saved_preference_for_test(value: Preference) -> Preference {
     previous
 }
 
+#[cfg(test)]
+thread_local! {
+    static THREAD_LOCALE: std::cell::Cell<Option<&'static LocaleContext>> = const { std::cell::Cell::new(None) };
+}
+
+/// Resolve every catalog accessor on THIS test thread in the expanded pseudo-locale until the
+/// guard drops. Tests run in parallel, so the process-wide [`current`] must stay English for every
+/// other test; a thread-local override is what lets one test draw a whole screen in `[!! … !!]`.
+#[cfg(test)]
+pub(crate) fn pseudo_on_this_thread_for_test() -> ThreadLocaleGuard {
+    static PSEUDO: OnceLock<LocaleContext> = OnceLock::new();
+    let pseudo = PSEUDO.get_or_init(LocaleContext::pseudo_for_test);
+    ThreadLocaleGuard(THREAD_LOCALE.with(|slot| slot.replace(Some(pseudo))))
+}
+
+#[cfg(test)]
+pub(crate) struct ThreadLocaleGuard(Option<&'static LocaleContext>);
+
+#[cfg(test)]
+impl Drop for ThreadLocaleGuard {
+    fn drop(&mut self) {
+        THREAD_LOCALE.with(|slot| slot.set(self.0));
+    }
+}
+
 pub(crate) fn current() -> &'static LocaleContext {
     #[cfg(test)]
     {
+        if let Some(cx) = THREAD_LOCALE.with(std::cell::Cell::get) {
+            return cx;
+        }
         CURRENT.get_or_init(|| LocaleContext::resolve(Preference::En, None, None, None, None))
     }
     #[cfg(not(test))]

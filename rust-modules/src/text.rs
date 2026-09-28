@@ -327,6 +327,17 @@ thread_local! {
     static PREWARM: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
     #[cfg(test)]
     static PREWARMED_FOR_TEST: RefCell<Vec<WarmKey>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static CAPTURED_FOR_TEST: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Every text run a recording painter (`ui::Painter::recording`) is handed while `f` runs on this
+/// thread — whether or not the glyph cache or the prewarm queue would take it.
+#[cfg(test)]
+pub(crate) fn capture_text_runs_for_test(f: impl FnOnce()) -> Vec<String> {
+    CAPTURED_FOR_TEST.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    f();
+    CAPTURED_FOR_TEST.with(|c| c.borrow_mut().take()).unwrap_or_default()
 }
 
 /// Does the resident cache already hold this exact key? Unlike `text_tex`, this does not touch the
@@ -352,6 +363,12 @@ pub(crate) fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
         return;
     }
     let bytes = unsafe { CStr::from_ptr(s).to_bytes() };
+    #[cfg(test)]
+    CAPTURED_FOR_TEST.with(|c| {
+        if let (Some(runs), false) = (c.borrow_mut().as_mut(), bytes.is_empty()) {
+            runs.push(String::from_utf8_lossy(bytes).into_owned());
+        }
+    });
     if bytes.is_empty() || cache_has(bytes, sz, bold) {
         return;
     }
