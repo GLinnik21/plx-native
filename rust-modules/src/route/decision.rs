@@ -3480,88 +3480,23 @@ pub(crate) fn recover_auto_to_original_for(
         return None;
     }
     let mut rollback = snapshot_route(ps, expected_encoder.clone(), offset_secs);
-    if flavour == RecoveryFlavour::Direct {
-        // The probe and the actual Part body must name the same exact Streaming Resource. A URL
-        // left on the logical playback id can token-alias this HLS resource today, then fail a
-        // later seek after cleanup because the alias choice is not durable.
-        let source_url = if candidate.probe_part.starts_with('/') {
-            let client = cur_client(ps)?;
-            client
-                .direct_play_url(&candidate.probe_part, &expected_encoder)
-                .to_url()
-        } else {
-            candidate.url.clone()
-        };
-        // Keep the exact id as a source-resource owner, but remove its HLS route projection. On
-        // decoded frames confirmation stops only the physical encoder; final teardown takes this
-        // id and performs the full resource close.
-        if replace_active_encoder_for(expected, &expected_encoder).is_none() {
-            return None;
-        }
-        // **Taken before anything is overwritten.** A raw Part request has no replacement
-        // encoder; the empty marker tells rollback there is nothing new to retire.
-        { let s = &mut *ps; {
-            s.url = source_url;
-            s.tsession.clear();
-            s.cur_contract.remux = false;
-            s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
-            s.cur_contract.no_video_copy = false;
-            s.cur_contract.ceiling = None;
-            s.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
-            s.cur_enhancement = EnhancementOutcome::Off;
-            s.cur_auto_original_watched = watched;
-            s.cur_audio = candidate.audio.clone();
-            s.stream_vcodec = candidate.vcodec.clone();
-            // A server-default candidate carries no track facts; the file's own default codec
-            // (`src_acodec`, the resolve's source argument) is what that direct play decodes.
-            s.stream_acodec = candidate
-                .audio
-                .as_ref()
-                .map_or_else(|| s.src_acodec.clone(), |a| a.codec.clone());
-            s.stream_fps = candidate.fps;
-            s.stream_dovi = candidate.dovi;
-            s.stream_dv_decision = candidate.dv_decision;
-            s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
-        } };
-        crate::player::set_audio_track(
-            candidate.audio.as_ref().map_or(-1, |a| a.ordinal),
-        );
-        crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
-        set_pending_original(ps, rollback, automatic);
-        // This is a new source attempt. A prior probe's typed failure explains the HLS route we
-        // are leaving, not the replacement now being opened; a failure of this open republishes
-        // its own exact status from the pump.
-        crate::player::clear_original_failure();
-        crate::player::log(match cause {
-            RecoveryCause::Automatic => {
-                "auto: recovered Original direct play; HLS encoder held pending frames"
-            }
-            RecoveryCause::ManualOriginal => {
-                "quality: Original restored direct play; HLS encoder held pending frames"
-            }
-            RecoveryCause::EnhancementReleased => {
-                "enhancement: released to Original direct play; remux encoder held pending frames"
-            }
-        });
-        crate::player::report::note_delivery_requested_for(
-            playback_trace_generation(),
-            crate::player::report::DeliveryClass::Direct,
-            crate::player::report::QualityClass::Original,
-            crate::player::report::DeliveryReason::OriginalRecovery,
-        );
-        return Some(AutoOriginalReload::Direct);
-    }
-
+    let RecoveryFlavour::Remux(audio) = flavour else {
+        return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, false);
+    };
     // `/decision` only registers the replacement. Just like a raw Part open, it does not prove
     // that Starfish can read and decode the resulting MKV. Publish the remux without stopping the
     // old HLS encoder, then put both exact identities in PendingOriginal; decoded frames retire
     // HLS, while a failed open restores its client-side route snapshot and retires this unproven
     // remux. Only the next HLS response establishes PMS-side cursor continuity.
-    let RecoveryFlavour::Remux(audio) = flavour else {
-        unreachable!("the Direct flavour returned above");
-    };
     let replacement =
-        prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)?;
+        match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)? {
+            OriginalRemux::Prepared(replacement) => replacement,
+            // The server will not apply the params and the candidate direct-plays: the plain
+            // Original IS that direct play, exactly as the resolve's own fallback returns to it.
+            OriginalRemux::RefusedToDirect => {
+                return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
+            }
+        };
     rollback.replacement_encoder = replacement;
     set_pending_original(ps, rollback, automatic);
     crate::player::clear_original_failure();
@@ -3581,6 +3516,93 @@ pub(crate) fn recover_auto_to_original_for(
         crate::player::report::DeliveryReason::OriginalRecovery,
     );
     Some(AutoOriginalReload::Remux)
+}
+
+/// The direct-play half of an Original recovery (the candidate's raw Part). `enhancement_refused`
+/// records that an enhanced remux was asked for first and the server would not apply it, so the
+/// offer stays withdrawn for this playback (the resolve's and the preflight's `Refused`).
+fn recover_original_direct(
+    ps: &mut PlaybackSession,
+    candidate: &AutoOriginalCandidate,
+    expected: &WorkerTicket,
+    rollback: PendingOriginal,
+    watched: bool,
+    cause: RecoveryCause,
+    enhancement_refused: bool,
+) -> Option<AutoOriginalReload> {
+    let automatic = cause == RecoveryCause::Automatic;
+    let expected_encoder = expected.encoder();
+    // The probe and the actual Part body must name the same exact Streaming Resource. A URL
+    // left on the logical playback id can token-alias this HLS resource today, then fail a
+    // later seek after cleanup because the alias choice is not durable.
+    let source_url = if candidate.probe_part.starts_with('/') {
+        let client = cur_client(ps)?;
+        client
+            .direct_play_url(&candidate.probe_part, expected_encoder)
+            .to_url()
+    } else {
+        candidate.url.clone()
+    };
+    // Keep the exact id as a source-resource owner, but remove its HLS route projection. On
+    // decoded frames confirmation stops only the physical encoder; final teardown takes this
+    // id and performs the full resource close.
+    replace_active_encoder_for(expected, expected_encoder)?;
+    // **Taken before anything is overwritten.** A raw Part request has no replacement
+    // encoder; the empty marker tells rollback there is nothing new to retire.
+    { let s = &mut *ps; {
+        s.url = source_url;
+        s.tsession.clear();
+        s.cur_contract.remux = false;
+        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.no_video_copy = false;
+        s.cur_contract.ceiling = None;
+        s.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
+        s.cur_enhancement = if enhancement_refused {
+            EnhancementOutcome::Refused
+        } else {
+            EnhancementOutcome::Off
+        };
+        s.cur_auto_original_watched = watched;
+        s.cur_audio = candidate.audio.clone();
+        s.stream_vcodec = candidate.vcodec.clone();
+        // A server-default candidate carries no track facts; the file's own default codec
+        // (`src_acodec`, the resolve's source argument) is what that direct play decodes.
+        s.stream_acodec = candidate
+            .audio
+            .as_ref()
+            .map_or_else(|| s.src_acodec.clone(), |a| a.codec.clone());
+        s.stream_fps = candidate.fps;
+        s.stream_dovi = candidate.dovi;
+        s.stream_dv_decision = candidate.dv_decision;
+        s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
+    } };
+    crate::player::set_audio_track(
+        candidate.audio.as_ref().map_or(-1, |a| a.ordinal),
+    );
+    crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
+    set_pending_original(ps, rollback, automatic);
+    // This is a new source attempt. A prior probe's typed failure explains the HLS route we
+    // are leaving, not the replacement now being opened; a failure of this open republishes
+    // its own exact status from the pump.
+    crate::player::clear_original_failure();
+    crate::player::log(match cause {
+        RecoveryCause::Automatic => {
+            "auto: recovered Original direct play; HLS encoder held pending frames"
+        }
+        RecoveryCause::ManualOriginal => {
+            "quality: Original restored direct play; HLS encoder held pending frames"
+        }
+        RecoveryCause::EnhancementReleased => {
+            "enhancement: released to Original direct play; remux encoder held pending frames"
+        }
+    });
+    crate::player::report::note_delivery_requested_for(
+        playback_trace_generation(),
+        crate::player::report::DeliveryClass::Direct,
+        crate::player::report::QualityClass::Original,
+        crate::player::report::DeliveryReason::OriginalRecovery,
+    );
+    Some(AutoOriginalReload::Direct)
 }
 
 /// The route as it stood the instant before an Original recovery overwrote it, kept so the
@@ -6447,6 +6469,16 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     start
 }
 
+/// What [`prepare_original_remux`] published (`None` from it = the recovery failed and the held
+/// route is untouched).
+enum OriginalRemux {
+    /// The remux replacement's encoder session, registered and published.
+    Prepared(String),
+    /// The server would not apply the enhancement and the candidate direct-plays: nothing was
+    /// published, and the plain Original is the direct play the caller now installs as `Refused`.
+    RefusedToDirect,
+}
+
 /// Register and publish a codec-preserving Original remux without retiring `expected_hls`.
 /// `PendingOriginal` owns the two-session commit/rollback after this returns. `audio` is the
 /// recovery's own [`recovery_flavour`] (issue #266): `NONE` for the plain remux, else the params
@@ -6458,7 +6490,7 @@ fn prepare_original_remux(
     offset_secs: i64,
     watched: bool,
     audio: crate::plex::AudioEnhancements,
-) -> Option<String> {
+) -> Option<OriginalRemux> {
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
     let expected_hls = expected.encoder();
@@ -6478,28 +6510,36 @@ fn prepare_original_remux(
     let subtitle = cur_sub_sid(ps);
     let candidate_audio_sid = candidate.audio.as_ref().map_or(0, |a| a.sid);
     put_selection(cur_sid(ps), cur_part_id(ps), candidate_audio_sid, subtitle);
-    let spec = transcode_spec(
-        &rk,
-        &replacement,
-        &replacement,
-        crate::plex::TranscodeOffset::from_seconds(offset_secs.max(0)),
-        candidate_audio_sid,
-        subtitle,
-        crate::plex::EncodeContract {
-            remux: true,
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            no_video_copy: false,
-            ceiling: None,
-            audio,
-        },
-    );
-    let decision = c.transcode_decision(&spec);
-    // A refused or ignored enhancement is a failed recovery, not a quiet plain remux: the route
-    // that would play is not the one asked for, and the held HLS/remux route is still intact.
+    let spec_for = |audio| {
+        transcode_spec(
+            &rk,
+            &replacement,
+            &replacement,
+            crate::plex::TranscodeOffset::from_seconds(offset_secs.max(0)),
+            candidate_audio_sid,
+            subtitle,
+            enhanced_remux_contract(audio),
+        )
+    };
+    let mut audio = audio;
+    let mut spec = spec_for(audio);
+    let mut decision = c.transcode_decision(&spec);
+    let mut enhancement_refused = false;
+    // A refused or ignored enhancement must not strand the recovery: the candidate's plain
+    // Original is still the route this recovery exists to reach. Fall back once, exactly as the
+    // resolve and the remote preflight do, and record `Refused` so no reconcile asks this server
+    // again this playback. Nothing enhanced was fetched, so re-deciding on the same replacement
+    // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
-        crate::player::log("enhancement: refused/ignored by server; recovery keeps current stream");
-        let _ = c.transcode_stop(&replacement);
-        return None;
+        crate::player::log("enhancement: refused/ignored by server in Original recovery; fell back");
+        if candidate.direct {
+            let _ = c.transcode_stop(&replacement);
+            return Some(OriginalRemux::RefusedToDirect);
+        }
+        enhancement_refused = true;
+        audio = crate::plex::AudioEnhancements::NONE;
+        spec = spec_for(audio);
+        decision = c.transcode_decision(&spec);
     }
     if let Some(reason) = decision.as_ref().and_then(refusal) {
         crate::player::log(&format!(
@@ -6526,7 +6566,11 @@ fn prepare_original_remux(
             },
         )
     });
-    let enhancement = classify_outcome(decision.as_ref(), candidate.audio.as_ref(), audio);
+    let enhancement = if enhancement_refused {
+        EnhancementOutcome::Refused
+    } else {
+        classify_outcome(decision.as_ref(), candidate.audio.as_ref(), audio)
+    };
     let url = c.transcode_start_url(&spec).to_url();
     if replace_active_encoder_for(expected, &replacement).is_none() {
         let _ = c.transcode_stop(&replacement);
@@ -6553,7 +6597,7 @@ fn prepare_original_remux(
         "decision output: v={} a={}",
         output_codecs.0, output_codecs.1
     ));
-    Some(replacement)
+    Some(OriginalRemux::Prepared(replacement))
 }
 
 /// Re-transcode the current item (the session's `cur_rk`) at `offset_secs`, carrying the CURRENT
@@ -6589,7 +6633,10 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
 /// because the params already match, and its legacy reload lands here; rebuilding that as a
 /// re-encode would silently drop the enhancement the viewer still has switched on.
 fn retranscode_contract(ps: &PlaybackSession) -> crate::plex::EncodeContract {
+    // A ceiling means a fixed rung was picked, and an enhanced remux is uncapped by definition:
+    // keeping it would erase the cap the picker shows (I5).
     let keep_enhanced = live_family(ps) == RouteFamily::Remux
+        && ps.cur_contract.ceiling.is_none()
         && ps.cur_contract.audio.any()
         && want_live(ps).any();
     if keep_enhanced {
@@ -6790,12 +6837,24 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 
 /// What the viewer's preference asks of the live route: an Original-family route (Direct or
 /// Remux) is judged as the remux an enhancement would make it; anything else is never offered.
+/// Under a fixed rung nothing is: the enhanced route is an uncapped remux, so wanting it there
+/// would override the bitrate cap the viewer picked (I5) — the quality refresh already queued
+/// rebuilds that route as a capped re-encode without the params.
 fn want_live(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
+    if !enhancement_quality() {
+        return crate::plex::AudioEnhancements::NONE;
+    }
     let target = match live_family(ps) {
         RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
         RouteFamily::Other => RouteFamily::Other,
     };
     desired_audio(crate::player::audio_enhancements(), enhancements_offered(&facts(ps), target))
+}
+
+/// Whether the quality preference admits an Original-family route at all — Auto (which may run
+/// Original) or Original itself. A fixed rung is a bitrate cap, and the enhanced route is not.
+fn enhancement_quality() -> bool {
+    matches!(quality(), Quality::Auto | Quality::Original)
 }
 
 /// The one shape an enhanced Original takes: a codec-preserving progressive-MKV remux, video
@@ -6827,6 +6886,11 @@ pub(crate) enum EnhancementStep {
 /// candidate (direct, or its plain remux); everything else — including no candidate at all — is
 /// not the enhancement's business.
 pub(crate) fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
+    // Under a fixed rung the rebuild is the quality refresh's own (a capped re-encode, which
+    // drops the params by family); a release to the uncapped candidate would erase that cap.
+    if !enhancement_quality() {
+        return EnhancementStep::NotInvolved;
+    }
     let want = want_live(ps);
     let applied = ps.cur_contract.audio;
     if want.any() && want != applied {

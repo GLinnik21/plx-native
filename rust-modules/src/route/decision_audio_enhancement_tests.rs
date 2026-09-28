@@ -964,3 +964,80 @@ fn transcode_seek_preserves_enhancement_params() {
     assert_eq!(query_param(decisions(&requests)[0], "normalizeLoudness"), Some("1"));
     cleanup(&mut ps);
 }
+
+// ---- review fixes: a fixed rung, and a refused recovery ------------------------------------
+
+/// D1 (I5): a fixed rung picked on an enhanced Original remux is a bitrate cap, and the enhanced
+/// remux is uncapped by definition — the rebuild must honour the ceiling and drop the params, not
+/// keep the enhanced remux and erase the cap the picker now shows.
+#[test]
+fn fixed_quality_pick_on_enhanced_remux_honours_ceiling_drops_params() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
+    set_quality(&mut ps, Quality::P1080);
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    let cap = Quality::P1080.ceiling();
+    assert!(cap.is_some());
+    assert_eq!(ps.cur_contract.ceiling, cap, "the picked cap is what plays");
+    assert!(!ps.cur_contract.remux, "a capped route is a re-encode, not the Original remux");
+    assert_eq!(ps.cur_contract.audio, NONE, "the params never ride a fixed rung");
+    assert_ne!(ps.cur_enhancement, EnhancementOutcome::Applied);
+    assert!(!audio_enhancements_offered_live(&ps));
+    let requests = live.finish();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 1, "{requests:?}");
+    assert!(!d[0].contains("normalizeLoudness"), "{}", d[0]);
+    assert!(query_param(d[0], "maxVideoBitrate").is_some(), "{}", d[0]);
+    cleanup(&mut ps);
+}
+
+/// D2: a server that will not apply the params must not strand Auto on HLS. The recovery
+/// re-decides once as the plain Original the candidate already proved, and records Refused so no
+/// later reconcile asks again this playback.
+fn recovery_enhanced_remux_falls_back(mode: EnhMode, direct: bool) {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(mode);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(direct, a1(), None)), 0);
+    let ticket = worker_ticket();
+    let got = recover_auto_to_original_for(&mut ps, &ticket, 60, RecoveryCause::Automatic);
+    assert_eq!(
+        got,
+        Some(if direct { AutoOriginalReload::Direct } else { AutoOriginalReload::Remux }),
+        "{mode:?} direct={direct}",
+    );
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Refused, "{mode:?} direct={direct}");
+    assert_eq!(ps.cur_contract.audio, NONE);
+    assert!(!ps.url.contains("normalizeLoudness"), "{}", ps.url);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "Refused ends the offer");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), if direct { 1 } else { 2 }, "{requests:?}");
+    assert!(d[0].contains("normalizeLoudness"));
+    if !direct {
+        assert!(!d[1].contains("normalizeLoudness"), "{}", d[1]);
+    }
+    cleanup(&mut ps);
+}
+
+#[test]
+fn recovery_enhanced_remux_refused_falls_back_to_plain_original_refused() {
+    recovery_enhanced_remux_falls_back(EnhMode::Refuse, true);
+    recovery_enhanced_remux_falls_back(EnhMode::Refuse, false);
+}
+
+#[test]
+fn recovery_enhanced_remux_ignored_falls_back_to_plain_original_refused() {
+    recovery_enhanced_remux_falls_back(EnhMode::Ignore, true);
+    recovery_enhanced_remux_falls_back(EnhMode::Ignore, false);
+}
