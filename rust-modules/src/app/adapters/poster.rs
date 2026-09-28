@@ -1427,7 +1427,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
                     .collect(),
             ),
             O::Denied | O::Missing => fan::Members::Final,
-            O::Transport(_) => fan::Members::Transient,
+            O::Transport => fan::Members::Transient,
         }
     }
     fn poster(&mut self, thumb: &str) -> fan::Art {

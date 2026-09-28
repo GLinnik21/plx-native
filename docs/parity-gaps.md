@@ -753,9 +753,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* Confirmed. Crate-wide grep for userRating/user_rating returns nothing; plex/models.rs Metadata (114-187) has no such field; plex/library.rs (all 120 lines) has no /:/rate — its write ops are scrobble (:90), unscrobble (:95) and select_streams (:104). ui/detail.rs has no star widget and ui/icons.rs:13-31 has no star glyph. The Client::put helper does exist and is already exercised (plex/library.rs:109). Auditor's endpoint and targets are right; effort medium is fair (the star leaf in widgets.rs is the bulk, the PUT is trivial).
 
 - **Collections the item belongs to are never shown** — `minor` / `medium`  
-  The official detail page surfaces an item's collections as links into that collection. We retain the Collection[] tags in the Plex data layer but do not yet carry them into detail state or UI.
-  *Where:* rust-modules/src/plex/models.rs (Collection: Vec<Tag>), rust-modules/src/metadata.rs:311, rust-modules/src/ui/detail.rs:1473 (chips in the About block, using the existing widgets::badge) linking to GET /library/collections/{rk}/children  
-  *Verified:* The typed Plex layer now retains member `Collection[]` tags and exposes collection listing/detail/children reads, but metadata.rs Detail still has no collections field and the UI never draws them. The remaining gap is the detail/store/UI wiring, not wire deserialization. Collection tag ids and collection ratingKeys are distinct; the data layer resolves tags to full collection rows by guid, then index/tag id, then exact title.
+  The official detail page surfaces an item's collections as links into that collection.
+  *Where:* rust-modules/src/metadata.rs (`CollectionShelf`, from the member's `collection.related.*` hub), rust-modules/src/screens/detail/collection.rs (the linked shelf heading)
+  *Verified:* Addressed by #205: the detail page's collection shelf links into the collection page. Member `Collection[]` tags are not deserialized — the shelf is fed by the `/related` collection hub, which names the collection by its tag id. Collection tag ids and collection ratingKeys are distinct; the collection store resolves a tag to its full collection row by tag id (`index`), then exact title.
 
 - **Social action row (like, clap-with-count, more)** — `polish` / `medium`  
   Under the reviews the official client shows a circular thumbs-up, a clap reaction with a count, and a "…" button. Nothing equivalent exists.  

@@ -29,7 +29,7 @@ impl CollectionTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CollectionStatus {
     #[default]
     Loading,
@@ -331,7 +331,7 @@ fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Lan
             loop {
                 match client.section_collections(sec, start, PAGE_SIZE as i64) {
                     CollectionOutcome::Ok(page) => {
-                        if let Some(row) = resolve_tag(&page.metadata, tag, "", &name) {
+                        if let Some(row) = resolve_tag(&page.metadata, tag, &name) {
                             let (title, thumb, summary, child_count) = row_header(row);
                             return Landing::Resolved { rk: row.rating_key.clone(), title, thumb, summary, child_count };
                         }
@@ -342,7 +342,7 @@ fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Lan
                     }
                     CollectionOutcome::Denied => return Landing::Denied,
                     CollectionOutcome::Missing => return Landing::Missing,
-                    CollectionOutcome::Transport(_) => return Landing::Transport,
+                    CollectionOutcome::Transport => return Landing::Transport,
                 }
             }
         }
@@ -356,7 +356,7 @@ fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Lan
             },
             CollectionOutcome::Denied => Landing::Denied,
             CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport(_) => Landing::Transport,
+            CollectionOutcome::Transport => Landing::Transport,
         },
         Job::Children { rk, start } => match client.collection_children(&rk, start as i64, PAGE_SIZE as i64) {
             CollectionOutcome::Ok(page) => {
@@ -368,7 +368,7 @@ fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Lan
             }
             CollectionOutcome::Denied => Landing::Denied,
             CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport(_) => Landing::Transport,
+            CollectionOutcome::Transport => Landing::Transport,
         },
     }
 }

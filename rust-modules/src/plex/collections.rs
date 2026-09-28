@@ -8,19 +8,13 @@ use super::client::{Client, JsonStatusOutcome, QueryBuilder};
 use super::models::{MediaContainer, Metadata};
 
 /// A collection read preserves the server answers that collection UI must present distinctly.
+/// Every other failure — no response, an unexpected status, a malformed 2xx body — is one
+/// retryable `Transport`: the page presents them identically.
 pub(crate) enum CollectionOutcome {
     Ok(MediaContainer),
     Denied,
     Missing,
-    Transport(CollectionError),
-}
-
-/// Failures other than the two collection-specific HTTP answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CollectionError {
-    RequestFailed,
-    Http(i32),
-    Malformed,
+    Transport,
 }
 
 impl Client {
@@ -59,9 +53,7 @@ impl Client {
 
     fn collection_get(&self, path: &str) -> CollectionOutcome {
         match self.get_json_status(path) {
-            JsonStatusOutcome::Transport => {
-                CollectionOutcome::Transport(CollectionError::RequestFailed)
-            }
+            JsonStatusOutcome::Transport => CollectionOutcome::Transport,
             JsonStatusOutcome::Response {
                 status: 401 | 403, ..
             } => CollectionOutcome::Denied,
@@ -70,40 +62,25 @@ impl Client {
                 status: 200..=299,
                 parsed: Some(page),
             } => CollectionOutcome::Ok(page),
-            JsonStatusOutcome::Response {
-                status: 200..=299,
-                parsed: None,
-            } => CollectionOutcome::Transport(CollectionError::Malformed),
-            JsonStatusOutcome::Response { status, .. } => {
-                CollectionOutcome::Transport(CollectionError::Http(status))
-            }
+            JsonStatusOutcome::Response { .. } => CollectionOutcome::Transport,
         }
     }
 }
 
 /// Extract the collection rating key from either supported member-listing route.
-pub(crate) fn collection_rk_from_hub_key(key: &str) -> Option<&str> {
+fn collection_rk_from_hub_key(key: &str) -> Option<&str> {
     let path = key.split_once('?').map_or(key, |(path, _)| path);
     let tail = path.strip_prefix("/library/collections/")?;
     let (rating_key, endpoint) = tail.split_once('/')?;
     (!rating_key.is_empty() && matches!(endpoint, "children" | "items")).then_some(rating_key)
 }
 
-/// Resolve a member tag to a full collection row using the strongest live-observed identity first.
-pub(crate) fn resolve_tag<'a>(
-    rows: &'a [Metadata],
-    tag_id: i64,
-    guid: &str,
-    title: &str,
-) -> Option<&'a Metadata> {
-    (!guid.is_empty())
-        .then(|| rows.iter().find(|row| row.guid == guid))
+/// Resolve a member tag to a full collection row: the tag id (a collection row's `index`) first,
+/// then the exact title.
+pub(crate) fn resolve_tag<'a>(rows: &'a [Metadata], tag_id: i64, title: &str) -> Option<&'a Metadata> {
+    (tag_id != 0)
+        .then(|| rows.iter().find(|row| row.index == tag_id))
         .flatten()
-        .or_else(|| {
-            (tag_id != 0)
-                .then(|| rows.iter().find(|row| row.index == tag_id))
-                .flatten()
-        })
         .or_else(|| {
             (!title.is_empty())
                 .then(|| rows.iter().find(|row| row.title == title))
@@ -111,36 +88,18 @@ pub(crate) fn resolve_tag<'a>(
         })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CollectionArt {
-    Custom(String),
-    Composite { rk: String, stamp: String },
-    None,
-}
-
-/// Classify an automatic collection composite separately from an ordinary/custom poster path.
-pub(crate) fn collection_art(thumb: Option<&str>) -> CollectionArt {
-    let Some(thumb) = thumb.filter(|thumb| !thumb.is_empty()) else {
-        return CollectionArt::None;
-    };
+/// The `(ratingKey, stamp)` of an automatic collection composite
+/// (`/library/collections/{rk}/composite/{stamp}`, possibly with a query); `None` for a custom
+/// poster path or no art at all.
+pub(crate) fn composite_parts(thumb: &str) -> Option<(&str, &str)> {
     let path = thumb.split_once('?').map_or(thumb, |(path, _)| path);
-    if let Some(tail) = path.strip_prefix("/library/collections/") {
-        let mut segments = tail.split('/');
-        if let (Some(rk), Some("composite"), Some(stamp), None) = (
-            segments.next(),
-            segments.next(),
-            segments.next(),
-            segments.next(),
-        ) {
-            if !rk.is_empty() && !stamp.is_empty() {
-                return CollectionArt::Composite {
-                    rk: rk.to_string(),
-                    stamp: stamp.to_string(),
-                };
-            }
+    let mut segments = path.strip_prefix("/library/collections/")?.split('/');
+    match (segments.next(), segments.next(), segments.next(), segments.next()) {
+        (Some(rk), Some("composite"), Some(stamp), None) if !rk.is_empty() && !stamp.is_empty() => {
+            Some((rk, stamp))
         }
+        _ => None,
     }
-    CollectionArt::Custom(thumb.to_string())
 }
 
 /// The collection a promoted `custom.collection.{section}.{rk}.{rk}` hub lists, for a linked shelf
@@ -185,12 +144,6 @@ pub(crate) fn related_collection_hub(hub_identifier: &str, key: &str) -> Option<
     Some((section, tag))
 }
 
-pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
-    hub_identifier.starts_with("custom.collection.")
-        || hub_identifier == "collection.related"
-        || hub_identifier.starts_with("collection.related.")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_collection_shapes_parse_with_lenient_numbers_and_member_tags() {
+    fn redacted_collection_shapes_parse_with_lenient_numbers_and_tag_guids() {
         let section = page(br#"{"MediaContainer":{"size":1,"totalSize":"3","offset":0,"Metadata":[
             {"ratingKey":"420","key":"/library/collections/420/children","guid":"collection://fixture-a",
              "type":"collection","title":"Placeholder Collection","subtype":"movie","index":77,
@@ -217,22 +170,12 @@ mod tests {
         assert_eq!((row.child_count, row.updated_at), (3, 1_700_000_000));
         assert_eq!(row.subtype, "movie");
 
-        let member = page(
-            br#"{"MediaContainer":{"Metadata":[{"ratingKey":"900","type":"movie",
-            "title":"Placeholder Movie","Collection":[{"id":77,"filter":"collection=77",
-            "tag":"Placeholder Collection","guid":"collection://fixture-a"}]}]}}"#,
-        );
-        let tag = &member.metadata[0].collection[0];
-        assert_eq!(tag.id, 77);
-        assert_eq!(tag.filter, "collection=77");
-        assert_eq!(tag.guid, "collection://fixture-a");
-
         let odd_guids = page(
-            br#"{"MediaContainer":{"Metadata":[{"Collection":[
+            br#"{"MediaContainer":{"Metadata":[{"Genre":[
             {"tag":"Null guid","guid":null},{"tag":"Numeric guid","guid":42}
             ]}]}}"#,
         );
-        let tags = &odd_guids.metadata[0].collection;
+        let tags = &odd_guids.metadata[0].genre;
         assert_eq!(tags[0].guid, "");
         assert_eq!(tags[1].guid, "42");
 
@@ -265,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn tag_resolution_prefers_guid_then_index_then_exact_title() {
+    fn tag_resolution_prefers_index_then_exact_title() {
         let rows = page(
             br#"{"MediaContainer":{"Metadata":[
             {"title":"Title Match","guid":"collection://wrong","index":5},
@@ -274,45 +217,25 @@ mod tests {
         )
         .metadata;
         assert_eq!(
-            resolve_tag(&rows, 77, "collection://right", "Title Match")
-                .unwrap()
-                .title,
-            "Other"
-        );
-        assert_eq!(
-            resolve_tag(&rows, 77, "", "Title Match").unwrap().title,
+            resolve_tag(&rows, 77, "Title Match").unwrap().title,
             "Index Match"
         );
         assert_eq!(
-            resolve_tag(&rows, 99, "", "Title Match").unwrap().title,
+            resolve_tag(&rows, 99, "Title Match").unwrap().title,
             "Title Match"
         );
-        assert!(resolve_tag(&rows, 99, "", "Missing").is_none());
+        assert!(resolve_tag(&rows, 99, "Missing").is_none());
     }
 
     #[test]
     fn art_distinguishes_composites_custom_paths_and_absence() {
-        assert_eq!(collection_art(None), CollectionArt::None);
-        assert_eq!(collection_art(Some("")), CollectionArt::None);
+        assert_eq!(composite_parts(""), None);
         assert_eq!(
-            collection_art(Some("/library/collections/420/composite/1700?width=400")),
-            CollectionArt::Composite {
-                rk: "420".into(),
-                stamp: "1700".into()
-            }
+            composite_parts("/library/collections/420/composite/1700?width=400"),
+            Some(("420", "1700"))
         );
-        assert_eq!(
-            collection_art(Some("/library/metadata/420/thumb/1700")),
-            CollectionArt::Custom("/library/metadata/420/thumb/1700".into())
-        );
-    }
-
-    #[test]
-    fn recognizes_promoted_and_related_collection_hubs() {
-        assert!(is_collection_hub("custom.collection.1.420.420"));
-        assert!(is_collection_hub("collection.related"));
-        assert!(is_collection_hub("collection.related.1.1"));
-        assert!(!is_collection_hub("movie.similar"));
+        assert_eq!(composite_parts("/library/metadata/420/thumb/1700"), None);
+        assert_eq!(composite_parts("/library/collections/420/composite/1700/x"), None);
     }
 
     #[test]

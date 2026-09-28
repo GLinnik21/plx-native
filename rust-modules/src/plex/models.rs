@@ -370,8 +370,6 @@ pub struct Metadata {
     pub writer: Vec<Tag>,
     #[serde(rename = "Role", default)]
     pub role: Vec<Tag>,
-    #[serde(rename = "Collection", default)]
-    pub collection: Vec<Tag>,
     #[serde(rename = "Chapter", default)]
     pub chapter: Vec<Chapter>,
     #[serde(rename = "Marker", default)]

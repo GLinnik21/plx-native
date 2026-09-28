@@ -12,11 +12,11 @@
 //! and never become GL textures. A warm disk hit decodes the baked PNG and fetches nothing.
 //!
 //! A custom poster (`/library/metadata/{rk}/thumb/…`) is untouched: only a path that
-//! [`crate::plex::collections::collection_art`] classifies as a composite is rerouted, at key
+//! [`crate::plex::collections::composite_parts`] reads as a composite is rerouted, at key
 //! build time, to the synthetic `/plx/fan/{rk}/{stamp}` key this module parses back. The server's
 //! composite is never a fallback: no usable member art is [`FanOutcome::NoArt`].
 
-use crate::plex::collections::{collection_art, CollectionArt};
+use crate::plex::collections::composite_parts;
 
 /// The store key prefix of a baked fan. Not a server path: the worker recognises it before any
 /// request is built, and it carries no token by construction.
@@ -35,10 +35,7 @@ pub(super) const FAN_KIND: &str = "fan.1";
 
 /// The store key for a thumb that is a server composite; `None` for every other path.
 pub(super) fn fan_key(thumb: &str) -> Option<String> {
-    match collection_art(Some(thumb)) {
-        CollectionArt::Composite { rk, stamp } => Some(format!("{FAN_PREFIX}{rk}/{stamp}")),
-        CollectionArt::Custom(_) | CollectionArt::None => None,
-    }
+    composite_parts(thumb).map(|(rk, stamp)| format!("{FAN_PREFIX}{rk}/{stamp}"))
 }
 
 /// `(ratingKey, stamp)` back out of a [`fan_key`].
