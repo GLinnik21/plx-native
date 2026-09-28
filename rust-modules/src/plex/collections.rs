@@ -143,6 +143,23 @@ pub(crate) fn collection_art(thumb: Option<&str>) -> CollectionArt {
     CollectionArt::Custom(thumb.to_string())
 }
 
+/// The collection a promoted `custom.collection.{section}.{rk}.{rk}` hub lists, for a linked shelf
+/// heading: `(section, ratingKey)`. The rating key comes from the hub's listing `key`
+/// (`/library/collections/{rk}/children`) and falls back to the identifier's own segment; the
+/// section is the identifier's first segment (0 when it does not parse). `collection.related` hubs
+/// answer `None` — they are keyed by TAG id and a Detail page resolves them through the store.
+pub(crate) fn promoted_collection_hub<'a>(
+    hub_identifier: &'a str,
+    key: &'a str,
+) -> Option<(i64, &'a str)> {
+    let tail = hub_identifier.strip_prefix("custom.collection.")?;
+    let mut segments = tail.split('.');
+    let section = segments.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let rk = collection_rk_from_hub_key(key)
+        .or_else(|| segments.next().filter(|rk| !rk.is_empty()))?;
+    Some((section, rk))
+}
+
 pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
     hub_identifier.starts_with("custom.collection.")
         || hub_identifier == "collection.related"
@@ -271,6 +288,28 @@ mod tests {
         assert!(is_collection_hub("collection.related"));
         assert!(is_collection_hub("collection.related.1.1"));
         assert!(!is_collection_hub("movie.similar"));
+    }
+
+    #[test]
+    fn a_promoted_collection_hub_names_its_section_and_rating_key() {
+        assert_eq!(
+            promoted_collection_hub(
+                "custom.collection.1.420.420",
+                "/library/collections/420/children"
+            ),
+            Some((1, "420"))
+        );
+        assert_eq!(
+            promoted_collection_hub("custom.collection.2.77.77", ""),
+            Some((2, "77")),
+            "an absent key falls back to the identifier's own rating key"
+        );
+        assert_eq!(
+            promoted_collection_hub("collection.related.1.1", "/library/sections/1/all?tagId=9"),
+            None,
+            "a related hub is tag-keyed and is resolved by the collection store"
+        );
+        assert_eq!(promoted_collection_hub("movie.recentlyadded.1", "/x"), None);
     }
 
     // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a

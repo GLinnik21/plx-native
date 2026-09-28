@@ -90,6 +90,9 @@ pub(crate) struct Shelf {
     /// rows, which rotate their subject on every call (§3a) — anything remembering a position by
     /// it owes a fallback for an id that is simply not there any more.
     pub(crate) id: String,
+    /// The hub's provider listing `key`, verbatim. A promoted `custom.collection.*` shelf's key is
+    /// `/library/collections/{rk}/children` — the collection its linked heading opens.
+    pub(crate) key: String,
     pub(crate) title: String,
     /// A Continue Watching row scoped to this section. **Not `home.continue`**, which is
     /// `pms`'s whole-server id and does not appear here — see [`shelf_is_continue`].
@@ -626,6 +629,19 @@ pub(crate) fn seed_shelves_for_owner_test(
     titles: &[&str],
     per_row: usize,
 ) {
+    let rows: Vec<_> = titles.iter().map(|title| (*title, "", *title)).collect();
+    seed_named_shelves_for_owner_test(state, sec, &rows, per_row);
+}
+
+/// [`seed_shelves_for_owner_test`] with each shelf's `(hubIdentifier, key, title)` named — a
+/// promoted collection shelf needs its identifier and listing key.
+#[cfg(test)]
+pub(crate) fn seed_named_shelves_for_owner_test(
+    state: &mut super::BrowseState,
+    sec: usize,
+    rows: &[(&str, &str, &str)],
+    per_row: usize,
+) {
     let Some(st) = state.state_mut(sec) else {
         return;
     };
@@ -635,16 +651,17 @@ pub(crate) fn seed_shelves_for_owner_test(
     };
     st.hubs.armed = true;
     st.hubs.land_ok(
-        titles
+        rows
             .iter()
-            .map(|title| Shelf {
-                id: (*title).into(),
+            .map(|(id, key, title)| Shelf {
+                id: (*id).into(),
+                key: (*key).into(),
                 title: (*title).into(),
-                is_continue: shelf_is_continue(title, ""),
+                is_continue: shelf_is_continue(id, key),
                 landscape: false,
                 items: (0..per_row)
                     .map(|index| PmsMovie {
-                        rk: format!("{title}-{index}"),
+                        rk: format!("{id}-{index}"),
                         title: format!("{title} {index}"),
                         ..Default::default()
                     })
@@ -743,6 +760,7 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId) -> Vec
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
             id: hub.hub_identifier.clone(),
+            key: hub.key.clone(),
             title: hub.title.clone(),
             items,
         });
@@ -1043,6 +1061,8 @@ mod tests {
         let shelves = parse_hubs(&container(json), ServerId::from_raw(0));
         assert_eq!(shelves.len(), 1, "a collection row must not become a movie card");
         assert_eq!(shelves[0].id, "custom.collection.1.50001.50001");
+        assert_eq!(shelves[0].key, "/library/collections/50001/children",
+            "a collection shelf keeps the listing key its linked heading opens");
         assert_eq!(shelves[0].items.len(), 1);
         assert_eq!(shelves[0].items[0].rk, "11");
         assert_eq!(shelves[0].items[0].kind, 0);

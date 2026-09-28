@@ -155,3 +155,9 @@ change shape (`LibraryType{code:u32}`, `LibraryLayout{…empty:bool…}`). The p
 observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three, both
 modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
 `5354288741423994209` and passed Targets and Resolve with zero difference counters.
+
+The linked collection shelves on Home and the Library (#205) give a Library section-hub shelf an
+optional heading group, which moves the screen census. The prior anchors were observed being
+refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
+three were re-recorded with `tools/plxnative-rec rerecord` against shape `2955617958233795258`
+and passed Targets and Resolve with zero difference counters.

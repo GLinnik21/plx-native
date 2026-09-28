@@ -1281,7 +1281,7 @@ impl PersonScreen {
             // `MARGIN_X`, which is the pre-phase-7 regression `entry_rect`'s doc explains.
             let entry = LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or(""));
             let measured = entry.measure(measure);
-            entry.draw(p, col_x_, y, f32::from(focus_elem == Some(ENTRY_ELEM)), &measured);
+            entry.draw(p, col_x_, y, f32::from(focus_elem == Some(ENTRY_ELEM)), &measured, measure);
         }
     }
 
