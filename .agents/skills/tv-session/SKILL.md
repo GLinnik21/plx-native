@@ -120,8 +120,8 @@ you want both the Movies and Shows shelves populated.
 Three builds live on this television. **stable** is `com.beb.plxnative`, the app the household
 watches with; **debug** is `com.beb.plxnative.debug`, the developer build beside it, with its own
 launcher tile (amber DEV bar), its own sign-in and its own runtime files; **nightly** is
-`com.beb.plxnative.nightly`, its own install beside the other two with its own runtime root and
-crash log. webOS keys the install directory, SAM's `launch`/`closeByAppId` and the LS2 role file on
+`com.beb.plxnative.nightly`, its own install beside the other two with its own launcher tile
+(grey NIGHTLY bar), runtime root and crash log. webOS keys the install directory, SAM's `launch`/`closeByAppId` and the LS2 role file on
 that id, so none of the three can touch each other. **`debug` is the default**, deliberately:
 deploying to `debug` when you meant `stable` costs you retyping one command, while the reverse
 destroys a working install — possibly mid-film — on the app somebody actually watches with. So

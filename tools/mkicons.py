@@ -3,6 +3,8 @@
 
     python3 tools/mkicons.py assets/logo-master.png [--band=N] [--splash=assets/splash-master.png]
     python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/dev --sizes=80,130 --badge=DEV
+    python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/nightly --sizes=80,130 \
+        --badge=NIGHTLY --badge-fill=#cdd3dd
 
 Emits `pkg/icon.png` (80), `pkg/largeIcon.png` (130) and, for the webosbrew channel listing,
 `pkg/icon160.png` / `pkg/icon320.png`. With `--splash` it also emits `pkg/splash.png` at exactly

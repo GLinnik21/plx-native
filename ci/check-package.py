@@ -1378,21 +1378,24 @@ if corner is not None:
 
 check(png_size(PAYLOAD / "splash.png") == (1920, 1080),
       "splash.png is exactly 1920x1080 (splashBackground accepts no other size)")
-# The badged set is a tracked artwork source (`tools/mkicons.py --out-dir=pkg/dev --badge=DEV`), so
-# it is graded whether or not this run happens to be packaging it — otherwise a regression in it
-# would only ever be found by whoever next built a debug package.
-if (ROOT / "pkg/dev").is_dir():
-    check(png_size(ROOT / "pkg/dev/icon.png") == (80, 80), "pkg/dev/icon.png is 80x80")
-    check(png_size(ROOT / "pkg/dev/largeIcon.png") == (130, 130), "pkg/dev/largeIcon.png is 130x130")
+# The badged sets are tracked artwork sources (`tools/mkicons.py --out-dir=pkg/dev --badge=DEV`,
+# `--out-dir=pkg/nightly --badge=NIGHTLY`), so they are graded whether or not this run happens to be
+# packaging them — otherwise a regression in one would only ever be found by whoever next built
+# that flavour's package.
+for badged in ("pkg/dev", "pkg/nightly"):
+    if not (ROOT / badged).is_dir():
+        continue
+    check(png_size(ROOT / badged / "icon.png") == (80, 80), f"{badged}/icon.png is 80x80")
+    check(png_size(ROOT / badged / "largeIcon.png") == (130, 130), f"{badged}/largeIcon.png is 130x130")
     if corner is not None:
         # Same rule as above, and the same failure it prevents: iconColor paints the launcher tile
         # BEHIND the icon, so a badge that changed the tile's own background without moving
         # iconColor would draw the debug icon as a hard-edged rectangle in a differently-coloured
         # tile. The badge is a BOTTOM bar for this reason — pixel (1,1) is untouched, so one
         # iconColor stays correct for both flavours.
-        dbg_corner = Image.open(ROOT / "pkg/dev/largeIcon.png").convert("RGB").getpixel((1, 1))
+        dbg_corner = Image.open(ROOT / badged / "largeIcon.png").convert("RGB").getpixel((1, 1))
         check(max(abs(a - b) for a, b in zip(dbg_corner, declared)) <= 2,
-              f"the badged tile keeps iconColor {appinfo['iconColor']} at its corner rgb{dbg_corner}")
+              f"{badged}'s badged tile keeps iconColor {appinfo['iconColor']} at its corner rgb{dbg_corner}")
 check(appinfo.get("splashBackground") == "splash.png",
       "appinfo declares splashBackground: splash.png")
 

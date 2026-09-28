@@ -1475,6 +1475,15 @@ tracked, cut from the SAME master by the same script:
 python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/dev --sizes=80,130 --badge=DEV
 ```
 
+The nightly install (`com.beb.plxnative.nightly`) is a third tile beside both, so it wears its own
+set, `pkg/nightly/`, in the palette's cool grey (`COOL_200`, `#cdd3dd`) with the derived dark ink —
+cut the same way:
+
+```sh
+python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/nightly --sizes=80,130 \
+  --badge=NIGHTLY --badge-fill=#cdd3dd
+```
+
 The badge is a **full-bleed bottom bar** — amber (`theme::RESUME_FILL` over `AMBER_950` ink, the
 design system's own filled-control pair, so it is on-brand while being the one thing on the tile
 that could not be mistaken for the release artwork). Both halves of "full-bleed bottom bar" are
@@ -1488,7 +1497,7 @@ load-bearing rather than taste:
   corner alone, so **one `iconColor` stays correct for both flavours and the badge needs no
   descriptor change at all**. That is why the flavour transform moves only `id` and `title`. It is
   enforced, not merely documented: `check-package.py` runs the same pixel-(1,1)-within-2-levels test
-  a second time against `pkg/dev/largeIcon.png`, so a badge that creeps into the corner fails the
+  again against `pkg/dev/largeIcon.png` and `pkg/nightly/largeIcon.png`, so a badge that creeps into the corner fails the
   package rather than shipping a hard-edged rectangle in a differently-coloured tile.
 - **A bar, not a whole-tile tint.** Tinting means moving `iconColor` in lockstep — or reproducing
   exactly the defect above — and it stops looking like the product.

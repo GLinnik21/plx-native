@@ -897,7 +897,10 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # is read FROM and never in the name it is packaged UNDER. (A `pkg/appinfo.debug.json` would ship
 # under that name and fail an otherwise correct package.)
 APPINFO   = $(if $(filter stable,$(FLAVOR)),pkg/appinfo.json,pkg/.flavor/$(FLAVOR)/appinfo.json)
-ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/dev/icon.png pkg/dev/largeIcon.png)
+# Each non-stable flavour wears its OWN badge — `pkg/dev/` (amber DEV) for debug, `pkg/nightly/`
+# (grey NIGHTLY) for nightly — because all three tiles sit side by side in one launcher.
+ICONDIR   = $(if $(filter nightly,$(FLAVOR)),pkg/nightly,pkg/dev)
+ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,$(ICONDIR)/icon.png $(ICONDIR)/largeIcon.png)
 # `pkg/lab.json` is in this list ONLY under LAB=1, and it is the whole handoff between the two
 # halves of the Cloud Lab bridge: `tools/plxnative-lab start` writes it (endpoint, session,
 # secret, certificate pin), and the app reads it out of its own install directory at boot, because

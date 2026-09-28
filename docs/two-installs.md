@@ -42,7 +42,7 @@ So: two ids, two installs, two tiles.
 | runtime root | `/tmp` | `/tmp/com.beb.plxnative.debug` |
 | session file | `/media/developer/com.beb.plxnative-auth.json` | `/media/developer/com.beb.plxnative.debug-auth.json` |
 | launcher title | `PlxNative` | `PlxNative debug` |
-| launcher artwork | `pkg/icon.png` | `pkg/dev/icon.png` (amber DEV bar) |
+| launcher artwork | `pkg/icon.png` | `pkg/dev/icon.png` (amber DEV bar; nightly: `pkg/nightly/`, grey NIGHTLY bar) |
 | plex.tv device name | `PlxNative (LG TV)` | `PlxNative debug (LG TV)` |
 
 **`FLAVOR ?= debug`, in the tracked Makefile.** The asymmetry is deliberate and it is the whole
