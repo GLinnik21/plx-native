@@ -1383,7 +1383,8 @@ video::-webkit-media-controls-start-playback-button {
   padding: clamp(40px, 5.5vh, 60px) 0 clamp(44px, 6vh, 68px);
   box-shadow: inset 0 1px 0 var(--hairline);
 }
-.quote-section > .kicker {
+.quote-section > .kicker,
+.press-section > .kicker {
   font-size: 14px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -1434,18 +1435,36 @@ video::-webkit-media-controls-start-playback-button {
 }
 /* Quotes are read, not pressed: no pill outlines or chip fills. The longer
    excerpts are quote blocks set off by a quiet rule; the short ones float
-   below them as plain fragments on uneven baselines. */
+   below them as plain fragments on uneven baselines. Each links to where it
+   was said, with its source and TV underneath. */
 .quote-lg,
 .quote-sm {
+  display: block;
   text-wrap: pretty;
+  transition: color 200ms ease;
 }
-.quote-lg::before,
-.quote-sm::before {
+.quote-text::before {
   content: "\201C";
 }
-.quote-lg::after,
-.quote-sm::after {
+.quote-text::after {
   content: "\201D";
+}
+.quote-source {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  transition: color 200ms ease;
+}
+.quote-lg:hover,
+.quote-sm:hover {
+  color: var(--text-primary);
+}
+.quote-lg:hover .quote-source,
+.quote-sm:hover .quote-source {
+  color: var(--text-secondary);
 }
 .quote-lg {
   grid-column: span 3;
@@ -1470,9 +1489,10 @@ video::-webkit-media-controls-start-playback-button {
   margin-top: 30px;
   justify-self: center;
 }
+/* No sideways offset: with sources under them the short quotes are wide
+   enough that pulling one into the gutter crowded its neighbour. */
 .quote-cloud > .quote-sm:nth-child(6) {
   margin-top: 18px;
-  margin-left: calc(-1 * clamp(0px, 3.4vw, 48px));
 }
 .quote-caption {
   font-size: 14px;
@@ -1486,6 +1506,48 @@ video::-webkit-media-controls-start-playback-button {
   color: var(--text-secondary);
 }
 .quote-caption a:hover {
+  color: var(--text-primary);
+}
+
+/* ---------- Press ---------- */
+/* Kept apart from the community quotes: press is not a user testimonial. The
+   outlet is set in type, not its logo. */
+.press-section {
+  padding: clamp(36px, 5vh, 56px) 0 clamp(40px, 5.5vh, 64px);
+  box-shadow: inset 0 1px 0 var(--hairline);
+}
+.press-section > .kicker {
+  margin-bottom: clamp(20px, 3vh, 28px);
+}
+.press-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 820px;
+}
+.press-outlet {
+  font-size: clamp(17px, 1.6vw, 20px);
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-secondary);
+}
+.press-headline {
+  font-size: clamp(22px, 2.8vw, 34px);
+  line-height: 1.2;
+  letter-spacing: -0.8px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-wrap: pretty;
+}
+.press-link {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  transition: color 200ms ease;
+}
+.press-item:hover .press-link {
   color: var(--text-primary);
 }
 
@@ -2194,9 +2256,6 @@ video::-webkit-media-controls-start-playback-button {
   }
   .quote-sm {
     font-size: 16px;
-  }
-  .quote-cloud > .quote-sm:nth-child(6) {
-    margin-left: 0;
   }
   .quote-lead {
     margin-bottom: 18px;
