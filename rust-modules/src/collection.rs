@@ -194,19 +194,14 @@ impl CollectionState {
     fn apply(&mut self, landing: Landing) -> bool {
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
-            Landing::Resolved { rk, title, thumb, summary, child_count } => {
-                c.id.rk = rk;
-                if !title.is_empty() { c.title = title; }
-                c.thumb = thumb;
-                c.summary = summary;
-                c.child_count = child_count;
-                true
-            }
-            Landing::Header { title, thumb, summary, child_count } => {
-                if !title.is_empty() { c.title = title; }
-                c.thumb = thumb;
-                c.summary = summary;
-                c.child_count = child_count;
+            Landing::Header { rk, head } => {
+                // A tag route's resolution arrives with the row it was resolved from, which IS the
+                // header: no second GET for the same fields.
+                if let Some(rk) = rk { c.id.rk = rk; }
+                if !head.title.is_empty() { c.title = head.title; }
+                c.thumb = head.thumb;
+                c.summary = head.summary;
+                c.child_count = head.child_count;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
                 true
@@ -273,10 +268,21 @@ enum Job {
     Children { rk: String, start: usize },
 }
 
+/// A collection row's header fields, as both the tag resolution and the metadata GET read them.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Header { title: String, thumb: String, summary: String, child_count: usize }
+
+impl Header {
+    fn of(row: &crate::plex::Metadata) -> Self {
+        Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
+            child_count: row.child_count.max(0) as usize }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum Landing {
-    Resolved { rk: String, title: String, thumb: String, summary: String, child_count: usize },
-    Header { title: String, thumb: String, summary: String, child_count: usize },
+    /// The collection's header; `rk` is `Some` when it answers a tag route's resolution.
+    Header { rk: Option<String>, head: Header },
     /// `got` is the server rows this page consumed; `items` only the listable ones among them.
     Page { start: usize, got: usize, items: Vec<PmsMovie>, total: usize },
     Denied,
@@ -298,57 +304,50 @@ pub(crate) fn member(row: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
     item
 }
 
-fn row_header(row: &crate::plex::Metadata) -> (String, String, String, usize) {
-    (row.title.clone(), row.thumb.clone(), row.summary.clone(), row.child_count.max(0) as usize)
+/// A read's page, or the landing its failure is: the one mapping of the server's non-page answers.
+fn answered(outcome: CollectionOutcome) -> Result<crate::plex::MediaContainer, Landing> {
+    match outcome {
+        CollectionOutcome::Ok(page) => Ok(page),
+        CollectionOutcome::Denied => Err(Landing::Denied),
+        CollectionOutcome::Missing => Err(Landing::Missing),
+        CollectionOutcome::Transport => Err(Landing::Transport),
+    }
 }
 
 fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Landing {
-    match job {
-        Job::Resolve { sec, tag, name } => {
-            let mut start = 0i64;
-            loop {
-                match client.section_collections(sec, start, PAGE_SIZE as i64) {
-                    CollectionOutcome::Ok(page) => {
-                        if let Some(row) = resolve_tag(&page.metadata, tag, &name) {
-                            let (title, thumb, summary, child_count) = row_header(row);
-                            return Landing::Resolved { rk: row.rating_key.clone(), title, thumb, summary, child_count };
-                        }
-                        let got = page.metadata.len() as i64;
-                        let total = page.total_size.max(page.size).max(0);
-                        if got == 0 || start + got >= total { return Landing::Missing; }
-                        start += got;
+    let run = || -> Result<Landing, Landing> {
+        Ok(match job {
+            Job::Resolve { sec, tag, name } => {
+                let mut start = 0i64;
+                loop {
+                    let page = answered(client.section_collections(sec, start, PAGE_SIZE as i64))?;
+                    if let Some(row) = resolve_tag(&page.metadata, tag, &name) {
+                        break Landing::Header { rk: Some(row.rating_key.clone()), head: Header::of(row) };
                     }
-                    CollectionOutcome::Denied => return Landing::Denied,
-                    CollectionOutcome::Missing => return Landing::Missing,
-                    CollectionOutcome::Transport => return Landing::Transport,
+                    let got = page.metadata.len() as i64;
+                    let total = page.total_size.max(page.size).max(0);
+                    if got == 0 || start + got >= total { break Landing::Missing; }
+                    start += got;
                 }
             }
-        }
-        Job::Header { rk } => match client.collection(&rk) {
-            CollectionOutcome::Ok(page) => match page.metadata.first() {
-                Some(row) => {
-                    let (title, thumb, summary, child_count) = row_header(row);
-                    Landing::Header { title, thumb, summary, child_count }
-                }
-                None => Landing::Missing,
-            },
-            CollectionOutcome::Denied => Landing::Denied,
-            CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport => Landing::Transport,
-        },
-        Job::Children { rk, start } => match client.collection_children(&rk, start as i64, PAGE_SIZE as i64) {
-            CollectionOutcome::Ok(page) => {
+            Job::Header { rk } => answered(client.collection(&rk))?.metadata.first()
+                .map_or(Landing::Missing, |row| Landing::Header { rk: None, head: Header::of(row) }),
+            Job::Children { rk, start } => {
+                let page = answered(client.collection_children(&rk, start as i64, PAGE_SIZE as i64))?;
                 let total = page.total_size.max(page.size).max(0) as usize;
                 let got = page.metadata.len();
                 let items = page.metadata.iter().filter(|row| crate::pms::listable(&row.kind))
                     .map(|row| member(row, sid)).collect();
                 Landing::Page { start, got, items, total }
             }
-            CollectionOutcome::Denied => Landing::Denied,
-            CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport => Landing::Transport,
-        },
-    }
+        })
+    };
+    run().unwrap_or_else(|failed| failed)
+}
+
+#[cfg(test)]
+fn header(title: &str, child_count: usize) -> Header {
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -405,8 +404,7 @@ impl CollectionAdapter {
 
     #[cfg(test)]
     pub(crate) fn land_resolved_for_test(&self, generation: u32, rk: &str) {
-        self.land(generation, Landing::Resolved { rk: rk.into(), title: "Resolved".into(),
-            thumb: String::new(), summary: String::new(), child_count: 0 });
+        self.land(generation, Landing::Header { rk: Some(rk.into()), head: header("Resolved", 0) });
     }
 
 
@@ -453,8 +451,7 @@ mod tests {
         state.run(&adapter, CollectionCmd::Open { target: target.clone() });
         assert!(matches!(state.job(), Some(Job::Header { .. })));
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
-            summary: String::new(), child_count: 130 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })));
         let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
@@ -483,8 +480,7 @@ mod tests {
         let mut state = CollectionState::default();
         state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
-            summary: String::new(), child_count: 130 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         let listed = (0..PAGE_SIZE - 5).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
         adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: listed, total: 130 });
@@ -498,14 +494,29 @@ mod tests {
         let mut state = CollectionState::default();
         state.run(&adapter, CollectionCmd::Open { target: set_target("50002", 8, "Clips") });
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Clips".into(), thumb: String::new(),
-            summary: String::new(), child_count: 3 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Clips", 3) });
         assert!(state.take_landing_for_test(&adapter));
         adapter.land(generation, Landing::Page { start: 0, got: 3, items: Vec::new(), total: 3 });
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
         assert_eq!((c.status, c.more), (CollectionStatus::Empty, false));
         assert!(state.job().is_none());
+    }
+
+    /// A tag route resolves from the section's collection listing, whose row IS the collection's
+    /// header — the resolution lands it, so the next job is the first page, not a second GET of
+    /// `/library/metadata/{rk}` for the same fields.
+    #[test]
+    fn a_tag_resolution_lands_the_header_and_pages_next() {
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("", 7, "Set") });
+        assert!(matches!(state.job(), Some(Job::Resolve { tag: 7, .. })));
+        adapter.land_resolved_for_test(state.generation(), "50007");
+        assert!(state.take_landing_for_test(&adapter));
+        let c = state.view().current().unwrap();
+        assert_eq!((c.id.rk.as_str(), c.title.as_str()), ("50007", "Resolved"));
+        assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })), "no second header request");
     }
 
     #[test]
