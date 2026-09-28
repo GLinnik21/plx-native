@@ -286,9 +286,9 @@ impl SearchScreen {
                         sid: hit.item.sid, rk: hit.item.rk.clone(), tag: hit.tag })));
                 }
                 Item::Tag(tag) if row.kind == Kind::Collection => {
-                    if let Some(crate::screens::registry::ContentArg::Collection { sid, tag, .. }) = tag.collection_route() {
+                    if let Some(crate::screens::registry::ContentArg::Collection(id)) = tag.collection_route() {
                         self.remember(fx);
-                        fx.push(Fx::App(AppFx::Search(SearchReq::Collection { sid, rk: String::new(), tag })));
+                        fx.push(Fx::App(AppFx::Search(SearchReq::Collection { sid: id.sid, rk: String::new(), tag: id.tag })));
                     }
                 }
                 Item::Tag(tag) if row.kind == Kind::Person && !held => {

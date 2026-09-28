@@ -705,7 +705,7 @@ fn search_target(item: &crate::search::Item, request: &crate::screens::registry:
             Some(AppArg::Content(hit.route())),
         (crate::search::Item::Tag(item), SearchReq::Collection { sid, rk, tag }) if rk.is_empty() =>
             item.collection_route().filter(|route| matches!(route,
-                ContentArg::Collection { sid: s, tag: t, .. } if s == sid && t == tag))
+                ContentArg::Collection(id) if id.sid == *sid && id.tag == *tag))
                 .map(AppArg::Content),
         _ => None,
     }
@@ -796,16 +796,16 @@ mod search_action_tests {
                 kind: crate::pms::KIND_COLLECTION, ..Default::default() },
             tag: 7 });
         let req = |sid, rk: &str, tag| SearchReq::Collection { sid, rk: rk.into(), tag };
-        assert!(search_target(&hit, &req(a, "50007", 7)) == Some(AppArg::Content(ContentArg::Collection {
-            sid: a, rk: "50007".into(), sec: 1, tag: 7, name: "Shorts".into() })));
+        assert!(search_target(&hit, &req(a, "50007", 7)) == Some(AppArg::Content(ContentArg::Collection(
+            crate::plex::collections::CollectionRef { sid: a, rk: "50007".into(), sec: 1, tag: 7, name: "Shorts".into() }))));
         assert!(search_target(&hit, &req(b, "50007", 7)).is_none(), "another server's key");
         assert!(search_target(&hit, &req(a, "50008", 7)).is_none(), "a stale selection");
         assert!(search_target(&hit, &SearchReq::Detail { sid: a, rk: "50007".into() }).is_none(),
             "a collection never opens as an item detail");
         // the tag-shaped fallback: no ratingKey, resolved on the page by section + tag id
         let tag = Item::Tag(TagHit { sid: a, id: "7".into(), sec: 1, name: "Shorts".into(), ..Default::default() });
-        assert!(search_target(&tag, &req(a, "", 7)) == Some(AppArg::Content(ContentArg::Collection {
-            sid: a, rk: String::new(), sec: 1, tag: 7, name: "Shorts".into() })));
+        assert!(search_target(&tag, &req(a, "", 7)) == Some(AppArg::Content(ContentArg::Collection(
+            crate::plex::collections::CollectionRef::by_tag(a, 1, 7, "Shorts")))));
         assert!(search_target(&tag, &req(a, "", 8)).is_none());
         crate::plex::reset_servers_for_test();
     }

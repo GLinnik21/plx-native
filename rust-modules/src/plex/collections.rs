@@ -6,6 +6,52 @@
 
 use super::client::{Client, JsonStatusOutcome, QueryBuilder};
 use super::models::{MediaContainer, Metadata};
+use super::ServerId;
+
+/// One collection as a link names it: by `rk` (its ratingKey) when the link carries one, else by
+/// `sec` + `tag` (the member-tag id space) for the collection store to resolve against the
+/// section's collection listing. `name` is the title shown until the collection's own metadata
+/// lands — it is never identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CollectionRef {
+    pub(crate) sid: ServerId,
+    pub(crate) rk: String,
+    pub(crate) sec: i64,
+    pub(crate) tag: i64,
+    pub(crate) name: String,
+}
+
+impl CollectionRef {
+    /// A link that knows the collection's ratingKey (a promoted shelf, a library tile).
+    pub(crate) fn by_rk(sid: ServerId, rk: &str, sec: i64, name: &str) -> Self {
+        Self { sid, rk: rk.to_owned(), sec, tag: 0, name: name.to_owned() }
+    }
+
+    /// A link that knows only the collection's tag id within a section (a member's
+    /// `collection.related` hub, a tag-shaped search hit).
+    pub(crate) fn by_tag(sid: ServerId, sec: i64, tag: i64, name: &str) -> Self {
+        Self { sid, rk: String::new(), sec, tag, name: name.to_owned() }
+    }
+
+    /// THE collection identity rule. Two ratingKeys compare when both sides carry one; otherwise
+    /// the server, section and a non-zero tag id must all agree. A ratingKey is never compared
+    /// with a tag id, and a zero tag names nothing.
+    pub(crate) fn same_collection(&self, other: &Self) -> bool {
+        if self.sid != other.sid {
+            return false;
+        }
+        if !self.rk.is_empty() && !other.rk.is_empty() {
+            self.rk == other.rk
+        } else {
+            self.sec == other.sec && self.tag != 0 && self.tag == other.tag
+        }
+    }
+
+    /// Names no collection at all — neither a ratingKey nor a tag to resolve.
+    pub(crate) fn is_identityless(&self) -> bool {
+        self.rk.is_empty() && self.tag == 0
+    }
+}
 
 /// A collection read preserves the server answers that collection UI must present distinctly.
 /// Every other failure — no response, an unexpected status, a malformed 2xx body — is one
@@ -107,7 +153,7 @@ pub(crate) fn composite_parts(thumb: &str) -> Option<(&str, &str)> {
 /// (`/library/collections/{rk}/children`) and falls back to the identifier's own segment; the
 /// section is the identifier's first segment (0 when it does not parse). `collection.related` hubs
 /// answer `None` — they are keyed by TAG id and a Detail page resolves them through the store.
-pub(crate) fn promoted_collection_hub<'a>(
+fn promoted_collection_hub<'a>(
     hub_identifier: &'a str,
     key: &'a str,
 ) -> Option<(i64, &'a str)> {
@@ -117,6 +163,20 @@ pub(crate) fn promoted_collection_hub<'a>(
     let rk = collection_rk_from_hub_key(key)
         .or_else(|| segments.next().filter(|rk| !rk.is_empty()))?;
     Some((section, rk))
+}
+
+/// Where a promoted collection shelf's linked heading leads: the collection its hub lists, titled
+/// with the shelf's heading. `section` is the section the shelf was published under, used when the
+/// identifier's own section segment does not parse. `None` for every other hub.
+pub(crate) fn promoted_collection_link(
+    sid: ServerId,
+    hub_identifier: &str,
+    key: &str,
+    title: &str,
+    section: i64,
+) -> Option<CollectionRef> {
+    let (sec, rk) = promoted_collection_hub(hub_identifier, key)?;
+    Some(CollectionRef::by_rk(sid, rk, if sec != 0 { sec } else { section }, title))
 }
 
 /// A member's own-collection hub from `/library/metadata/{rk}/related`:
@@ -258,6 +318,44 @@ mod tests {
             "a related hub is tag-keyed and is resolved by the collection store"
         );
         assert_eq!(promoted_collection_hub("movie.recentlyadded.1", "/x"), None);
+    }
+
+    /// Home and the Library build a promoted shelf's link through one function, so the section a
+    /// link carries when the identifier's own segment does not parse is the publishing section on
+    /// both — never a bare 0 on one of them.
+    #[test]
+    fn a_promoted_link_falls_back_to_the_publishing_section() {
+        let sid = ServerId::from_raw(3);
+        let key = "/library/collections/420/children";
+        assert_eq!(
+            promoted_collection_link(sid, "custom.collection.1.420.420", key, "Set", 9),
+            Some(CollectionRef::by_rk(sid, "420", 1, "Set"))
+        );
+        assert_eq!(
+            promoted_collection_link(sid, "custom.collection.x.420.420", key, "Set", 9),
+            Some(CollectionRef::by_rk(sid, "420", 9, "Set"))
+        );
+        assert_eq!(promoted_collection_link(sid, "movie.similar", key, "Set", 9), None);
+    }
+
+    #[test]
+    fn collection_identity_never_compares_a_tag_with_a_rating_key() {
+        let sid = ServerId::from_raw(2);
+        let at = |rk: &str, tag| CollectionRef { sid, rk: rk.into(), sec: 4, tag, name: "A".into() };
+        assert!(at("50077", 77).same_collection(&at("50077", 99)),
+            "two resolved identities compare their ratingKey");
+        assert!(!at("50077", 77).same_collection(&at("50078", 77)),
+            "different non-empty ratingKeys do not fall through to tag identity");
+        assert!(at("", 77).same_collection(&at("", 77)),
+            "tag-only identities compare server, section and non-zero tag");
+        assert!(at("50077", 77).same_collection(&at("", 77)),
+            "a resolved identity still matches the tag route it was resolved from");
+        assert!(!at("", 0).same_collection(&at("", 0)), "zero is not a tag identity");
+        assert!(!at("50077", 0).same_collection(&at("", 50077)),
+            "a ratingKey is never compared to a numeric tag id");
+        assert!(!at("50077", 0).same_collection(&CollectionRef { sid: ServerId::from_raw(5), ..at("50077", 0) }),
+            "another server's collection is another collection");
+        assert!(at("", 0).is_identityless() && !at("", 7).is_identityless() && !at("1", 0).is_identityless());
     }
 
     #[test]

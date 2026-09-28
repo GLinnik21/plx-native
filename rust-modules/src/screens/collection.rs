@@ -5,7 +5,7 @@
 use std::ffi::CString;
 
 use crate::collection::{Collection, CollectionStatus, CollectionTarget, PAGE_SIZE};
-use crate::plex::ServerId;
+use crate::plex::collections::CollectionRef;
 use crate::pms::PmsMovie;
 use crate::stores::collection::CollectionCmd;
 use crate::ui::card_row::{self, TileLabel};
@@ -89,11 +89,8 @@ pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
 
 pub(crate) struct CollectionScreen {
     entry: EntryId,
-    sid: ServerId,
-    rk: String,
-    sec: i64,
-    tag: i64,
-    name: String,
+    /// The page's argument; `id.rk` adopts the store's resolution of a tag route.
+    id: CollectionRef,
     header_marked: bool,
     card_keys: Vec<CardIdentity>,
     next_elem: u32,
@@ -116,15 +113,15 @@ pub(crate) struct CollectionScreen {
 
 impl LogicalState for CollectionScreen {
     fn write(&self, c: &mut Canon) {
-        c.u32(self.entry.0).u32(self.sid.raw() as u32).str(&self.rk)
-            .u64(self.sec as u64).u64(self.tag as u64).str(&self.name)
+        c.u32(self.entry.0).u32(self.id.sid.raw() as u32).str(&self.id.rk)
+            .u64(self.id.sec as u64).u64(self.id.tag as u64).str(&self.id.name)
             .bool(self.header_marked).bool(self.return_pending)
             .u32(self.next_elem).seq(self.card_keys.len());
         for key in &self.card_keys { c.u32(key.sid.raw() as u32).str(&key.rk).u32(key.elem); }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!("collection sid={} rk={} sec={} tag={} cards={} next={} return_pending={}",
-            self.sid.raw(), self.rk, self.sec, self.tag, self.card_keys.len(), self.next_elem,
+            self.id.sid.raw(), self.id.rk, self.id.sec, self.id.tag, self.card_keys.len(), self.next_elem,
             self.return_pending));
     }
 }
@@ -132,8 +129,8 @@ impl LogicalState for CollectionScreen {
 impl CollectionScreen {
     pub(crate) const SHAPE: &'static str = "CollectionScreen{entry:u32,sid:u32,rk:String,sec:i64,tag:i64,name:String,header_marked:bool,return_pending:bool,next_elem:u32,card_keys:[{sid:u32,rk:String,elem:u32}]}";
 
-    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, sec: i64, tag: i64, name: String) -> Self {
-        Self { entry, sid, rk, sec, tag, name, header_marked: false, card_keys: Vec::new(),
+    pub(crate) fn new(entry: EntryId, id: CollectionRef) -> Self {
+        Self { entry, id, header_marked: false, card_keys: Vec::new(),
             next_elem: FIRST_CARD_ELEM, return_pending: false, teardown_closed: false,
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
@@ -141,29 +138,23 @@ impl CollectionScreen {
     }
 
     fn target(&self, want: usize) -> CollectionTarget {
-        let mut target = CollectionTarget::initial(
-            self.rk.clone(), self.sec, self.tag, self.name.clone());
-        target.want = want;
-        target
+        CollectionTarget { id: self.id.clone(), want }
     }
 
     fn request_store<H: ContentLike + CollectionLike>(&mut self, want: usize, fx: &mut Effects<'_, H>) {
         fx.push(crate::ui::machine::Fx::App(AppFx::Store(
             crate::stores::StoreId::Collection,
-            crate::stores::StoreCmd::Collection(CollectionCmd::Open { sid: self.sid, target: self.target(want) }),
+            crate::stores::StoreCmd::Collection(CollectionCmd::Open { target: self.target(want) }),
         )));
     }
 
     fn collection<'a, H: CollectionLike>(&self, cx: &Cx<'a, H>) -> Option<&'a Collection> {
-        H::collection(cx).current().filter(|c| {
-            c.sid == self.sid && if !self.rk.is_empty() { c.rk == self.rk }
-                else { c.sec == self.sec && self.tag != 0 && c.tag == self.tag }
-        })
+        H::collection(cx).current().filter(|c| c.id.same_collection(&self.id))
     }
 
     fn sync(&mut self, collection: &Collection, measure: &dyn crate::ui::machine::Measure) {
         self.synced = Some((collection.items.len(), collection.summary.len()));
-        if self.rk.is_empty() && !collection.rk.is_empty() { self.rk = collection.rk.clone(); }
+        if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         for item in &collection.items {
             if self.card_keys.iter().any(|key| crate::plex::same_item(
                 (key.sid, key.rk.as_str()), (item.sid, item.rk.as_str()))) { continue; }
@@ -381,9 +372,9 @@ impl CollectionScreen {
         let dy = -self.scroll.pos;
         if HEADER_TOP + ART_H + dy <= 0.0 { return; }
         let art = Rect::new(MARGIN_X, HEADER_TOP + dy, ART_W, ART_H);
-        widgets::card(p, art, Art::Thumb { sid: collection.sid, key: &collection.thumb, res: ART_RES },
+        widgets::card(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
             theme::CARD_RING_RAD, false, 1.0, 0.0);
-        let title = measure.fit_line(if collection.title.is_empty() { &collection.name } else { &collection.title },
+        let title = measure.fit_line(if collection.title.is_empty() { &collection.id.name } else { &collection.title },
             TEXT_W, theme::size::DISPLAY, true);
         Label::new(title.as_ptr(), theme::size::DISPLAY, theme::TEXT_PRIMARY).bold()
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
@@ -695,12 +686,14 @@ mod tests {
     }
 
     fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
+    fn set() -> CollectionRef {
+        CollectionRef { sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() }
+    }
     fn seeded() -> (crate::stores::collection::CollectionStore, CollectionScreen) {
         let mut store = crate::stores::collection::CollectionStore::default();
-        store.run(CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
         store.install_for_test(vec![item("a"), item("b"), item("c")], CollectionStatus::Ready);
-        let mut screen = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut screen = CollectionScreen::new(EntryId(9), set());
         screen.sync(store.view().current().unwrap(), &FixtureMeasure);
         (store, screen)
     }
@@ -843,7 +836,7 @@ mod tests {
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
 
         store.edit_for_test(|c| { c.items = many[..PAGE_SIZE].to_vec(); c.more = true; });
-        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut restored = CollectionScreen::new(EntryId(9), set());
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
         let out = step(&mut restored, ScreenEvent::Enter(crate::ui::screen::Enter::Restored), &cx(store.view(), None));
         let want = out.iter().find_map(|e| match &e.fx {
@@ -868,7 +861,7 @@ mod tests {
         let (store, original) = seeded();
         let focus = original.key_at(store.view().current().unwrap(), 1);
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
-        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut restored = CollectionScreen::new(EntryId(9), set());
         restored.restore(&memory);
         restored.return_pending = true;
         restored.sync(store.view().current().unwrap(), &FixtureMeasure);

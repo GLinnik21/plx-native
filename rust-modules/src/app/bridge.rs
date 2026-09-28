@@ -2165,7 +2165,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 crate::focusprobe::push_rk(&mut out, &item.rk);
             } else { out.push_str(" sid=- rk=-"); }
         }
-        AppArg::Content(ContentArg::Collection { rk, sec, tag, .. }) => {
+        AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
             let item = instance.screen.as_any()
                 .and_then(|screen| screen.downcast_ref::<crate::screens::collection::CollectionScreen>())
                 .and_then(|screen| screen.focused_item(focus, &cx));

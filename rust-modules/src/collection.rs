@@ -3,7 +3,7 @@
 //! separate jobs so a tag-only route can publish its resolved ratingKey before later requests
 //! finish. All network work runs off the frame thread; landings are applied by [`CollectionState::pump_with_gate`].
 
-use crate::plex::collections::{resolve_tag, CollectionOutcome};
+use crate::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
@@ -15,18 +15,9 @@ const RETRY_FRAMES: u32 = 120;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CollectionTarget {
-    pub(crate) rk: String,
-    pub(crate) sec: i64,
-    pub(crate) tag: i64,
-    pub(crate) name: String,
+    pub(crate) id: CollectionRef,
     /// Number of children the visible grid currently asks the store to make available.
     pub(crate) want: usize,
-}
-
-impl CollectionTarget {
-    pub(crate) fn initial(rk: String, sec: i64, tag: i64, name: String) -> Self {
-        Self { rk, sec, tag, name, want: PAGE_SIZE }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,11 +31,8 @@ pub(crate) enum CollectionStatus {
 }
 
 pub(crate) struct Collection {
-    pub(crate) sid: ServerId,
-    pub(crate) rk: String,
-    pub(crate) sec: i64,
-    pub(crate) tag: i64,
-    pub(crate) name: String,
+    /// The identity the page was opened with; `id.rk` is filled in once a tag route resolves.
+    pub(crate) id: CollectionRef,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) thumb: String,
@@ -64,10 +52,12 @@ pub(crate) struct Collection {
 }
 
 impl Collection {
-    pub(crate) fn identity_matches(&self, sid: ServerId, target: &CollectionTarget) -> bool {
-        if self.sid != sid { return false; }
-        if !self.rk.is_empty() && !target.rk.is_empty() { self.rk == target.rk }
-        else { self.sec == target.sec && self.tag != 0 && self.tag == target.tag }
+    /// A collection opened (or reopened) with nothing landed yet: its title is the link's name
+    /// until the header replaces it.
+    fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
+        Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
+            child_count: 0, items: Vec::new(), total: 0, status: CollectionStatus::Loading,
+            more: true, offset: 0, want, header_ready: false, client_key }
     }
 }
 
@@ -100,8 +90,8 @@ impl CollectionState {
     pub(crate) fn run(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
         use crate::stores::collection::CollectionCmd;
         match cmd {
-            CollectionCmd::Open { sid, target } => {
-                if let Some(current) = self.current.as_mut().filter(|c| c.identity_matches(sid, &target)) {
+            CollectionCmd::Open { target } => {
+                if let Some(current) = self.current.as_mut().filter(|c| c.id.same_collection(&target.id)) {
                     let old = current.want;
                     current.want = current.want.max(target.want);
                     let retry = current.status == CollectionStatus::Failed;
@@ -112,14 +102,8 @@ impl CollectionState {
                     return current.want != old || retry;
                 }
                 self.supersede(adapter);
-                let client_key = crate::plex::client_for(sid).map(|c| (c.instance_gen(), c.token_gen()));
-                self.current = Some(Collection {
-                    sid, rk: target.rk, sec: target.sec, tag: target.tag,
-                    name: target.name.clone(), title: target.name, summary: String::new(),
-                    thumb: String::new(), child_count: 0, items: Vec::new(), total: 0,
-                    status: CollectionStatus::Loading, more: true, offset: 0,
-                    want: target.want.max(PAGE_SIZE), header_ready: false, client_key,
-                });
+                let client_key = crate::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
+                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
                 true
             }
             CollectionCmd::Close | CollectionCmd::Reset => {
@@ -144,17 +128,11 @@ impl CollectionState {
 
     fn refresh_if_client_changed(&mut self, adapter: &CollectionAdapter) -> bool {
         let Some(c) = self.current.as_ref() else { return false };
-        let now = crate::plex::client_for(c.sid).map(|x| (x.instance_gen(), x.token_gen()));
+        let now = crate::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
         if now == c.client_key { return false; }
-        let (sid, rk, sec, tag, name, want) =
-            (c.sid, c.rk.clone(), c.sec, c.tag, c.name.clone(), c.want);
+        let (id, want) = (c.id.clone(), c.want);
         self.supersede(adapter);
-        self.current = Some(Collection {
-            sid, rk, sec, tag, name: name.clone(), title: name, summary: String::new(),
-            thumb: String::new(), child_count: 0, items: Vec::new(), total: 0,
-            status: CollectionStatus::Loading, more: true, offset: 0, want, header_ready: false,
-            client_key: now,
-        });
+        self.current = Some(Collection::loading(id, want, now));
         true
     }
 
@@ -179,14 +157,14 @@ impl CollectionState {
     fn job(&self) -> Option<Job> {
         let c = self.current.as_ref()?;
         if c.status == CollectionStatus::Unavailable || c.status == CollectionStatus::Empty { return None; }
-        if c.rk.is_empty() {
-            return (c.sec != 0 && c.tag != 0).then(|| Job::Resolve {
-                sec: c.sec, tag: c.tag, name: c.name.clone(),
+        if c.id.rk.is_empty() {
+            return (c.id.sec != 0 && c.id.tag != 0).then(|| Job::Resolve {
+                sec: c.id.sec, tag: c.id.tag, name: c.id.name.clone(),
             });
         }
-        if !c.header_ready { return Some(Job::Header { rk: c.rk.clone() }); }
+        if !c.header_ready { return Some(Job::Header { rk: c.id.rk.clone() }); }
         if c.more && c.items.len() < c.want {
-            return Some(Job::Children { rk: c.rk.clone(), start: c.offset });
+            return Some(Job::Children { rk: c.id.rk.clone(), start: c.offset });
         }
         None
     }
@@ -195,13 +173,13 @@ impl CollectionState {
         if adapter.fetch.busy() || self.retry_cd > 0 { return; }
         let Some(job) = self.job() else { return };
         let Some(c) = self.current.as_ref() else { return };
-        let Some(client) = crate::plex::client_for(c.sid) else {
+        let Some(client) = crate::plex::client_for(c.id.sid) else {
             self.retry_cd = RETRY_FRAMES;
             if c.items.is_empty() { self.current.as_mut().unwrap().status = CollectionStatus::Failed; }
             return;
         };
         let generation = self.generation;
-        let sid = c.sid;
+        let sid = c.id.sid;
         adapter.fetch.claim();
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
@@ -217,7 +195,7 @@ impl CollectionState {
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
             Landing::Resolved { rk, title, thumb, summary, child_count } => {
-                c.rk = rk;
+                c.id.rk = rk;
                 if !title.is_empty() { c.title = title; }
                 c.thumb = thumb;
                 c.summary = summary;
@@ -265,7 +243,7 @@ impl CollectionState {
     #[cfg(test)]
     pub(crate) fn install_for_test(&mut self, items: Vec<PmsMovie>, status: CollectionStatus) {
         let Some(c) = self.current.as_mut() else { return };
-        c.title = if c.name.is_empty() { "Collection".into() } else { c.name.clone() };
+        c.title = if c.id.name.is_empty() { "Collection".into() } else { c.id.name.clone() };
         c.summary = "A collection summary long enough for screen layout tests.".into();
         c.child_count = items.len();
         c.total = items.len();
@@ -444,6 +422,11 @@ mod tests {
     use super::*;
     use crate::stores::collection::CollectionCmd;
 
+    fn set_target(rk: &str, tag: i64, name: &str) -> CollectionTarget {
+        CollectionTarget { id: CollectionRef { sid: ServerId::UNSET, rk: rk.into(), sec: 1, tag,
+            name: name.into() }, want: PAGE_SIZE }
+    }
+
     fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> crate::plex::Metadata {
         crate::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
@@ -466,8 +449,8 @@ mod tests {
     fn paging_asks_for_the_next_page_only_when_the_grid_wants_more() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        let target = CollectionTarget::initial("50001".into(), 1, 7, "Set".into());
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: target.clone() });
+        let target = set_target("50001", 7, "Set");
+        state.run(&adapter, CollectionCmd::Open { target: target.clone() });
         assert!(matches!(state.job(), Some(Job::Header { .. })));
         let generation = state.generation();
         adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
@@ -483,7 +466,7 @@ mod tests {
 
         let mut more = target;
         more.want = 2 * PAGE_SIZE;
-        assert!(state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: more }),
+        assert!(state.run(&adapter, CollectionCmd::Open { target: more }),
             "a larger want on the same identity is a change, not a reopen");
         assert_eq!(state.generation(), generation, "paging does not supersede the collection");
         assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE));
@@ -498,8 +481,7 @@ mod tests {
     fn a_page_with_unlisted_rows_advances_by_the_rows_the_server_sent() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let generation = state.generation();
         adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
             summary: String::new(), child_count: 130 });
@@ -507,15 +489,14 @@ mod tests {
         let listed = (0..PAGE_SIZE - 5).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
         adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: listed, total: 130 });
         assert!(state.take_landing_for_test(&adapter));
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: CollectionTarget {
-            want: 2 * PAGE_SIZE, ..CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) } });
+        state.run(&adapter, CollectionCmd::Open { target: CollectionTarget {
+            want: 2 * PAGE_SIZE, ..set_target("50001", 7, "Set") } });
         assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE),
             "the next page starts after every row the server sent, listed or not");
 
         // A collection whose every row is unlisted ends Empty rather than paging forever.
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50002".into(), 1, 8, "Clips".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50002", 8, "Clips") });
         let generation = state.generation();
         adapter.land(generation, Landing::Header { title: "Clips".into(), thumb: String::new(),
             summary: String::new(), child_count: 3 });
@@ -531,8 +512,7 @@ mod tests {
     fn a_local_watched_edit_flips_the_member_in_place() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![PmsMovie { rk: "a".into(), unwatched: true, ..Default::default() }],
             CollectionStatus::Ready);
         assert!(!state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,

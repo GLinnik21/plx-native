@@ -7,8 +7,9 @@ use crate::plex::ServerId;
 use crate::stores::collection::CollectionCmd;
 
 fn open(store: &mut crate::stores::collection::CollectionStore, rk: &str, tag: i64) {
-    store.run(CollectionCmd::Open { sid: ServerId::UNSET,
-        target: CollectionTarget::initial(rk.into(), 8, tag, "Fixture Collection".into()) });
+    store.run(CollectionCmd::Open { target: CollectionTarget { id: crate::plex::collections::CollectionRef {
+        sid: ServerId::UNSET, rk: rk.into(), sec: 8, tag, name: "Fixture Collection".into() },
+        want: crate::collection::PAGE_SIZE } });
 }
 
 #[test]
@@ -20,13 +21,13 @@ fn stale_generation_is_dropped_and_tag_resolution_publishes_the_rating_key() {
     open(&mut store, "", 88);
     adapter.land_resolved_for_test(old, "50077");
     assert!(!store.take_landing_for_test(), "a stale landing changes no visible model");
-    assert_eq!(store.view().current().unwrap().tag, 88);
-    assert!(store.view().current().unwrap().rk.is_empty());
+    assert_eq!(store.view().current().unwrap().id.tag, 88);
+    assert!(store.view().current().unwrap().id.rk.is_empty());
 
     let current = store.generation_for_test();
     adapter.land_resolved_for_test(current, "50088");
     assert!(store.take_landing_for_test());
-    assert_eq!(store.view().current().unwrap().rk, "50088",
+    assert_eq!(store.view().current().unwrap().id.rk, "50088",
         "the tag-only identity publishes its resolved collection ratingKey");
 }
 

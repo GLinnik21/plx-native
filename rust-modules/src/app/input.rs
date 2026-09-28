@@ -183,13 +183,8 @@ pub(crate) unsafe fn activate_card(
 }
 
 fn collection_content_arg(mm: &crate::pms::PmsMovie) -> crate::screens::registry::ContentArg {
-    crate::screens::registry::ContentArg::Collection {
-        sid: mm.sid,
-        rk: mm.rk.clone(),
-        sec: mm.sec,
-        tag: 0,
-        name: mm.title.clone(),
-    }
+    crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef::by_rk(
+        mm.sid, &mm.rk, mm.sec, &mm.title))
 }
 
 /// The landing half of `activate_card`'s show/season Play — see [`MenuPlayAwait`]. Called every
@@ -366,9 +361,8 @@ mod activate_card_tests {
             &mut pages, &mut bridge, &mut menu_play_await, 0); }
         assert!(pages.has_pending_navigation(), "a collection must queue its own page");
         assert!(matches!(collection_content_arg(&collection),
-            crate::screens::registry::ContentArg::Collection {
-                rk, sec: 0, tag: 0, name, ..
-            } if rk == "50001" && name.is_empty()));
+            crate::screens::registry::ContentArg::Collection(id)
+                if id.rk == "50001" && id.sec == 0 && id.tag == 0 && id.name.is_empty()));
         assert!(menu_play_await.is_none(), "a collection must not arm playback");
         assert!(!crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "a collection must not request movie metadata");

@@ -248,13 +248,13 @@ impl CollectionHit {
     /// section + tag id carried as the second identity the page resolves by when no ratingKey is
     /// available.
     pub(crate) fn route(&self) -> crate::screens::registry::ContentArg {
-        crate::screens::registry::ContentArg::Collection {
+        crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef {
             sid: self.item.sid,
             rk: self.item.rk.clone(),
             sec: self.item.sec,
             tag: self.tag,
             name: self.item.title.clone(),
-        }
+        })
     }
 }
 
@@ -265,13 +265,8 @@ impl TagHit {
     /// when either is missing: a guess would open a page for nothing.
     pub(crate) fn collection_route(&self) -> Option<crate::screens::registry::ContentArg> {
         let tag = self.id.parse::<i64>().ok().filter(|t| *t > 0)?;
-        (self.sec > 0).then(|| crate::screens::registry::ContentArg::Collection {
-            sid: self.sid,
-            rk: String::new(),
-            sec: self.sec,
-            tag,
-            name: self.name.clone(),
-        })
+        (self.sec > 0).then(|| crate::screens::registry::ContentArg::Collection(
+            crate::plex::collections::CollectionRef::by_tag(self.sid, self.sec, tag, &self.name)))
     }
 }
 

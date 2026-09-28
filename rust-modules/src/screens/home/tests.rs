@@ -1269,6 +1269,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         },
         group: GroupId(FIRST_HUB_GROUP + 1),
         elems: vec![second_elem],
+        link: None,
     });
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -2221,7 +2222,7 @@ fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
     assert_eq!(s.rows.len(), 3);
     assert!(s.linked(0).is_none() && s.linked(2).is_none());
     let linked = s.linked(1).expect("the custom.collection row links to its collection");
-    assert_eq!((linked.sec, linked.rk), (1, "50001"));
+    assert_eq!((linked.sec, linked.rk.as_str()), (1, "50001"));
     assert_eq!(s.locate(heading_elem(s.rows[0].group)), None,
         "an unlinked shelf has no heading stop to land on");
     assert_eq!(s.locate(heading_key(&s, 1).elem), Some(Located::Heading(1)));
@@ -2312,8 +2313,8 @@ fn ok_on_the_linked_heading_opens_the_collection_page() {
         _ => None,
     }).collect();
     assert_eq!(pushed.len(), 1);
-    assert!(matches!(&pushed[0], ContentArg::Collection { rk, sec: 1, tag: 0, name, .. }
-        if rk == "50001" && name == "Toy Story Collection"), "{:?}", pushed[0]);
+    assert!(matches!(&pushed[0], ContentArg::Collection(id)
+        if id.rk == "50001" && id.sec == 1 && id.tag == 0 && id.name == "Toy Story Collection"), "{:?}", pushed[0]);
     assert!(!has_home(&out, |r| matches!(r, HomeReq::Detail { .. } | HomeReq::Play { .. })),
         "the heading opens the collection, never a member");
 }

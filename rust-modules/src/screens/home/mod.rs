@@ -116,6 +116,10 @@ struct HubProjection {
     identity: HomeHubIdentity,
     group: GroupId,
     elems: Vec<u32>,
+    /// Where the row's linked heading leads: the collection a promoted `custom.collection.*` hub
+    /// lists, classified once per publication. Every other row is unlinked and keeps its plain
+    /// heading.
+    link: Option<crate::plex::collections::CollectionRef>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -131,23 +135,6 @@ impl Located {
     fn on_grid(self) -> bool {
         matches!(self, Self::Item(..) | Self::Heading(_))
     }
-}
-
-/// The collection shelf a promoted `custom.collection.*` hub lists: where its linked heading
-/// leads. Every other hub is unlinked and keeps its plain heading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Linked<'a> {
-    sid: crate::plex::ServerId,
-    sec: i64,
-    rk: &'a str,
-}
-
-fn linked_of(identity: &HomeHubIdentity) -> Option<Linked<'_>> {
-    let HomeHubIdentity::Identifier { sid, id, key } = identity else {
-        return None;
-    };
-    let (sec, rk) = crate::plex::collections::promoted_collection_hub(id, key)?;
-    Some(Linked { sid: *sid, sec, rk })
 }
 
 fn heading_group(shelf: GroupId) -> GroupId {
@@ -523,10 +510,19 @@ impl HomeScreen {
                 key.last_col = col as u32;
                 elems.push(key.elem);
             }
+            // The publishing section, for an identifier whose own section segment does not parse:
+            // a hub lists one section's items.
+            let link = match hub.identity {
+                Some(HubIdentity::Identifier { sid, id, key }) =>
+                    crate::plex::collections::promoted_collection_link(
+                        sid, id, key, hub.title, hub.items.first().map_or(0, |item| item.sec)),
+                _ => None,
+            };
             rows.push(HubProjection {
                 identity,
                 group,
                 elems,
+                link,
             });
         }
         let old_shelves = self.grid.shelves;
@@ -650,7 +646,7 @@ impl HomeScreen {
         }
         if elem & HEADING_BASE != 0 {
             return self.rows.iter().position(|row| {
-                heading_elem(row.group) == elem && linked_of(&row.identity).is_some()
+                heading_elem(row.group) == elem && row.link.is_some()
             }).map(Located::Heading);
         }
         self.rows.iter().enumerate().find_map(|(row, hub)| {
@@ -693,8 +689,8 @@ impl HomeScreen {
     }
 
     /// Where a row's linked heading leads, if it has one.
-    fn linked(&self, row: usize) -> Option<Linked<'_>> {
-        linked_of(&self.rows.get(row)?.identity)
+    fn linked(&self, row: usize) -> Option<&crate::plex::collections::CollectionRef> {
+        self.rows.get(row)?.link.as_ref()
     }
 
     /// The linked heading of `row`: title case, the hub's own title and source annotation.
@@ -1112,16 +1108,11 @@ impl HomeScreen {
             Located::Heading(row) => {
                 // OK on a linked heading opens the collection it names. BACK from that page
                 // returns here: the heading is an ordinary engine key the return state restores.
-                let (Some(linked), Some(hub)) = (self.linked(row), self.hub(view, row)) else {
-                    return;
-                };
-                fx.push(Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection {
-                    sid: linked.sid,
-                    rk: linked.rk.to_owned(),
-                    sec: linked.sec,
-                    tag: 0,
-                    name: hub.title.to_owned(),
-                }))));
+                if let Some(link) = self.linked(row) {
+                    fx.push(Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection(
+                        link.clone(),
+                    )))));
+                }
                 return;
             }
             Located::Item(row, col) => {
@@ -2217,7 +2208,7 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
         // stop DOWN from the shelf above. The engine takes the FIRST matching link, so these
         // precede the first shelf's UP door to the hero.
         for (row, projection) in self.rows.iter().enumerate() {
-            if linked_of(&projection.identity).is_none() {
+            if projection.link.is_none() {
                 continue;
             }
             let heading = heading_group(projection.group);

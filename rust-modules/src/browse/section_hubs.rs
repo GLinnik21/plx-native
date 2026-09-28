@@ -93,6 +93,9 @@ pub(crate) struct Shelf {
     /// The hub's provider listing `key`, verbatim. A promoted `custom.collection.*` shelf's key is
     /// `/library/collections/{rk}/children` — the collection its linked heading opens.
     pub(crate) key: String,
+    /// Where a promoted `custom.collection.*` shelf's linked heading leads, classified once at
+    /// parse ([`crate::plex::collections::promoted_collection_link`]); `None` for every other hub.
+    pub(crate) link: Option<crate::plex::collections::CollectionRef>,
     pub(crate) title: String,
     /// A Continue Watching row scoped to this section. **Not `home.continue`**, which is
     /// `pms`'s whole-server id and does not appear here — see [`shelf_is_continue`].
@@ -409,7 +412,7 @@ impl super::BrowseState {
         let spawned = crate::task::spawn_small("libhubs", move || {
             let shelves = catch_unwind(|| {
                 let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
-                Some(parse_hubs(&mc, sid))
+                Some(parse_hubs(&mc, sid, key))
             })
             .unwrap_or(None);
             *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
@@ -642,6 +645,8 @@ pub(crate) fn seed_named_shelves_for_owner_test(
     rows: &[(&str, &str, &str)],
     per_row: usize,
 ) {
+    let sid = state.section_sid(sec).unwrap_or(ServerId::UNSET);
+    let section = state.sections().get(sec).map_or(0, |s| s.key);
     let Some(st) = state.state_mut(sec) else {
         return;
     };
@@ -656,6 +661,7 @@ pub(crate) fn seed_named_shelves_for_owner_test(
             .map(|(id, key, title)| Shelf {
                 id: (*id).into(),
                 key: (*key).into(),
+                link: crate::plex::collections::promoted_collection_link(sid, id, key, title, section),
                 title: (*title).into(),
                 is_continue: shelf_is_continue(id, key),
                 landscape: false,
@@ -736,7 +742,7 @@ pub(super) struct HubResult {
 /// EMPTY hub is dropped entirely, which §3a measured as the common case (one movie section
 /// answered with 6 hubs of which 5 were empty), so this is required rather than tidy: a client
 /// that draws what it is given draws five headings over nothing.
-pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId) -> Vec<Shelf> {
+pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, section: i64) -> Vec<Shelf> {
     let mut out = Vec::new();
     for hub in &mc.hub {
         if out.len() >= MAX_SHELVES {
@@ -761,6 +767,9 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId) -> Vec
             landscape: is_episode_shelf(&items),
             id: hub.hub_identifier.clone(),
             key: hub.key.clone(),
+            link: crate::plex::collections::promoted_collection_link(
+                sid, &hub.hub_identifier, &hub.key, &hub.title, section,
+            ),
             title: hub.title.clone(),
             items,
         });
@@ -988,7 +997,7 @@ mod tests {
     }
 
     fn parsed() -> Vec<Shelf> {
-        parse_hubs(&container(HUBS_JSON), ServerId::from_raw(0))
+        parse_hubs(&container(HUBS_JSON), ServerId::from_raw(0), 1)
     }
 
     /// The shelves come back in the SERVER OWNER's order — this endpoint quotes their
@@ -1058,7 +1067,7 @@ mod tests {
           {"hubIdentifier":"custom.collection.1.50001.50001","title":"A Collection","type":"movie",
            "key":"/library/collections/50001/children","Metadata":[
              {"ratingKey":"11","type":"movie","title":"A Film","thumb":"/m"}]}]}}"#;
-        let shelves = parse_hubs(&container(json), ServerId::from_raw(0));
+        let shelves = parse_hubs(&container(json), ServerId::from_raw(0), 1);
         assert_eq!(shelves.len(), 1, "a collection row must not become a movie card");
         assert_eq!(shelves[0].id, "custom.collection.1.50001.50001");
         assert_eq!(shelves[0].key, "/library/collections/50001/children",
@@ -1078,7 +1087,7 @@ mod tests {
              {"ratingKey":"1","type":"movie","title":"No Art"},
              {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
         assert!(
-            parse_hubs(&container(json), ServerId::from_raw(0)).is_empty(),
+            parse_hubs(&container(json), ServerId::from_raw(0), 1).is_empty(),
             "one row has no art and the other no title: the hub has nothing to draw"
         );
     }
@@ -1106,7 +1115,7 @@ mod tests {
             r#"{{"MediaContainer":{{"Hub":[{}]}}}}"#,
             hubs.trim_end_matches(',')
         );
-        let sh = parse_hubs(&container(&json), ServerId::from_raw(0));
+        let sh = parse_hubs(&container(&json), ServerId::from_raw(0), 1);
         assert_eq!(sh.len(), MAX_SHELVES, "the document is bounded");
         assert!(
             sh.iter().all(|s| s.items.len() == MAX_SHELF_ITEMS),

@@ -486,8 +486,8 @@ fn collection_rows_become_kind_four_hits_and_other_rows_stay_ordinary_cards() {
     assert_eq!((hit.tag, hit.item.child_count), (7, 12));
     assert_eq!(hit.item.thumb, "/library/collections/50007/composite/1700000000");
     assert_eq!(p[4][0].title(), "Aardman Shorts");
-    assert_eq!(hit.route(), crate::screens::registry::ContentArg::Collection {
-        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() });
+    assert_eq!(hit.route(), crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef {
+        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() }));
     let Item::Media(film) = &p[0][0] else { panic!("a film stays an ordinary card") };
     assert_eq!((film.kind, film.rk.as_str()), (0, "1971"));
 }
@@ -510,8 +510,8 @@ fn a_tag_shaped_collection_hit_routes_by_section_and_tag_id() {
     let mc = MediaContainer { hub: vec![collection], ..Default::default() };
     let p = project(&mc, sid, NO_FAVS);
     let Item::Tag(tag) = &p[4][0] else { panic!("a Directory row is still a tag hit") };
-    assert_eq!(tag.collection_route(), Some(crate::screens::registry::ContentArg::Collection {
-        sid, rk: String::new(), sec: 1, tag: 7, name: "Aardman Shorts".into() }));
+    assert_eq!(tag.collection_route(), Some(crate::screens::registry::ContentArg::Collection(
+        crate::plex::collections::CollectionRef::by_tag(sid, 1, 7, "Aardman Shorts"))));
     assert!(TagHit { sec: 0, ..tag.clone() }.collection_route().is_none(), "no section");
     assert!(TagHit { id: String::new(), ..tag.clone() }.collection_route().is_none(), "no tag id");
 }

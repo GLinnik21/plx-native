@@ -482,7 +482,7 @@ pub(crate) enum ContentArg {
     Detail { sid: crate::plex::ServerId, rk: String },
     Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
     Filmography { sid: crate::plex::ServerId, key: String },
-    Collection { sid: crate::plex::ServerId, rk: String, sec: i64, tag: i64, name: String },
+    Collection(crate::plex::collections::CollectionRef),
 }
 
 impl crate::ui::machine::LogicalState for ContentArg {
@@ -491,8 +491,8 @@ impl crate::ui::machine::LogicalState for ContentArg {
             Self::Detail { sid, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(rk); }
             Self::Person { sid, key, guid, name, thumb } => { c.u32(1).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(thumb); }
             Self::Filmography { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
-            Self::Collection { sid, rk, sec, tag, name } => {
-                c.u32(3).u32(u32::from(sid.raw())).str(rk).u64(*sec as u64).u64(*tag as u64).str(name);
+            Self::Collection(id) => {
+                c.u32(3).u32(u32::from(id.sid.raw())).str(&id.rk).u64(id.sec as u64).u64(id.tag as u64).str(&id.name);
             }
         }
     }
@@ -509,11 +509,7 @@ impl ContentArg {
                 if !g.is_empty() && !h.is_empty() { g == h } else { a == b && x == y },
             (Self::Filmography { sid: a, key: x }, Self::Filmography { sid: b, key: y }) =>
                 a == b && x == y,
-            (Self::Collection { sid: a, rk: x, sec: as_, tag: at, .. },
-             Self::Collection { sid: b, rk: y, sec: bs, tag: bt, .. }) => {
-                if !x.is_empty() && !y.is_empty() { a == b && x == y }
-                else { a == b && *as_ == *bs && *at != 0 && at == bt }
-            }
+            (Self::Collection(a), Self::Collection(b)) => a.same_collection(b),
             _ => false,
         }
     }
@@ -1555,7 +1551,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Detail { .. }) => 8,
             AppArg::Content(ContentArg::Person { .. }) => 9,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
-            AppArg::Content(ContentArg::Collection { .. }) => 23,
+            AppArg::Content(ContentArg::Collection(_)) => 23,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -1698,9 +1694,8 @@ where
                 if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory, cx); }
                 Box::new(page)
             }
-            AppArg::Content(ContentArg::Collection { sid, rk, sec, tag, name }) => {
-                let mut page = crate::screens::collection::CollectionScreen::new(
-                    entry, *sid, rk.clone(), *sec, *tag, name.clone());
+            AppArg::Content(ContentArg::Collection(id)) => {
+                let mut page = crate::screens::collection::CollectionScreen::new(entry, id.clone());
                 if let PageMemory::Collection(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
@@ -2087,10 +2082,9 @@ mod arg_tests {
                 sid: crate::plex::ServerId::UNSET, key: String::new(), guid: String::new(),
                 name: String::new(), thumb: String::new(),
             }),
-            AppArg::Content(crate::screens::registry::ContentArg::Collection {
-                sid: crate::plex::ServerId::UNSET, rk: String::new(), sec: 0, tag: 1,
-                name: String::new(),
-            }),
+            AppArg::Content(crate::screens::registry::ContentArg::Collection(
+                crate::plex::collections::CollectionRef::by_tag(crate::plex::ServerId::UNSET, 0, 1, ""),
+            )),
             AppArg::Login,
             AppArg::Profiles,
             AppArg::Onboard,
@@ -2106,9 +2100,9 @@ mod arg_tests {
     #[test]
     fn collection_content_arg_has_the_pinned_canonical_field_order() {
         let sid = crate::plex::ServerId::from_raw(7);
-        let arg = ContentArg::Collection {
+        let arg = ContentArg::Collection(crate::plex::collections::CollectionRef {
             sid, rk: "50077".into(), sec: 8, tag: 77, name: "Fixture".into(),
-        };
+        });
         let mut expected = Canon::new();
         expected.u32(3).u32(7).str("50077").u64(8).u64(77).str("Fixture");
         assert_eq!(arg.hash(), expected.finish());
@@ -2117,15 +2111,13 @@ mod arg_tests {
     #[test]
     fn collection_identity_never_compares_a_tag_with_a_rating_key() {
         let sid = crate::plex::ServerId::from_raw(2);
-        let by_rk = |rk: &str, tag| ContentArg::Collection {
+        let by_rk = |rk: &str, tag| ContentArg::Collection(crate::plex::collections::CollectionRef {
             sid, rk: rk.into(), sec: 4, tag, name: "A".into(),
-        };
+        });
+        // The rule itself is `CollectionRef::same_collection`'s (graded in `plex::collections`);
+        // this pins that a page argument asks it rather than a copy.
         assert!(by_rk("50077", 77).same_item(&by_rk("50077", 99)),
             "two resolved arguments compare their ratingKey");
-        assert!(!by_rk("50077", 77).same_item(&by_rk("50078", 77)),
-            "different non-empty ratingKeys do not fall through to tag identity");
-        assert!(by_rk("", 77).same_item(&by_rk("", 77)),
-            "tag-only arguments compare server, section and non-zero tag");
         assert!(!by_rk("", 0).same_item(&by_rk("", 0)), "zero is not a tag identity");
         assert!(!by_rk("50077", 0).same_item(&by_rk("", 50077)),
             "a ratingKey is never compared to a numeric tag id");
@@ -2145,12 +2137,12 @@ mod arg_tests {
 
     #[test]
     fn collection_is_its_own_page_identity() {
-        let a = AppArg::Content(ContentArg::Collection {
+        let a = AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef {
             sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 1, name: "A".into(),
-        });
-        let b = AppArg::Content(ContentArg::Collection {
+        }));
+        let b = AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef {
             sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 9, name: "Renamed".into(),
-        });
+        }));
         assert_eq!(a.id(), ScreenId(23));
         assert!(a.same_instance(&b));
         assert!(!a.same_instance(&AppArg::Content(ContentArg::Detail {

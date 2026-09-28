@@ -12,7 +12,7 @@ fn content(arg: &crate::screens::registry::ContentArg) -> Value {
         ContentArg::Detail { sid, rk } => json!({"detail":[sid.raw(),rk]}),
         ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
         ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
-        ContentArg::Collection { sid, rk, sec, tag, name } => json!({"collection":[sid.raw(),rk,sec,tag,name]}),
+        ContentArg::Collection(id) => json!({"collection":[id.sid.raw(),id.rk,id.sec,id.tag,id.name]}),
     }
 }
 fn argument(arg: &crate::screens::registry::AppArg) -> Result<Value, &'static str> {
@@ -238,7 +238,7 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
         StoreCmd::Collection(cmd) => {
             use crate::stores::collection::CollectionCmd;
             json!({"collection":match cmd {
-                CollectionCmd::Open { sid, target } => json!({"open":[sid.raw(),target.rk,target.sec,target.tag,target.name,target.want]}),
+                CollectionCmd::Open { target } => json!({"open":[target.id.sid.raw(),target.id.rk,target.id.sec,target.id.tag,target.id.name,target.want]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
                 CollectionCmd::SetWatchedLocal { .. } => return Err("unsupported controlled collection command"),
