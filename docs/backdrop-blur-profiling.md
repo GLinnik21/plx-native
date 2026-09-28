@@ -1013,6 +1013,14 @@ per-shader: extend the hero's one-pass ground (`fs_hero`) across the fold so the
 scrim are one pass, and opaque card interiors that let the tiler skip the wash beneath them.
 `ui::idle`'s settle frame no longer has a renderer term to settle and could be retired separately.
 
+**2026-09-28, the first lever, taken in part.** The wash, the photograph dissolving over it and the
+atmospheric ramp now draw as ONE opaque pass (`AmbientWash::draw_ground`, `fs_art_wash.frag`,
+`vs_ambient.vert`'s `PLX_WASH_INK`), on Home's fold and Detail's still-over-ground; the corner wedge
+stays its own layer. `poster-hero-grid-dive` went from 56.3 mean moving fps (seven runs, 54.9–57.1,
+one below its 55 floor) to 58.6–60.7 (five runs). The whole-screen version — `fs_hero` extended
+with the wash, the wedge and an inside test on every pixel — measured **49.1**: it moved ALU onto
+pixels that had none, which on this arithmetic-bound GPU is the one thing that costs.
+
 ## 2026-09-19: transition hitches — `modal-100` and `push-100`, attributed
 
 Both benches fail their 20 ms `bench_worst_ms` on base 727e4851. This section records where the

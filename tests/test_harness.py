@@ -5484,6 +5484,31 @@ class PosterGateCoverage(unittest.TestCase):
         for bad in ('lost=12','rearmed=12','refused_evicted=10'):
             self.assertFalse(run.grade_poster_gate(scene,[line.replace(bad,bad.split('=')[0]+'=0') for line in evidence('eviction')])[0])
 
+    def test_poster_grade_reads_the_sized_plan_and_names_an_unfit_catalog(self):
+        # The scene sizes its targets to the catalog it booted into and logs that plan; the plan
+        # line is context, not a phase. A catalog too small to prove anything is refused by the
+        # app by name, and the grade must say THAT rather than blame the renderer.
+        import poster_gate
+        values = {k: 0 for k in poster_gate.FIELDS}
+        values.update(ms=1000, frames=60, draws=720, ready=720, moving=700, moving_frames=60,
+                      moving_ms=983, requested=12, refused_new=20, refused_evicted=10, rearmed=12,
+                      uploads=12, lost=12, last_draws=12, last_ready=12, complete=1)
+        fields = ' '.join(f'{k}={v}' for k, v in values.items())
+        lines = ['poster-gate: kind=eviction phase=armed budget_mib=12',
+                 'poster-gate: kind=eviction phase=planned content=Grid { rows: 7, per_screen: 3 } '
+                 'stages=warm@row0,seed1@row3,seed2@row6,reverse@row6,settle@row0']
+        lines += [f'poster-gate: kind=eviction phase={p} {fields}' for p in poster_gate.PHASES['eviction']]
+        lines.append('poster-gate: kind=eviction phase=done')
+        scene = {'poster_gate': {'kind': 'eviction', 'moving_fps_floor': 55}}
+        self.assertTrue(run.grade_poster_gate(scene, lines)[0])
+        unfit = ['poster-gate: kind=eviction phase=armed budget_mib=12',
+                 'poster-gate: kind=eviction phase=unfit what=library-rows have=5 need=6']
+        ok, detail = run.grade_poster_gate(scene, unfit)
+        self.assertFalse(ok)
+        self.assertIn('UNFIT CATALOG', detail)
+        self.assertIn('library-rows >= 6', detail)
+        self.assertIn('has 5', detail)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

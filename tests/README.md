@@ -445,12 +445,19 @@ its horizontal spring to stay stationary while the retained offset is transforme
 The dive hands over at snap 0.9, while that horizontal product is still moving fast;
 the settle phase captures its natural deceleration and resulting art arrivals.
 
-These scenes send focus commands only. Use a mock catalog for repeatable coverage: at least
-152 library items and 12 items in Home shelf 0, all with working artwork. Eviction and dive
-explicitly lower the real texture byte-LRU ceiling to 12 MiB so cached textures are lost before
-the source's 64 identities recycle; other scenes retain the production 44 MiB ceiling. A
-missing target, missing art, incomplete phase sequence or unavailable telemetry fails the
-scene. The ordinary `library-scroll` scene remains the continuous-motion performance control.
+These scenes send focus commands only, and size their targets to the catalog they boot into
+(logged as `poster-gate: ... phase=planned`): settle sweeps to the grid's deepest row (18 at
+most), eviction seeds its head, a middle row and its deepest row (rows 0/6/12 at most), and dive
+seeds Home shelf 0 at its deepest card (column 11 at most). Each has a floor below which it
+cannot prove its property, and a catalog under it fails as `UNFIT CATALOG` naming what it needs:
+four grid rows for settle and six for eviction (19 and 31 items at six columns, 1080p), and ten
+cards in Home shelf 0 for dive (the graded 1000 px retained offset). All artwork must work; a
+mock catalog gives repeatable coverage. Eviction and dive explicitly lower the real texture
+byte-LRU ceiling to 12 MiB so cached textures are lost before the source's 64 identities
+recycle; once warm, eviction tightens it further to 1.5x the working set its warm window
+measurably drew (`phase=ceiling`), so a shallow grid still evicts the rows its reversal
+crosses. Other scenes retain the production 44 MiB ceiling. A missing target, missing art,
+incomplete phase sequence or unavailable telemetry fails the scene. The ordinary `library-scroll` scene remains the continuous-motion performance control.
 
 For a diagnosis rather than a regression gate, select exactly one reproducible scene and ask for
 the three-layer bundle:

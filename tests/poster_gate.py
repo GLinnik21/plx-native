@@ -24,10 +24,16 @@ def grade(spec, lines):
         phase = values.get('phase')
         if phase == 'failed':
             return False, 'poster gate scene reported failure'
+        if phase == 'unfit':
+            # The scene sizes itself to the catalog it booted into; this is a catalog too small
+            # for it to prove anything at all. Say so by name: it is not a renderer regression.
+            return False, (f'UNFIT CATALOG: {kind} needs {values.get("what", "?")} >= '
+                           f'{values.get("need", "?")}, the test server has {values.get("have", "?")} '
+                           f'-- this scene proved nothing; use a larger library')
         if phase == 'done':
             done = True
             continue
-        if phase == 'armed':
+        if phase in ('armed', 'planned', 'ceiling'):
             continue
         if phase not in PHASES[kind] or phase in phases:
             return False, f'unknown or repeated poster phase {phase}'

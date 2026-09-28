@@ -224,6 +224,14 @@ impl Layout {
         Some(best.1)
     }
 
+    /// Grid rows one screenful spans below the content top: a row revealed at the top of the
+    /// viewport leaves every row at least this far below it undrawn. The grid head band only
+    /// pushes rows further down, so the document's head shows no more than this either.
+    #[cfg(any(test, feature = "devtriggers"))]
+    pub(super) fn rows_per_screen(&self) -> usize {
+        ((SCR_H - CONTENT_TOP) / self.grid_pitch()).ceil() as usize
+    }
+
     pub(super) fn visible_rows(&self, scroll: f32) -> (usize, usize) {
         if self.rows == 0 { return (0, 0); }
         let local = self.doc_to_grid(scroll);
@@ -469,6 +477,21 @@ mod tests {
         let at_grid = lay.row_reveal(8);
         let (lo, hi) = lay.visible_rows(at_grid);
         assert!(lo <= 8 && hi > 8, "{lo}..{hi}");
+    }
+
+    #[test]
+    fn rows_per_screen_bounds_what_a_revealed_row_leaves_on_screen() {
+        // The poster-gate scenes derive their targets from this: a row this far below the
+        // revealed one (or below the document's head) must not be on screen at all.
+        let lay = posters(true, 2, 40, true);
+        let per = lay.rows_per_screen();
+        assert!(per >= 2, "{per}");
+        for row in [0, 8, 20] {
+            let scroll = lay.row_reveal(row);
+            assert!(lay.row_y(row + per, scroll) >= SCR_H, "row {row}: +{per} is on screen");
+            // Tight, not merely safe: below the head band a full screenful really is this many.
+            assert!(row == 0 || lay.row_y(row + per - 1, scroll) < SCR_H, "row {row}: +{} is off screen", per - 1);
+        }
     }
 
     #[test]

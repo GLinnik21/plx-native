@@ -2223,34 +2223,42 @@ impl DetailScreen {
         let ground_flat = self
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
-        if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw(p, Rect::FULL);
-        }
-        if texture != 0 {
-            p.tex(
-                texture,
-                Rect::FULL.cover(width, height),
-                0.0,
-                theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
-            );
-        }
+        let art = crate::ui::widgets::WashArt {
+            tex: texture,
+            rect: Rect::FULL.cover(width, height),
+            uv: crate::gfx::UV_FULL,
+            tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
+        };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
-        if visible > 0.01 {
+        // The atmospheric ramp: nothing above the scrim's top, one straight stop to its foot.
+        let ramp = (visible > 0.01).then(|| {
+            let y0 = crate::ui::widgets::HERO_BASE_SCRIM_Y0;
+            let foot = crate::ui::detail_layout::base_scrim_a(crate::ui::consts::SCR_H, visible)
+                * self.preview_base_scrim;
+            let h = crate::ui::consts::SCR_H;
+            crate::ui::widgets::WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (h, foot), (h, foot)] }
+        });
+        // The still dissolves over its ground while the page scrolls, so where the ground is drawn
+        // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
+        let ramp_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
+            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp)
+        } else {
+            if texture != 0 {
+                p.tex_uv(art.tex, art.uv, art.rect, 0.0, art.tint);
+            }
+            false
+        };
+        if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
+            let y0 = ramp.stops[0].0;
             p.rect(
-                Rect::new(
-                    0.0,
-                    crate::ui::widgets::HERO_BASE_SCRIM_Y0,
-                    crate::ui::consts::SCR_W,
-                    crate::ui::consts::SCR_H - crate::ui::widgets::HERO_BASE_SCRIM_Y0,
-                ),
+                Rect::new(0.0, y0, crate::ui::consts::SCR_W, crate::ui::consts::SCR_H - y0),
                 0.0,
                 theme::scrim(0.0),
-                theme::scrim(
-                    crate::ui::detail_layout::base_scrim_a(crate::ui::consts::SCR_H, visible)
-                        * self.preview_base_scrim,
-                ),
+                theme::scrim(ramp.stops[1].1),
                 0.0,
             );
+        }
+        if visible > 0.01 {
             crate::ui::widgets::hero_scrim(
                 p,
                 visible * self.preview_field,
