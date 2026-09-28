@@ -4984,19 +4984,39 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
 
 
 # `bench: kind=<push|modal> cycle=<i>/<n> target=<name> worst_ms=<f> frames=<k> dur_ms=<d>
-# rss_kb=<r>` — one line per completed stress-bench cycle (`dev::scenarios::push_bench_tick` /
-# `modal_bench_tick`), and a terminal `bench: kind=<k> done cycles=<n>` once every cycle ran.
+# rss_kb=<r> tex=<n>/<kB> first_ms=<f> missed=<k> open=<half>[ close=<half>]` — one line per
+# completed stress-bench cycle (`dev::scenarios::push_bench_tick` / `modal_bench_tick`), and a
+# terminal `bench: kind=<k> done cycles=<n>` once every cycle ran. `missed` is the GATED number:
+# refreshes on which the panel repeated a picture, counted from present-to-present intervals
+# (`dev::scenarios::bench::HalfStats`). `worst_ms` is the largest Top->Swap, which on this driver
+# includes the frame's own vsync wait, so it is reported but not graded. Each `<half>` is
+# `first:<ms>,worst:<ms>@<i>,iv:<ms>,missed:<k>` — the open (press) and close (back) halves.
+BENCH_TAIL = (r"(?: tex=\S+)? first_ms=(?P<first>\d+(?:\.\d+)?) missed=(?P<missed>\d+)"
+              r" open=(?P<open>\S+)(?: close=(?P<close>\S+))?")
 BENCH_RE = re.compile(
     r"^bench: kind=(?P<kind>push|modal) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
     r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
-    r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+    r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)(?:" + BENCH_TAIL + r")?")
 BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal) done cycles=(?P<n>\d+)")
+
+
+def _bench_tail(m):
+    """The `first_ms`/`missed`/half fields of a matched `bench:` line; `missed` is `None` on a line
+    from a binary that predates the missed-refresh accounting."""
+    missed = m.group("missed")
+    return {
+        "first_ms": float(m.group("first")) if m.group("first") is not None else None,
+        "missed": int(missed) if missed is not None else None,
+        "open": m.group("open"),
+        "close": m.group("close"),
+    }
 
 
 def parse_bench(lines, kind):
     """Every completed `bench:` cycle for `kind` ("push"|"modal"), in log order, plus whether the
     terminal `done` line was seen. Each cycle: `{cycle, n, target, worst_ms, frames, dur_ms,
-    rss_kb}`, `cycle` 1-based (the wire format's own `cycle=<i>/<n>` is 1-based)."""
+    rss_kb, first_ms, missed, open, close}`, `cycle` 1-based (the wire format's own
+    `cycle=<i>/<n>` is 1-based)."""
     reject_simulator(lines)
     cycles = []
     done = False
@@ -5012,6 +5032,7 @@ def parse_bench(lines, kind):
                 "frames": int(m.group("frames")),
                 "dur_ms": int(m.group("dur")),
                 "rss_kb": int(m.group("rss")),
+                **_bench_tail(m),
             })
             continue
         m = BENCH_DONE_RE.match(s)
@@ -5020,19 +5041,58 @@ def parse_bench(lines, kind):
     return cycles, done
 
 
+def _grade_missed(samples, scene, unit):
+    """The frame gate every bench shares: the run's summed `missed` refreshes must not exceed
+    `bench_missed_max` (default 0 — a repeated picture is a visible drop). A line without the
+    field fails outright rather than grading as clean. Returns `(ok, detail)`."""
+    ceiling = scene.get("bench_missed_max", 0)
+    unaccounted = [c for c in samples if c["missed"] is None]
+    if unaccounted:
+        return False, (f" | FAIL: {len(unaccounted)} {unit} line(s) carry no `missed=` field — "
+                       f"a build older than the missed-refresh accounting cannot be graded")
+    total = sum(c["missed"] for c in samples)
+    dropped = [c for c in samples if c["missed"] > 0]
+    detail = (f" | missed refreshes={total} in {len(dropped)} {unit}(s) of {len(samples)} "
+              f"vs bench_missed_max {ceiling}")
+    if dropped:
+        worst = sorted(dropped, key=lambda c: (-c["missed"], c["cycle"]))[:3]
+        named = ", ".join(
+            f"cycle={c['cycle']}/{c['n']}"
+            + (f" dir={c['dir']}" if "dir" in c else "")
+            + f" target={c['target']} missed={c['missed']} open={c['open']}"
+            + (f" close={c['close']}" if c.get("close") else "")
+            for c in worst)
+        detail += f" | most missed: {named}"
+    ok = total <= ceiling
+    if not ok:
+        detail = " | FAIL:" + detail[2:]
+    return ok, detail
+
+
+def _worst_stats(samples):
+    sw = sorted(c["worst_ms"] for c in samples)
+    n = len(sw)
+    firsts = sorted(c["first_ms"] for c in samples if c["first_ms"] is not None)
+    out = (f" | worst_ms (Top->Swap, includes the vsync wait; reported, not graded) "
+           f"p50={sw[n // 2]:.1f} p95={sw[min(n - 1, int(n * 0.95))]:.1f} max={sw[-1]:.1f} n={n}")
+    if firsts:
+        out += f" | first_ms p50={firsts[len(firsts) // 2]:.1f} max={firsts[-1]:.1f}"
+    return out
+
+
 def grade_bench(scene, lines):
     """Grade a `bench: push`/`bench: modal` stress run (spec: 100 counted push/modal cycles).
 
-    FAILS unless: the `done` line is present (every cycle completed); every cycle's `worst_ms` is
-    <= `bench_worst_ms` (default 20.0 — a single missed 60 Hz frame is ~16.7 ms, so 20 gives a
-    hair of margin before calling it a miss); the mean `worst_ms` of the last 10 cycles is <= the
-    first 10's mean + `bench_drift_ms` (default 2.0); and the last cycle's `rss_kb` is <= cycle
-    10's `rss_kb` + `bench_rss_growth_kb` (default 8192).
+    FAILS unless: the `done` line is present (every cycle completed); the run's summed `missed`
+    refreshes are <= `bench_missed_max` (default 0 — see `_grade_missed`); the mean `worst_ms` of
+    the last 10 cycles is <= the first 10's mean + `bench_drift_ms` (default 2.0) — per-cycle cost
+    must not grow; and the last cycle's `rss_kb` is <= cycle 10's `rss_kb` + `bench_rss_growth_kb`
+    (default 8192).
 
-    `bench_latch_exempt_ms`, if the scene sets it, permits ONE FRAME's worth of overage per cycle
-    up to that ceiling — i.e. a cycle whose `worst_ms` is over `bench_worst_ms` but at or under
-    `bench_latch_exempt_ms` is not counted as a miss — and every such exemption is named in the
-    detail string rather than silently absorbed, so the report always says which cycle it was.
+    Why missed refreshes and not a Top->Swap ceiling: a frame's Top->Swap on this driver includes
+    its own wait for a free buffer, so a steady 60 fps animation reads 16.7-23 ms per frame without
+    the panel ever repeating a picture, while a present interval of more than 1.5 refreshes is a
+    repeat whichever side — CPU or GPU — was late. `worst_ms` stays on the line and in the detail.
 
     Returns `(ok, detail)`, `detail` already prefixed with a leading space+`|` per clause,
     matching every other `grade_*` helper's contract with the caller's `print`."""
@@ -5041,37 +5101,18 @@ def grade_bench(scene, lines):
     if not cycles:
         return False, f" | no `bench: kind={kind}` cycle lines — the bench never armed, or logged nothing"
 
-    worst_ceiling = scene.get("bench_worst_ms", 20.0)
     drift_ceiling = scene.get("bench_drift_ms", 2.0)
     rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
-    latch_exempt = scene.get("bench_latch_exempt_ms")
 
-    ok = True
     detail = f" | bench:{kind} {len(cycles)} cycle line(s) (expect n={cycles[-1]['n']})"
-
+    ok = True
     if not done:
         ok = False
         detail += " | FAIL: no `done` line — not every cycle completed"
 
-    misses, exempted = [], []
-    for c in cycles:
-        if c["worst_ms"] <= worst_ceiling:
-            continue
-        if latch_exempt is not None and c["worst_ms"] <= latch_exempt:
-            exempted.append(c)
-        else:
-            misses.append(c)
-    if misses:
-        ok = False
-        worst_ex = max(misses, key=lambda c: c["worst_ms"])
-        detail += (f" | FAIL: {len(misses)} cycle(s) over bench_worst_ms={worst_ceiling} (worst "
-                   f"cycle={worst_ex['cycle']}/{worst_ex['n']} target={worst_ex['target']} "
-                   f"worst_ms={worst_ex['worst_ms']:.1f})")
-    if exempted:
-        named = ", ".join(f"cycle={c['cycle']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
-                          for c in exempted)
-        detail += (f" | {len(exempted)} cycle(s) exempted under bench_latch_exempt_ms="
-                   f"{latch_exempt}: {named}")
+    missed_ok, missed_detail = _grade_missed(cycles, scene, "cycle")
+    ok = ok and missed_ok
+    detail += missed_detail
 
     worst_vals = [c["worst_ms"] for c in cycles]
     if len(worst_vals) >= 10:
@@ -5094,34 +5135,27 @@ def grade_bench(scene, lines):
     else:
         detail += f" | rss growth: only {len(cycles)} cycle(s), need >= 10 — not graded"
 
-    sw = sorted(worst_vals)
-    n = len(sw)
-    p50 = sw[n // 2]
-    p95 = sw[min(n - 1, int(n * 0.95))]
-    worst3 = sorted(cycles, key=lambda c: c["worst_ms"], reverse=True)[:3]
-    worst3_str = ", ".join(f"cycle={c['cycle']}/{c['n']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
-                           for c in worst3)
-    detail += (f" | worst_ms p50={p50:.1f} p95={p95:.1f} max={sw[-1]:.1f} n={n} | worst 3: {worst3_str}")
-    return ok, detail
+    return ok, detail + _worst_stats(cycles)
 
 
 # `bench: kind=deep cycle=<i>/<n> target=<name> dir=<push|pop> depth=<d> worst_ms=<f> frames=<k>
-# dur_ms=<d> rss_kb=<r>` — one line per completed DEEP-stack bench step (`dev::scenarios::
-# deep_bench_tick`), and a terminal `bench: kind=deep done cycles=<n> rss_root_kb=<r>` once every
-# step ran. Unlike `push`/`modal` (one open+close round trip per line), a `deep` line is ONE nav op
-# — a push OR a pop, never both — which is why it carries its own `dir`/`depth` fields the other
-# two kinds don't need.
+# dur_ms=<d> rss_kb=<r> tex=<n>/<kB> first_ms=<f> missed=<k> open=<half>` — one line per completed
+# DEEP-stack bench step (`dev::scenarios::deep_bench_tick`), and a terminal `bench: kind=deep done
+# cycles=<n> rss_root_kb=<r>` once every step ran. Unlike `push`/`modal` (one open+close round trip
+# per line), a `deep` line is ONE nav op — a push OR a pop, never both — which is why it carries
+# its own `dir`/`depth` fields and a single measured half.
 BENCH_DEEP_RE = re.compile(
     r"^bench: kind=deep cycle=(?P<cycle>\d+)/(?P<n>\d+) target=(?P<target>[\w-]+) "
     r"dir=(?P<dir>push|pop) depth=(?P<depth>\d+) worst_ms=(?P<worst>\d+(?:\.\d+)?) "
-    r"frames=(?P<frames>\d+) dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+    r"frames=(?P<frames>\d+) dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)(?:" + BENCH_TAIL + r")?")
 BENCH_DEEP_DONE_RE = re.compile(r"^bench: kind=deep done cycles=(?P<n>\d+) rss_root_kb=(?P<rss>\d+)")
 
 
 def parse_deep_bench(lines):
     """Every completed `bench: kind=deep` step, in log order, plus the `done` line's own
     `rss_root_kb` (`None` if it never printed). Each step: `{cycle, n, target, dir, depth,
-    worst_ms, frames, dur_ms, rss_kb}`, `cycle` 1-based exactly like `parse_bench`."""
+    worst_ms, frames, dur_ms, rss_kb, first_ms, missed, open, close}`, `cycle` 1-based exactly
+    like `parse_bench`."""
     reject_simulator(lines)
     steps = []
     rss_root_kb = None
@@ -5139,6 +5173,7 @@ def parse_deep_bench(lines):
                 "frames": int(m.group("frames")),
                 "dur_ms": int(m.group("dur")),
                 "rss_kb": int(m.group("rss")),
+                **_bench_tail(m),
             })
             continue
         m = BENCH_DEEP_DONE_RE.match(s)
@@ -5151,17 +5186,22 @@ def grade_deep_bench(scene, lines):
     """Grade a `bench: kind=deep` DEEP nav-stack stress run (spec: `depth` pushes with no pop in
     between, then `depth` pops back to the root one page at a time — `2*depth` steps total).
 
-    FAILS unless: all `2*depth` steps AND the terminal `done` line are present; every step's
-    `worst_ms` is <= `bench_worst_ms` (default 20.0, same ceiling `grade_bench` uses); the mean
-    `worst_ms` of the LAST 10 pushes is <= the FIRST 10 pushes' mean + `bench_drift_ms` (default
-    2.0) — catches per-push cost growing with depth — and the identical check over pops, where the
-    FIRST 10 pops are the DEEPEST (recorded right after the walk turns around) and the LAST 10 are
-    the SHALLOWEST (just before the root); the deepest push's `rss_kb` is <= the 10th step's
-    `rss_kb` + `bench_depth_rss_kb` (default 16384 — ~180kB/level over the 90 levels past the
-    first 10, retained STATE rather than pixels) — catches memory growing with depth; and the
-    `done` line's own `rss_root_kb` is <= the 10th step's `rss_kb` + `bench_rss_growth_kb` (default
-    8192, the same key `grade_bench` uses) — the stack must give everything back once fully
-    unwound.
+    FAILS unless: all `2*depth` steps AND the terminal `done` line are present; the summed `missed`
+    refreshes are <= `bench_missed_max` (default 0, `_grade_missed`, same as `grade_bench`); the
+    mean `worst_ms` of the LAST 10 pushes is <= the FIRST 10 pushes' mean + `bench_drift_ms`
+    (default 2.0) — catches per-push cost growing with depth — and the identical check over pops,
+    where the FIRST 10 pops are the DEEPEST (recorded right after the walk turns around) and the
+    LAST 10 are the SHALLOWEST (just before the root); the deepest push's `rss_kb` is <= the
+    unwound root's `rss_root_kb` + `bench_depth_rss_kb` (default 16384 — ~160kB/level over 100
+    levels, retained STATE rather than pixels) — catches memory held BY depth, which unwinding
+    gives back; and `rss_root_kb` itself — the process once the stack is fully unwound — is <= the
+    absolute `bench_root_rss_kb` when the scene sets one — catches what unwinding did NOT give
+    back.
+
+    Both are measured against the END state, never against step 10: step 10's RSS is read while
+    the image, text and texture caches are still filling, and moved ~16 MB between two device runs
+    whose unwound root RSS agreed within 0.6 MB (step 10 68104/81732 kB, root 86856/86296 kB). By
+    the unwound root those caches are warm, so the difference to the deepest push is depth alone.
 
     Returns `(ok, detail)`, same contract as `grade_bench`."""
     steps, rss_root_kb = parse_deep_bench(lines)
@@ -5169,10 +5209,9 @@ def grade_deep_bench(scene, lines):
         return False, " | no `bench: kind=deep` step lines — the bench never armed, or logged nothing"
 
     n = steps[0]["n"]
-    worst_ceiling = scene.get("bench_worst_ms", 20.0)
     drift_ceiling = scene.get("bench_drift_ms", 2.0)
-    rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
     depth_rss_ceiling = scene.get("bench_depth_rss_kb", 16384)
+    root_rss_ceiling = scene.get("bench_root_rss_kb")
 
     ok = True
     detail = f" | bench:deep {len(steps)} step line(s) (expect n={n})"
@@ -5181,13 +5220,9 @@ def grade_deep_bench(scene, lines):
         ok = False
         detail += " | FAIL: no `done` line, or fewer than the expected step count — not every step completed"
 
-    misses = [s for s in steps if s["worst_ms"] > worst_ceiling]
-    if misses:
-        ok = False
-        worst_ex = max(misses, key=lambda s: s["worst_ms"])
-        detail += (f" | FAIL: {len(misses)} step(s) over bench_worst_ms={worst_ceiling} (worst "
-                   f"step cycle={worst_ex['cycle']}/{worst_ex['n']} dir={worst_ex['dir']} "
-                   f"target={worst_ex['target']} worst_ms={worst_ex['worst_ms']:.1f})")
+    missed_ok, missed_detail = _grade_missed(steps, scene, "step")
+    ok = ok and missed_ok
+    detail += missed_detail
 
     pushes = [s for s in steps if s["dir"] == "push"]
     pops = [s for s in steps if s["dir"] == "pop"]
@@ -5208,23 +5243,20 @@ def grade_deep_bench(scene, lines):
     drift_check("push", pushes)
     drift_check("pop", pops)
 
-    if len(steps) >= 10:
-        rss10 = steps[9]["rss_kb"]
-        if pushes:
-            rss_depth_max = pushes[-1]["rss_kb"]
-            depth_growth = rss_depth_max - rss10
-            ok = ok and depth_growth <= depth_rss_ceiling
-            detail += (f" | depth rss growth(maxdepth-step10)={depth_growth}kB (step10={rss10}, "
-                       f"maxdepth={rss_depth_max}) vs bench_depth_rss_kb {depth_rss_ceiling}")
-        if rss_root_kb is not None:
-            root_growth = rss_root_kb - rss10
-            ok = ok and root_growth <= rss_ceiling
-            detail += (f" | root rss growth(root-step10)={root_growth}kB (step10={rss10}, "
-                       f"root={rss_root_kb}) vs bench_rss_growth_kb {rss_ceiling}")
-    else:
-        detail += f" | rss growth: only {len(steps)} step(s), need >= 10 — not graded"
+    if pushes and rss_root_kb is not None:
+        rss_depth_max = pushes[-1]["rss_kb"]
+        depth_growth = rss_depth_max - rss_root_kb
+        ok = ok and depth_growth <= depth_rss_ceiling
+        detail += (f" | depth rss(maxdepth-root)={depth_growth}kB (maxdepth={rss_depth_max}, "
+                   f"root={rss_root_kb}) vs bench_depth_rss_kb {depth_rss_ceiling}")
+    if rss_root_kb is not None:
+        if root_rss_ceiling is None:
+            detail += f" | root rss={rss_root_kb}kB (no bench_root_rss_kb — not graded)"
+        else:
+            ok = ok and rss_root_kb <= root_rss_ceiling
+            detail += f" | root rss={rss_root_kb}kB vs bench_root_rss_kb {root_rss_ceiling}"
 
-    return ok, detail
+    return ok, detail + _worst_stats(steps)
 
 
 def rate_stats(vals):
@@ -5928,13 +5960,13 @@ def main():
                   f"{ops:20s} {', '.join(c.get('covers', []))}{mark}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
-            # A bench scene (push/modal/deep-100) gates on bench_worst_ms, not loop_floor — it has
-            # no `loop_floor` key at all, so assuming one crashed the listing partway through
+            # A bench scene (push/modal/deep-100) gates on missed refreshes, not loop_floor — it
+            # has no `loop_floor` key at all, so assuming one crashed the listing partway through
             # printing. Print whichever this scene actually declares.
             if s.get("loop_floor") is not None:
                 gates = f"loop_floor={s['loop_floor']}"
-            elif s.get("bench_worst_ms") is not None:
-                gates = f"bench_worst_ms={s['bench_worst_ms']}"
+            elif s.get("bench"):
+                gates = f"bench_missed_max={s.get('bench_missed_max', 0)}"
             else:
                 gates = "gate=?"
             if s.get("fps_floor") is not None:

@@ -2422,7 +2422,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
         // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
         // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
-        crate::dev::scenarios::bench_frame_tick(app, fr.present);
+        crate::dev::scenarios::bench_frame_tick(app, fr.present, fr.now);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
     if crate::text::take_measure_fault() && !app.measure_fault_logged {
