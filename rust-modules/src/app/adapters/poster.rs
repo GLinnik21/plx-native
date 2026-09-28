@@ -1505,7 +1505,7 @@ fn poster_worker() {
             if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
                 match bake_fan(client, srv, rk, stamp, cache_gen, token_gen) {
                     fan::FanOutcome::Baked(out) => {
-                        px = img::img_malloc_copy(&out.px);
+                        px = img::img_malloc_copy(&out.px, || format!("{}x{} collection {rk} fan", out.w, out.h));
                         (w, h) = (out.w as c_int, out.h as c_int);
                     }
                     fan::FanOutcome::NoArt => crate::log(&format!(
