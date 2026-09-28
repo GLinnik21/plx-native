@@ -5928,7 +5928,15 @@ def main():
                   f"{ops:20s} {', '.join(c.get('covers', []))}{mark}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
-            gates = f"loop_floor={s['loop_floor']}"
+            # A bench scene (push/modal/deep-100) gates on bench_worst_ms, not loop_floor — it has
+            # no `loop_floor` key at all, so assuming one crashed the listing partway through
+            # printing. Print whichever this scene actually declares.
+            if s.get("loop_floor") is not None:
+                gates = f"loop_floor={s['loop_floor']}"
+            elif s.get("bench_worst_ms") is not None:
+                gates = f"bench_worst_ms={s['bench_worst_ms']}"
+            else:
+                gates = "gate=?"
             if s.get("fps_floor") is not None:
                 gates += f" fps_floor={s['fps_floor']}"
             if s.get("fps_ceiling") is not None:
