@@ -53,6 +53,12 @@ missing or unknown keys, invalid placeholders, and incomplete plural forms. The 
 accessors also make unknown message keys and wrong argument types compilation errors. Source
 wording can change without renaming its key; change a key only when its meaning changes.
 
+Some slots have a fixed width and line count, and a translation that overflows one ends in `…`.
+Host tests measure each shipped language with the TV's own glyph widths and fail when such a line
+would not fit. The covered slots are Settings row titles and subtitles, the sign-in failure
+read-out, alert answer buttons, and the player's More menu. When one of these tests fails, shorten
+the wording; do not abbreviate it past readability.
+
 Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
 regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped

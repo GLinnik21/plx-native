@@ -3531,6 +3531,13 @@ impl<'a> StatusOverlay<'a> {
         let (sz, ink) = Self::reason_face(self.kind);
         TextView::new(r.to_str().unwrap_or(""), sz, ink).h(HAlign::Center).max_lines(2)
     }
+    /// Whether `reason` would be cut short in a `Failed` read-out's two-line slot [`Self::REASON_W`]
+    /// wide, measured through the slot's own view, with `headroom` of the width to spare.
+    #[cfg(test)]
+    pub(crate) fn failed_reason_truncates(reason: &core::ffi::CStr, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> bool {
+        let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed);
+        o.reason_view(reason).with_measure(measure).truncates(Self::REASON_W * headroom)
+    }
     /// The two-line slot's height from one measured line: one line pitch plus the last line's box.
     fn reason_slot_h(&self, line_h: f32) -> f32 {
         self.reason_view(c"").line_h() + line_h

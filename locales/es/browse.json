@@ -182,7 +182,7 @@
   "browse.auth.plex_unreachable": "No se pudo conectar con Plex. Comprueba tu conexión a internet. Para iniciar sesión necesitas conexión a internet.",
   "browse.auth.switch_failed": "No se pudo cambiar de perfil; comprueba la conexión.",
   "browse.auth.offline_profile": "No hay conexión a internet. Elige este perfil una vez con conexión para poder usarlo sin conexión.",
-  "browse.auth.insecure": "Se encontró tu servidor Plex, pero no se pudo establecer una conexión segura (HTTPS). Comprueba que el servidor permite conexiones seguras e inténtalo de nuevo.",
+  "browse.auth.insecure": "Se encontró tu servidor Plex, pero sin conexión segura (HTTPS). Comprueba que el servidor la admita e inténtalo de nuevo.",
   "browse.auth.no_access": "{profile} no tiene acceso a ningún servidor",
   "browse.auth.no_source_access": "{profile} no tiene acceso a este servidor",
   "browse.kind.episodes": "Episodios",
@@ -342,21 +342,21 @@
   "browse.detail.full_screen_hint": "{key} Pantalla completa",
   "browse.auth.discovery_trouble": "Plex no responde. Seguimos intentándolo…",
   "browse.auth.signin_refused": "Plex no aceptó este inicio de sesión. Inténtalo de nuevo.",
-  "browse.auth.servers_unreachable": "plex.tv devolvió tus servidores, pero ninguno respondió. Comprueba que Plex Media Server esté encendido y conectado e inténtalo de nuevo.",
+  "browse.auth.servers_unreachable": "plex.tv devolvió tus servidores, pero ninguno respondió. Comprueba que Plex Media Server está encendido y en línea, y reinténtalo.",
   "browse.auth.plex_tls": "Este televisor no pudo conectarse de forma segura con plex.tv. Comprueba la fecha y la hora del televisor e inténtalo de nuevo.",
   "browse.auth.plex_unavailable": "plex.tv tiene problemas en este momento; no se comprobaron tus servidores. Inténtalo de nuevo en unos minutos.",
   "browse.auth.profile_signin_refused": "plex.tv rechazó el inicio de sesión de {profile}. Inténtalo de nuevo.",
   "browse.auth.server_profile_refused": "{server} rechazó a {profile}. Inténtalo de nuevo.",
   "browse.auth.switch_invalid": "No se pudo cambiar de perfil: el servidor devolvió una respuesta no válida.",
   "browse.auth.plex_dns_retry": {
-    "one": "Este televisor no pudo encontrar plex.tv; no se comprobaron tus servidores. Se intentó una vez. Comprueba la conexión a internet del televisor e inténtalo de nuevo.",
-    "many": "Este televisor no pudo encontrar plex.tv; no se comprobaron tus servidores. Se intentó {count} veces. Comprueba la conexión a internet del televisor e inténtalo de nuevo.",
-    "other": "Este televisor no pudo encontrar plex.tv; no se comprobaron tus servidores. Se intentó {count} veces. Comprueba la conexión a internet del televisor e inténtalo de nuevo."
+    "one": "No se encontró plex.tv y no se comprobaron tus servidores. Se intentó una vez. Revisa la conexión a internet del televisor.",
+    "many": "No se encontró plex.tv y no se comprobaron tus servidores. Se intentó {count} veces. Revisa la conexión a internet del televisor.",
+    "other": "No se encontró plex.tv y no se comprobaron tus servidores. Se intentó {count} veces. Revisa la conexión a internet del televisor."
   },
   "browse.auth.plex_connect_retry": {
-    "one": "Este televisor no pudo conectarse con plex.tv; no se comprobaron tus servidores. Se intentó una vez. Comprueba la conexión a internet del televisor e inténtalo de nuevo.",
-    "many": "Este televisor no pudo conectarse con plex.tv; no se comprobaron tus servidores. Se intentó {count} veces. Comprueba la conexión a internet del televisor e inténtalo de nuevo.",
-    "other": "Este televisor no pudo conectarse con plex.tv; no se comprobaron tus servidores. Se intentó {count} veces. Comprueba la conexión a internet del televisor e inténtalo de nuevo."
+    "one": "No se pudo conectar con plex.tv y no se comprobaron tus servidores. Se intentó una vez. Revisa la conexión a internet del televisor.",
+    "many": "No se pudo conectar con plex.tv y no se comprobaron tus servidores. Se intentó {count} veces. Revisa la conexión a internet del televisor.",
+    "other": "No se pudo conectar con plex.tv y no se comprobaron tus servidores. Se intentó {count} veces. Revisa la conexión a internet del televisor."
   },
   "browse.auth.plaintext_offer": "Tu servidor Plex está en esta red, sin HTTPS. Selecciona Conectar para usarlo sin cifrado.",
   "browse.auth.plaintext_allowed": "Tu servidor Plex está en esta red, sin HTTPS. Selecciona Reintentar para usarlo sin cifrado.",

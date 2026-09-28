@@ -90,6 +90,10 @@ pub enum Action {
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
 /// takes the appear fraction as a parameter instead of stepping its own `Popover`.
+/// The panel's width — fixed, so every row's label and value must fit it in every language
+/// (`every_row_fits_the_panel_in_every_language`).
+const PANEL_W: f32 = 448.0;
+
 pub(crate) struct MoreMenuState {
     table: TableView, // main-thread only
     /// The ordered rows captured at construction — the ONE place row order lives, so [`on_ok`]'s
@@ -168,7 +172,7 @@ impl MoreMenuState {
     /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
     /// other does not make the panel hop.
     fn panel_rect(&self) -> Rect {
-        let pw = 448.0f32;
+        let pw = PANEL_W;
         let px = crate::ui::player_hud::CTRL_RIGHT - pw;
         let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
                                     // The ceiling was 320 while this menu held one row, and it was invisible then. With the
@@ -431,7 +435,7 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
 /// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (pw, ph) = (448.0f32, 320.0f32);
+    let (pw, ph) = (PANEL_W, 320.0f32);
     let bottom = SCR_H - 316.0;
     out.push((
         "… overflow menu panel",
@@ -686,5 +690,24 @@ mod focus_tests {
             );
             assert_eq!(got.elem, 2);
         });
+    }
+
+    /// **Every row fits the panel, in every shipped language.** The panel is [`PANEL_W`] wide
+    /// whatever it lists, and a row elides its label to what the value beside it leaves — Spanish
+    /// *Estadísticas avanzadas* and Belarusian *Падрабязная статыстыка* both ended in `…` beside
+    /// their *Off*. Measured with the device's whole-pixel advances.
+    #[test]
+    fn every_row_fits_the_panel_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let ps = crate::route::PlaybackSession::default();
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let menu = MoreMenuState::new(&ps);
+            out.extend(menu.table.elided_rows(PANEL_W, &ShippedMeasure, HEADROOM)
+                .into_iter().map(|e| format!("{}: {e}", language.tag())));
+        }
+        assert!(out.is_empty(), "rows the menu would end in an ellipsis:\n  {}", out.join("\n  "));
     }
 }

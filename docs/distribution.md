@@ -1726,27 +1726,21 @@ section closed anything at all.
 4. **Does anything on a webOS TV display `appDescription` at all** for a sideloaded app, or is it
    Content-Store-listing metadata only? If the latter, this closes #41's listing half and nothing
    visible on the set, which is still the right answer for a submission but is a different claim.
-5. **The app does not crash or misrender on a language change** — which it structurally cannot,
-   see §12.5, but the checklist item asks about behaviour and behaviour is measured.
+5. **The app does not crash or misrender on a language change** — the checklist item asks about
+   behaviour, and behaviour is measured; the UI now follows the language (§12.5).
 
-### 12.5 What is explicitly NOT closed
+### 12.5 The UI half (since closed)
 
-**The UI is English-only and stays that way in this change.** There are ~203 display literals
-across 45 files, and `Label`/`Button` take a non-owning `*const c_char` — an owned `String` needs a
-lifetime story that a metadata change has no business inventing. The CJK fallback face landed
-separately and is a *precondition* for a translated UI, not the thing itself: glyph coverage means
-Korean renders, not that anything is written in Korean.
+**Superseded: the UI is localized now.** When this section was written the UI was English-only,
+with ~203 display literals across 45 files and no string ownership story, and the native UI was
+locale-blind apart from a best-effort `X-Plex-Language` read from the POSIX locale environment.
+Both are gone. The app's own text comes from bundled catalogs (English, Spanish, Belarusian), the
+UI language resolves from a saved Settings → Language override, then the TV UI language reported
+by the native Settings Service, then the process locale, then English, and
+`plex::identity::language` now sends that resolved language as `X-Plex-Language`.
+[`docs/localization.md`](localization.md) is the current account of runtime behaviour and of its
+verification on the television.
 
-**The native UI remains locale-blind, but PMS metadata has a best-effort locale.**
-`plex::identity::language` reads the inherited POSIX `LC_ALL`, `LC_MESSAGES`, then `LANG` and
-validates the value; `plex::client::pms_headers` and `AccountClient::headers` send the result as
-`X-Plex-Language`. An absent, neutral, or malformed locale omits the header and leaves PMS on its
-default language. The app does not query webOS's language service, so whether the TV launcher
-exports the menu language into that process environment is a device acceptance question, not a
-host claim. This improves server-returned strings without pretending that the app's own display
-literals are translated.
-
-**So the honest mark for #41** is: the metadata half is implemented and gated; the UI half is
-English-only by design; and the whole thing is **unverified on a television** until §12.4 item 1 is
-run. A tester who changes the language and finds an English UI has found a documented decision, not
-a defect — but "Pass" cannot be written next to this row on the strength of this section alone.
+**So the mark for #41** is: the metadata half is implemented and gated as above; the UI half is
+implemented by the localization work and verified on the webOS 4.5 set as `docs/localization.md`
+records; the launcher-metadata acceptance questions in §12.4 are still separate device checks.

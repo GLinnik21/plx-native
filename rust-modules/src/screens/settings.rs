@@ -1439,6 +1439,10 @@ mod test_support;
 mod draw_and_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "settings_text_fit_tests.rs"]
+mod text_fit_tests;
+
+#[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
 mod root_navigation_tests;
 

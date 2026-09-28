@@ -567,6 +567,25 @@ impl TableView {
         width.ceil()
     }
 
+    /// Every row label or sub-line that a `frame_w`-wide panel would end in an ellipsis, with
+    /// `headroom` of each row's label budget to spare — for the per-language text-fit tests, which
+    /// measure with the device's own advances (`fontcov::advances::ShippedMeasure`).
+    #[cfg(test)]
+    pub(crate) fn elided_rows(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<String> {
+        let (size, bold) = self.label_style();
+        let mut out = Vec::new();
+        for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| !r.sep) {
+            let budget = self.label_width(row, frame_w, measure) * headroom;
+            for (text, size, bold) in [(&row.label, size, bold), (&row.detail, theme::size::CAPTION, false)] {
+                let w = measure.width_str(text, size, bold);
+                if w > budget {
+                    out.push(format!("{text:?} is {w:.0}px in a {budget:.0}px column"));
+                }
+            }
+        }
+        out
+    }
+
     fn label_style(&self) -> (std::os::raw::c_int, bool) {
         if self.compact { (theme::size::BODY, false) } else { (theme::size::HEADLINE, true) }
     }

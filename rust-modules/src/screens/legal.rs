@@ -142,6 +142,11 @@ impl LogicalState for IndexState {
 }
 
 impl LegalIndex {
+    #[cfg(test)]
+    pub(crate) fn table_for_test(&self) -> &TableView {
+        &self.table
+    }
+
     pub(crate) fn new(entry: EntryId) -> Self {
         let mut s = Section::new(crate::i18n::msg::settings_legal_section());
         for page in Page::ALL {

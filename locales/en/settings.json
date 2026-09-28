@@ -292,7 +292,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_policy"
   },
   "settings.consent.preview_errors_id": {
-    "value": "The identifier on your crash reports, and how to have them deleted.",
+    "value": "Your crash report identifier and how to have reports deleted.",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_errors_id"
   },
   "settings.consent.preview_analytics_id": {

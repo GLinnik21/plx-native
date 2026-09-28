@@ -1008,7 +1008,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // that can show every sign-in cause's glyph without a network call or an account.
     if let Some(case) = crate::dev::scenarios::readout_case() {
         let (message, incident) = case.canned_login_failure();
-        return output_failed(output, epoch, message, incident, None);
+        return output_failed(output, epoch, &message, incident, None);
     }
     let ac = AccountClient::new(&cid, None);
 

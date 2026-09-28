@@ -132,6 +132,11 @@ impl LogicalState for ConsentState {
 }
 
 impl ConsentPage {
+    #[cfg(test)]
+    pub(crate) fn table_for_test(&self) -> &TableView {
+        &self.table
+    }
+
     /// Privacy & data, seeded from the published decision.
     pub(crate) fn settings(entry: EntryId, _cx: &Cx<'_, InnerHost>, _fx: &mut Effects<'_, InnerHost>) -> Self {
         let prev = consent::current().unwrap_or_default();

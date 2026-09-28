@@ -400,6 +400,142 @@ pub(crate) fn shipped(name: &str) -> &'static Result<Coverage, String> {
     })
 }
 
+/// **The shipped faces' horizontal advances, as a host-test text measure.** Unit tests have no
+/// SDL_ttf, so every other test `Measure` is a per-character guess — and a guess cannot say whether
+/// a translated line fits its row. This one reads `cmap`, `head`, `hhea` and `hmtx` out of
+/// `pkg/appfont*.ttf` and sums one advance per character, each rounded to a WHOLE pixel at the
+/// requested size: the faces are opened with hinting on (`TTF_HINTING_LIGHT`), so FreeType hands
+/// SDL2_ttf 2.0.x (the only versions any television ships) pixel-rounded advances, which it caches
+/// per glyph (`FT_CEIL(horiAdvance)`), and `TTF_SizeUTF8` is a plain left-to-right sum of them. The
+/// simulator's newer SDL_ttf sums fractional advances instead, which is why a sub-line the
+/// simulator fits can still come out ellipsised on the television (2026-09-28, the Belarusian
+/// Settings root).
+#[cfg(test)]
+pub(crate) mod advances {
+    use super::{be16, be32};
+    use std::collections::HashMap;
+
+    pub(crate) struct Face {
+        upem: f32,
+        glyph: HashMap<u32, u32>,
+        advance: Vec<u32>,
+    }
+
+    fn table<'a>(font: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
+        let n = be16(font, 4)? as usize;
+        (0..n).find_map(|i| {
+            let rec = font.get(12 + i * 16..12 + i * 16 + 16)?;
+            if &rec[0..4] != tag {
+                return None;
+            }
+            let (off, len) = (be32(rec, 8)? as usize, be32(rec, 12)? as usize);
+            font.get(off..off + len)
+        })
+    }
+
+    fn cmap(t: &[u8], out: &mut HashMap<u32, u32>) -> Option<()> {
+        for i in 0..be16(t, 2)? as usize {
+            let (plat, enc, off) = (be16(t, 4 + 8 * i)?, be16(t, 6 + 8 * i)?, be32(t, 8 + 8 * i)?);
+            if !super::is_unicode(plat, enc) {
+                continue;
+            }
+            let sub = t.get(off as usize..)?;
+            match be16(sub, 0)? {
+                4 => {
+                    let seg2 = be16(sub, 6)? as usize;
+                    let (end_at, start_at, delta_at, ro_at) = (14, 16 + seg2, 16 + 2 * seg2, 16 + 3 * seg2);
+                    for s in 0..seg2 / 2 {
+                        let (end, start) = (be16(sub, end_at + 2 * s)?, be16(sub, start_at + 2 * s)?);
+                        let (delta, ro) = (be16(sub, delta_at + 2 * s)?, be16(sub, ro_at + 2 * s)?);
+                        for cp in start..=end.min(0xFFFE) {
+                            let g = if ro == 0 {
+                                cp.wrapping_add(delta) & 0xFFFF
+                            } else {
+                                match be16(sub, ro_at + 2 * s + ro as usize + 2 * (cp - start) as usize) {
+                                    Some(0) | None => 0,
+                                    Some(g) => g.wrapping_add(delta) & 0xFFFF,
+                                }
+                            };
+                            if g != 0 {
+                                out.entry(cp).or_insert(g);
+                            }
+                        }
+                    }
+                }
+                12 => {
+                    for gi in 0..be32(sub, 12)? as usize {
+                        let g = sub.get(16 + gi * 12..)?;
+                        let (lo, hi, gid) = (be32(g, 0)?, be32(g, 4)?, be32(g, 8)?);
+                        for cp in lo..=hi.min(0x10FFFF) {
+                            out.entry(cp).or_insert(gid + (cp - lo));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(())
+    }
+
+    impl Face {
+        fn parse(font: &[u8]) -> Option<Face> {
+            let upem = be16(table(font, b"head")?, 18)? as f32;
+            let metrics = be16(table(font, b"hhea")?, 34)? as usize;
+            let hmtx = table(font, b"hmtx")?;
+            let advance = (0..metrics).map(|i| be16(hmtx, 4 * i)).collect::<Option<Vec<_>>>()?;
+            let mut glyph = HashMap::new();
+            cmap(table(font, b"cmap")?, &mut glyph)?;
+            Some(Face { upem, glyph, advance })
+        }
+
+        /// `s` at pixel size `size`, one whole-pixel advance per character (see the item doc).
+        pub(crate) fn width(&self, s: &str, size: i32) -> f32 {
+            s.chars()
+                .map(|ch| {
+                    let g = self.glyph.get(&(ch as u32)).copied().unwrap_or(0) as usize;
+                    // Glyphs past `numberOfHMetrics` share the last advance (the `hmtx` rule).
+                    let units = self.advance.get(g).or(self.advance.last()).copied().unwrap_or(0);
+                    (units as f32 * size as f32 / self.upem).round()
+                })
+                .sum()
+        }
+    }
+
+    /// One of the two shipped text faces, parsed once for the test binary.
+    pub(crate) fn shipped(bold: bool) -> &'static Face {
+        use std::sync::OnceLock;
+        static REG: OnceLock<Face> = OnceLock::new();
+        static BOLD: OnceLock<Face> = OnceLock::new();
+        let (slot, name) = if bold { (&BOLD, "appfont-bold.ttf") } else { (&REG, "appfont.ttf") };
+        slot.get_or_init(|| {
+            let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../pkg")).join(name);
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            Face::parse(&bytes).unwrap_or_else(|| panic!("{}: unreadable metrics tables", p.display()))
+        })
+    }
+
+    /// The share of a column a line may fill under [`ShippedMeasure`]. The measure models the
+    /// device's whole-pixel advances but not its kerning or hinting quirks, so a line that clears
+    /// its column by one pixel here (731 of 732 was a real Belarusian Settings candidate) is left
+    /// no margin at all on the set.
+    pub(crate) const HEADROOM: f32 = 0.98;
+
+    /// A [`crate::ui::machine::Measure`] over the shipped faces' real advances.
+    pub(crate) struct ShippedMeasure;
+
+    impl crate::ui::machine::Measure for ShippedMeasure {
+        fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+            shipped(bold).width(&s.to_string_lossy(), sz)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            sz as f32 * 0.73
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            sz as f32 * 1.21
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // THE GATE. Everything below runs in `make check`.
 // ------------------------------------------------------------------------------------------------

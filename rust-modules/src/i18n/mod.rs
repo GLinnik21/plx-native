@@ -263,6 +263,22 @@ pub(crate) fn pseudo_on_this_thread_for_test() -> ThreadLocaleGuard {
     ThreadLocaleGuard(THREAD_LOCALE.with(|slot| slot.replace(Some(pseudo))))
 }
 
+/// Resolve every catalog accessor on THIS test thread in one shipped UI language until the guard
+/// drops — the pseudo-locale's thread-local door, for tests that measure real translations.
+#[cfg(test)]
+pub(crate) fn language_on_this_thread_for_test(preference: Preference) -> ThreadLocaleGuard {
+    static EN: OnceLock<LocaleContext> = OnceLock::new();
+    static ES: OnceLock<LocaleContext> = OnceLock::new();
+    static BE: OnceLock<LocaleContext> = OnceLock::new();
+    let slot = match preference {
+        Preference::Es => &ES,
+        Preference::Be => &BE,
+        Preference::En | Preference::System => &EN,
+    };
+    let cx = slot.get_or_init(|| LocaleContext::resolve(preference, None, None, None, None));
+    ThreadLocaleGuard(THREAD_LOCALE.with(|slot| slot.replace(Some(cx))))
+}
+
 #[cfg(test)]
 pub(crate) struct ThreadLocaleGuard(Option<&'static LocaleContext>);
 

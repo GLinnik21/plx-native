@@ -2141,6 +2141,10 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
 }
 
 #[cfg(test)]
+#[path = "login_text_fit_tests.rs"]
+mod text_fit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, LazyLock};
