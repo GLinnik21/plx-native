@@ -701,12 +701,8 @@ fn search_target(item: &crate::search::Item, request: &crate::screens::registry:
                     guid: item.tag_key.clone(), name: item.name.clone(), thumb: item.thumb.clone() }))
         }
         (crate::search::Item::Collection(hit), SearchReq::Collection { sid, rk, tag })
-            if hit.item.sid == *sid && hit.item.rk == *rk && !rk.is_empty() && hit.tag == *tag =>
-            Some(AppArg::Content(hit.route())),
-        (crate::search::Item::Tag(item), SearchReq::Collection { sid, rk, tag }) if rk.is_empty() =>
-            item.collection_route().filter(|route| matches!(route,
-                ContentArg::Collection(id) if id.sid == *sid && id.tag == *tag))
-                .map(AppArg::Content),
+            if hit.item.sid == *sid && hit.item.rk == *rk && hit.tag == *tag =>
+            hit.route().map(AppArg::Content),
         _ => None,
     }
 }
@@ -803,7 +799,8 @@ mod search_action_tests {
         assert!(search_target(&hit, &SearchReq::Detail { sid: a, rk: "50007".into() }).is_none(),
             "a collection never opens as an item detail");
         // the tag-shaped fallback: no ratingKey, resolved on the page by section + tag id
-        let tag = Item::Tag(TagHit { sid: a, id: "7".into(), sec: 1, name: "Shorts".into(), ..Default::default() });
+        let tag = Item::Collection(crate::search::CollectionHit::from_tag(
+            &TagHit { sid: a, id: "7".into(), sec: 1, name: "Shorts".into(), ..Default::default() }));
         assert!(search_target(&tag, &req(a, "", 7)) == Some(AppArg::Content(ContentArg::Collection(
             crate::plex::collections::CollectionRef::by_tag(a, 1, 7, "Shorts")))));
         assert!(search_target(&tag, &req(a, "", 8)).is_none());

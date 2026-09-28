@@ -208,6 +208,8 @@ impl SearchScreen {
                 let identity = match item {
                     Item::Media(media) if !media.rk.is_empty() => Identity::Media(shelf.kind, media.sid, media.rk.clone()),
                     Item::Collection(hit) if !hit.item.rk.is_empty() => Identity::Media(shelf.kind, hit.item.sid, hit.item.rk.clone()),
+                    // a tag-shaped collection keys on its tag id, as it did while it was a tag
+                    Item::Collection(hit) if hit.tag > 0 => Identity::Tag(shelf.kind, hit.item.sid, hit.tag.to_string()),
                     Item::Tag(tag) if !tag.tag_key.is_empty() || (!tag.id.is_empty() && tag.id != "0") =>
                         Identity::Tag(shelf.kind, tag.sid, if tag.tag_key.is_empty() { tag.id.clone() } else { tag.tag_key.clone() }),
                     _ => Identity::Slot(shelf.kind, view.query_gen(), slot),
@@ -280,16 +282,10 @@ impl SearchScreen {
                     } else { SearchReq::Detail { sid: media.sid, rk: media.rk.clone() } })));
                 }
                 // A collection opens its page; it has no item menu, so a hold does the same.
-                Item::Collection(hit) if !hit.item.rk.is_empty() => {
+                Item::Collection(hit) if hit.route().is_some() => {
                     self.remember(fx);
                     fx.push(Fx::App(AppFx::Search(SearchReq::Collection {
                         sid: hit.item.sid, rk: hit.item.rk.clone(), tag: hit.tag })));
-                }
-                Item::Tag(tag) if row.kind == Kind::Collection => {
-                    if let Some(crate::screens::registry::ContentArg::Collection(id)) = tag.collection_route() {
-                        self.remember(fx);
-                        fx.push(Fx::App(AppFx::Search(SearchReq::Collection { sid: id.sid, rk: String::new(), tag: id.tag })));
-                    }
                 }
                 Item::Tag(tag) if row.kind == Kind::Person && !held => {
                     let key = if tag.id.is_empty() || tag.id == "0" { &tag.tag_key } else { &tag.id };
