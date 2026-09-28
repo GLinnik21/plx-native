@@ -248,9 +248,21 @@ struct QrLayout {
     card: Rect,
     code: Rect,
     status: Rect,
+    status_text: Rect,
+    status_spinner: Rect,
 }
 
-fn qr_layout(layout: RouteLayout) -> QrLayout {
+/// Preserve the QR status mark's existing radius; its dots are part of the measured gutter.
+const STATUS_SPINNER_R: f32 = 15.0;
+
+fn waiting_view<'a>(status: &'a CStr, measure: &'a dyn Measure) -> TextView<'a> {
+    TextView::new(status.to_str().unwrap_or_default(), theme::size::BODY, theme::TEXT_SECONDARY)
+        .with_measure(measure)
+        .leading(theme::size::BODY as f32 + theme::space::XS)
+        .break_long_words()
+}
+
+fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLayout {
     const SIDE: f32 = 420.0;
     let card = Rect::new(
         layout.content.cx() - SIDE * 0.5,
@@ -261,6 +273,23 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
     let url_h = theme::size::TITLE as f32 + theme::space::XS;
     let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
     let status_h = theme::size::BODY as f32 + theme::space::SM;
+    let status_top = card.y + card.h + theme::space::LG + code_h + theme::space::MD;
+    let spinner_extent = STATUS_SPINNER_R + Spinner::dot_r(STATUS_SPINNER_R);
+    let gutter = spinner_extent * 2.0 + theme::space::SM;
+    let text_w = measure.width(status, theme::size::BODY, false)
+        .min((layout.content.w - gutter).max(1.0));
+    let row_w = text_w + gutter;
+    let row_x = layout.content.cx() - row_w * 0.5;
+    // The first line retains the old cap-band anchor. Further lines flow below it, and their
+    // complete measured extent also owns the retry hit/focus rectangle.
+    let cap_h = measure.cap_h(theme::size::BODY);
+    let text_top = status_top + (status_h - cap_h).max(0.0) * 0.5;
+    let text_h = waiting_view(status, measure).measure_h(text_w);
+    let status_text = Rect::new(row_x + gutter, text_top, text_w, text_h);
+    let status_spinner = Rect::new(row_x, text_top + cap_h * 0.5 - spinner_extent,
+        spinner_extent * 2.0, spinner_extent * 2.0);
+    let status_frame = Rect::new(row_x, status_top, row_w,
+        status_h.max(text_top - status_top + text_h));
     QrLayout {
         url: Rect::new(
             layout.content.x,
@@ -275,12 +304,9 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
             layout.content.w,
             code_h,
         ),
-        status: Rect::new(
-            layout.content.x,
-            card.y + card.h + theme::space::LG + code_h + theme::space::MD,
-            layout.content.w,
-            status_h,
-        ),
+        status: status_frame,
+        status_text,
+        status_spinner,
     }
 }
 
@@ -509,8 +535,6 @@ struct Report {
     /// The offer the alert was opened for. Set once per offer, so an answered offer is not asked
     /// again when its state flickers back.
     alert_for: Option<u32>,
-    /// The alert's answers as last drawn — `Focusable` answers with `&self`.
-    alert_frames: Option<(Rect, Rect)>,
     /// The last `(id, revision)` this screen resolved, so a pending offer is resolved once rather
     /// than on every frame the owner has yet to answer.
     last_resolve: Option<(u32, u32)>,
@@ -541,7 +565,6 @@ impl Report {
             support_for: None,
             alert,
             alert_for: None,
-            alert_frames: None,
             last_resolve: None,
             pop: CtlPop::new(),
         }
@@ -1195,6 +1218,11 @@ impl LoginScreen {
         }
     }
 
+    /// The current status, shared by its measured layout and its draw.
+    fn waiting_label(&self) -> &'static CStr {
+        waiting_status(self.qr_replaced, qr_escape_offered(self.phase_ms), self.report.link_trouble)
+    }
+
     /// Every element's rect — shared verbatim by `draw`'s stops and every `Focusable` query, so
     /// the two can never drift apart (`ui/table_screen.rs`'s rule).
     fn elem_rect(&self, elem: u32, measure: &dyn Measure) -> Option<Rect> {
@@ -1203,7 +1231,7 @@ impl LoginScreen {
             return match elem {
                 // The QR screen's escape is a SENTENCE, not a button (see `waiting_status`'s doc),
                 // so its geometry is the status line's own rect rather than a computed pill.
-                CONTROL => Some(qr_layout(RouteLayout::screen()).status),
+                CONTROL => Some(qr_layout(RouteLayout::screen(), self.waiting_label(), measure).status),
                 DETAILS => self.waiting_details(measure),
                 _ => None,
             };
@@ -1554,7 +1582,8 @@ impl LoginScreen {
             theme::size::LABEL,
             f.measure,
         );
-        let right = qr_layout(layout);
+        let status = self.waiting_label();
+        let right = qr_layout(layout, status, f.measure);
 
         TextView::new("plex.tv/link", theme::size::TITLE, theme::TEXT_HEADING)
             .bold()
@@ -1599,26 +1628,12 @@ impl LoginScreen {
             );
         }
 
-        let wr = 15.0;
-        let wy = right.status.cy();
         let escaping = qr_escape_offered(self.phase_ms);
-        let status = waiting_status(self.qr_replaced, escaping, self.report.link_trouble);
-        let status_w = f.measure.width(status, theme::size::BODY, false);
-        let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
-        Spinner::new(sx + wr, wy, wr)
+        Spinner::new(right.status_spinner.cx(), right.status_spinner.cy(), STATUS_SPINNER_R)
             .phase(self.spin_ms as u32)
             .tint(theme::TEXT_SECONDARY)
             .draw(&Env::inert(), p);
-        let ty = crate::text::text_vcenter_y(theme::size::BODY, 0, wy);
-        p.text(
-            status.as_ptr(),
-            sx + wr * 2.0 + theme::space::SM,
-            ty,
-            theme::size::BODY,
-            theme::TEXT_SECONDARY,
-            0,
-            0,
-        );
+        waiting_view(status, f.measure).draw(p, right.status_text);
 
         let details = self.waiting_details(f.measure);
         if let Some(rect) = details {
@@ -1678,7 +1693,6 @@ impl LoginScreen {
         };
         self.report.alert.draw(cancel, affirm, f.measure);
         let frames = self.report.alert.frames(f.measure);
-        self.report.alert_frames = Some(frames);
         if self.report.alert.is_open() && self.report.alert.settled() {
             for &elem in self.alert_elems() {
                 let rect = if elem == ALERT_SEND { frames.1 } else { frames.0 };
@@ -2378,13 +2392,76 @@ mod tests {
     #[test]
     fn qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_column() {
         let route = RouteLayout::screen();
-        let q = qr_layout(route);
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let q = qr_layout(route, waiting_status(false, false, false), &measure);
         assert_eq!(q.card.cy(), Rect::FULL.cy());
         for r in [q.url, q.card, q.code, q.status] {
             assert!(r.x >= route.content.x);
             assert!(r.x + r.w <= route.content.x + route.content.w);
             assert!(inside_safe(r));
         }
+    }
+
+    /// The old single line was 1222px wide for this real Belarusian message under the Unicode
+    /// fixture metrics: centred in an 884px column, its right edge landed at 1993, outside even
+    /// the 1920px canvas. The old 44px hit box also could not contain two BODY lines.
+    #[test]
+    fn translated_waiting_status_wraps_completely_inside_the_qr_column() {
+        use crate::i18n::{LocaleContext, Preference};
+        struct UnicodeMeasure;
+        impl Measure for UnicodeMeasure {
+            fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let _guard = crate::testlock::serial();
+        let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+        let measure = UnicodeMeasure;
+        let route = RouteLayout::screen();
+        let belarusian = LocaleContext::resolve(Preference::Be, None, None, None, None);
+        let old_text_w = measure.width(crate::i18n::msg::settings_login_unreachable_c_in(&belarusian), theme::size::BODY, false);
+        let old_row_w = old_text_w + 30.0 + theme::space::SM;
+        assert!(route.content.cx() + old_row_w * 0.5 > Rect::FULL.w,
+            "the actual translated sentence reproduces the former off-canvas row");
+        for locale in [
+            LocaleContext::resolve(Preference::En, None, None, None, None),
+            LocaleContext::resolve(Preference::Es, None, None, None, None),
+            belarusian,
+            LocaleContext::pseudo_for_test(),
+        ] {
+            for message in [
+                crate::i18n::msg::settings_login_unreachable_c_in(&locale),
+                crate::i18n::msg::browse_login_stalled_c_in(&locale),
+                crate::i18n::msg::browse_login_expired_c_in(&locale),
+                crate::i18n::msg::browse_login_waiting_c_in(&locale),
+            ] {
+                let q = qr_layout(route, message, &measure);
+                assert_eq!(q.card.cy(), Rect::FULL.cy(), "the QR anchor must not move");
+                assert!(q.status.y >= q.code.y + q.code.h + theme::space::MD);
+                for frame in [q.status, q.status_text, q.status_spinner] {
+                    assert!(inside_safe(frame), "message={message:?} frame={frame:?}");
+                    assert!(frame.x >= route.content.x);
+                    assert!(frame.x + frame.w <= route.content.x + route.content.w + 0.01);
+                    assert!(frame.y >= q.status.y);
+                    assert!(frame.y + frame.h <= q.status.y + q.status.h + 0.01);
+                }
+                let text = waiting_view(message, &measure);
+                assert!(!text.truncates(q.status_text.w), "never elide the waiting instruction");
+                assert_eq!(q.status_text.h, text.measure_h(q.status_text.w));
+                if measure.width(message, theme::size::BODY, false) > q.status_text.w {
+                    assert!(q.status_text.h >= (theme::size::BODY as f32 + theme::space::XS) * 2.0);
+                    assert!(q.status.h > theme::size::BODY as f32 + theme::space::SM);
+                }
+            }
+        }
+        let mut screen = bare_screen(Phase::Waiting, 60_000.0);
+        screen.report.link_trouble = true;
+        let drawn = qr_layout(route, screen.waiting_label(), &measure).status;
+        let hit = screen.elem_rect(CONTROL, &measure).expect("retry is offered after 60 seconds");
+        assert_eq!((hit.x, hit.y, hit.w, hit.h), (drawn.x, drawn.y, drawn.w, drawn.h),
+            "the complete wrapped instruction must share its draw/focus/hit geometry");
     }
 
     /// A bare screen, built with NO read of `crate::auth` at all — for testing [`ControlKind`]'s
