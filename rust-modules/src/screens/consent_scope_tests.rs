@@ -193,8 +193,8 @@ fn a_first_run_answer_commits_through_the_presscommit_event() {
 /// notice.
 #[test]
 fn the_two_switches_name_two_different_purposes() {
-    assert_ne!(ROW_ERRORS, ROW_USAGE);
-    assert_ne!(ROW_ERRORS_SUB, ROW_USAGE_SUB);
+    assert_ne!(crate::i18n::msg::settings_consent_crash_row(), crate::i18n::msg::settings_consent_usage_row());
+    assert_ne!(crate::i18n::msg::settings_consent_crash_detail(), crate::i18n::msg::settings_consent_usage_detail());
 }
 
 /// The prose carries the four things WP260's first layer needs — who, why, that it is
@@ -207,19 +207,19 @@ fn the_two_switches_name_two_different_purposes() {
 /// half is that file's own invariant to keep now, not this one's.)
 #[test]
 fn first_run_separates_crash_and_product_consent() {
-    assert!(CRASH_BODY.contains("signal"));
-    assert!(CRASH_BODY.contains("product analytics identifier"));
+    assert!(crate::i18n::msg::settings_consent_crash_body().contains("signal"));
+    assert!(crate::i18n::msg::settings_consent_crash_body().contains("product analytics identifier"));
     assert!(
-        CRASH_BODY.contains("crash report identifier"),
+        crate::i18n::msg::settings_consent_crash_body().contains("crash report identifier"),
         "the crash question must disclose the identifier it now carries"
     );
-    assert!(PRODUCT_BODY.contains("random Analytics ID"));
-    for body in [CRASH_BODY, PRODUCT_BODY] {
+    assert!(crate::i18n::msg::settings_consent_product_body().contains("random Analytics ID"));
+    for body in [crate::i18n::msg::settings_consent_crash_body(), crate::i18n::msg::settings_consent_product_body()] {
         assert!(
             body.contains("turn it off or sign out"),
             "each question must say the identifier ends with the sign-in, not with the television"
         );
     }
-    assert!(PRODUCT_BODY.contains("exact viewing history"));
-    assert_ne!(CRASH_TITLE, PRODUCT_TITLE);
+    assert!(crate::i18n::msg::settings_consent_product_body().contains("exact viewing history"));
+    assert_ne!(crate::i18n::msg::settings_consent_crash_title(), crate::i18n::msg::settings_consent_product_title());
 }

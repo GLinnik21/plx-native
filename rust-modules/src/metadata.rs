@@ -278,6 +278,41 @@ pub(crate) struct Cast {
     pub(crate) tag_key: String,
 }
 
+/// Stable identities for the app-owned jobs derived from PMS crew arrays. The keys stay in
+/// recorded metadata and semantic comparisons; only a display accessor translates them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CrewRole {
+    Director,
+    Writer,
+    DirectorWriter,
+}
+impl CrewRole {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Director => "Director",
+            Self::Writer => "Writer",
+            Self::DirectorWriter => "Director, Writer",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "Director" => Some(Self::Director),
+            "Writer" => Some(Self::Writer),
+            "Director, Writer" => Some(Self::DirectorWriter),
+            _ => None,
+        }
+    }
+
+    fn display(self, locale: &crate::i18n::LocaleContext) -> &'static str {
+        match self {
+            Self::Director => crate::i18n::msg::browse_crew_director_in(locale),
+            Self::Writer => crate::i18n::msg::browse_crew_writer_in(locale),
+            Self::DirectorWriter => crate::i18n::msg::browse_crew_director_writer_in(locale),
+        }
+    }
+}
+
 impl Cast {
     /// The `personId` for `/library/people/{personId}/media` — the numeric id when the server
     /// sent one, else the global guid (PMS accepts EITHER; both verified live 2026-07-29).
@@ -596,6 +631,15 @@ impl DvPresentation {
         }
     }
 
+    /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
+    pub(crate) fn display(&self) -> &'static str {
+        match self {
+            Self::NotDv => crate::i18n::msg::browse_diagnostics_dv_base_layer(),
+            Self::Declare(_) => crate::i18n::msg::browse_diagnostics_dv_declare(),
+            Self::Refuse(_) => crate::i18n::msg::browse_diagnostics_dv_refuse(),
+        }
+    }
+
     /// Direct play is refused (and, at `build_stream`, the reason for the log line).
     pub(crate) fn refusal(&self) -> Option<&'static str> {
         match self {
@@ -815,20 +859,22 @@ impl Extra {
         self.subtype == "trailer" || self.extra_type == 1
     }
 
-    /// Human subtype for the extras shelf caption. Unknown subtypes stay "Extra".
+    /// Human subtype for the extras shelf caption, in the UI language. Unknown subtypes read as
+    /// the generic extra. The match is on PMS's own subtype names, which are never drawn.
     pub(crate) fn caption(&self) -> &'static str {
+        use crate::i18n::msg;
         match self.subtype.as_str() {
-            "trailer" => "Trailer",
-            "behindTheScenes" => "Behind the Scenes",
-            "featurette" => "Featurette",
-            "sceneOrSample" => "Scene",
-            "deletedScene" => "Deleted Scene",
-            "interview" => "Interview",
+            "trailer" => msg::browse_detail_trailer(),
+            "behindTheScenes" => msg::browse_extra_behind_the_scenes(),
+            "featurette" => msg::browse_extra_featurette(),
+            "sceneOrSample" => msg::browse_extra_scene(),
+            "deletedScene" => msg::browse_extra_deleted_scene(),
+            "interview" => msg::browse_extra_interview(),
             _ => match self.extra_type {
-                1 => "Trailer",
-                5 => "Behind the Scenes",
-                6 => "Scene",
-                _ => "Extra",
+                1 => msg::browse_detail_trailer(),
+                5 => msg::browse_extra_behind_the_scenes(),
+                6 => msg::browse_extra_scene(),
+                _ => ExtraContext::Extra.label(),
             },
         }
     }
@@ -843,22 +889,56 @@ impl Extra {
     }
 }
 
-/// HUD context line AND the PlayQueue gate. [`crate::route::request_play`] omits `continuous`
-/// when `ctx` equals this, so EOS cannot Up-Next into a sibling extra. The HUD prints the
-/// same word.
-pub(crate) const TRAILER_CONTEXT: &str = match std::str::from_utf8(TRAILER_CONTEXT_C.to_bytes()) {
-    Ok(s) => s,
-    Err(_) => panic!("TRAILER_CONTEXT_C is ASCII"),
-};
-/// The same word as a C string, for a painter that draws it every frame — ONE literal, with the
-/// `&str` above derived from it at compile time, so the two spellings cannot drift apart and the
-/// draw path never allocates to reach it.
-pub(crate) const TRAILER_CONTEXT_C: &std::ffi::CStr = c"Trailer";
+/// **What an extra's playback request carries as its context**, typed so the comparison and the
+/// words cannot be the same string. [`ExtraContext::key`] is the stable value a request carries
+/// and [`crate::route::request_play`] compares — it omits `continuous` for both kinds, so EOS
+/// cannot Up-Next into a sibling extra — and it is never drawn; [`ExtraContext::label`] is what the
+/// HUD prints in its place ([`context_label`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExtraContext {
+    Trailer,
+    /// Any non-trailer extra.
+    Extra,
+}
+
+impl ExtraContext {
+    /// The comparison key. Deliberately not a word, so no display text can be mistaken for it.
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Trailer => "plx:context/trailer",
+            Self::Extra => "plx:context/extra",
+        }
+    }
+
+    pub(crate) fn of(ctx: &str) -> Option<Self> {
+        [Self::Trailer, Self::Extra].into_iter().find(|kind| kind.key() == ctx)
+    }
+
+    /// The HUD's word for this kind, in the UI language.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Trailer => crate::i18n::msg::browse_detail_trailer(),
+            Self::Extra => crate::i18n::msg::browse_extra_extra(),
+        }
+    }
+}
+
+/// The trailer's request context: see [`ExtraContext::key`].
+pub(crate) const TRAILER_CONTEXT: &str = ExtraContext::Trailer.key();
 /// Non-trailer extras. Same queue rule as a trailer: omit `continuous` so EOS cannot Up-Next.
-pub(crate) const EXTRA_CONTEXT: &str = "Extra";
+pub(crate) const EXTRA_CONTEXT: &str = ExtraContext::Extra.key();
 
 pub(crate) fn context_omits_queue_continuous(ctx: &str) -> bool {
-    ctx == TRAILER_CONTEXT || ctx == EXTRA_CONTEXT
+    ExtraContext::of(ctx).is_some()
+}
+
+/// The HUD context line for a request context: an extra's kind in the UI language, and any other
+/// context unchanged — a feature's context line is already display text.
+pub(crate) fn context_label(ctx: &str) -> &str {
+    match ExtraContext::of(ctx) {
+        Some(kind) => kind.label(),
+        None => ctx,
+    }
 }
 
 pub(crate) fn extra_play_context(extra: &Extra) -> &'static str {
@@ -1497,6 +1577,20 @@ impl Detail {
             self.crew.get(i - self.cast.len())
         }
     }
+
+    /// Only the crew array owns job identities. An actor whose server-provided character is
+    /// named "Director" must retain that exact character name in every locale.
+    pub(crate) fn credit_role(&self, i: usize) -> Option<&str> {
+        self.credit_role_in(i, crate::i18n::current())
+    }
+
+    fn credit_role_in(&self, i: usize, locale: &crate::i18n::LocaleContext) -> Option<&str> {
+        let credit = self.credit(i)?;
+        if i < self.cast.len() {
+            return Some(&credit.role);
+        }
+        Some(CrewRole::from_key(&credit.role).map(|role| role.display(locale)).unwrap_or(&credit.role))
+    }
 }
 
 /// the currently-loaded detail item, or None
@@ -1878,7 +1972,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)
 /// The crew jobs we surface, in the order they appear on the shelf. PMS names the job by the
 /// ARRAY the person arrived in (`Director[]`/`Writer[]`) — the rows themselves carry no job
 /// attribute, and (verified live) no `role` either, so this is where the sub-caption comes from.
-const CREW_JOBS: [&str; 2] = ["Director", "Writer"];
+const CREW_JOBS: [CrewRole; 2] = [CrewRole::Director, CrewRole::Writer];
 
 /// The named tags of one crew array, in server order, without the blanks or the repeats.
 fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
@@ -1901,12 +1995,12 @@ fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
 /// focus can still land on.
 fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
     let mut out: Vec<Cast> = Vec::new();
-    for (job, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
+    for (role, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
+        let job = role.key();
         for t in list.iter().filter(|t| !t.tag.is_empty()) {
             match out.iter_mut().find(|c| c.tag == t.tag) {
                 Some(c) if !c.role.ends_with(job) => {
-                    c.role.push_str(", ");
-                    c.role.push_str(job);
+                    c.role = CrewRole::DirectorWriter.key().to_string();
                 }
                 Some(_) => {}
                 // the id/guid ride along exactly as they do for an actor: a director is a person

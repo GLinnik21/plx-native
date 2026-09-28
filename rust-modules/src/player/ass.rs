@@ -62,6 +62,58 @@ pub(crate) struct Rect {
     pub rgba: Arc<[u8]>,
 }
 
+/// **Why a styled subtitle cannot be shown**, as a closed set. The player draws [`Fault::message`]
+/// in the UI language; the log names the variant, so it reads the same on every television.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fault {
+    StartFailed,
+    InvalidFile,
+    InvalidTrack,
+    InvalidEvents,
+    TrackTooLarge,
+    TooManyFonts,
+    InvalidFonts,
+    RenderFailed,
+    Unavailable,
+    FontsUnavailable,
+    InitFailed,
+    FontTooLarge,
+    Unreadable,
+    FontName,
+    TrackFonts,
+    TooManyEvents,
+    InvalidRegions,
+    InvalidPixels,
+    OverlappingRegions,
+}
+
+impl Fault {
+    pub(crate) fn message(self) -> &'static str {
+        use crate::i18n::msg;
+        match self {
+            Fault::StartFailed => msg::widgets_ass_start_failed(),
+            Fault::InvalidFile => msg::widgets_ass_invalid_file(),
+            Fault::InvalidTrack => msg::widgets_ass_invalid_track(),
+            Fault::InvalidEvents => msg::widgets_ass_invalid_events(),
+            Fault::TrackTooLarge => msg::widgets_ass_track_too_large(),
+            Fault::TooManyFonts => msg::widgets_ass_too_many_fonts(),
+            Fault::InvalidFonts => msg::widgets_ass_invalid_fonts(),
+            Fault::RenderFailed => msg::widgets_ass_render_failed(),
+            Fault::Unavailable => msg::widgets_ass_unavailable(),
+            Fault::FontsUnavailable => msg::widgets_ass_fonts_unavailable(),
+            Fault::InitFailed => msg::widgets_ass_init_failed(),
+            Fault::FontTooLarge => msg::widgets_ass_font_too_large(),
+            Fault::Unreadable => msg::widgets_ass_unreadable(),
+            Fault::FontName => msg::widgets_ass_font_name(),
+            Fault::TrackFonts => msg::widgets_ass_track_fonts(),
+            Fault::TooManyEvents => msg::widgets_ass_too_many_events(),
+            Fault::InvalidRegions => msg::widgets_ass_invalid_regions(),
+            Fault::InvalidPixels => msg::widgets_ass_invalid_pixels(),
+            Fault::OverlappingRegions => msg::widgets_ass_overlapping_regions(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Frame {
     pub source_id: u64,
@@ -71,7 +123,7 @@ pub(crate) struct Frame {
     pub height: i32,
     /// Disjoint regions; an empty list clears output between dialogue events.
     pub rects: Vec<Rect>,
-    pub error: Option<&'static str>,
+    pub error: Option<Fault>,
 }
 
 pub(crate) fn next_source_id() -> u64 {
@@ -187,7 +239,7 @@ pub(crate) fn request(
                 return Some(frame.clone());
             }
         }
-        let frame = error_frame(key, "Couldn't start styled subtitles");
+        let frame = error_frame(key, Fault::StartFailed);
         mailbox.published = Some((key.epoch, frame.clone()));
         return Some(frame);
     }
@@ -244,7 +296,7 @@ fn next_serial() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-fn error_frame(key: Key, message: &'static str) -> Arc<Frame> {
+fn error_frame(key: Key, message: Fault) -> Arc<Frame> {
     Arc::new(Frame {
         source_id: key.source_id,
         serial: next_serial(),
@@ -307,11 +359,11 @@ fn worker() {
     }
 }
 
-fn validate(source: &Source) -> Result<(), &'static str> {
+fn validate(source: &Source) -> Result<(), Fault> {
     match &source.content {
         Content::Script { bytes, .. } => {
             if bytes.is_empty() || bytes.len() > MAX_SCRIPT_BYTES || bytes.contains(&0) {
-                return Err("This styled subtitle file is invalid or too large");
+                return Err(Fault::InvalidFile);
             }
         }
         Content::Embedded {
@@ -325,7 +377,7 @@ fn validate(source: &Source) -> Result<(), &'static str> {
                 || events.len() > MAX_EVENTS
                 || fonts.len() > MAX_FONTS
             {
-                return Err("This styled subtitle track is invalid or too large");
+                return Err(Fault::InvalidTrack);
             }
             let mut bytes = header.len();
             for event in events.iter() {
@@ -335,18 +387,18 @@ fn validate(source: &Source) -> Result<(), &'static str> {
                     || event.duration_ms <= 0
                     || event.start_ms.checked_add(event.duration_ms).is_none()
                 {
-                    return Err("This styled subtitle track contains invalid events");
+                    return Err(Fault::InvalidEvents);
                 }
                 bytes += event.payload.len();
                 if bytes > MAX_SCRIPT_BYTES {
-                    return Err("This styled subtitle track is too large");
+                    return Err(Fault::TrackTooLarge);
                 }
             }
         }
     }
     let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
     if fonts.len() > MAX_FONTS {
-        return Err("This styled subtitle track contains too many fonts");
+        return Err(Fault::TooManyFonts);
     }
     let mut bytes = 0;
     for font in fonts.iter() {
@@ -356,11 +408,11 @@ fn validate(source: &Source) -> Result<(), &'static str> {
             || font.data.is_empty()
             || font.data.len() > MAX_FONT_BYTES
         {
-            return Err("This styled subtitle track contains invalid fonts");
+            return Err(Fault::InvalidFonts);
         }
         bytes += font.data.len();
         if bytes > MAX_FONT_BYTES {
-            return Err("This styled subtitle track contains too many fonts");
+            return Err(Fault::TooManyFonts);
         }
     }
     Ok(())
@@ -421,7 +473,7 @@ struct Engine {
     source: Option<Arc<Source>>,
     native: Option<Native>,
     frame: Option<Arc<Frame>>,
-    error: Option<&'static str>,
+    error: Option<Fault>,
 }
 
 impl Engine {
@@ -470,7 +522,7 @@ impl Engine {
             self.source = Some(request.source.clone());
             if let Some(error) = self.error {
                 self.native = None;
-                crate::log(&format!("subtitle: ASS refused: {error}"));
+                crate::log(&format!("subtitle: ASS refused: {error:?}"));
             }
         }
         if let Some(error) = self.error {
@@ -506,7 +558,7 @@ impl Engine {
                 if let Some(frame) = &self.frame {
                     return frame.clone();
                 }
-                error_frame(key, "Couldn't render this styled subtitle")
+                error_frame(key, Fault::RenderFailed)
             }
             Ok(Some(rects)) => {
                 if let Some(old) = &self.frame {
@@ -530,7 +582,7 @@ impl Engine {
             }
             Err(error) => {
                 self.error = Some(error);
-                crate::log(&format!("subtitle: ASS render failed: {error}"));
+                crate::log(&format!("subtitle: ASS render failed: {error:?}"));
                 error_frame(key, error)
             }
         };
@@ -593,27 +645,27 @@ impl Drop for Native {
 }
 
 impl Native {
-    fn open(source: &Source) -> Result<Self, &'static str> {
+    fn open(source: &Source) -> Result<Self, Fault> {
         static LOADED: OnceLock<bool> = OnceLock::new();
         let loaded = *LOADED.get_or_init(|| {
             native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == 2
         });
         if !loaded {
-            return Err("Styled subtitle support is unavailable in this installation");
+            return Err(Fault::Unavailable);
         }
         let fallback = asset_dir().join("appfont-cjk.ttf");
         let fallback = CString::new(fallback.to_string_lossy().as_bytes())
-            .map_err(|_| "Couldn't load subtitle fonts")?;
+            .map_err(|_| Fault::FontsUnavailable)?;
         let ptr = unsafe { plx_ass_create(fallback.as_ptr()) };
         if ptr.is_null() {
-            return Err("Couldn't initialize styled subtitles");
+            return Err(Fault::InitFailed);
         }
         let mut native = Self(ptr);
         for name in ["appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf"] {
             let bytes = std::fs::read(asset_dir().join(name))
-                .map_err(|_| "Couldn't load subtitle fonts")?;
+                .map_err(|_| Fault::FontsUnavailable)?;
             if bytes.len() > MAX_FONT_BYTES {
-                return Err("The installed subtitle font is too large");
+                return Err(Fault::FontTooLarge);
             }
             native.font(name, &bytes)?;
         }
@@ -626,21 +678,21 @@ impl Native {
             Content::Script { bytes, .. } => (bytes.as_ref(), 1),
         };
         if unsafe { plx_ass_load(native.0, data.as_ptr(), data.len(), script) } < 0 {
-            return Err("This styled subtitle file could not be read");
+            return Err(Fault::Unreadable);
         }
         native.append(source, 0)?;
         Ok(native)
     }
 
-    fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), &'static str> {
-        let name = CString::new(name).map_err(|_| "This subtitle font name is invalid")?;
+    fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), Fault> {
+        let name = CString::new(name).map_err(|_| Fault::FontName)?;
         if unsafe { plx_ass_add_font(self.0, name.as_ptr(), bytes.as_ptr(), bytes.len()) } < 0 {
-            return Err("Couldn't load this subtitle's fonts");
+            return Err(Fault::TrackFonts);
         }
         Ok(())
     }
 
-    fn append(&mut self, source: &Source, from: usize) -> Result<(), &'static str> {
+    fn append(&mut self, source: &Source, from: usize) -> Result<(), Fault> {
         if let Content::Embedded { events, .. } = &source.content {
             for event in &events[from..] {
                 if unsafe {
@@ -653,14 +705,14 @@ impl Native {
                     )
                 } < 0
                 {
-                    return Err("This styled subtitle track contains too many events");
+                    return Err(Fault::TooManyEvents);
                 }
             }
         }
         Ok(())
     }
 
-    fn render(&mut self, key: Key, previous: &[Rect]) -> Result<Option<Vec<Rect>>, &'static str> {
+    fn render(&mut self, key: Key, previous: &[Rect]) -> Result<Option<Vec<Rect>>, Fault> {
         let mut frame = NativeFrame::default();
         let result = unsafe {
             plx_ass_render(
@@ -674,7 +726,7 @@ impl Native {
             )
         };
         if result < 0 {
-            return Err("Couldn't render this styled subtitle");
+            return Err(Fault::RenderFailed);
         }
         if result == 0 {
             return Ok(None);
@@ -683,7 +735,7 @@ impl Native {
             return Ok(Some(Vec::new()));
         }
         if frame.count > MAX_REGIONS || frame.regions.is_null() {
-            return Err("The styled subtitle renderer returned invalid regions");
+            return Err(Fault::InvalidRegions);
         }
         let bitmaps = unsafe { std::slice::from_raw_parts(frame.regions, frame.count) };
         let mut rects: Vec<Rect> = Vec::with_capacity(frame.count);
@@ -705,7 +757,7 @@ impl Native {
                 || pixels.is_none_or(|n| n > MAX_PIXELS || n * 4 != bitmap.bytes)
                 || bitmap.rgba.is_null()
             {
-                return Err("The styled subtitle renderer returned invalid pixels");
+                return Err(Fault::InvalidPixels);
             }
             total_pixels += pixels.unwrap();
             if total_pixels > MAX_PIXELS
@@ -716,7 +768,7 @@ impl Native {
                         && bitmap.y < r.y + r.height
                 })
             {
-                return Err("The styled subtitle renderer returned overlapping regions");
+                return Err(Fault::OverlappingRegions);
             }
             let pixels = unsafe { std::slice::from_raw_parts(bitmap.rgba, bitmap.bytes) };
             let same_pixels = |old: &&Rect| {

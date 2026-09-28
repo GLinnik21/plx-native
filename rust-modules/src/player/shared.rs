@@ -515,11 +515,11 @@ impl PlaybackState {
     /// load window, and indefinitely in `Error`.
     pub fn caption(self) -> &'static std::ffi::CStr {
         match self {
-            PlaybackState::Resolving => c"Preparing…",
-            PlaybackState::Connecting => c"Connecting…",
-            PlaybackState::Buffering => c"Buffering…",
-            PlaybackState::Seeking => c"Seeking…",
-            PlaybackState::Error => c"Playback failed",
+            PlaybackState::Resolving => crate::i18n::msg::widgets_status_preparing_c(),
+            PlaybackState::Connecting => crate::i18n::msg::widgets_status_connecting_c(),
+            PlaybackState::Buffering => crate::i18n::msg::widgets_status_buffering_c(),
+            PlaybackState::Seeking => crate::i18n::msg::widgets_status_seeking_c(),
+            PlaybackState::Error => crate::i18n::msg::widgets_status_failed_c(),
             _ => c"",
         }
     }

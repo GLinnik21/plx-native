@@ -312,7 +312,7 @@ impl TrackMenuState {
     }
 
     fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Section {
-        let mut sec = Section::new("Audio");
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
             Some(t) => t,
             None => return sec,
@@ -320,12 +320,12 @@ impl TrackMenuState {
         let names = crate::player::SHARED.track_names.lock().unwrap();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
-                "Unknown"
+                crate::i18n::msg::widgets_tracks_unknown()
             } else {
                 s.lang.as_str()
             };
             let label = if s.default {
-                format!("Original: {lang}")
+                crate::i18n::msg::widgets_tracks_original(lang)
             } else {
                 lang.to_string()
             };
@@ -355,8 +355,8 @@ impl TrackMenuState {
     }
 
     fn build_subs(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Section {
-        let mut sec = Section::new("Subtitles");
-        sec = sec.row(Row::new("Off").checked(self.active_sub() < 0));
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_subtitles());
+        sec = sec.row(Row::new(crate::i18n::msg::widgets_tracks_off()).checked(self.active_sub() < 0));
         if let Some(t) = tracks(meta) {
             let names = crate::player::SHARED.track_names.lock().unwrap();
             for i in visible_subs(ps, meta) {
@@ -365,7 +365,7 @@ impl TrackMenuState {
                     None => continue,
                 };
                 let lang = if s.lang.is_empty() {
-                    "Unknown"
+                    crate::i18n::msg::widgets_tracks_unknown()
                 } else {
                     s.lang.as_str()
                 };
@@ -385,7 +385,7 @@ impl TrackMenuState {
                     row = row.badge(Badge::Sdh);
                 }
                 if s.external {
-                    row = row.badge(Badge::Text("EXTERNAL".to_string()));
+                    row = row.badge(Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()));
                 }
                 if is_image_sub_codec(&s.codec) {
                     row = row.badge(Badge::Text(s.codec.to_uppercase()));
@@ -399,9 +399,9 @@ impl TrackMenuState {
     /// The Color section: one checked row per rung of the tone ladder, lightest first.
     fn build_tones(&self) -> Section {
         let active = crate::player::subtitle_tone();
-        let mut sec = Section::new("Color");
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_color());
         for tone in SubtitleTone::LADDER {
-            sec = sec.row(Row::new(tone.label()).checked(tone == active));
+            sec = sec.row(Row::new(tone_label(tone)).checked(tone == active));
         }
         sec
     }
@@ -413,18 +413,18 @@ impl TrackMenuState {
         // the player's own range for the selected track's kind — Earlier dims at an embedded
         // track's 0, which takes no advance, and at a sidecar's -30 s
         let (earliest, latest) = crate::player::subtitle_offset_range_ms();
-        let mut sec = Section::new("Timing").accessory(format_offset(self.offset_ms));
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_timing()).accessory(format_offset(self.offset_ms));
         for row in TimingRow::ALL {
             let r = match row {
-                TimingRow::Earlier => Row::new("Earlier")
+                TimingRow::Earlier => Row::new(crate::i18n::msg::widgets_tracks_earlier())
                     .value(format_offset(-SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
                     .dim(self.offset_ms <= earliest),
-                TimingRow::Later => Row::new("Later")
+                TimingRow::Later => Row::new(crate::i18n::msg::widgets_tracks_later())
                     .value(format_offset(SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
                     .dim(self.offset_ms >= latest),
-                TimingRow::Reset => Row::new("Reset").dim(self.offset_ms == 0),
+                TimingRow::Reset => Row::new(crate::i18n::msg::widgets_tracks_reset()).dim(self.offset_ms == 0),
             };
             sec = sec.row(r);
         }
@@ -680,16 +680,32 @@ fn timing_at(offset_base: Option<c_int>, sel: c_int) -> Option<TimingRow> {
     TimingRow::ALL.get(i).copied()
 }
 
-/// An offset as the panel reads it: signed seconds to the tenth ("+1.3 s", "-0.1 s", "0.0 s").
+/// Resolve the typed tone at the UI boundary; persisted values and technical logs stay stable.
+fn tone_label(tone: SubtitleTone) -> &'static str {
+    match tone {
+        SubtitleTone::White => crate::i18n::msg::widgets_tracks_tone_white(),
+        SubtitleTone::Silver => crate::i18n::msg::widgets_tracks_tone_silver(),
+        SubtitleTone::LightGrey => crate::i18n::msg::widgets_tracks_tone_light_grey(),
+        SubtitleTone::Grey => crate::i18n::msg::widgets_tracks_tone_grey(),
+        SubtitleTone::DarkGrey => crate::i18n::msg::widgets_tracks_tone_dark_grey(),
+        SubtitleTone::Charcoal => crate::i18n::msg::widgets_tracks_tone_charcoal(),
+    }
+}
+
+/// An offset as localized signed seconds to the tenth; examples below use English formatting.
 /// ASCII hyphen-minus rather than U+2212, which the UI font is not guaranteed to carry.
 fn format_offset(ms: i64) -> String {
+    format_offset_in(ms, crate::i18n::current())
+}
+
+fn format_offset_in(ms: i64, locale: &crate::i18n::LocaleContext) -> String {
     let sign = match ms.signum() {
         1 => "+",
         -1 => "-",
         _ => "",
     };
-    let tenths = ms.unsigned_abs() / 100;
-    format!("{sign}{}.{} s", tenths / 10, tenths % 10)
+    let tenths = (ms.unsigned_abs() / 100) as i64;
+    crate::i18n::msg::core_seconds_in(locale, &format!("{sign}{}", locale.decimal(tenths, 1)))
 }
 
 // ---- section building ----
@@ -747,8 +763,8 @@ fn audio_descriptor(s: &metadata::Stream) -> String {
         channel_short(&s.layout)
     } else if s.channels > 0 {
         match s.channels {
-            1 => "Mono".to_string(),
-            2 => "Stereo".to_string(),
+            1 => crate::i18n::msg::widgets_tracks_mono().to_string(),
+            2 => crate::i18n::msg::widgets_tracks_stereo().to_string(),
             n => format!("{}.{}", n - 1, if n >= 6 { 1 } else { 0 }),
         }
     } else {
@@ -766,8 +782,8 @@ fn audio_descriptor(s: &metadata::Stream) -> String {
 fn channel_short(layout: &str) -> String {
     let base = layout.split('(').next().unwrap_or(layout).trim();
     match base {
-        "mono" => "Mono".to_string(),
-        "stereo" => "Stereo".to_string(),
+        "mono" => crate::i18n::msg::widgets_tracks_mono().to_string(),
+        "stereo" => crate::i18n::msg::widgets_tracks_stereo().to_string(),
         other => other.to_string(),
     }
 }
@@ -1195,5 +1211,22 @@ mod focus_tests {
                 want.map(|r| (r.x, r.y, r.w, r.h))
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod localized_offset_tests {
+    #[test]
+    fn subtitle_timing_uses_locale_decimal_and_unit_without_changing_offset_sign() {
+        use crate::i18n::{LocaleContext, Preference};
+        for (preference, region, negative, positive) in [
+            (Preference::En, "en-US", "-0.1 s", "+1.3 s"),
+            (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
+            (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
+        ] {
+            let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
+            assert_eq!(super::format_offset_in(-100, &locale), negative);
+            assert_eq!(super::format_offset_in(1300, &locale), positive);
+        }
     }
 }

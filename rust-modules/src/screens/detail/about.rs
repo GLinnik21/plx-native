@@ -70,7 +70,7 @@ impl Rows {
         self.info.clear();
         let released = crate::ui::fmt::pretty_date(&d.aired, d.year);
         if !released.is_empty() {
-            self.info.push(("Released", released));
+            self.info.push((crate::i18n::msg::browse_detail_released(), released));
         }
         let dur = if d.dur_ms > 0 {
             d.dur_ms
@@ -78,23 +78,23 @@ impl Rows {
             d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
         };
         if dur > 0 {
-            self.info.push(("Run Time", crate::ui::fmt::dur_long(dur)));
+            self.info.push((crate::i18n::msg::browse_detail_runtime(), crate::ui::fmt::dur_long(dur)));
         }
         self.info.push((
-            "Rated",
+            crate::i18n::msg::browse_detail_rated(),
             if d.rating.is_empty() {
-                "NR".into()
+                crate::i18n::msg::browse_detail_unrated().into()
             } else {
                 d.rating.clone()
             },
         ));
         if !d.countries.is_empty() {
             self.info
-                .push(("Regions of Origin", d.countries.join(", ")));
+                .push((crate::i18n::msg::browse_detail_origins(), d.countries.join(", ")));
         }
         self.orig_audio = d.audio.first().map(|a| {
             if a.lang.is_empty() {
-                "Unknown".into()
+                crate::i18n::msg::browse_detail_unknown().into()
             } else {
                 a.lang.clone()
             }
@@ -105,7 +105,7 @@ impl Rows {
             .take(8)
             .map(|a| {
                 let lang = if a.lang.is_empty() {
-                    "Unknown"
+                    crate::i18n::msg::browse_detail_unknown()
                 } else {
                     &a.lang
                 };
@@ -116,17 +116,17 @@ impl Rows {
         self.access.clear();
         if !d.subs.is_empty() {
             self.access.push((
-                "CC",
-                "Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information.",
+                crate::i18n::msg::widgets_badge_cc(),
+                crate::i18n::msg::browse_detail_closed_captions(),
             ));
         }
         if d.subs.iter().any(|s| s.sdh) {
-            self.access.push(("SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."));
+            self.access.push((crate::i18n::msg::widgets_badge_sdh(), crate::i18n::msg::browse_detail_sdh()));
         }
         if d.audio.iter().any(|a| a.ad) {
             self.access.push((
-                "AD",
-                "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision.",
+                crate::i18n::msg::widgets_badge_ad(),
+                crate::i18n::msg::browse_detail_audio_description(),
             ));
         }
     }
@@ -192,7 +192,7 @@ impl Rows {
     ) {
         let x = crate::ui::consts::MARGIN_X;
         p.text(
-            c"About".as_ptr(),
+            crate::i18n::msg::browse_detail_about_c().as_ptr(),
             x,
             top,
             theme::size::HEADLINE,
@@ -239,7 +239,7 @@ impl Rows {
                 Rect::new(ix, card.y + CARD_PAD + 100.0, card.w - 2.0 * CARD_PAD, 0.0),
             );
         p.text(
-            crate::ui::text_view::MORE_MARK.as_ptr(),
+            crate::ui::text_view::more_mark().as_ptr(),
             card.x + card.w - CARD_PAD,
             card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
             theme::size::CAPTION,
@@ -261,7 +261,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Information",
+            crate::i18n::msg::browse_detail_information(),
         );
         let mut yy = y + 68.0;
         for (label, value) in &self.info {
@@ -280,11 +280,11 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Languages",
+            crate::i18n::msg::browse_detail_languages(),
         );
         let mut yy = y + 68.0;
         if let Some(orig) = &self.orig_audio {
-            yy += draw_pair(p, LANG_X, yy, "Original Audio", orig, measure);
+            yy += draw_pair(p, LANG_X, yy, crate::i18n::msg::browse_detail_original_audio(), orig, measure);
         }
         if !self.audio_list.is_empty() {
             text_at(
@@ -294,7 +294,7 @@ impl Rows {
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
                 0,
-                "Audio",
+                crate::i18n::msg::browse_detail_audio(),
             );
             TextView::new(&self.audio_list, theme::size::LABEL, theme::TEXT_HEADING)
                 .with_measure(measure)
@@ -306,7 +306,7 @@ impl Rows {
         if tracks {
             let plate = self.languages_rect(y - COL_Y, measure);
             p.text(
-                crate::ui::text_view::MORE_MARK.as_ptr(),
+                crate::ui::text_view::more_mark().as_ptr(),
                 plate.x + plate.w - CARD_PAD,
                 plate.y + plate.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,
@@ -331,7 +331,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Accessibility",
+            crate::i18n::msg::browse_detail_accessibility(),
         );
         if self.access.is_empty() {
             text_at(

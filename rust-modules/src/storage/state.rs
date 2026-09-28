@@ -530,13 +530,29 @@ impl CanonicalState {
         {
             return Err(StateError::Conflict);
         }
+        // "Delete all local data" may reset a cleared installation's public language without
+        // claiming new auth. Nothing except removal of that one PRESENT preference is allowed:
+        // every account domain, migration marker, credential generation and protected envelope
+        // stays cleared, and any other preference write to a cleared tenure is still refused.
+        let cleared_language_reset = self.status == Status::Cleared
+            && match &operation.mutation {
+                Mutation::UpdatePreferences { public } => {
+                    let mut reset = self.public.clone();
+                    reset.preferences.as_object_mut()
+                        .is_some_and(|preferences| preferences.remove("language").is_some())
+                        && public == &reset
+                }
+                _ => false,
+            };
         if matches!(operation.mutation, Mutation::UpdatePreferences { .. })
+            && !cleared_language_reset
             && (self.migrations.session.progress != MigrationProgress::Complete
                 || self.auth_envelope.is_none())
         {
             return Err(StateError::Conflict);
         }
         if self.status == Status::Cleared
+            && !cleared_language_reset
             && !matches!(
                 operation.mutation,
                 Mutation::ReplaceAuth { .. } | Mutation::ClearTenure { .. }
@@ -1457,6 +1473,50 @@ mod tests {
                 StateError::Conflict
             );
         }
+    }
+
+    /// Sign-out retains the install-wide language through ClearTenure; "Delete all local data"
+    /// then removes exactly that key. The cleared tenure accepts no other preference write.
+    #[test]
+    fn cleared_state_accepts_only_the_removal_of_its_retained_language() {
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({"language": "be", "volume": 30}),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences, json!({"language": "be", "volume": 30}),
+            "sign-out retains the install-wide language");
+        let with = |preferences: Value| Mutation::UpdatePreferences {
+            public: PublicPayload { preferences, ..cleared.public.clone() },
+        };
+        for refused in [
+            with(json!({"language": "es", "volume": 30})),
+            with(json!({"volume": 31})),
+            with(json!({})),
+            Mutation::UpdatePreferences {
+                public: PublicPayload {
+                    preferences: json!({"volume": 30}),
+                    client_id: Some("resurrected".into()),
+                    ..cleared.public.clone()
+                },
+            },
+        ] {
+            assert_eq!(cleared.apply(&operation(&cleared, 5, refused)).unwrap_err(),
+                StateError::Conflict);
+        }
+        let (reset, _) = cleared.apply(&operation(&cleared, 6, with(json!({"volume": 30})))).unwrap();
+        assert_eq!(reset.status, Status::Cleared);
+        assert!(reset.auth_envelope.is_none());
+        assert_eq!(reset.auth_generation, cleared.auth_generation);
+        assert_eq!(reset.public.preferences, json!({"volume": 30}));
+        // With the language gone the same no-op write is an ordinary cleared-tenure write again.
+        assert_eq!(reset.apply(&operation(&reset, 7, with(json!({"volume": 30})))).unwrap_err(),
+            StateError::Conflict);
     }
 
     #[test]

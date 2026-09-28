@@ -18,11 +18,8 @@ use crate::ui::{theme, Rect};
 use super::family::{table_focus, InnerHost, ALERT_GROUP};
 use super::registry::{AccountPreferenceReply, AppFx, PreferenceCmd, ALERT};
 
-pub(crate) const SHAPE: &str = "PreferencesV1{kind:u8,picker:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,confirm:bool,affirm:bool,values:[str]}";
+pub(crate) const SHAPE: &str = "PreferencesV2{kind:u8,picker:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,confirm:bool,affirm:bool,alert_scroll:u32,values:[str]}";
 
-const FORCE_BODY: &str = "Bypasses playback compatibility checks and always uses original quality. Playback may have no sound, display incorrectly, freeze, or crash the app. PlxNative will not automatically switch to compatible playback and may not recover gracefully.\n\nEnable this only if you understand these risks and know how to restart the app and return Direct Play to Auto.";
-const FORCE_NOTE: &str = "Advanced override. Playback may fail or crash; automatic fallback is off. Return to Auto if problems occur.";
-const ACCOUNT_NOTE: &str = "Saved to this Plex profile and shared with your other Plex apps. Changes may take time to affect playback; selections already made for an item still take priority.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind { Playback, AudioSubtitles }
@@ -30,9 +27,9 @@ pub(crate) enum Kind { Playback, AudioSubtitles }
 enum Field { Quality, DirectPlay, AudioLanguage, SubtitleMode, SubtitleLanguage, ForcedSubtitles }
 impl Field {
     fn title(self) -> &'static str { match self {
-        Self::Quality => "Default quality", Self::DirectPlay => "Direct Play",
-        Self::AudioLanguage => "Preferred audio language", Self::SubtitleMode => "Subtitles",
-        Self::SubtitleLanguage => "Subtitle language", Self::ForcedSubtitles => "Forced subtitles",
+        Self::Quality => crate::i18n::msg::settings_playback_quality(), Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play(),
+        Self::AudioLanguage => crate::i18n::msg::settings_audio_language(), Self::SubtitleMode => crate::i18n::msg::settings_audio_subtitles(),
+        Self::SubtitleLanguage => crate::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => crate::i18n::msg::settings_audio_forced_subtitles(),
     }}
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,14 +39,14 @@ enum Action { Open(Field), Pick(Value), Retry }
 struct State {
     kind: Kind, picker: Option<Field>, selected: i32, busy: bool, status: String,
     quality: Quality, direct_play: DirectPlayMode, values: Vec<String>,
-    confirming: bool, affirmative: bool,
+    confirming: bool, affirmative: bool, alert_scroll: u32,
 }
 impl LogicalState for State {
     fn write(&self, c: &mut Canon) {
         c.u8(self.kind as u8).u8(self.picker.map_or(0, |p| p as u8 + 1))
             .u32(self.selected.max(0) as u32).bool(self.busy).str(&self.status)
             .u8(self.quality as u8).u8(self.direct_play as u8)
-            .bool(self.confirming).bool(self.affirmative).u32(self.values.len() as u32);
+            .bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll).u32(self.values.len() as u32);
         for v in &self.values { c.str(v); }
     }
     fn probe(&self, out: &mut String) {
@@ -80,33 +77,33 @@ impl PreferencesPage {
         let mut s = Self { entry, table: TableView::new(), actions: Vec::new(),
             state: State { kind, picker: None, selected: 0, busy: false, status: String::new(),
                 quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(),
-                values: Vec::new(), confirming: false, affirmative: false },
+                values: Vec::new(), confirming: false, affirmative: false, alert_scroll: 0 },
             parent_row: 0, copy: String::new(), request: None, snapshot: None, pending: None, retry: None,
-            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, c"Cancel", c"Enable Force") };
+            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_playback_enable_force_c()) };
         s.rebuild(0);
         s
     }
     fn title(&self) -> &'static str {
         self.state.picker.map_or(match self.state.kind {
-            Kind::Playback => "Video & playback", Kind::AudioSubtitles => "Audio & subtitles",
+            Kind::Playback => crate::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => crate::i18n::msg::settings_audio_title(),
         }, Field::title)
     }
     fn copy_text(&self) -> Cow<'_, str> {
         if !self.state.status.is_empty() {
             return if self.state.kind == Kind::Playback && self.state.direct_play == DirectPlayMode::Forced {
-                Cow::Owned(format!("{}\n\n{FORCE_NOTE}", self.state.status))
+                Cow::Owned(format!("{}\n\n{}", self.state.status, crate::i18n::msg::settings_playback_force_note()))
             } else { Cow::Borrowed(&self.state.status) };
         }
         match self.state.kind {
-            Kind::AudioSubtitles => Cow::Borrowed(ACCOUNT_NOTE),
-            Kind::Playback if self.state.direct_play == DirectPlayMode::Forced => Cow::Borrowed(FORCE_NOTE),
-            Kind::Playback => Cow::Borrowed("Playback defaults for this television. Quality is also available in the player's More menu. Changes here apply to the next playback."),
+            Kind::AudioSubtitles => Cow::Borrowed(crate::i18n::msg::settings_audio_account_note()),
+            Kind::Playback if self.state.direct_play == DirectPlayMode::Forced => Cow::Borrowed(crate::i18n::msg::settings_playback_force_note()),
+            Kind::Playback => Cow::Borrowed(crate::i18n::msg::settings_playback_copy()),
         }
     }
     fn view(&self) -> TableScreen<'_> {
         let crumb = if self.state.picker.is_some() { match self.state.kind {
-            Kind::Playback => "Video & playback", Kind::AudioSubtitles => "Audio & subtitles",
-        }} else { "Settings" };
+            Kind::Playback => crate::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => crate::i18n::msg::settings_audio_title(),
+        }} else { crate::i18n::msg::settings_title() };
         TableScreen::new(Header::new(RouteLayout::screen(), Some(crumb), self.title(), &self.copy),
             &self.table, GroupId(0), self.entry)
     }
@@ -130,8 +127,8 @@ impl PreferencesPage {
             _ => PreferenceCmd::Load { reply },
         };
         self.state.status = if matches!(&command, PreferenceCmd::Save { .. }) {
-            "Saving to your Plex account…"
-        } else { "Loading your Plex account preferences…" }.into();
+            crate::i18n::msg::settings_audio_saving()
+        } else { crate::i18n::msg::settings_audio_loading() }.into();
         self.pending = Some(Pending::Account(rx)); self.state.busy = true;
         fx.push(Fx::App(AppFx::Preferences(command)));
     }
@@ -143,7 +140,7 @@ impl PreferencesPage {
             _ => return,
         };
         self.pending = Some(Pending::Local(rx)); self.state.busy = true;
-        self.state.status = "Saving playback preference…".into();
+        self.state.status = crate::i18n::msg::settings_playback_saving().into();
         fx.push(Fx::App(AppFx::Preferences(command)));
     }
     fn start_initial_load(&mut self, fx: &mut Effects<'_, InnerHost>) -> bool {
@@ -170,12 +167,12 @@ impl PreferencesPage {
                 .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
             Field::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
                 .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
-            Field::SubtitleMode => [("Off (manual selection)", 0), ("When audio isn't in my language", 1), ("Always", 2)]
+            Field::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
                 .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
-            Field::ForcedSubtitles => ["Prefer non-forced subtitles", "Prefer forced subtitles", "Only forced subtitles", "Only non-forced subtitles"]
+            Field::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
                 .into_iter().enumerate().map(|(i, s)| (s.into(), Value::Forced(i as i64))).collect(),
             Field::AudioLanguage | Field::SubtitleLanguage => {
-                let mut result = vec![(if field == Field::AudioLanguage { "Original" } else { "No preference" }.into(), Value::Language(String::new()))];
+                let mut result = vec![(if field == Field::AudioLanguage { crate::i18n::msg::settings_audio_original() } else { crate::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
                 result.extend(crate::plex::languages::LANGUAGES.iter()
                     .map(|l| (l.name.to_string(), Value::Language(l.code.to_string()))));
                 let current = self.current_value(field);
@@ -188,13 +185,14 @@ impl PreferencesPage {
     }
     fn value_label(&self, field: Field) -> String {
         let current = self.current_value(field);
-        self.options(field).into_iter().find(|(_, v)| *v == current).map_or_else(|| "Not set".into(), |(s, _)| s)
+        self.options(field).into_iter().find(|(_, v)| *v == current).map_or_else(|| crate::i18n::msg::settings_audio_not_set().into(), |(s, _)| s)
     }
     fn rebuild(&mut self, selected: i32) {
         self.state.quality = crate::route::quality();
         self.state.direct_play = crate::route::direct_play_mode();
         self.copy = self.copy_text().into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
+        self.state.alert_scroll = self.alert.scroll_target_bits();
         self.state.values.clear(); self.actions.clear();
         let mut section = Section::new("");
         if let Some(field) = self.state.picker {
@@ -213,15 +211,15 @@ impl PreferencesPage {
                 let value = self.value_label(field);
                 let mut row = Row::new(field.title()).value(&value).chevron(true).dim(self.state.busy);
                 if field == Field::Quality && self.state.direct_play == DirectPlayMode::Forced {
-                    row = row.detail("Overridden by Force Direct Play: Original quality.");
+                    row = row.detail(crate::i18n::msg::settings_playback_overridden());
                 }
                 if field == Field::AudioLanguage && self.snapshot.as_ref().is_some_and(|s| s.preferences.auto_select_audio == Some(false)) {
-                    row = row.detail("Automatic selection is off in Plex. Choosing a language enables it.");
+                    row = row.detail(crate::i18n::msg::settings_audio_selection_off());
                 }
                 section = section.row(row); self.state.values.push(value); self.actions.push(Action::Open(field));
             }
             if self.state.kind == Kind::AudioSubtitles && !self.state.busy && !self.state.status.is_empty() {
-                section = section.row(Row::new("Retry").detail("Try the account request again.")); self.actions.push(Action::Retry);
+                section = section.row(Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail())); self.actions.push(Action::Retry);
             }
         }
         self.table.compact = false; self.table.header_ink = theme::TEXT_READING;
@@ -243,8 +241,9 @@ impl PreferencesPage {
             }
             Action::Pick(value) => {
                 if value == Value::DirectPlay(DirectPlayMode::Forced) && self.state.direct_play != DirectPlayMode::Forced {
-                    self.alert.open(c"Force Direct Play?", FORCE_BODY);
-                    self.state.confirming = true; self.state.affirmative = false; self.focus(fx, ALERT_GROUP);
+                    self.alert.open(crate::i18n::msg::settings_playback_force_question_c(), crate::i18n::msg::settings_playback_force_body());
+                    self.state.confirming = true; self.state.affirmative = false;
+                    self.state.alert_scroll = self.alert.scroll_target_bits(); self.focus(fx, ALERT_GROUP);
                     return;
                 }
                 self.commit(value, fx); self.close_picker(fx);
@@ -303,29 +302,33 @@ impl PreferencesPage {
                         Ok(snapshot) => { self.snapshot = Some(snapshot); self.retry = None; self.state.status.clear(); }
                         Err(error) => {
                             if error == PreferenceError::Stale { self.retry = None; }
-                            self.state.status = format!("{} Select Retry.", error.message());
+                            self.state.status = crate::i18n::msg::settings_audio_error_retry(error.message());
                         }
                     }
                 } else {
                     self.request = None; self.snapshot = None; self.retry = None;
-                    self.state.status = "Sign in to this Plex profile again to edit its account preferences.".into();
+                    self.state.status = crate::i18n::msg::settings_audio_sign_in_again().into();
                 }
             }
             Receipt::Local(true) => self.state.status.clear(),
-            Receipt::Local(false) | Receipt::Failed => self.state.status = "Could not save or load this preference. Please try again.".into(),
+            Receipt::Local(false) | Receipt::Failed => self.state.status = crate::i18n::msg::settings_playback_save_failed().into(),
         }
         true
     }
 }
 fn mode_label(mode: DirectPlayMode) -> &'static str {
-    match mode { DirectPlayMode::Auto => "Auto", DirectPlayMode::Forced => "Force Direct Play (advanced)", DirectPlayMode::Disabled => "Disabled" }
+    match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
 }
 impl Machine<InnerHost> for PreferencesPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match self.alert.step(ev, cx) {
             PromptStep::Pass => (),
-            PromptStep::Done(handled) => { self.state.affirmative = self.alert.choice(); return handled; }
+            PromptStep::Done(handled) => {
+                self.state.affirmative = self.alert.choice();
+                self.state.alert_scroll = self.alert.scroll_target_bits();
+                return handled;
+            }
             PromptStep::Answer(yes) => {
                 if yes { self.save_local(Value::DirectPlay(DirectPlayMode::Forced), fx); }
                 self.state.confirming = false;
@@ -379,7 +382,7 @@ impl Machine<InnerHost> for PreferencesPage {
 
 impl Focusable<InnerHost> for PreferencesPage {
     fn groups(&self, cx: &Cx<'_, InnerHost>, out: &mut Vec<GroupSpec>) {
-        if !self.alert.groups(out) {
+        if !self.alert.groups(out, cx.measure) {
             Focusable::<InnerHost>::groups(&self.view(), cx, out)
         }
     }
@@ -396,7 +399,7 @@ impl Focusable<InnerHost> for PreferencesPage {
         }
     }
     fn place(&self, key: &u32, cx: &Cx<'_, InnerHost>, at: At) -> Option<Placed> {
-        match self.alert.place(*key) {
+        match self.alert.place(*key, cx.measure) {
             Some(placed) => placed,
             None => Focusable::<InnerHost>::place(&self.view(), key, cx, at),
         }
@@ -426,7 +429,7 @@ impl Screen<InnerHost> for PreferencesPage {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed("Settings"))
+        Some(Cow::Borrowed(crate::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {

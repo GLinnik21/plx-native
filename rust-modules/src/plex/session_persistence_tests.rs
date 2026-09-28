@@ -360,6 +360,54 @@ impl Drop for TempCanonicalRoot {
     }
 }
 
+/// Language belongs to the installation, while sign-out must still revoke every credential.
+/// Exercise the canonical host store and real save/clear/load paths across simulated relaunches.
+#[test]
+fn language_survives_ordinary_signout_fresh_login_and_relaunch() {
+    use crate::i18n::Preference;
+    let _serial = crate::testlock::serial();
+    let root = TempCanonicalRoot::new("language-signout-relaunch");
+    struct Restore {
+        preference: Preference,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::i18n::set_saved_preference(self.preference);
+            redirect_candidates_for_test(None);
+            redirect_for_test(None);
+        }
+    }
+    let _restore = Restore { preference: crate::i18n::saved_preference() };
+    redirect_for_test(None);
+    redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
+
+    save(&signed_in());
+    assert!(set_language(Preference::Be), "setup: the language change must be durable");
+    assert_eq!(peek().language, Preference::Be);
+    assert!(matches!(clear(), ClearOutcome::Durable { .. }));
+    assert!(peek().account_token.is_empty(), "sign-out must immediately revoke credentials");
+
+    // A new process has neither the old session cache nor the confirmed-preference atomic.
+    redirect_for_test(None);
+    crate::i18n::set_saved_preference(Preference::System);
+    let mut fresh_login = load_with_id(|| "new-install-id".into());
+    assert!(fresh_login.account_token.is_empty());
+    assert!(fresh_login.server.token.is_empty());
+    assert!(fresh_login.profiles.is_empty());
+    assert_eq!(fresh_login.language, Preference::Be,
+        "ordinary sign-out must retain the installation's language across relaunch");
+
+    // Only a new authentication may repopulate credentials; it inherits the retained language.
+    fresh_login.account_token = "different-test-account".into();
+    save_fresh_reauthentication(&fresh_login);
+    redirect_for_test(None);
+    crate::i18n::set_saved_preference(Preference::System);
+    let relaunched = load_with_id(|| panic!("fresh login already persisted its client id"));
+    assert_eq!(relaunched.account_token, "different-test-account");
+    assert_eq!(relaunched.language, Preference::Be,
+        "a later account must not replace the installation's language with System");
+}
+
 /// AUTH-08 (RED before the fix, for the real reason — not a compile error, not a fixture bug):
 /// `clear()` only ever swept the legacy on-disk candidates, never committing anything to the
 /// canonical authority. `save`/`clear` both route through `persistence::write_session`/
@@ -682,7 +730,7 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
 #[test]
 fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missing() {
     let missing = prepare_load(&ReadState::Missing, || "id-missing".to_string()).0;
-    let cleared = prepare_load(&ReadState::Cleared, || "id-cleared".to_string()).0;
+    let cleared = prepare_load(&ReadState::Cleared { language: crate::i18n::Preference::System }, || "id-cleared".to_string()).0;
     assert!(
         missing.playback_quality.is_some(),
         "setup: a Missing read must seed a fresh quality"
@@ -701,9 +749,9 @@ fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missin
 /// (the `Locked | Blocked` bucket) leaves the rest of this module's suite green.
 #[test]
 fn read_identity_gives_cleared_its_own_bucket_distinct_from_every_other_state() {
-    let cleared = read_identity(&ReadState::Cleared);
+    let cleared = read_identity(&ReadState::Cleared { language: crate::i18n::Preference::System });
     assert_ne!(cleared, read_identity(&ReadState::Missing));
-    assert_ne!(cleared, read_identity(&ReadState::Locked));
+    assert_ne!(cleared, read_identity(&ReadState::Locked { language: crate::i18n::Preference::System }));
     assert_ne!(cleared, read_identity(&ReadState::Blocked));
 }
 
@@ -1097,6 +1145,29 @@ fn a_malformed_home_user_costs_that_tile_and_not_the_session() {
     assert_eq!(s.account(None).name.as_deref(), Some("B"));
 }
 
+
+#[test]
+fn a_language_update_reports_when_the_next_launch_cannot_be_persisted() {
+    let _g = crate::testlock::serial();
+    let t = TempSession::new("language-write-failure");
+    save(&signed_in());
+    let dir = t.file().parent().unwrap().to_path_buf();
+    let result = update_with_outcome(|cur| {
+        let mut next = cur.clone();
+        next.language = crate::i18n::Preference::Be;
+        // Remove the writable directory after the read, before the atomic replacement. A file
+        // at the parent path makes this fail on every host, including privileged test runners.
+        std::fs::remove_file(t.file()).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        Some(next)
+    });
+    std::fs::remove_file(&dir).unwrap();
+    std::fs::create_dir(&dir).unwrap();
+    assert!(!result.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_))),
+        "the language picker must not promise next-launch persistence after a failed write");
+}
+
 // The canonical seam supplies the same typed failure as a dead native helper. It does not
 // bypass the production save, fallback writer, candidate reader, or cache.
 struct CanonicalReadOverride;
@@ -1165,7 +1236,7 @@ fn fallback_never_outranks_present_or_untrusted_canonical_state() {
             public: Session::default(),
             protection: None,
         },
-        || C::Cleared { revision: 1 },
+        || C::Cleared { revision: 1, language: crate::i18n::Preference::System },
         || C::Data {
             revision: 1,
             payload: "not json".into(),
@@ -1219,7 +1290,7 @@ fn legacy_unmarked_file_requires_missing_canonical_and_marked_sealed_stays_locke
     let envelope =
         serde_json::json!({"format":SECURE_FORMAT,"version":99,"sealed":{}, FALLBACK_MARKER:1});
     write_atomic(&candidates[2], &serde_json::to_vec(&envelope).unwrap()).unwrap();
-    assert!(matches!(read_live_locked(), ReadState::Locked));
+    assert!(matches!(read_live_locked(), ReadState::Locked { .. }));
 }
 
 #[test]
@@ -1494,7 +1565,7 @@ fn p1_authoritative_reads_retire_only_marked_files() {
     for read in [
         (|| C::Opened { revision: 1, session: signed_in() }) as fn() -> C,
         || C::Data { revision: 1, payload: serde_json::to_string(&signed_in()).unwrap() },
-        || C::Cleared { revision: 1 },
+        || C::Cleared { revision: 1, language: crate::i18n::Preference::System },
     ] {
         assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
         persistence::READ_FOR_TEST.with(|hook| hook.set(Some(read)));
@@ -1685,7 +1756,7 @@ fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
     RETIRE_PARENT_SYNC_FOR_TEST.with(|hook| hook.set(Some(|| Some(libc::EIO))));
     assert!(!with_io_for_test(retire_marked_fallbacks_locked));
     assert!(!file.file().exists());
-    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1 })));
+    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1, language: crate::i18n::Preference::System })));
     assert_eq!(with_io_for_test(persistence::cleanup_after_confirmed_clear),
         persistence::ClearCleanupOutcome::LegacyRetireFailed);
     assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: false });

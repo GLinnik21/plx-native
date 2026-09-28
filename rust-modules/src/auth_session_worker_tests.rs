@@ -230,7 +230,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
     assert!(
         matches!(&**data, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
             outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied: false }, ..
-        }) if error == DISCOVERY_INSECURE_ONLY_MESSAGE),
+        }) if error == discovery_insecure_only_message()),
         "an InsecureOnly-only grant must report the shared discovery copy, not the generic \
          'has no access' wording"
     );

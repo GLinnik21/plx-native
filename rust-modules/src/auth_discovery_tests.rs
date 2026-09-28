@@ -956,13 +956,13 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
 /// the three other Discovery failures never had a name collision to drift on. `discover_and_store`
 /// itself needs a live plex.tv edge no host test can reach, so this pins the SHARED CONST's
 /// content directly; the two call sites (`login_worker_with_output`, `rediscovery_worker_with_output`)
-/// are both spelled `output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)` — greppable,
+/// are both spelled `output_failed(output, epoch, discovery_insecure_only_message())` — greppable,
 /// and unable to drift apart without a compile error renaming one identifier but not the other.
 #[test]
 fn insecure_only_copy_is_one_shared_const_naming_the_fixable_cause() {
-    assert!(!DISCOVERY_INSECURE_ONLY_MESSAGE.is_empty());
-    assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("securely"));
-    assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("HTTPS"));
+    assert!(!discovery_insecure_only_message().is_empty());
+    assert!(discovery_insecure_only_message().contains("securely"));
+    assert!(discovery_insecure_only_message().contains("HTTPS"));
 }
 
 // ---- issue #95, step 4: probe pinning ----
@@ -2612,7 +2612,7 @@ fn plx10_a_fresh_verdict_that_does_not_reach_the_granted_origin_revokes_the_gran
 /// fixture measurer's wrap at the real width and size, and a character budget
 /// ([`READOUT_REASON_BUDGET`]) that holds with room for the real face's wider glyphs. The shared
 /// forms are measured with a long owner name. The owner-approved
-/// `DISCOVERY_INSECURE_ONLY_MESSAGE` predates the budget and is kept byte-identical; it is held to
+/// `discovery_insecure_only_message()` predates the budget and is kept byte-identical; it is held to
 /// the measured wrap only.
 #[test]
 fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
@@ -2623,7 +2623,7 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
         .max_lines(2)
         .with_measure(&crate::ui::fixture::FixtureMeasure)
         .truncates(StatusOverlay::REASON_W);
-    assert!(fits(DISCOVERY_INSECURE_ONLY_MESSAGE));
+    assert!(fits(discovery_insecure_only_message()));
     let mut seen = 0;
     for owner in ["", "a-longish-owner18"] {
         for eligibility in [probe::PlaintextEligibility::Eligible, probe::PlaintextEligibility::NotLocal,
@@ -2636,7 +2636,7 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
                         eligibility, choice,
                     };
                     let copy = plaintext_copy(Some(&v), surface);
-                    if copy == DISCOVERY_INSECURE_ONLY_MESSAGE { continue; }
+                    if copy == discovery_insecure_only_message() { continue; }
                     seen += 1;
                     assert!(copy.chars().count() <= READOUT_REASON_BUDGET, "{} chars: {copy}", copy.chars().count());
                     assert!(fits(&copy), "wraps past two lines: {copy}");
@@ -2656,4 +2656,71 @@ fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
         }
     }
     assert!(seen > 20);
+}
+
+#[test]
+fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action() {
+    use crate::i18n::{LocaleContext, Preference};
+    use crate::ui::text_view::TextView;
+    use crate::ui::widgets::StatusOverlay;
+    use std::ffi::CStr;
+    /// `FixtureMeasure`'s half-em advance per UNICODE SCALAR rather than per UTF-8 byte. Its byte
+    /// count doubles every Cyrillic letter, so it would grade Belarusian against a font no device
+    /// has; this grades every locale on exactly the advance the English copy is held to.
+    struct ScalarMeasure;
+    impl crate::ui::machine::Measure for ScalarMeasure {
+        fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.5
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    for (preference, connect, retry, settings_path) in [
+        (Preference::En, "Connect", "Try again", "Settings → Unencrypted connections"),
+        (Preference::Es, "Conectar", "Reintentar", "Ajustes → Conexiones sin cifrar"),
+        (Preference::Be, "Злучыцца", "Паспрабаваць зноў", "Налады → Злучэнні без шыфравання"),
+    ] {
+        let locale = LocaleContext::resolve(preference, None, None, None, None);
+        for owner in ["", "a-longish-owner18"] {
+            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed,
+                PlaintextChoice::Declined, PlaintextChoice::Revoked] {
+                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
+                    let verdict = PlaintextVerdict { machine_id: "fixture".into(), name: "fixture".into(),
+                        shared_by: owner.into(), eligibility: probe::PlaintextEligibility::Eligible, choice };
+                    let text = plaintext_copy_in(Some(&verdict), surface, &locale);
+                    let action = match (choice, surface) {
+                        (PlaintextChoice::Undecided, _) => connect,
+                        (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => retry,
+                        (_, ReadoutSurface::SignedIn) => settings_path,
+                    };
+                    assert!(text.contains(action), "{preference:?}/{choice:?}/{surface:?}: {text}");
+                    if !owner.is_empty() {
+                        assert_eq!(text.matches(owner).count(), 1, "the owner remains literal metadata");
+                        if preference != Preference::En {
+                            assert!(!text.contains("’s"), "English possessive grammar must not leak: {text}");
+                        }
+                    }
+                    assert!(text.chars().count() <= 125, "reason budget: {preference:?}: {text}");
+                    assert!(!TextView::new(&text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+                        .max_lines(2).with_measure(&ScalarMeasure)
+                        .truncates(StatusOverlay::REASON_W), "complete action must fit: {text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
+    use crate::i18n::{LocaleContext, Preference};
+    let be = LocaleContext::resolve(Preference::Be, None, None, None, None);
+    for (count, phrase) in [(1, "1 раз."), (2, "2 разы."), (5, "5 разоў."),
+        (11, "11 разоў."), (21, "21 раз.")] {
+        for text in [crate::i18n::msg::browse_auth_plex_dns_retry_in(&be, count),
+            crate::i18n::msg::browse_auth_plex_connect_retry_in(&be, count)] {
+            assert!(text.contains(phrase), "{text}");
+            assert!(text.contains("plex.tv") && text.contains("Праверце злучэнне"), "{text}");
+            assert!(!text.contains("We tried"), "an English sentence fragment must never survive");
+        }
+    }
 }

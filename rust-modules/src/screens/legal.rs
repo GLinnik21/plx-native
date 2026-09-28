@@ -18,9 +18,8 @@ use crate::ui::{theme, Rect};
 use super::family::{table_focus, InnerHost, SettingsPage};
 use super::registry::word;
 
-/// The index's own title, and — one push deeper — the crumb a document names.
-const INDEX_TITLE: &str = "Legal notices";
-const CRUMB_SETTINGS: &str = "Settings";
+
+
 /// **The one contact address the application prints.**
 /// `every_document_prints_only_the_one_contact_address` scans the documents for stray `@`s;
 /// `screens::consent` imports it.
@@ -47,32 +46,32 @@ impl Page {
     ];
     fn title(self) -> &'static str {
         match self {
-            Self::Privacy => "Privacy policy",
-            Self::OpenSource => "Open-source licences",
-            Self::Ffmpeg => "FFmpeg & source offer",
-            Self::Source => "PlxNative source code",
-            Self::Trademarks => "Trademarks & non-affiliation",
-            Self::Contact => "Privacy & security contact",
+            Self::Privacy => crate::i18n::msg::settings_legal_privacy_title(),
+            Self::OpenSource => crate::i18n::msg::settings_legal_opensource_title(),
+            Self::Ffmpeg => crate::i18n::msg::settings_legal_ffmpeg_title(),
+            Self::Source => crate::i18n::msg::settings_legal_source_title(),
+            Self::Trademarks => crate::i18n::msg::settings_legal_trademarks_title(),
+            Self::Contact => crate::i18n::msg::settings_legal_contact_title(),
         }
     }
     fn subtitle(self) -> &'static str {
         match self {
-            Self::Privacy => "How PlxNative handles local data and optional reports.",
-            Self::OpenSource => "Components, copyright holders and licence texts.",
-            Self::Ffmpeg => "LGPL notice, replaceability and corresponding source.",
-            Self::Source => "Project source, build scripts and release materials.",
-            Self::Trademarks => "Independent-client status and trademark attribution.",
-            Self::Contact => "How to ask a privacy question or report a vulnerability.",
+            Self::Privacy => crate::i18n::msg::settings_legal_privacy_subtitle(),
+            Self::OpenSource => crate::i18n::msg::settings_legal_opensource_subtitle(),
+            Self::Ffmpeg => crate::i18n::msg::settings_legal_ffmpeg_subtitle(),
+            Self::Source => crate::i18n::msg::settings_legal_source_subtitle(),
+            Self::Trademarks => crate::i18n::msg::settings_legal_trademarks_subtitle(),
+            Self::Contact => crate::i18n::msg::settings_legal_contact_subtitle(),
         }
     }
     pub(crate) fn body(self) -> &'static str {
         match self {
-            Self::Privacy => PRIVACY,
-            Self::OpenSource => OPEN_SOURCE,
-            Self::Ffmpeg => FFMPEG,
-            Self::Source => SOURCE,
-            Self::Trademarks => TRADEMARKS,
-            Self::Contact => CONTACT,
+            Self::Privacy => &PRIVACY,
+            Self::OpenSource => &OPEN_SOURCE,
+            Self::Ffmpeg => &FFMPEG,
+            Self::Source => &SOURCE,
+            Self::Trademarks => &TRADEMARKS,
+            Self::Contact => &CONTACT,
         }
     }
 }
@@ -80,31 +79,44 @@ impl Page {
 /// The full privacy policy — the one narrative the consent screen's Privacy policy row also
 /// opens, so the two doors cannot disagree.
 pub(crate) fn privacy_policy() -> &'static str {
-    PRIVACY
+    &PRIVACY
 }
 
-const PRIVACY: &str = "RESPONSIBLE FOR PLXNATIVE DATA\n\nGleb Linnik is responsible only for data PlxNative stores locally and for optional reports you choose to share.\n\nPLEX SERVICES\n\nPlxNative is an independent client for Plex. To sign you in, discover servers and provide Plex account features, the app communicates directly with Plex services. Plex processes information received by those services under Plex’s own Privacy Policy. PlxNative’s developer does not receive that information.\n\nPlex Privacy Policy: https://www.plex.tv/about/privacy-legal/\n\nPLEX MEDIA SERVERS\n\nTo browse and play media, update watch progress and use server features, PlxNative communicates directly with the Plex Media Servers you select. Those requests are handled by the selected server and its operator. PlxNative’s developer does not receive them.\n\nON THIS TELEVISION\n\nPlxNative stores your Plex account token and a separate token for each server you use. For every profile you have switched to on this television, it also keeps that profile's own server access token(s) and, for a PIN-protected profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the addresses and identifiers of those servers, the profile names and pictures on your account, your Home library choices, your recent searches, your playback quality and Direct Play preferences, and local technical logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers to the two optional-reporting questions, the random Crash report ID if you turned crash reports on, the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a marker recording how much of the crash log has already been read. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Plex Media Server. Delete all local data in Settings signs out and removes PlxNative data from this television.\n\nOPTIONAL CRASH REPORTS\n\nIf enabled, technical crash details are sent to Sentry in Germany. They can include the signal, code addresses, thread information and device compatibility details. Each report carries a random Crash report ID created on this television when you turned crash reports on, so that repeated crashes under one Crash report ID are counted once rather than once each. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics. Settings shows it as your Crash report ID while crash reports are on.\n\nIf signing in fails, the same channel can carry a sign-in problem report: which sign-in step failed (or which fixed kind of failure inside the app stopped it), how the connection answered (an error class with its HTTP status or network error number), rounded try counts and durations, how many codes were shown, and, when a sign-in could not be saved, a storage failure class, which key-service step it stopped at and the key service's own numeric error code, fixed storage-helper failure stages and error codes, storage-candidate errno numbers (never file paths or owners), the app version and when it happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With crash reports on, it is sent automatically under your Crash report ID, and the sign-in screen shows its Report ID. Otherwise it is sent only if you press Send report on the sign-in screen, once, without any Crash report ID and with a random Report ID that identifies only that one report.\n\nOPTIONAL PRODUCT ANALYTICS\n\nIf enabled, screen and feature events and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on.\n\nNEVER INCLUDED\n\nTitles, Plex accounts, searches, server names or addresses, tokens, subtitle text and exact viewing history are not included in either optional report type. Both choices are independent and can be changed at any time in Settings.\n\nRETENTION\n\nDifferent things here have different lifetimes, so this is stated for each. Your sign-in, the servers registered with it and their tokens, and every profile's own cached server access token(s) and PIN check, are removed when you sign out. Your answers to the two optional-reporting questions, and the Crash report ID and Analytics ID if they exist, belong to that sign-in: signing out removes them with it, and whoever signs in next is asked afresh. Switching between the profiles of one Plex account is not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for a profile you are not currently using, so that profile can be switched to again with no internet. A report waiting to be sent is deleted once it is sent, and a queued report of a category you switch off, or that you sign out of, is deleted at that moment; one report that the sender had already picked up at that moment may still be sent, and no further report is picked up after it. The event log rotates continuously and the storage snapshot is replaced when its bounded status changes. Delete all local data removes all of it. A report that has already been sent is held by the service that received it, under that service’s own retention schedule; write to the contact below to ask what those periods currently are.\n\nYOUR CHOICES AND HOW TO ASK\n\nBoth optional reports are off until you turn them on, and either can be turned off again at any time in Settings. A one-off sign-in problem report is sent only when you press Send report. Delete all local data removes what PlxNative stored on this television; it does not reach anything already sent. To ask what crash reports or product analytics hold for your installation, or to have them deleted, write to the contact below and quote your Crash report ID or Analytics ID from Settings, or the Report ID shown after a one-off report. Each identifier is the only handle its reports carry. Turning a category off deletes its identifier from this television, and so does signing out; reports already sent keep the old one, so copy it down first if you intend to ask for their deletion.\n\nWHERE DATA IS PROCESSED\n\nOptional crash reports are processed by Sentry in Germany and optional product analytics by PostHog in Germany. Plex processes what its own services receive under Plex’s Privacy Policy. A Plex Media Server you connect to may be located anywhere and is operated by whoever runs it, not by PlxNative’s developer.\n\nUNINSTALLING\n\nRemoving PlxNative removes the application, but webOS gives an application no way to run code as it is removed, so anything kept outside the application’s own directory can survive. Two things are deliberately kept there: your sign-in, so that reinstalling does not sign you out, and — because they belong to that sign-in — your optional-reporting answers together with the Crash report ID and Analytics ID, so that a decision you have already made is not put to you again after a reinstall. Use Delete all local data BEFORE uninstalling if you want nothing of PlxNative left on this television.\n\nCONTACT\n\nPrivacy questions: support@plxnative.com";
-const OPEN_SOURCE: &str = concat!(
-    "PlxNative is open-source software licensed under GPL-3.0-or-later. Copyright (c) 2026 Gleb Linnik and contributors. You may modify and redistribute it under these terms. There is no warranty, to the extent permitted by law.\n\nThird-party components retain their own licences. The package includes THIRD-PARTY-NOTICES.md and licence texts for the Rust runtime and crates, FFmpeg, Sentry Native, libunwind, NanoSVG, fonts and icons. Platform libraries have separate terms.\n\n",
-    include_str!("../../../LICENSE")
-);
-const FFMPEG: &str = "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is copyright (c) the FFmpeg developers; PlxNative does not own FFmpeg.\n\nThe FFmpeg libraries are unmodified and loaded dynamically, and may be replaced with an interface-compatible build. The complete corresponding FFmpeg 9.0 source, exact configure line and build script are published with every PlxNative release.";
-const SOURCE: &str = concat!(
-    "Source for build ", env!("PLX_BUILD_SHA"),
-    ":\n\nhttps://github.com/GLinnik21/plx-native/tree/", env!("PLX_BUILD_SHA"),
-    "\n\nLocal migration candidates may contain unpublished changes. Their matching source snapshot is provided with the candidate evidence. A published binary must be accompanied by its version-specific complete source bundle and build instructions; a moving branch is not the corresponding-source record. See LICENSING.md in the package."
-);
-const TRADEMARKS: &str = "Plex, the Plex logo and Plex Media Server are trademarks of Plex, Inc.\n\nLG and webOS are trademarks of LG Electronics Inc.\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.";
-const CONTACT: &str = "Privacy questions may be sent to support@plxnative.com.\n\nSecurity vulnerabilities may be reported privately through GitHub Security Advisories for GLinnik21/plx-native. Please do not include Plex tokens, server addresses or personal media information in a report.";
-const ABOUT: &str = concat!(
-    "Version ",
-    env!("PLX_VERSION"),
-    "\nBuild ",
-    env!("PLX_BUILD_SHA"),
-    "\n\nDeveloped by Gleb Linnik\n\u{00A9} 2026 Gleb Linnik",
-    "\n\nOpen source under GPL-3.0-or-later\ngithub.com/GLinnik21/plx-native",
-    "\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc."
-);
+static PRIVACY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| [
+    crate::i18n::msg::settings_legal_privacy_responsible(),
+    crate::i18n::msg::settings_legal_privacy_responsible_body(),
+    crate::i18n::msg::settings_legal_privacy_plex(),
+    crate::i18n::msg::settings_legal_privacy_plex_body(),
+    crate::i18n::msg::settings_legal_privacy_plex_link(),
+    crate::i18n::msg::settings_legal_privacy_servers(),
+    crate::i18n::msg::settings_legal_privacy_servers_body(),
+    crate::i18n::msg::settings_legal_privacy_local(),
+    crate::i18n::msg::settings_legal_privacy_local_body(),
+    crate::i18n::msg::settings_legal_privacy_plaintext_body(),
+    crate::i18n::msg::settings_legal_privacy_crashes(),
+    crate::i18n::msg::settings_legal_privacy_crashes_body(),
+    crate::i18n::msg::settings_legal_privacy_signin_body(),
+    crate::i18n::msg::settings_legal_privacy_analytics(),
+    crate::i18n::msg::settings_legal_privacy_analytics_body(),
+    crate::i18n::msg::settings_legal_privacy_excluded(),
+    crate::i18n::msg::settings_legal_privacy_excluded_body(),
+    crate::i18n::msg::settings_legal_privacy_retention(),
+    crate::i18n::msg::settings_legal_privacy_retention_body(),
+    crate::i18n::msg::settings_legal_privacy_choices(),
+    crate::i18n::msg::settings_legal_privacy_choices_body(),
+    crate::i18n::msg::settings_legal_privacy_processing(),
+    crate::i18n::msg::settings_legal_privacy_processing_body(),
+    crate::i18n::msg::settings_legal_privacy_uninstall(),
+    crate::i18n::msg::settings_legal_privacy_uninstall_body(),
+    crate::i18n::msg::settings_legal_privacy_contact(),
+    crate::i18n::msg::settings_legal_privacy_contact_body()
+].join("\n\n"));
+static OPEN_SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!("{}\n\n{}", crate::i18n::msg::settings_legal_opensource_body(), include_str!("../../../LICENSE")));
+static FFMPEG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_ffmpeg_body);
+static SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| crate::i18n::msg::settings_legal_source_body(env!("PLX_BUILD_SHA")));
+static TRADEMARKS: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_trademarks_body);
+static CONTACT: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_contact_body);
+static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| crate::i18n::msg::settings_about_body(env!("PLX_BUILD_SHA"), env!("PLX_VERSION")));
 
 // ---------------------------------------------------------------------------------------------
 // the index
@@ -131,7 +143,7 @@ impl LogicalState for IndexState {
 
 impl LegalIndex {
     pub(crate) fn new(entry: EntryId) -> Self {
-        let mut s = Section::new("Legal");
+        let mut s = Section::new(crate::i18n::msg::settings_legal_section());
         for page in Page::ALL {
             s = s.row(Row::new(page.title()).detail(page.subtitle()).chevron(true));
         }
@@ -151,9 +163,9 @@ impl LegalIndex {
         TableScreen::new(
             Header::new(
                 RouteLayout::screen(),
-                Some(CRUMB_SETTINGS),
-                INDEX_TITLE,
-                "Read the notices that apply to this build, its open-source components and its relationship with Plex and LG.",
+                Some(crate::i18n::msg::settings_title()),
+                crate::i18n::msg::settings_legal_title(),
+                crate::i18n::msg::settings_legal_copy(),
             ),
             &self.table,
             GroupId(0),
@@ -211,7 +223,7 @@ impl Screen<InnerHost> for LegalIndex {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(CRUMB_SETTINGS))
+        Some(Cow::Borrowed(crate::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
@@ -240,7 +252,9 @@ pub(crate) struct DocumentPage {
     crumb: &'static str,
     title: &'static str,
     subtitle: &'static str,
-    body: &'static str,
+    body: Cow<'static, str>,
+    qr: Option<crate::ui::qr::QrCode>,
+    guide_caption: Option<&'static str>,
     word: &'static str,
     state: DocState,
 }
@@ -291,10 +305,12 @@ impl DocumentPage {
         Self {
             entry,
             reader: DocumentReader::new(),
-            crumb: INDEX_TITLE,
+            crumb: crate::i18n::msg::settings_legal_title(),
             title: page.title(),
             subtitle: page.subtitle(),
-            body: page.body(),
+            body: Cow::Borrowed(page.body()),
+            qr: None,
+            guide_caption: None,
             word: word::LEGAL,
             state: DocState { which: i, pos: 0 },
         }
@@ -304,19 +320,44 @@ impl DocumentPage {
         Self {
             entry,
             reader: DocumentReader::new(),
-            crumb: CRUMB_SETTINGS,
-            title: "About PlxNative",
-            subtitle: "A native media client built for LG webOS.",
-            body: ABOUT,
+            crumb: crate::i18n::msg::settings_title(),
+            title: crate::i18n::msg::settings_about_title(),
+            subtitle: crate::i18n::msg::settings_about_subtitle(),
+            body: Cow::Borrowed(&ABOUT),
+            qr: None,
+            guide_caption: None,
             word: word::LEGAL,
             state: DocState { which: 0xff, pos: 0 },
         }
     }
 
+    pub(crate) fn contribute(entry: EntryId) -> Self {
+        Self {
+            entry,
+            reader: DocumentReader::new(),
+            crumb: crate::i18n::msg::settings_language_title(),
+            title: crate::i18n::msg::settings_language_contribute(),
+            subtitle: crate::i18n::msg::settings_language_contribute_copy(),
+            body: Cow::Owned(contribution_address()),
+            qr: crate::ui::qr::QrCode::new(crate::i18n::CONTRIBUTE_URL).ok(),
+            guide_caption: Some(crate::i18n::msg::settings_language_contribute_body()),
+            word: "contribute",
+            state: DocState { which: 0xfe, pos: 0 },
+        }
+    }
+
+    fn document_frame(&self) -> Rect {
+        RouteLayout::screen().document(true)
+    }
+
+    fn guide(&self) -> Option<crate::ui::qr::QrLink<'_>> {
+        self.guide_caption.map(|caption| crate::ui::qr::QrLink::new(caption, self.body.as_ref()))
+    }
+
     fn view(&self) -> DocumentFocus<'_> {
         DocumentFocus {
             reader: &self.reader,
-            frame: RouteLayout::screen().document(true),
+            frame: self.document_frame(),
             group: GroupId(0),
             entry: self.entry,
         }
@@ -378,16 +419,30 @@ impl Screen<InnerHost> for DocumentPage {
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
         Some(Cow::Borrowed(self.crumb))
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
+    fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, InnerHost>) {
+        let code = self.guide().map(|guide| guide.layout(self.document_frame(), cx.measure).code);
+        if let (Some(qr), Some(code)) = (&mut self.qr, code) {
+            qr.prepare(code);
+        }
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        let document_frame = self.document_frame();
+        if let Some(guide) = self.guide() {
+            let layout = guide.draw(f.painter, document_frame, f.measure);
+            if let Some(qr) = &self.qr { qr.draw(f.painter, layout.code); }
+            Header::new(RouteLayout::screen(), Some(self.crumb), self.title, self.subtitle)
+                .paint(f.painter, f.measure);
+            return;
+        }
         let Self { reader, crumb, title, subtitle, body, entry, .. } = self;
         let mut v = DocumentScreen::new(
             Header::new(RouteLayout::screen(), Some(crumb), title, subtitle),
             reader,
-            body,
+            body.as_ref(),
             GroupId(0),
             *entry,
         );
+        v.doc.frame = document_frame;
         Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
     }
     fn render(&self) -> RenderStrategy {
@@ -399,6 +454,12 @@ impl Screen<InnerHost> for DocumentPage {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
+}
+
+/// A visual line break, not a different address. The path keeps its leading slash and all
+/// GitHub route segments so typing the two lines reaches the QR's exact destination.
+fn contribution_address() -> String {
+    crate::i18n::CONTRIBUTE_URL.trim_start_matches("https://").replace("/blob/", "\n/blob/")
 }
 
 #[cfg(test)]
@@ -413,6 +474,27 @@ mod tests {
     };
     use crate::ui::present::Present;
     use crate::ui::screen::{Activate, By, EdgeRule, Focusable, Hover, Stop};
+
+    #[test]
+    fn contribution_manual_address_is_the_complete_qr_destination() {
+        let _guard = crate::testlock::serial();
+        let page = DocumentPage::contribute(EntryId(0));
+        assert_eq!(format!("https://{}", page.body.replace('\n', "")), crate::i18n::CONTRIBUTE_URL,
+            "a viewer who cannot scan the QR needs the same complete address in text");
+        assert!(page.body.lines().nth(1).unwrap().starts_with('/'));
+    }
+
+    #[test]
+    fn every_contribution_locale_preserves_the_canonical_address() {
+        use crate::i18n::{LocaleContext, Preference};
+        for preference in [Preference::En, Preference::Es, Preference::Be] {
+            let locale = LocaleContext::resolve(preference, None, None, None, None);
+            let caption = crate::i18n::msg::settings_language_contribute_body_in(&locale);
+            assert!(!caption.contains("github.com"), "only the caption is translated");
+            assert_eq!(format!("https://{}", contribution_address().replace('\n', "")),
+                crate::i18n::CONTRIBUTE_URL);
+        }
+    }
 
     /// **No document may print an address other than [`CONTACT_EMAIL`].** Written against the
     /// personal address these pages used to carry: a support address that reaches only some of
@@ -1009,5 +1091,22 @@ mod tests {
             hash_before,
             "…and it must leave the reading position and every other hashed fact untouched"
         );
+    }
+
+    /// Every Legal notices row fits its column in every shipped language, measured with the
+    /// device's whole-pixel advances (see `settings_text_fit_tests.rs` for the Settings root).
+    #[test]
+    fn every_legal_row_fits_its_column_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let frame_w = crate::ui::route_screen::RouteLayout::screen().sectioned_table().w;
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            out.extend(LegalIndex::new(EntryId(0)).table.elided_rows(frame_w, &ShippedMeasure, HEADROOM)
+                .into_iter().map(|e| format!("{tag}: {e}")));
+        }
+        assert!(out.is_empty(), "rows the television would end in an ellipsis:\n  {}", out.join("\n  "));
     }
 }

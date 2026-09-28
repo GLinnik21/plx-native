@@ -2273,7 +2273,7 @@ impl DetailScreen {
         let title = d
             .map(|d| d.title.as_str())
             .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or("Loading…");
+            .unwrap_or(crate::i18n::msg::browse_library_loading());
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
@@ -2368,7 +2368,7 @@ impl DetailScreen {
                 parts.push(&ordinal);
             }
         } else {
-            parts.push(if d.is_show { "TV Show" } else { "Movie" });
+            parts.push(if d.is_show { crate::i18n::msg::browse_kind_tv_show() } else { crate::i18n::msg::browse_kind_movie() });
             parts.extend(d.genres.iter().take(2).map(String::as_str));
         }
         if !d.rating.is_empty() {
@@ -2401,9 +2401,9 @@ impl DetailScreen {
             ) + theme::space::XS;
         }
         for (present, label) in [
-            (!d.subs.is_empty(), "CC"),
-            (d.subs.iter().any(|s| s.sdh), "SDH"),
-            (d.audio.iter().any(|s| s.ad), "AD"),
+            (!d.subs.is_empty(), crate::i18n::msg::widgets_badge_cc()),
+            (d.subs.iter().any(|s| s.sdh), crate::i18n::msg::widgets_badge_sdh()),
+            (d.audio.iter().any(|s| s.ad), crate::i18n::msg::widgets_badge_ad()),
         ] {
             if present {
                 x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
@@ -2473,7 +2473,11 @@ impl DetailScreen {
             hero::CD,
         ];
         let picture = crate::player::preview::view().picture;
-        let may_read = !picture && may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
+        // A text-recording pass (the transition's prewarm, or a headless sweep) drew no pixels
+        // under this row, so a read-back there would sample some other page's ground.
+        let may_read = !picture
+            && !p.is_recording()
+            && may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
         let palette = if picture {
             ControlPalette::default()
         } else {
@@ -2503,7 +2507,7 @@ impl DetailScreen {
                 .scale(scale)
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
-                    Button::new(hero::ALT_LABEL.as_ptr(), theme::size::BODY, rect)
+                    Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
                         .trailing_icon(crate::ui::icons::Icon::ChevronDown)
                         .focused(focused)
                         .palette(palette)
@@ -3739,7 +3743,7 @@ impl DetailScreen {
         } else {
             ep.title.clone()
         };
-        let context = format!("{}  \u{b7}  S{} E{}", d.title, ep.season, ep.index);
+        let context = format!("{}  \u{b7}  {}", d.title, crate::ui::fmt::episode_ordinal(ep.season, ep.index));
         let resume_ns = play_resume_ns(from_start, ep.resume_ms, ep.dur_ms);
         let now_playing = crate::metadata::NowPlaying {
             is_episode: true,

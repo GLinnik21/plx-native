@@ -1,25 +1,23 @@
-//! Reusable decision alert — two choices, or a one-answer card.  It owns focus, hit geometry and destructive styling; a
-//! caller supplies the question, the two verbs and — for a question whose consequences its verb
-//! does not state — an optional body, which this module measures and which grows the panel.
+//! Reusable decision alert — two choices, or a one-answer card. The caller owns focus; this
+//! component shares measured geometry for paint and hits, retained paragraphs, and answer styling.
+//! Complete translated titles and bodies use the shared left padding edge. Oversized disclosures
+//! scroll inside the safe frame while their answers stay visible.
 //!
 //! [`layout`] is the pure half, `layout(question_h, body_h)`, and `body_h == 0.0` is byte-identical
-//! to the geometry that existed before bodies did (`no_body_leaves_the_geometry_untouched`), which
-//! is the shape an alert takes when it asks its question and nothing more. No shipping alert does
-//! that today — the last bare one was `ui::exit_alert`, retired 2026-09-03 when BACK at a root
-//! stopped asking anything and started handing the screen back to the television, and the one that
-//! ships (Privacy & data's *Delete local data*) carries a body — so that test is now the ONLY thing
-//! holding the body-free arithmetic, and it is kept deliberately: the next question this app asks
-//! will almost certainly be a bare one. The body is held on the ALERT
+//! to the geometry that existed before bodies did when the question fits the safe frame
+//! (`no_body_leaves_the_geometry_untouched`), which
+//! is the shape an alert takes when it asks its question alone. Shipping confirmations and
+//! report cards retain their disclosures on the alert, so the body-free test separately guards
+//! that simpler geometry. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
 //! [`DecisionAlert::frames`] — the geometry an owning Engine screen registers its own hit stops
 //! from — has to measure the same retained content the draw consumes.
 //!
 //! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
 //! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
-//! translated a raw key or pointer event into a call here. The owned callers
-//! (`screens::consent::ConsentPage` and `screens::player::PlayerScreen`) are `Engine` screens: they register the alert's two answers
-//! as ordinary focus-group elements through [`DecisionAlert::frames`] and move this type's
-//! selection with [`DecisionAlert::set_choice`], exactly as it would any other control — so the
+//! translated a raw key or pointer event into a call here. Engine screens register the alert's
+//! answers as ordinary focus-group elements through [`DecisionAlert::frames`] and move this
+//! type's selection with [`DecisionAlert::set_choice`], as with any other control. The old
 //! two SDL-keysym-shaped methods had no caller left and are gone.
 //!
 //! **The same sheet is also a one- or two-answer CARD** ([`DecisionAlert::open_card`]): a title,
@@ -54,11 +52,12 @@
 
 use std::borrow::Cow;
 
-use crate::ui::label::HAlign;
+use crate::ui::consts::{K_SCROLL, SAFE};
+use crate::ui::machine::Measure;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
-use crate::ui::{theme, Env, Rect, View};
+use crate::ui::{theme, Env, Rect, Spring, View};
 
 const PANEL_W: f32 = 660.0;
 const PAD_TOP: f32 = theme::alert::PAD;
@@ -76,7 +75,6 @@ const PARA_GAP: f32 = theme::space::XS;
 pub(crate) const BODY_W: f32 = PANEL_W - 2.0 * PAD_X;
 const BUTTON_W: f32 = 260.0;
 const BUTTON_GAP: f32 = 20.0;
-const TEXT_ALIGN: HAlign = HAlign::Left;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Choice {
@@ -116,11 +114,13 @@ pub(crate) struct Layout {
     pub(crate) body: Rect,
     pub(crate) cancel: Rect,
     pub(crate) destructive: Rect,
+    pub(crate) text_viewport: Rect,
+    pub(crate) scroll_max: f32,
 }
 
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
 /// its question and nothing more, and the arithmetic is written so that case stays byte-identical
-/// to the layout that existed before a body was possible.
+/// to the layout that existed before a body was possible when the question fits the safe frame.
 pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     layout_with(question_h, body_h, Answers::Two)
 }
@@ -130,47 +130,30 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
 /// there and nothing registers it.
 pub(crate) fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
     let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
-    let h = PAD_TOP + question_h + body_block + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
-    let panel = Rect::new(
-        (Rect::FULL.w - PANEL_W) * 0.5,
-        (Rect::FULL.h - h) * 0.5,
-        PANEL_W,
-        h,
-    );
+    let text_h = question_h + body_block;
+    let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
+    let overflow = text_h + fixed_h > SAFE.h;
+    let viewport_h = text_h.min(SAFE.h - fixed_h);
+    let h = fixed_h + viewport_h;
+    let panel = Rect::new((Rect::FULL.w - PANEL_W) * 0.5, (Rect::FULL.h - h) * 0.5, PANEL_W, h);
     let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
     let x = panel.cx() - row_w * 0.5;
-    let by = panel.y + PAD_TOP + question_h + body_block + QUESTION_GAP;
-    let one = Rect::new(panel.cx() - BUTTON_W * 0.5, by, BUTTON_W, StatusOverlay::CTRL_H);
-    if answers == Answers::One {
-        return Layout {
-            panel,
-            question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, panel.w - 2.0 * PAD_X, question_h),
-            body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + question_h + BODY_GAP, BODY_W, body_h),
-            cancel: one,
-            destructive: Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H),
-        };
-    }
+    let by = panel.y + PAD_TOP + viewport_h + QUESTION_GAP;
+    let (cancel, destructive) = if answers == Answers::One {
+        (Rect::new(panel.cx() - BUTTON_W * 0.5, by, BUTTON_W, StatusOverlay::CTRL_H),
+         Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H))
+    } else {
+        (Rect::new(x, by, BUTTON_W, StatusOverlay::CTRL_H),
+         Rect::new(x + BUTTON_W + BUTTON_GAP, by, BUTTON_W, StatusOverlay::CTRL_H))
+    };
     Layout {
         panel,
-        question: Rect::new(
-            panel.x + PAD_X,
-            panel.y + PAD_TOP,
-            panel.w - 2.0 * PAD_X,
-            question_h,
-        ),
-        body: Rect::new(
-            panel.x + PAD_X,
-            panel.y + PAD_TOP + question_h + BODY_GAP,
-            BODY_W,
-            body_h,
-        ),
-        cancel: Rect::new(x, by, BUTTON_W, StatusOverlay::CTRL_H),
-        destructive: Rect::new(
-            x + BUTTON_W + BUTTON_GAP,
-            by,
-            BUTTON_W,
-            StatusOverlay::CTRL_H,
-        ),
+        question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, question_h),
+        body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + question_h + BODY_GAP, BODY_W, body_h),
+        cancel,
+        destructive,
+        text_viewport: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, viewport_h),
+        scroll_max: if overflow { text_h + theme::space::XS - viewport_h } else { 0.0 },
     }
 }
 
@@ -187,10 +170,11 @@ pub(crate) struct DecisionAlert {
     /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
     /// is precisely the frame a fast click lands on.
     ///
-    /// Owned-or-static paragraphs, stacked [`PARA_GAP`] apart: `TextView` has no line breaks, and a
-    /// card whose body names a runtime value (a Report ID) cannot be a `&'static str`. Empty = no
-    /// body.
+    /// Owned-or-static paragraphs, stacked [`PARA_GAP`] apart. A card whose body names a runtime
+    /// value (a Report ID) cannot be a `&'static str`. Empty = no body.
     body: Vec<Cow<'static, str>>,
+    scroll: Spring,
+    scroll_target: f32,
     /// One answer or two — see [`Answers`].
     answers: Answers,
     /// Which face the destructive-slot answer wears — see [`Tone`]. Defaults to
@@ -221,6 +205,8 @@ impl DecisionAlert {
             controls: CtlPop::new(),
             question: "",
             body: Vec::new(),
+            scroll: Spring::at(0.0),
+            scroll_target: 0.0,
             answers: Answers::Two,
             tone: Tone::Destructive,
             field: crate::ui::underlay::UnderlayField::new(),
@@ -309,23 +295,37 @@ impl DecisionAlert {
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
+        self.scroll_target = 0.0;
+        self.scroll.jump(0.0);
         // A fresh open is a fresh page under it: re-latch at the next `draw_scrim`.
         self.field.reset();
         self.pop.open();
         crate::ui::idle::invalidate();
     }
-    /// The panel for the current retained content. **Not callable from a host test** — `text_height` and `measure_h`
-    /// both reach SDL2_ttf; the pure half is [`layout`].
-    fn measured(&self) -> Layout {
-        let qh = Self::question_view(self.question).measure_h(BODY_W);
-        let heights: Vec<f32> = self.body.iter().map(|b| Self::body_view(b).measure_h(BODY_W)).collect();
+    /// Measure retained content through the caller's capability, before paint or during replay.
+    fn measured(&self, measure: &dyn Measure) -> Layout {
+        let qh = Self::question_view(self.question).with_measure(measure).measure_h(BODY_W);
+        let heights: Vec<f32> = self.body.iter()
+            .map(|body| Self::body_view(body).with_measure(measure).measure_h(BODY_W)).collect();
         layout_with(qh, body_h(&heights), self.answers)
     }
-    /// Final measured answer frames, shared by draw and the owning screen's hit registration.
-    pub(crate) fn frames(&self) -> (Rect, Rect) {
-        let l = self.measured();
+    /// Final answer frames, measured exactly as drawing without depending on a previous paint.
+    pub(crate) fn frames(&self, measure: &dyn Measure) -> (Rect, Rect) {
+        let l = self.measured(measure);
         (l.cancel, l.destructive)
     }
+    /// Vertical input reads the disclosure while horizontal focus retains the answer.
+    /// Return canonical target bits for the owner's logical state.
+    pub(crate) fn scroll_by(&mut self, measure: &dyn Measure, delta: i32) -> u32 {
+        let max = self.measured(measure).scroll_max;
+        self.scroll_target = (self.scroll_target + delta as f32 * theme::size::BODY as f32 * 6.0)
+            .clamp(0.0, max);
+        let _own = crate::ui::popover::own_motion();
+        crate::ui::idle::invalidate();
+        self.scroll_target.to_bits()
+    }
+    pub(crate) fn scroll_target_bits(&self) -> u32 { self.scroll_target.to_bits() }
+
     /// Confirmation disclosures must be complete, never silently capped. The panel grows from
     /// this same measured view. Each caller still needs a simulator capture confirming that the
     /// full title, disclosure and buttons fit the viewport; measurement alone does not prove it.
@@ -333,12 +333,14 @@ impl DecisionAlert {
     /// budget but exceeded the former eight-line cap and lost its final privacy sentence.
     pub(crate) fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
-            .h(TEXT_ALIGN)
+            .h(theme::alert::TEXT_ALIGN)
+            .break_long_words()
     }
     pub(crate) fn question_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
-            .h(TEXT_ALIGN)
+            .h(theme::alert::TEXT_ALIGN)
+            .break_long_words()
     }
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
@@ -372,6 +374,7 @@ impl DecisionAlert {
         // page's — `popover::own_motion`.
         let _own = crate::ui::popover::own_motion();
         self.pop.update(dt);
+        self.scroll.step(self.scroll_target, K_SCROLL, dt);
         self.controls.step(
             Some(matches!(self.choice, Choice::Destructive) as usize),
             dt,
@@ -399,23 +402,34 @@ impl DecisionAlert {
         &mut self,
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
+        measure: &dyn Measure,
     ) {
         if !self.visible() {
             return;
         }
         // Everything below is LIVE over the frozen host page — see `popover::host::live`.
         let _live = crate::ui::popover::host::live();
-        let l = self.measured();
+        let l = self.measured(measure);
         let p = self.pop.content_painter(Popover::RISE);
         crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field)));
         crate::ui::profile::phase("da.text", || {
-            Self::question_view(self.question).draw(p, l.question);
+            let scroll = self.scroll.pos.clamp(0.0, l.scroll_max);
+            if l.scroll_max > 0.0 { p.clip(l.text_viewport); }
+            let text_painter = p.translate(0.0, -scroll);
+            Self::question_view(self.question).with_measure(measure).draw(text_painter, l.question);
             let mut y = l.body.y;
             for para in &self.body {
-                let view = Self::body_view(para);
+                let view = Self::body_view(para).with_measure(measure);
                 let h = view.measure_h(BODY_W);
-                view.draw(p, Rect::new(l.body.x, y, l.body.w, h));
+                view.draw(text_painter, Rect::new(l.body.x, y, l.body.w, h));
                 y += h + PARA_GAP;
+            }
+            if l.scroll_max > 0.0 {
+                p.clip_clear();
+                crate::ui::widgets::continuous_scroll_rail(p,
+                    Rect::new(l.text_viewport.x + l.text_viewport.w + theme::space::SM,
+                        l.text_viewport.y, crate::ui::widgets::RAIL_W, l.text_viewport.h),
+                    scroll, l.text_viewport.h + l.scroll_max, l.text_viewport.h);
             }
         });
         let env = Env::inert();
@@ -453,6 +467,71 @@ fn body_h(heights: &[f32]) -> f32 {
 mod tests {
     use super::*;
 
+    /// Unicode scalar metrics avoid treating every Belarusian glyph as two UTF-8 bytes. Real
+    /// font/cap-band rendering is verified separately in the simulator and on the television.
+    struct DisclosureMeasure;
+    impl Measure for DisclosureMeasure {
+        fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.58
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.72 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.32 }
+    }
+
+    #[test]
+    fn belarusian_delete_question_and_complete_scope_wrap_at_the_existing_text_sizes() {
+        let _guard = crate::testlock::serial();
+        let measure = DisclosureMeasure;
+        let locale = crate::i18n::LocaleContext::resolve(crate::i18n::Preference::Be, None, None, None, None);
+        let question = crate::i18n::msg::settings_consent_delete_question_in(&locale);
+        let body = crate::i18n::msg::settings_consent_delete_scope_in(&locale);
+        assert!(body.contains("серверы Plex") && body.contains("Sentry") && body.contains("PostHog"));
+        let question_view = DecisionAlert::question_view(question).with_measure(&measure);
+        let body_view = DecisionAlert::body_view(body).with_measure(&measure);
+        assert!(!question_view.truncates(BODY_W));
+        assert!(!body_view.truncates(BODY_W), "the old four-line limit hid the deletion exclusions");
+        assert!(question_view.measure_h(BODY_W) > measure.line_h(theme::size::TITLE));
+        assert!(body_view.measure_h(BODY_W) > 4.0 * measure.line_h(theme::size::BODY));
+        let mut alert = DecisionAlert::new();
+        alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c_in(&locale), body);
+        let l = alert.measured(&measure);
+        assert_eq!(alert.choice(), Choice::Cancel);
+        assert_eq!(l.question.w, 564.0);
+        assert_eq!(l.question.x - l.panel.x, 48.0);
+        assert_eq!(l.body.h, body_view.measure_h(BODY_W));
+        assert_eq!(l.scroll_max, 0.0, "the real translation fits without hiding any scope");
+        let (cancel, destructive) = alert.frames(&measure);
+        assert_eq!((cancel.x, cancel.y, cancel.w, cancel.h), (l.cancel.x, l.cancel.y, l.cancel.w, l.cancel.h));
+        assert_eq!(cancel.w, destructive.w);
+        assert!(l.body.y + l.body.h < cancel.y);
+        assert!(l.panel.y >= SAFE.y && l.panel.y + l.panel.h <= SAFE.y + SAFE.h);
+    }
+
+    #[test]
+    fn oversized_disclosure_scrolls_to_its_end_while_both_answers_stay_inside_the_safe_area() {
+        let _guard = crate::testlock::serial();
+        let measure = DisclosureMeasure;
+        let mut alert = DecisionAlert::new();
+        alert.open_card(c"A future translated question", vec![
+            "A future translated disclosure with a complete scope ".repeat(100).into()
+        ], Answers::Two);
+        let l = alert.measured(&measure);
+        assert!(l.scroll_max > 0.0);
+        assert_eq!(l.panel.h, SAFE.h);
+        assert!(l.cancel.y >= l.text_viewport.y + l.text_viewport.h);
+        assert!(l.cancel.y + l.cancel.h <= SAFE.y + SAFE.h);
+        assert_eq!(l.cancel.w, l.destructive.w);
+        assert_ne!(alert.scroll_by(&measure, 1), 0);
+        alert.scroll_by(&measure, i32::MAX);
+        assert_eq!(alert.scroll_target, l.scroll_max);
+        assert!(l.body.y + l.body.h - alert.scroll_target < l.text_viewport.y + l.text_viewport.h,
+            "even the final scope sentence remains reachable");
+        assert_eq!(alert.choice(), Choice::Cancel, "reading never selects the destructive answer");
+        alert.scroll_by(&measure, i32::MIN);
+        assert_eq!(alert.scroll_target, 0.0);
+    }
+
+
     #[test]
     fn reconciling_a_card_preserves_motion_and_valid_focus_and_is_quiet_when_unchanged() {
         let _serial = crate::testlock::serial();
@@ -479,6 +558,29 @@ mod tests {
         assert!(!alert.reconcile_card(c"Details", vec!["new".into()], Answers::Two));
         assert_eq!(alert.body_for_test(), ["receipt"], "the exit keeps its last picture");
     }
+    #[test]
+    fn owned_multi_paragraph_card_scrolls_with_one_visible_answer_without_live_measurement() {
+        let _serial = crate::testlock::serial();
+        let _no_live = crate::ui::text_view::ForbidLive::enter();
+        let measure = DisclosureMeasure;
+        let mut alert = DecisionAlert::new();
+        alert.open_card(c"Report details", vec![
+            "Long translated report disclosure. ".repeat(120).into(),
+            "Final retained receipt and support details.".into(),
+        ], Answers::One);
+        let l = alert.measured(&measure);
+        let frames = alert.frames(&measure);
+        assert_eq!(frames.1.w, 0.0);
+        assert_eq!(frames.0.cx(), l.panel.cx());
+        assert_eq!(l.panel.h, SAFE.h);
+        alert.scroll_by(&measure, i32::MAX);
+        assert_eq!(f32::from_bits(alert.scroll_target_bits()), l.scroll_max);
+        assert!(l.body.y + l.body.h - alert.scroll_target < l.text_viewport.y + l.text_viewport.h);
+        assert_eq!(alert.choice(), Choice::Cancel);
+        assert_eq!(alert.body_for_test()[1], "Final retained receipt and support details.");
+        alert.close();
+    }
+
     /// **A body must not move an alert that has none.** The body arithmetic has to vanish
     /// completely at `body_h == 0.0` — not merely add a small gap. Written by computing the panel
     /// both ways and comparing.
@@ -549,7 +651,7 @@ mod tests {
         let short = layout(48.0, 0.0);
         let long = layout(96.0, 0.0);
 
-        assert!(matches!(TEXT_ALIGN, HAlign::Left));
+        assert!(matches!(theme::alert::TEXT_ALIGN, crate::ui::label::HAlign::Left));
         assert!(long.question.h > short.question.h, "the long title must wrap, never overflow");
         let growth = long.question.h - short.question.h;
         assert_eq!(long.panel.h - short.panel.h, growth);
@@ -598,5 +700,37 @@ mod tests {
         assert_eq!(body_h(&[]), 0.0);
         assert_eq!(body_h(&[30.0]), 30.0);
         assert_eq!(body_h(&[30.0, 60.0]), 90.0 + PARA_GAP);
+    }
+
+    /// **Every answer fits its pill, in every shipped language.** The pill is [`BUTTON_W`] wide
+    /// whatever it says and `Button` centres its label without clipping, so a long translation
+    /// spills past both ends — Belarusian *Даслаць справаздачу* ran out of the sign-in report
+    /// question's panel. Measured with the device's whole-pixel advances.
+    #[test]
+    fn every_answer_fits_its_pill_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let answers = [
+                msg::settings_cancel_c(),
+                msg::settings_delete_c(),
+                msg::settings_plaintext_not_now_c(),
+                msg::settings_login_send_report_c(),
+                msg::settings_login_close_c(),
+                msg::settings_playback_enable_force_c(),
+                msg::widgets_repair_action_c(),
+                crate::screens::plaintext_question::PlaintextQuestion::verbs().0,
+                crate::screens::plaintext_question::PlaintextQuestion::verbs().1,
+            ];
+            for label in answers {
+                let w = Button::pill_w_measured(label, theme::size::BODY, false, false, &ShippedMeasure);
+                if w > BUTTON_W * HEADROOM {
+                    out.push(format!("{}: {label:?} needs {w:.0}px of a {BUTTON_W}px pill", language.tag()));
+                }
+            }
+        }
+        assert!(out.is_empty(), "answers wider than their pill:\n  {}", out.join("\n  "));
     }
 }

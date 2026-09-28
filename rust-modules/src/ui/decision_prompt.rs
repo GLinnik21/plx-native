@@ -1,6 +1,5 @@
 //! Engine focus and input adapter for a reusable two-answer decision alert.
 //! The host consumes a boolean answer; no application command or persistence lives here.
-use std::cell::Cell;
 use std::ffi::CStr;
 use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
 use crate::ui::machine::{Cx, Edge, EntryId, FocusKey, GroupId, Handled, Host, InputEvent, InputKind, Key};
@@ -16,13 +15,12 @@ pub(crate) struct DecisionPrompt {
     affirm: u32,
     cancel_label: &'static CStr,
     affirm_label: &'static CStr,
-    frames: Cell<Option<(Rect, Rect)>>,
 }
 impl DecisionPrompt {
     pub(crate) fn new(group: GroupId, cancel: u32, affirm: u32,
         cancel_label: &'static CStr, affirm_label: &'static CStr) -> Self {
         Self { alert: DecisionAlert::new(), group, cancel, affirm, cancel_label,
-            affirm_label, frames: Cell::new(None) }
+            affirm_label }
     }
     pub(crate) fn open(&mut self, question: &'static CStr, body: &'static str) {
         self.alert.set_tone(Tone::Neutral);
@@ -32,6 +30,7 @@ impl DecisionPrompt {
     pub(crate) fn visible(&self) -> bool { self.alert.visible() }
     pub(crate) fn owns(&self, elem: u32) -> bool { elem == self.cancel || elem == self.affirm }
     pub(crate) fn choice(&self) -> bool { self.alert.choice() == Choice::Destructive }
+    pub(crate) fn scroll_target_bits(&self) -> u32 { self.alert.scroll_target_bits() }
     pub(crate) fn update(&mut self, dt: f32) { self.alert.update(dt); }
     pub(crate) fn step<H: Host<Elem=u32>>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>) -> PromptStep {
         match ev {
@@ -56,6 +55,10 @@ impl DecisionPrompt {
                     Key::Back if *edge == Edge::Down => {
                         self.alert.dismiss(); PromptStep::Answer(false)
                     }
+                    Key::Up | Key::Down if *edge != Edge::Up => {
+                        self.alert.scroll_by(cx.measure, if *key == Key::Up { -1 } else { 1 });
+                        PromptStep::Done(Handled::Yes)
+                    }
                     Key::Back | Key::Up | Key::Down => PromptStep::Done(Handled::Yes),
                     _ => PromptStep::Done(Handled::No),
                 }
@@ -67,16 +70,14 @@ impl DecisionPrompt {
         FocusKey { entry, elem }
     }
 
-    fn rect(&self, elem: u32) -> Rect {
-        self.frames
-            .get()
-            .map(|(cancel, affirm)| if elem == self.affirm { affirm } else { cancel })
-            .unwrap_or(Rect::FULL)
+    fn rect(&self, elem: u32, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        let (cancel, affirm) = self.alert.frames(measure);
+        if elem == self.affirm { affirm } else { cancel }
     }
 
     /// `Focusable::groups`: while open, the answers are the ONLY group — push it and return
     /// `true` so the host adds none of its own.
-    pub(crate) fn groups(&self, out: &mut Vec<GroupSpec>) -> bool {
+    pub(crate) fn groups(&self, out: &mut Vec<GroupSpec>, measure: &dyn crate::ui::machine::Measure) -> bool {
         if !self.is_open() {
             return false;
         }
@@ -86,7 +87,7 @@ impl DecisionPrompt {
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: self.rect(self.cancel).union(self.rect(self.affirm)),
+            extent: self.rect(self.cancel, measure).union(self.rect(self.affirm, measure)),
             len: 2,
             elem: ElemKind::Control,
         });
@@ -112,12 +113,12 @@ impl DecisionPrompt {
     }
 
     /// `Focusable::place` while open.
-    pub(crate) fn place(&self, key: u32) -> Option<Option<Placed>> {
+    pub(crate) fn place(&self, key: u32, measure: &dyn crate::ui::machine::Measure) -> Option<Option<Placed>> {
         if !self.is_open() {
             return None;
         }
         Some(self.owns(key).then(|| {
-            let rect = self.rect(key);
+            let rect = self.rect(key, measure);
             Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some((key == self.affirm) as u32) }
         }))
     }
@@ -149,9 +150,8 @@ impl DecisionPrompt {
         }
         self.alert.draw_scrim();
         let (cancel, affirm) = (self.cancel_label, self.affirm_label);
-        self.alert.draw(cancel, affirm);
-        let frames = self.alert.frames();
-        self.frames.set(Some(frames));
+        self.alert.draw(cancel, affirm, f.measure);
+        let frames = self.alert.frames(f.measure);
         if self.alert.is_open() && self.alert.settled() {
             for (elem, rect) in [(self.cancel, frames.0), (self.affirm, frames.1)] {
                 f.stop(

@@ -112,6 +112,24 @@ fn type_menu_command_preserves_plaintext_alert_control_keys() {
         Fx::App(AppFx::Library(LibraryReq::Menu { kind: crate::screens::registry::LibraryMenuKind::Type, .. })))));
 }
 
+#[test]
+fn empty_tv_library_names_the_selected_listing_type() {
+    let _guard = crate::testlock::serial();
+    for (kind, expected) in [
+        (LibraryType::Primary, "No shows in Television"),
+        (LibraryType::Seasons, "No seasons in Television"),
+        (LibraryType::Episodes, "No episodes in Television"),
+    ] {
+        let fixture = tv_fixture(kind, 0);
+        let mut page = tv_page(&fixture);
+        page.wanted_kind = None;
+        page.readout = Readout::Empty;
+        let (caption, reason) = page.status_text(&fixture.cx(None));
+        assert_eq!(caption.to_str().unwrap(), expected);
+        assert!(reason.is_none());
+    }
+}
+
 /// **Collections take no filters.** The listing carries neither the Unwatched nor the Genre
 /// filter, so the heading row drops FILTER rather than offering a control that changes nothing,
 /// and the TYPE chip names what is listed.

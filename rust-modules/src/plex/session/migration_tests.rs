@@ -320,7 +320,7 @@ impl persistence::MigrationStore for MigrationFixture {
             return CanonicalRead::Blocked(error);
         }
         if self.cleared {
-            return CanonicalRead::Cleared { revision: 1 };
+            return CanonicalRead::Cleared { revision: 1, language: crate::i18n::Preference::System };
         }
         match &self.data {
             Some(payload) => CanonicalRead::Data {
@@ -758,6 +758,45 @@ fn production_client_coordinator_and_helper_backend_reconcile_committed_lost_rep
     assert!(record["state"].is_string());
     assert!(backend.rpc.gets >= 4);
     assert_eq!(backend.rpc.puts, 2);
+}
+
+/// The DB8 half of the PR #265 review: ClearTenure (sign-out) retains the install-wide language
+/// and a Cleared read reports it; the delete-all reset removes exactly that key, through the
+/// production coordinator and the real helper backend, without reviving any credential.
+#[test]
+fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it() {
+    let mut backend = crate::storage::backend::Backend::new(
+        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = Session { language: crate::i18n::Preference::Be, ..fixture() };
+    assert!(matches!(
+        persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert!(matches!(persistence::commit_clear_with(&mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert!(matches!(persistence::load_helper_with(&mut transport),
+        CanonicalRead::Cleared { language: crate::i18n::Preference::Be, .. }),
+        "sign-out must keep the install-wide language readable");
+    let client::Load::Present(cleared) = client::load_with(&mut transport).unwrap() else {
+        panic!("helper snapshot")
+    };
+
+    assert!(matches!(persistence::reset_cleared_language_with(&mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert!(matches!(persistence::load_helper_with(&mut transport),
+        CanonicalRead::Cleared { language: crate::i18n::Preference::System, .. }),
+        "Delete all local data must reset the language");
+    let client::Load::Present(reset) = client::load_with(&mut transport).unwrap() else {
+        panic!("helper snapshot")
+    };
+    assert_eq!(reset.state.status, state::Status::Cleared);
+    assert!(reset.state.auth_envelope.is_none());
+    assert_eq!(reset.state.auth_generation, cleared.state.auth_generation);
+    let mut expected = cleared.state.public.preferences.clone();
+    expected.as_object_mut().unwrap().remove("language");
+    assert_eq!(reset.state.public.preferences, expected, "no other preference changes");
+    assert!(matches!(persistence::reset_cleared_language_with(&mut transport),
+        persistence::CanonicalCommit::Durable { .. }), "a retry after the reset is a no-op");
 }
 
 #[test]

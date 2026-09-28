@@ -60,6 +60,10 @@ Text is never hand-placed with a magic y. Use `ui::label::Label` for a single ru
 `text::text_cap_band`. See `label.rs` for why: a guessed offset mis-centers the moment a string has
 a descender.
 
+Alert titles and reading text share the left padding edge (`theme::alert::TEXT_ALIGN`). This
+applies to both decision dialogs and read-only panels. Button labels and paired value columns
+keep their control-specific alignment; centering the panel does not center its prose.
+
 ## Legibility over artwork is a graded contract, not a vibe
 
 This is the part most easily broken by accident, so it is the part worth knowing before you change a
@@ -130,8 +134,12 @@ forget to answer, and `None` means BACK leaves the app entirely.
 
 This replaced "Press [BACK] to return" across the family. The old hint spent a 60 px band restating
 a key the remote already has, and could not say where the key went, which on a three-deep push is
-the only part anybody needs. `KeyHint` survives only on the read-only ALERT panels that hold no
-control at all, where the line really is the whole affordance.
+the only part anybody needs. Keep the BACK-return `KeyHint` on read-only ALERT panels, where
+it supplies their dismissal affordance; do not repeat it beside a route's return crumb.
+
+First-run consent sizes its narrative from the complete disclosure and the related-link column.
+Its contextual answer verbs share one horizontal row, separated from BODY-sized reading copy by
+`space::MD`. Exceptional overflow scrolls with UP/DOWN while the selected answer stays focused.
 
 ## Where to look when you are changing something
 

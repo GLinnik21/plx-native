@@ -3,7 +3,9 @@
 //! type, two modes (§6.2 "mounts twice"): [`ConsentPage::settings`] is the Privacy & data page
 //! under the Settings root — two toggles, five documents, Delete all local data, and a Done that
 //! appears only once the draft differs from the stored answer; [`ConsentPage::first_run`] is one
-//! STAGE of the sign-in's question — the reading list beside two equal answers — and the second
+//! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers
+//! in one row. Exceptional overflow scrolls at BODY size while the selected answer retains focus;
+//! the second
 //! stage is a push of the same type carrying the first answer in its argument, so BACK from the
 //! second is the surface's ordinary pop.
 //!
@@ -38,26 +40,7 @@ use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq,
 
 // ---- the words -------------------------------------------------------------------------------
 
-const CRASH_TITLE: &str = "Share crash reports?";
-const PRODUCT_TITLE: &str = "Share product analytics?";
-const CRASH_BODY: &str = "If PlxNative crashes, or signing in fails, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, or which sign-in step failed and how the connection answered, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
-const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
-const ROW_ERRORS: &str = "Crash reports";
-const ROW_ERRORS_SUB: &str = "Optional technical crash reports.";
-const ROW_USAGE: &str = "Product analytics";
-const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
-const DOC_TITLE_CRASH: &str = "Crashes / Errors";
-const DOC_TITLE_USAGE: &str = "Analytics / Usage";
-const ROW_EXAMPLE: &str = "See an example report";
-const ROW_POLICY: &str = "Privacy policy";
 use super::legal::CONTACT_EMAIL;
-const DOC_TITLE_ANALYTICS_ID: &str = "Analytics ID";
-const DOC_TITLE_ERRORS_ID: &str = "Crash report ID";
-const ROW_DELETE: &str = "Delete all local data";
-const DELETE_SCOPE: &str = "This signs out and removes PlxNative data stored on this television. It does not delete data already sent to Plex, your Plex Media Servers, Sentry or PostHog.";
-const CRUMB_SETTINGS: &str = "Settings";
-const SETTINGS_TITLE: &str = "Privacy & data";
-const SETTINGS_COPY: &str = "Control optional reporting, review exactly what may be shared, and manage data stored by PlxNative on this television.";
 
 /// Should the app put the sign-in's question on screen?
 ///
@@ -124,6 +107,9 @@ pub(crate) struct ConsentPage {
     /// The alert's two answers as drawn last (the map is the last DRAWN frame's, §7.6).
     alert_frames: std::cell::Cell<Option<(Rect, Rect)>>,
     pop: CtlPop<2>,
+    disclosure: DocumentReader,
+    /// Measured at mount through Cx, so focus and draw use identical, replayable columns.
+    layout: RouteLayout,
     state: ConsentState,
 }
 
@@ -131,14 +117,17 @@ struct ConsentState {
     mode: u8,
     draft: (bool, bool),
     alert: bool,
+    /// Canonical f32 target bits, not the number of scroll keys pressed.
+    disclosure_pos: u32,
+    alert_scroll: u32,
 }
 
 impl LogicalState for ConsentState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.mode as u32).bool(self.draft.0).bool(self.draft.1).bool(self.alert);
+        w.u32(self.mode as u32).bool(self.draft.0).bool(self.draft.1).bool(self.alert).u32(self.disclosure_pos).u32(self.alert_scroll);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("consent mode={} draft={:?} alert={}", self.mode, self.draft, self.alert));
+        out.push_str(&format!("consent mode={} draft={:?} alert={} disclosure_pos={} alert_scroll={}", self.mode, self.draft, self.alert, self.disclosure_pos, self.alert_scroll));
     }
 }
 
@@ -153,13 +142,15 @@ impl ConsentPage {
     }
 
     /// One stage of the first-run question.
-    pub(crate) fn first_run(entry: EntryId, stage: u8, _cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Self {
+    pub(crate) fn first_run(entry: EntryId, stage: u8, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Self {
         let mode = Mode::FirstRun {
             product: stage & STAGE_PRODUCT != 0,
             errors: stage & ERRORS_SHARED != 0,
         };
         let mut s = Self::bare(entry, mode, (false, false));
         s.rebuild(0);
+        s.layout = Self::first_run_layout(s.title(), s.body(), s.crumb().is_some(),
+            &s.table, &s.band_labels(), cx.measure);
         s.table.list_focused = false;
         // First run's whole point (the legacy module's doc, and this page's own
         // `first_run_answers_are_the_action_row_and_not_table_rows`) is that the two answers ARE
@@ -202,6 +193,8 @@ impl ConsentPage {
             alert: DecisionAlert::new(),
             alert_frames: std::cell::Cell::new(None),
             pop: CtlPop::new(),
+            disclosure: DocumentReader::new().with_size(theme::size::BODY),
+            layout: RouteLayout::screen(),
             state: ConsentState {
                 mode: match mode {
                     Mode::Settings => 0,
@@ -210,6 +203,8 @@ impl ConsentPage {
                 },
                 draft: base,
                 alert: false,
+                disclosure_pos: 0,
+                alert_scroll: 0,
             },
         }
     }
@@ -238,22 +233,22 @@ impl ConsentPage {
         self.table.header_ink = theme::TEXT_READING;
         let sections = match self.mode {
             Mode::FirstRun { .. } => vec![Section::new("")
-                .row(Row::new(ROW_EXAMPLE).chevron(true))
-                .row(Row::new(ROW_POLICY).chevron(true))],
+                .row(Row::new(crate::i18n::msg::settings_consent_example()).chevron(true))
+                .row(Row::new(crate::i18n::msg::settings_consent_policy()).chevron(true))],
             Mode::Settings => {
                 let (errors, usage) = self.draft;
                 vec![
-                    Section::new("Reporting")
-                        .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
-                        .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage)),
-                    Section::new("Information")
-                        .row(Row::new(DOC_TITLE_CRASH).detail("Field-by-field preview of the crash/error report.").chevron(true))
-                        .row(Row::new(DOC_TITLE_USAGE).detail("Field-by-field preview of product analytics events.").chevron(true))
-                        .row(Row::new(ROW_POLICY).detail("The complete PlxNative privacy policy for this build.").chevron(true))
-                        .row(Row::new(DOC_TITLE_ERRORS_ID).detail("The identifier on your crash reports, and how to have them deleted.").chevron(true))
-                        .row(Row::new(DOC_TITLE_ANALYTICS_ID).detail("The identifier on your analytics, and how to have it deleted.").chevron(true)),
-                    Section::new("On this TV").row(
-                        Row::new(ROW_DELETE).detail("Sign out and remove PlxNative data from this TV.").chevron(true),
+                    Section::new(crate::i18n::msg::settings_consent_reporting())
+                        .row(Row::new(crate::i18n::msg::settings_consent_crash_row()).detail(crate::i18n::msg::settings_consent_crash_detail()).toggle(errors))
+                        .row(Row::new(crate::i18n::msg::settings_consent_usage_row()).detail(crate::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
+                    Section::new(crate::i18n::msg::settings_consent_information())
+                        .row(Row::new(crate::i18n::msg::settings_consent_crash_document()).detail(crate::i18n::msg::settings_consent_preview_crash()).chevron(true))
+                        .row(Row::new(crate::i18n::msg::settings_consent_usage_document()).detail(crate::i18n::msg::settings_consent_preview_usage()).chevron(true))
+                        .row(Row::new(crate::i18n::msg::settings_consent_policy()).detail(crate::i18n::msg::settings_consent_preview_policy()).chevron(true))
+                        .row(Row::new(crate::i18n::msg::settings_consent_crash_id()).detail(crate::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
+                        .row(Row::new(crate::i18n::msg::settings_consent_analytics_id()).detail(crate::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
+                    Section::new(crate::i18n::msg::settings_consent_on_tv()).row(
+                        Row::new(crate::i18n::msg::settings_consent_delete()).detail(crate::i18n::msg::settings_consent_delete_detail()).chevron(true),
                     ),
                 ]
             }
@@ -266,23 +261,23 @@ impl ConsentPage {
 
     fn title(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => SETTINGS_TITLE,
-            Mode::FirstRun { product: false, .. } => CRASH_TITLE,
-            Mode::FirstRun { product: true, .. } => PRODUCT_TITLE,
+            Mode::Settings => crate::i18n::msg::settings_privacy_title(),
+            Mode::FirstRun { product: false, .. } => crate::i18n::msg::settings_consent_crash_title(),
+            Mode::FirstRun { product: true, .. } => crate::i18n::msg::settings_consent_product_title(),
         }
     }
     fn body(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => SETTINGS_COPY,
-            Mode::FirstRun { product: false, .. } => CRASH_BODY,
-            Mode::FirstRun { product: true, .. } => PRODUCT_BODY,
+            Mode::Settings => crate::i18n::msg::settings_consent_settings_copy(),
+            Mode::FirstRun { product: false, .. } => crate::i18n::msg::settings_consent_crash_body(),
+            Mode::FirstRun { product: true, .. } => crate::i18n::msg::settings_consent_product_body(),
         }
     }
     fn crumb(&self) -> Option<&'static str> {
         match self.mode {
-            Mode::Settings => Some(CRUMB_SETTINGS),
+            Mode::Settings => Some(crate::i18n::msg::settings_title()),
             Mode::FirstRun { product: false, .. } => None,
-            Mode::FirstRun { product: true, .. } => Some(CRASH_TITLE),
+            Mode::FirstRun { product: true, .. } => Some(crate::i18n::msg::settings_consent_crash_title()),
         }
     }
     fn copy_size(&self) -> std::os::raw::c_int {
@@ -298,23 +293,37 @@ impl ConsentPage {
         match self.mode {
             Mode::Settings => {
                 if self.draft != self.base {
-                    vec![c"Done"]
+                    vec![crate::i18n::msg::settings_done_c()]
                 } else {
                     Vec::new()
                 }
             }
             Mode::FirstRun { product, .. } => {
                 if product {
-                    vec![c"Share analytics", c"Don’t share"]
+                    vec![crate::i18n::msg::settings_consent_share_analytics_c(), crate::i18n::msg::settings_consent_do_not_share_c()]
                 } else {
-                    vec![c"Share reports", c"Don’t share"]
+                    vec![crate::i18n::msg::settings_consent_share_reports_c(), crate::i18n::msg::settings_consent_do_not_share_c()]
                 }
             }
         }
     }
 
+    fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
+        labels: &[&std::ffi::CStr], measure: &dyn crate::ui::machine::Measure) -> RouteLayout {
+        let action_w = labels.iter().map(|label|
+            crate::ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
+            + crate::ui::widgets::CONTROL_GAP;
+        let action_w = action_w.ceil();
+        let reader = DocumentReader::new().with_size(theme::size::BODY);
+        RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
+            let frame = layout.narrative_copy_frame(has_crumb, title, layout.action.y, measure);
+            !RouteLayout::narrative_title(title).with_measure(measure).truncates(layout.narrative.w)
+                && reader.measured_height(body, frame.w, measure) <= frame.h
+        })
+    }
+
     fn list_frame(&self) -> Rect {
-        let l = RouteLayout::screen();
+        let l = self.layout;
         match self.mode {
             Mode::Settings => l.sectioned_table(),
             Mode::FirstRun { .. } => l.content,
@@ -322,12 +331,14 @@ impl ConsentPage {
     }
 
     fn view(&self) -> ConsentView<'_> {
-        let layout = RouteLayout::screen();
+        let layout = self.layout;
         let labels = self.band_labels();
         ConsentView {
             layout,
             table: &self.table,
             frame: self.list_frame(),
+            title: self.title(),
+            has_crumb: self.crumb().is_some(),
             entry: self.entry,
             labels,
             scales: [self.pop.scale(0), self.pop.scale(1)],
@@ -416,7 +427,8 @@ impl ConsentPage {
             RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
-                self.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
+                self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
+                self.state.alert_scroll = 0;
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
@@ -456,6 +468,8 @@ struct ConsentView<'a> {
     frame: Rect,
     entry: EntryId,
     labels: Vec<&'static std::ffi::CStr>,
+    title: &'static str,
+    has_crumb: bool,
     scales: [f32; 2],
     alert_open: bool,
     alert_frames: Option<(Rect, Rect)>,
@@ -485,6 +499,10 @@ impl<'a> ConsentView<'a> {
             palette: palette(),
             danger: None,
         })
+    }
+    fn disclosure_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        let top = self.screen().band.as_ref().map(|b| b.extent(measure).y).unwrap_or(self.layout.action.y);
+        self.layout.narrative_copy_frame(self.has_crumb, self.title, top, measure)
     }
     fn alert_key(&self, i: usize) -> FocusKey<u32> {
         FocusKey {
@@ -516,7 +534,7 @@ impl Focusable<InnerHost> for ConsentView<'_> {
             });
             return;
         }
-        Focusable::<InnerHost>::groups(&self.screen(), cx, out)
+        Focusable::<InnerHost>::groups(&self.screen(), cx, out);
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<GroupId> {
         if self.alert_open {
@@ -602,6 +620,7 @@ impl Machine<InnerHost> for ConsentPage {
                 let dt = t.dt();
                 self.table.update(dt, self.list_frame().h);
                 self.alert.update(dt);
+                self.disclosure.update(dt);
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
                 Handled::Yes
@@ -693,6 +712,29 @@ impl Machine<InnerHost> for ConsentPage {
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
+            }) if *edge != crate::ui::machine::Edge::Up && self.alert.is_open() => {
+                self.state.alert_scroll = self.alert.scroll_by(
+                    cx.measure,
+                    if *key == Key::Up { -1 } else { 1 });
+                Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
+            }) if *edge != crate::ui::machine::Edge::Up
+                && !self.alert.visible()
+                && cx.focus.current.is_some_and(|key| band_index(key.elem).is_some())
+                && matches!(self.mode, Mode::FirstRun { .. }) => {
+                let frame = self.view().disclosure_frame(cx.measure);
+                let body = self.body();
+                let (position, moved) = self.disclosure.move_measured(
+                    if *key == Key::Up { -1 } else { 1 }, body, frame, cx.measure);
+                self.state.disclosure_pos = position;
+                // Reading never transfers focus away from the visible answer. LEFT/RIGHT and
+                // OK remain immediately available; at the top UP resumes the normal route.
+                if moved { Handled::Yes } else { Handled::No }
+            }
+            ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key, edge: crate::ui::machine::Edge::Down, at_edge, .. },
                 ..
             }) => {
@@ -700,9 +742,6 @@ impl Machine<InnerHost> for ConsentPage {
                     // the alert answers its own keys: BACK dismisses, OK is the press
                     if *key == Key::Back {
                         self.alert_answer(false, fx);
-                        return Handled::Yes;
-                    }
-                    if matches!(key, Key::Up | Key::Down) {
                         return Handled::Yes;
                     }
                     return Handled::No;
@@ -789,10 +828,16 @@ impl Screen<InnerHost> for ConsentPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let p = f.painter;
-        let layout = RouteLayout::screen();
-        Header::new(layout, self.crumb(), self.title(), self.body())
-            .with_copy_size(self.copy_size())
-            .paint(p, f.measure);
+        let layout = self.layout;
+        if matches!(self.mode, Mode::FirstRun { .. }) {
+            Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);
+            let frame = self.view().disclosure_frame(f.measure);
+            let body = self.body();
+            self.disclosure.draw(p, frame, None, body);
+        } else {
+            Header::new(layout, self.crumb(), self.title(), self.body())
+                .with_copy_size(self.copy_size()).paint(p, f.measure);
+        }
         let labels = self.band_labels();
         let alert_open = self.alert.is_open();
         // Rule 9's guard (see `Self::uncommitted`'s doc), threaded through the SAME two builder
@@ -826,8 +871,8 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(c"Cancel", c"Delete");
-            let frames = self.alert.frames();
+            self.alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c(), f.measure);
+            let frames = self.alert.frames(f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**
             // `frames()` is the FINAL layout — the panel `settled()` documents itself as reaching
@@ -925,37 +970,37 @@ impl PreviewPage {
     pub(crate) fn new(entry: EntryId, which: u8) -> Self {
         let kind = PreviewKind::ALL[(which & 0x0f) as usize % PreviewKind::ALL.len()];
         let (crumb, word) = if which & FIRST_RUN_CRASH != 0 {
-            (CRASH_TITLE, word::CONSENT)
+            (crate::i18n::msg::settings_consent_crash_title(), word::CONSENT)
         } else if which & FIRST_RUN_PRODUCT != 0 {
-            (PRODUCT_TITLE, word::CONSENT)
+            (crate::i18n::msg::settings_consent_product_title(), word::CONSENT)
         } else {
-            (SETTINGS_TITLE, word::PRIVACY)
+            (crate::i18n::msg::settings_privacy_title(), word::PRIVACY)
         };
         let (title, subtitle): (&str, &str) = match kind {
             PreviewKind::ErrorsId => (
-                DOC_TITLE_ERRORS_ID,
-                "The random identifier attached to crash and error reports from this sign-in, and how to have those reports deleted.",
+                crate::i18n::msg::settings_consent_crash_id(),
+                crate::i18n::msg::settings_consent_errors_subtitle(),
             ),
             PreviewKind::AnalyticsId => (
-                DOC_TITLE_ANALYTICS_ID,
-                "The random identifier attached to product analytics from this sign-in, and how to have those events deleted.",
+                crate::i18n::msg::settings_consent_analytics_id(),
+                crate::i18n::msg::settings_consent_analytics_subtitle(),
             ),
-            PreviewKind::Policy => (ROW_POLICY, "How PlxNative handles local data, Plex services and optional reporting."),
+            PreviewKind::Policy => (crate::i18n::msg::settings_consent_policy(), crate::i18n::msg::settings_consent_policy_subtitle()),
             PreviewKind::Crash => (
-                DOC_TITLE_CRASH,
-                "What is actually sent: the exact fields a crash or error report can carry — only when error reporting is on.",
+                crate::i18n::msg::settings_consent_crash_document(),
+                crate::i18n::msg::settings_consent_crash_subtitle(),
             ),
             PreviewKind::Usage => (
-                DOC_TITLE_USAGE,
-                "What is actually sent: the exact fields a product analytics event can carry — only when usage reporting is on.",
+                crate::i18n::msg::settings_consent_usage_document(),
+                crate::i18n::msg::settings_consent_usage_subtitle(),
             ),
         };
         let text = match kind {
             PreviewKind::ErrorsId => errors_id_document(),
             PreviewKind::AnalyticsId => analytics_id_document(),
             PreviewKind::Policy => super::legal::privacy_policy().to_string(),
-            PreviewKind::Crash => preview_crash(),
-            PreviewKind::Usage => preview_usage(),
+            PreviewKind::Crash => localize_placeholders(&preview_crash()),
+            PreviewKind::Usage => localize_placeholders(&preview_usage()),
         };
         Self {
             entry,
@@ -1063,14 +1108,8 @@ impl Screen<InnerHost> for PreviewPage {
 /// mock-up: a field added to any of these schemas appears here, in front of the person being asked
 /// to consent to it, the same argument the old combined `preview` made.
 pub(crate) fn preview_crash() -> String {
-    let mut out = String::from(
-        "Crashes / Errors — what is actually sent to Sentry in Germany, and only when error \
-         reporting is on. Random and build-specific values are placeholders; fixed classes below \
-         are representative values from the closed domains in the Privacy notice. Nothing else is \
-         sent. The crash report identifier is random, is created only when crash reports are \
-         enabled, and is shown here as a placeholder.\n\n",
-    );
-    out.push_str("Native crash report (only when error reporting is on):\n");
+    let mut out = String::from(crate::i18n::msg::settings_consent_preview_crash_intro());
+    out.push_str(crate::i18n::msg::settings_consent_preview_native());
     let crash = crate::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
@@ -1080,24 +1119,21 @@ pub(crate) fn preview_crash() -> String {
     for (label, body) in crate::telemetry::crashreport::preview_events() {
         out.push_str("\n\n");
         out.push_str(label);
-        out.push_str(" (only if native capture is unavailable):\n");
+        out.push_str(crate::i18n::msg::settings_consent_preview_fallback());
         let text = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
         out.push_str(&text);
     }
-    out.push_str("\n\nHandled playback error (only when error reporting is on):\n");
+    out.push_str(crate::i18n::msg::settings_consent_preview_handled());
     let handled = crate::telemetry::playback::preview_event();
     let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
-    out.push_str(
-        "\n\nSign-in problem report (automatically only when error reporting is on; otherwise \
-         only when you press Send report, and then without the crash report identifier):\n",
-    );
+    out.push_str(crate::i18n::msg::settings_consent_preview_incident());
     let incident = crate::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
@@ -1118,14 +1154,8 @@ pub(crate) fn preview_crash() -> String {
 /// minted only when product analytics is enabled; error-only consent creates none.
 pub(crate) fn preview_usage() -> String {
     use crate::diag::schema::DiagEvent;
-    let mut out = String::from(
-        "Analytics / Usage — what is actually sent to PostHog in Germany, and only when usage \
-         reporting is on, with a random Analytics ID. Random and build-specific values \
-         are placeholders; fixed classes below are representative values from the closed domains \
-         in the Privacy notice. Nothing else is sent. The usage identifier is random and is \
-         created only when product analytics is enabled.\n\n",
-    );
-    out.push_str("Usage events (only when usage reporting is on):\n");
+    let mut out = String::from(crate::i18n::msg::settings_consent_preview_usage_intro());
+    out.push_str(crate::i18n::msg::settings_consent_preview_usage_heading());
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -1204,6 +1234,89 @@ pub(crate) fn preview_usage() -> String {
     out
 }
 
+/// **The previews' placeholders, in the reader's language.** The payloads above come from the real
+/// serialisers, and where a real report would carry a random or build-specific value they carry a
+/// `<placeholder>` naming it. Those names are the one app-authored prose inside the JSON, so they are
+/// translated HERE, where the payload becomes a page; field names, codes and representative values
+/// are the wire itself and pass through untouched. An unknown `<…>` also passes through, and
+/// `every_preview_placeholder_is_translated` fails the build's tests before one can ship.
+fn localize_placeholders(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        match tail.find('>').and_then(|close| placeholder(&tail[1..close]).map(|word| (close, word))) {
+            Some((close, word)) => {
+                out.push('<');
+                out.push_str(word);
+                out.push('>');
+                rest = &tail[close + 1..];
+            }
+            None => {
+                out.push('<');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A preview placeholder's words, or `None` for text that is not one of them.
+fn placeholder(token: &str) -> Option<&'static str> {
+    use crate::i18n::msg;
+    Some(match token {
+        "address" => msg::settings_consent_placeholder_address(),
+        "flags" => msg::settings_consent_placeholder_flags(),
+        "fault address" => msg::settings_consent_placeholder_fault_address(),
+        "caller address" => msg::settings_consent_placeholder_caller_address(),
+        "symbol address" => msg::settings_consent_placeholder_symbol_address(),
+        "compiled function" => msg::settings_consent_placeholder_compiled_function(),
+        "source line" => msg::settings_consent_placeholder_source_line(),
+        "source column" => msg::settings_consent_placeholder_source_column(),
+        "validated compile-time source:line" => msg::settings_consent_placeholder_source_location(),
+        "stable id for this crash-log record" => msg::settings_consent_placeholder_record_id(),
+        "crashed ELF build id" => msg::settings_consent_placeholder_crashed_build_id(),
+        "running ELF build id" => msg::settings_consent_placeholder_running_build_id(),
+        "random per-error event id" => msg::settings_consent_placeholder_error_event_id(),
+        "random id for this crash" => msg::settings_consent_placeholder_crash_event_id(),
+        "message hash" => msg::settings_consent_placeholder_message_hash(),
+        "load address" => msg::settings_consent_placeholder_load_address(),
+        "mapped bytes" => msg::settings_consent_placeholder_mapped_bytes(),
+        "kernel release" => msg::settings_consent_placeholder_kernel_release(),
+        "kernel build suffix" => msg::settings_consent_placeholder_kernel_build(),
+        "ELF debug id" => msg::settings_consent_placeholder_debug_id(),
+        "ELF build id" => msg::settings_consent_placeholder_build_id(),
+        "ELF code id" => msg::settings_consent_placeholder_code_id(),
+        "ELF virtual address" => msg::settings_consent_placeholder_virtual_address(),
+        "bytes" => msg::settings_consent_placeholder_bytes(),
+        "thread instruction address" => msg::settings_consent_placeholder_thread_address(),
+        "thread id" => msg::settings_consent_placeholder_thread_id(),
+        "internal thread label" => msg::settings_consent_placeholder_thread_label(),
+        "webOS release" => msg::settings_consent_placeholder_webos_release(),
+        "webOS release codename" => msg::settings_consent_placeholder_webos_codename(),
+        "webOS API version" => msg::settings_consent_placeholder_webos_api(),
+        "SoC/platform class" => msg::settings_consent_placeholder_soc_class(),
+        "hardware revision class" => msg::settings_consent_placeholder_revision_class(),
+        "device model class" => msg::settings_consent_placeholder_model_class(),
+        "crash time" => msg::settings_consent_placeholder_crash_time(),
+        "crash report id" => msg::settings_consent_placeholder_crash_report_id(),
+        "random session id" => msg::settings_consent_placeholder_session_id(),
+        "event time" => msg::settings_consent_placeholder_event_time(),
+        "random id" => msg::settings_consent_placeholder_random_id(),
+        "project key" => msg::settings_consent_placeholder_project_key(),
+        "app version" => msg::settings_consent_placeholder_app_version(),
+        "webOS codename" => msg::settings_consent_placeholder_webos_codename_short(),
+        // Placeholders that list the field's possible wire values: the codes are the payload.
+        "ok / missing / n/a" => "ok / missing / n/a",
+        "devmode / homebrew / unknown" => "devmode / homebrew / unknown",
+        "local / remote / relay / unknown" => "local / remote / relay / unknown",
+        "v4 / v6 / unknown" => "v4 / v6 / unknown",
+        _ => return None,
+    })
+}
+
 /// The union of both channels — test-only (`the_preview_shows_every_event_this_build_can_emit`).
 #[cfg(test)]
 fn preview() -> String {
@@ -1234,12 +1347,8 @@ fn preview() -> String {
 /// ever turned back on, so "off" really does mean the old handle is gone.
 fn analytics_id_document() -> String {
     match consent::current().and_then(|c| c.install_id).as_deref() {
-        Some(id) => format!(
-            "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one Analytics ID: one uninterrupted opt-in on one television. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports, which carry a separate Crash report ID of their own.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
-        ),
-        None => format!(
-            "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports do not use this identifier. They carry a separate Crash report ID, shown on its own row while crash reports are on."
-        ),
+        Some(id) => crate::i18n::msg::settings_consent_analytics_present(CONTACT_EMAIL, id),
+        None => crate::i18n::msg::settings_consent_analytics_absent(CONTACT_EMAIL),
     }
 }
 
@@ -1255,12 +1364,8 @@ fn analytics_id_document() -> String {
 /// owed the reason.
 fn errors_id_document() -> String {
     match consent::current().and_then(|c| c.errors_id).as_deref() {
-        Some(id) => format!(
-            "YOUR CRASH REPORT ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned crash reports on. It is attached to every crash and error report so that repeated crashes under one Crash report ID are counted once, which is what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics, which has a separate Analytics ID of its own.\n\nHOW TO HAVE THESE REPORTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these reports carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning crash reports off deletes this identifier, and turning them on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Reports already sent keep the old identifier, which is why it is worth copying down before you turn crash reports off if you intend to ask for their deletion."
-        ),
-        None => format!(
-            "NO CRASH REPORT ID\n\nCrash reports are off, so this installation has no crash report identifier and is sending no crash or error reports.\n\nAn identifier is created only when you turn crash reports on, and deleting it is what turning them off does. If you had crash reports on before and want reports from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when crash reports were turned off, so it can no longer be looked up from this television."
-        ),
+        Some(id) => crate::i18n::msg::settings_consent_errors_present(CONTACT_EMAIL, id),
+        None => crate::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
     }
 }
 
@@ -1288,3 +1393,7 @@ mod focus_tests;
 #[cfg(test)]
 #[path = "consent_delete_alert_tests.rs"]
 mod delete_alert_tests;
+
+#[cfg(test)]
+#[path = "consent_text_fit_tests.rs"]
+mod text_fit_tests;

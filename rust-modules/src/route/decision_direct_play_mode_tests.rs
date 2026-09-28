@@ -69,7 +69,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
         let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
         server.join().unwrap();
         assert!(plan.url.is_empty() && plan.tsession.is_empty());
-        assert!(plan.verdict.as_deref().unwrap().contains("Return Direct Play to Auto"));
+        assert!(plan.verdict.as_ref().unwrap().text().contains("Return Direct Play to Auto"));
         assert_eq!(requests.iter().filter(|r| r.contains("/decision?")).count(), 1);
         assert!(!requests.iter().any(|r| r.starts_with("PUT ") || r.contains("start.")));
         crate::plex::reset_servers_for_test();
@@ -130,5 +130,5 @@ fn disabled_mode_refuses_an_original_only_url_without_a_pms_item() {
     env.direct_play_mode = DirectPlayMode::Disabled;
     let plan = build_stream("", "/movie.mkv", "h264", "aac", &env);
     assert!(plan.url.is_empty());
-    assert!(plan.verdict.as_deref().unwrap().contains("Direct Play is disabled"));
+    assert_eq!(plan.verdict, Some(PlayVerdict::DirectPlayDisabled));
 }

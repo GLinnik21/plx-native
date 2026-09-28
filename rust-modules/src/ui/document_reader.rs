@@ -10,13 +10,12 @@
 //! runs only on a miss, and drawing already only touches the lines the clip rect can see.
 
 use crate::ui::consts::K_SCROLL;
+use crate::ui::machine::Measure;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets;
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::hash::{Hash, Hasher};
 
-const BODY_LEAD: f32 = theme::size::CAPTION as f32 + theme::space::XS;
-const STEP: f32 = BODY_LEAD * 6.0;
 const INDENT: f32 = theme::space::XS;
 const RAIL_GAP: f32 = theme::space::MD;
 
@@ -29,7 +28,8 @@ const RAIL_GAP: f32 = theme::space::MD;
 /// Owning it is what lets the layout be CACHED across those calls at all: `TextView<'a>` itself is
 /// reconstructed fresh each draw (cheap — a struct literal, and `TextView`'s own wrap step is
 /// separately memoized by content hash, see its module doc), but the expensive per-line
-/// measurement below only reruns when this struct is rebuilt.
+/// paint-side measurement below reruns when this struct is rebuilt. Layout and input may
+/// separately measure the same flow through their supplied measurement capability.
 struct LineLayout {
     y: f32,
     h: f32,
@@ -42,6 +42,7 @@ pub(crate) struct DocumentReader {
     scroll: Spring,
     target: f32,
     max_scroll: f32,
+    body_size: std::os::raw::c_int,
     /// The measured lines for the body/width `layout_key` was last built from.
     layout: Vec<LineLayout>,
     /// `(hash of the body text, wrap width in bits)` the current `layout` was built from —
@@ -62,12 +63,54 @@ impl DocumentReader {
             scroll: Spring::at(0.0),
             target: 0.0,
             max_scroll: 0.0,
+            body_size: theme::size::CAPTION,
             layout: Vec::new(),
             layout_key: None,
             layout_h: 0.0,
             #[cfg(test)]
             layout_generation: 0,
         }
+    }
+
+    /// Use an existing theme text rung. Consent disclosures retain their BODY typography.
+    pub(crate) fn with_size(mut self, size: std::os::raw::c_int) -> Self {
+        self.body_size = size;
+        self.layout_key = None;
+        self
+    }
+
+    fn body_leading(&self) -> f32 { self.body_size as f32 + theme::space::XS }
+
+    /// The same preserved-line flow used by painting, measured through the caller's capability.
+    /// Layout and input can ask before the first draw, including during controlled replay.
+    pub(crate) fn measured_height(&self, body: &str, frame_w: f32, measure: &dyn Measure) -> f32 {
+        let text_w = (frame_w - widgets::RAIL_W - RAIL_GAP).max(1.0);
+        body.lines().map(|line| self.line_layout(line, text_w, Some(measure)).0).sum()
+    }
+
+    /// Scroll from event-time measurements; return the logical target and whether it moved.
+    /// Never depend on a previous paint to discover the document's bounds.
+    pub(crate) fn move_measured(&mut self, delta: i32, body: &str, frame: Rect,
+        measure: &dyn Measure) -> (u32, bool) {
+        self.max_scroll = (self.measured_height(body, frame.w, measure) - frame.h).max(0.0);
+        let before = self.target;
+        self.move_by(delta);
+        (self.target.to_bits(), self.target != before)
+    }
+
+    fn line_layout(&self, line: &str, text_w: f32, measure: Option<&dyn Measure>) -> (f32, f32, bool) {
+        let trimmed = line.trim_start();
+        let indentation = (line.len() - trimmed.len()) as f32 * INDENT;
+        let heading = !trimmed.is_empty()
+            && trimmed.chars().any(char::is_alphabetic)
+            && trimmed.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+        let mut view = TextView::new(trimmed, self.body_size, theme::TEXT_READING)
+            .leading(self.body_leading()).break_long_words();
+        if heading { view = view.bold(); }
+        if let Some(measure) = measure { view = view.with_measure(measure); }
+        let h = if trimmed.is_empty() { self.body_leading() }
+            else { view.measure_h((text_w - indentation).max(1.0)) };
+        (h, indentation, heading)
     }
 
     pub(crate) fn reset(&mut self) {
@@ -95,7 +138,7 @@ impl DocumentReader {
     }
 
     pub(crate) fn move_by(&mut self, delta: i32) {
-        self.target = (self.target + delta as f32 * STEP).clamp(0.0, self.max_scroll);
+        self.target = (self.target + delta as f32 * self.body_leading() * 6.0).clamp(0.0, self.max_scroll);
         crate::ui::idle::invalidate();
     }
 
@@ -110,6 +153,7 @@ impl DocumentReader {
     fn key_changed(&mut self, body: &str, text_w: f32) -> bool {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         body.hash(&mut hasher);
+        self.body_size.hash(&mut hasher);
         let key = (hasher.finish(), text_w.to_bits());
         if self.layout_key == Some(key) {
             false
@@ -126,22 +170,7 @@ impl DocumentReader {
         let mut y = 0.0;
         for line in body.lines() {
             let trimmed = line.trim_start();
-            let indentation = (line.len() - trimmed.len()) as f32 * INDENT;
-            let heading = !trimmed.is_empty()
-                && trimmed.chars().any(char::is_alphabetic)
-                && trimmed
-                    .chars()
-                    .all(|c| !c.is_alphabetic() || c.is_uppercase());
-            let mut view = TextView::new(trimmed, theme::size::CAPTION, theme::TEXT_READING)
-                .leading(BODY_LEAD);
-            if heading {
-                view = view.bold();
-            }
-            let h = if trimmed.is_empty() {
-                BODY_LEAD
-            } else {
-                view.measure_h((text_w - indentation).max(1.0))
-            };
+            let (h, indentation, heading) = self.line_layout(line, text_w, None);
             self.layout.push(LineLayout {
                 y,
                 h,
@@ -190,8 +219,8 @@ impl DocumentReader {
             // struct literal over the owned `line.text`, and its own wrap step is memoized
             // separately by content hash (`text_view.rs`'s module doc) — the cost this cache
             // exists to remove is the MEASUREMENT above, done once per rebuild, not this.
-            let mut view = TextView::new(&line.text, theme::size::CAPTION, theme::TEXT_READING)
-                .leading(BODY_LEAD);
+            let mut view = TextView::new(&line.text, self.body_size, theme::TEXT_READING)
+                .leading(self.body_leading()).break_long_words();
             if line.heading {
                 view = view.bold();
             }
@@ -225,6 +254,26 @@ impl DocumentReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_measurement_preserves_blank_lines_indentation_and_long_tokens() {
+        let _guard = crate::testlock::serial();
+        let _no_live = crate::ui::text_view::ForbidLive::enter();
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let mut reader = DocumentReader::new().with_size(theme::size::BODY);
+        let body = "TITLE\n\n  abcdefghijklmnopqrstuvwxyz\nlast line";
+        let frame = Rect::new(96.0, 280.0, 210.0, 100.0);
+        let content = reader.measured_height(body, frame.w, &measure);
+        assert!(content > reader.body_leading() * 4.0,
+            "the indented long token must wrap, with the blank line retained");
+        let (target, moved) = reader.move_measured(100, body, frame, &measure);
+        assert!(moved && reader.at_end());
+        assert_eq!(f32::from_bits(target), content - frame.h);
+        assert!(reader.layout_key.is_none(), "scrolling never needs a prior draw");
+        let (target, moved) = reader.move_measured(-100, body, frame, &measure);
+        assert!(moved && reader.at_top());
+        assert_eq!(target, 0.0f32.to_bits());
+    }
 
     #[test]
     fn document_scroll_moves_on_a_spring_and_reaches_rest() {

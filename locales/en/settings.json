@@ -1,0 +1,1049 @@
+{
+  "settings.title": {
+    "value": "Settings",
+    "description": "Settings, account, onboarding or privacy UI: settings.title"
+  },
+  "settings.libraries.section": {
+    "value": "Libraries",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.section"
+  },
+  "settings.libraries.title": {
+    "value": "Favorite libraries",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.title"
+  },
+  "settings.libraries.detail": {
+    "value": "Which libraries this television shows.",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.detail"
+  },
+  "settings.privacy.section": {
+    "value": "Privacy",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.section"
+  },
+  "settings.privacy.title": {
+    "value": "Privacy & data",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.title"
+  },
+  "settings.privacy.detail": {
+    "value": "Optional reports, privacy information and local data.",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.detail"
+  },
+  "settings.legal.title": {
+    "value": "Legal notices",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.title"
+  },
+  "settings.legal.detail": {
+    "value": "Privacy, licences, source code, trademarks and contact.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.detail"
+  },
+  "settings.system.section": {
+    "value": "System",
+    "description": "Settings, account, onboarding or privacy UI: settings.system.section"
+  },
+  "settings.auto_sign_in.title": {
+    "value": "Automatically Sign In",
+    "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.title"
+  },
+  "settings.auto_sign_in.detail": {
+    "value": "Skip the profile list when the app starts.",
+    "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.detail"
+  },
+  "settings.trailers.title": {
+    "value": "Play trailers automatically",
+    "description": "Settings, account, onboarding or privacy UI: settings.trailers.title"
+  },
+  "settings.trailers.detail": {
+    "value": "After a moment on a title, play its trailer with sound.",
+    "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
+  },
+  "settings.about.title": {
+    "value": "About PlxNative",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.title"
+  },
+  "settings.about.detail": {
+    "value": "Version, copyright and project information.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.detail"
+  },
+  "settings.root.copy": {
+    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback defaults and the app language apply to this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
+  },
+  "settings.libraries.count": {
+    "value": {
+      "one": "{count} favorite",
+      "other": "{count} favorites"
+    },
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.count",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "settings.account.title": {
+    "value": "Account",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.title"
+  },
+  "settings.account.change_profile": {
+    "value": "Change profile",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.change_profile"
+  },
+  "settings.account.sign_in": {
+    "value": "Sign in",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.sign_in"
+  },
+  "settings.account.sign_out": {
+    "value": "Sign out",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.sign_out"
+  },
+  "settings.account.settings": {
+    "value": "Settings",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.settings"
+  },
+  "settings.account.diagnostics": {
+    "value": "Send diagnostics",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.diagnostics"
+  },
+  "settings.profiles.title": {
+    "value": "Who's watching?",
+    "description": "Settings, account, onboarding or privacy UI: settings.profiles.title"
+  },
+  "settings.profiles.pin": {
+    "value": "Enter {name}'s PIN",
+    "description": "Settings, account, onboarding or privacy UI: settings.profiles.pin",
+    "args": {
+      "name": "str"
+    }
+  },
+  "settings.onboard.title": {
+    "value": "Which libraries do you want?",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.title"
+  },
+  "settings.onboard.start": {
+    "value": "Start watching",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.start"
+  },
+  "settings.done": {
+    "value": "Done",
+    "description": "Settings, account, onboarding or privacy UI: settings.done"
+  },
+  "settings.retry": {
+    "value": "Try again",
+    "description": "Settings, account, onboarding or privacy UI: settings.retry"
+  },
+  "settings.onboard.failed": {
+    "value": "Couldn't load libraries",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.failed"
+  },
+  "settings.onboard.failed_reason": {
+    "value": "Check the connection, then try again.",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.failed_reason"
+  },
+  "settings.onboard.copy": {
+    "value": "Choose the libraries this television shows. Your favorites fill Home's shelves and the Library's own tabs; Settings lists every one you have.",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.copy"
+  },
+  "settings.onboard.shared": {
+    "value": {
+      "one": "{names} has shared libraries with you. Pick your favorites — they are what Home and the Library show, and you can change them in Settings whenever you like.",
+      "other": "{names} have shared libraries with you. Pick your favorites — they are what Home and the Library show, and you can change them in Settings whenever you like."
+    },
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.shared",
+    "args": {
+      "count": "i64",
+      "names": "str"
+    }
+  },
+  "settings.onboard.names": {
+    "value": "{names} and {last}",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.names",
+    "args": {
+      "last": "str",
+      "names": "str"
+    }
+  },
+  "settings.language.title": {
+    "value": "Language",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.title"
+  },
+  "settings.language.detail": {
+    "value": "Choose the language used by PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.detail"
+  },
+  "settings.language.system": {
+    "value": "System default",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.system"
+  },
+  "settings.language.copy": {
+    "value": "Choose the app language for everyone on this television. Changes apply after restarting PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.copy"
+  },
+  "settings.language.pending": {
+    "value": "Restart PlxNative to apply this change.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.pending"
+  },
+  "settings.language.save_failed": {
+    "value": "Could not save the language. Try again.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.save_failed"
+  },
+  "settings.language.help": {
+    "value": "Help translate the app.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.help"
+  },
+  "settings.language.contribute": {
+    "value": "Contribute on GitHub",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.contribute"
+  },
+  "settings.language.contribute_copy": {
+    "value": "Scan the code with your phone to read the translation guide and contribute on GitHub.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.contribute_copy"
+  },
+  "settings.language.contribute_body": {
+    "value": "Translation guide",
+    "description": "Caption above the translation guide address; the canonical URL is drawn separately and must never be translated."
+  },
+  "settings.consent.crash.title": {
+    "value": "Share crash reports?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.title"
+  },
+  "settings.consent.product.title": {
+    "value": "Share product analytics?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.product.title"
+  },
+  "settings.consent.crash.body": {
+    "value": "If PlxNative crashes, or signing in fails, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, or which sign-in step failed and how the connection answered, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.body"
+  },
+  "settings.consent.product.body": {
+    "value": "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.product.body"
+  },
+  "settings.consent.crash.row": {
+    "value": "Crash reports",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.row"
+  },
+  "settings.consent.crash.detail": {
+    "value": "Optional technical crash reports.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.detail"
+  },
+  "settings.consent.usage.row": {
+    "value": "Product analytics",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.row"
+  },
+  "settings.consent.usage.detail": {
+    "value": "Optional feature and playback outcomes.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.detail"
+  },
+  "settings.consent.crash.document": {
+    "value": "Crashes / Errors",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.document"
+  },
+  "settings.consent.usage.document": {
+    "value": "Analytics / Usage",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.document"
+  },
+  "settings.consent.example": {
+    "value": "See an example report",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.example"
+  },
+  "settings.consent.policy": {
+    "value": "Privacy policy",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.policy"
+  },
+  "settings.consent.analytics_id": {
+    "value": "Analytics ID",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics_id"
+  },
+  "settings.consent.crash_id": {
+    "value": "Crash report ID",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash_id"
+  },
+  "settings.consent.delete": {
+    "value": "Delete all local data",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete"
+  },
+  "settings.consent.delete_scope": {
+    "value": "This signs out and removes PlxNative data stored on this television. It does not delete data already sent to Plex, your Plex Media Servers, Sentry or PostHog.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_scope"
+  },
+  "settings.consent.settings_copy": {
+    "value": "Control optional reporting, review exactly what may be shared, and manage data stored by PlxNative on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.settings_copy"
+  },
+  "settings.consent.reporting": {
+    "value": "Reporting",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.reporting"
+  },
+  "settings.consent.information": {
+    "value": "Information",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.information"
+  },
+  "settings.consent.on_tv": {
+    "value": "On this TV",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.on_tv"
+  },
+  "settings.consent.preview_crash": {
+    "value": "Field-by-field preview of the crash/error report.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_crash"
+  },
+  "settings.consent.preview_usage": {
+    "value": "Field-by-field preview of product analytics events.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_usage"
+  },
+  "settings.consent.preview_policy": {
+    "value": "The complete PlxNative privacy policy for this build.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_policy"
+  },
+  "settings.consent.preview_errors_id": {
+    "value": "Your crash report identifier and how to have reports deleted.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_errors_id"
+  },
+  "settings.consent.preview_analytics_id": {
+    "value": "The identifier on your analytics, and how to have it deleted.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_analytics_id"
+  },
+  "settings.consent.delete_detail": {
+    "value": "Sign out and remove PlxNative data from this TV.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_detail"
+  },
+  "settings.consent.errors_subtitle": {
+    "value": "The random identifier attached to crash and error reports from this sign-in, and how to have those reports deleted.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors_subtitle"
+  },
+  "settings.consent.analytics_subtitle": {
+    "value": "The random identifier attached to product analytics from this sign-in, and how to have those events deleted.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics_subtitle"
+  },
+  "settings.consent.policy_subtitle": {
+    "value": "How PlxNative handles local data, Plex services and optional reporting.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.policy_subtitle"
+  },
+  "settings.consent.crash_subtitle": {
+    "value": "What is actually sent: the exact fields a crash or error report can carry — only when error reporting is on.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash_subtitle"
+  },
+  "settings.consent.usage_subtitle": {
+    "value": "What is actually sent: the exact fields a product analytics event can carry — only when usage reporting is on.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage_subtitle"
+  },
+  "settings.consent.share_analytics": {
+    "value": "Share",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
+  },
+  "settings.consent.share_reports": {
+    "value": "Share",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
+  },
+  "settings.consent.do_not_share": {
+    "value": "Don’t share",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.do_not_share"
+  },
+  "settings.consent.delete_question": {
+    "value": "Delete all local data?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_question"
+  },
+  "settings.cancel": {
+    "value": "Cancel",
+    "description": "Settings, account, onboarding or privacy UI: settings.cancel"
+  },
+  "settings.delete": {
+    "value": "Delete",
+    "description": "Settings, account, onboarding or privacy UI: settings.delete"
+  },
+  "settings.legal.privacy.title": {
+    "value": "Privacy policy",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.title"
+  },
+  "settings.legal.opensource.title": {
+    "value": "Open-source licences",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.title"
+  },
+  "settings.legal.ffmpeg.title": {
+    "value": "FFmpeg & source offer",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.title"
+  },
+  "settings.legal.source.title": {
+    "value": "PlxNative source code",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.title"
+  },
+  "settings.legal.trademarks.title": {
+    "value": "Trademarks & non-affiliation",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.title"
+  },
+  "settings.legal.contact.title": {
+    "value": "Privacy & security contact",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.title"
+  },
+  "settings.legal.privacy.subtitle": {
+    "value": "How PlxNative handles local data and optional reports.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.subtitle"
+  },
+  "settings.legal.opensource.subtitle": {
+    "value": "Components, copyright holders and licence texts.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.subtitle"
+  },
+  "settings.legal.ffmpeg.subtitle": {
+    "value": "LGPL notice, replaceability and corresponding source.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.subtitle"
+  },
+  "settings.legal.source.subtitle": {
+    "value": "Project source, build scripts and release materials.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.subtitle"
+  },
+  "settings.legal.trademarks.subtitle": {
+    "value": "Independent-client status and trademark attribution.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.subtitle"
+  },
+  "settings.legal.contact.subtitle": {
+    "value": "How to ask a privacy question or report a vulnerability.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.subtitle"
+  },
+  "settings.legal.section": {
+    "value": "Legal",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.section"
+  },
+  "settings.legal.copy": {
+    "value": "Read the notices that apply to this build, its open-source components and its relationship with Plex and LG.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.copy"
+  },
+  "settings.about.subtitle": {
+    "value": "A native media client built for LG webOS.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.subtitle"
+  },
+  "settings.legal.privacy.responsible": {
+    "value": "RESPONSIBLE FOR PLXNATIVE DATA",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.responsible"
+  },
+  "settings.legal.privacy.responsible_body": {
+    "value": "Gleb Linnik is responsible only for data PlxNative stores locally and for optional reports you choose to share.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.responsible_body"
+  },
+  "settings.legal.privacy.plex": {
+    "value": "PLEX SERVICES",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex"
+  },
+  "settings.legal.privacy.plex_body": {
+    "value": "PlxNative is an independent client for Plex. To sign you in, discover servers and provide Plex account features, the app communicates directly with Plex services. Plex processes information received by those services under Plex’s own Privacy Policy. PlxNative’s developer does not receive that information.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex_body"
+  },
+  "settings.legal.privacy.plex_link": {
+    "value": "Plex Privacy Policy: https://www.plex.tv/about/privacy-legal/",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex_link"
+  },
+  "settings.legal.privacy.servers": {
+    "value": "PLEX MEDIA SERVERS",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.servers"
+  },
+  "settings.legal.privacy.servers_body": {
+    "value": "To browse and play media, update watch progress and use server features, PlxNative communicates directly with the Plex Media Servers you select. Those requests are handled by the selected server and its operator. PlxNative’s developer does not receive them.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.servers_body"
+  },
+  "settings.legal.privacy.local": {
+    "value": "ON THIS TELEVISION",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local"
+  },
+  "settings.legal.privacy.local_body": {
+    "value": "PlxNative stores your Plex account token and a separate token for each server you use. For every profile you have switched to on this television, it also keeps that profile's own server access token(s) and, for a PIN-protected profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the addresses and identifiers of those servers, the profile names and pictures on your account (pictures and other downloaded artwork are cached as bounded files for reuse across restarts), your Home library choices, your recent searches, your playback quality, Direct Play and app language preferences, and local technical logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers to the two optional-reporting questions, the random Crash report ID if you turned crash reports on, the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a marker recording how much of the crash log has already been read. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Plex Media Server. Delete all local data in Settings signs out and removes PlxNative data from this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local_body"
+  },
+  "settings.legal.privacy.crashes": {
+    "value": "OPTIONAL CRASH REPORTS",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.crashes"
+  },
+  "settings.legal.privacy.crashes_body": {
+    "value": "If enabled, technical crash details are sent to Sentry in Germany. They can include the signal, code addresses, thread information and device compatibility details. Each report carries a random Crash report ID created on this television when you turned crash reports on, so that repeated crashes under one Crash report ID are counted once rather than once each. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics. Settings shows it as your Crash report ID while crash reports are on.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.crashes_body"
+  },
+  "settings.legal.privacy.analytics": {
+    "value": "OPTIONAL PRODUCT ANALYTICS",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics"
+  },
+  "settings.legal.privacy.analytics_body": {
+    "value": "If enabled, screen and feature events and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics_body"
+  },
+  "settings.legal.privacy.excluded": {
+    "value": "NEVER INCLUDED",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.excluded"
+  },
+  "settings.legal.privacy.excluded_body": {
+    "value": "Titles, Plex accounts, searches, server names or addresses, tokens, subtitle text and exact viewing history are not included in either optional report type. Both choices are independent and can be changed at any time in Settings.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.excluded_body"
+  },
+  "settings.legal.privacy.retention": {
+    "value": "RETENTION",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention"
+  },
+  "settings.legal.privacy.retention_body": {
+    "value": "Different things here have different lifetimes, so this is stated for each. Your sign-in, the servers registered with it and their tokens, every profile's own cached server access token(s) and PIN check, cached profile pictures and other downloaded artwork, and your answers about unencrypted connections, are removed when you sign out. Your answers to the two optional-reporting questions, and the Crash report ID and Analytics ID if they exist, belong to that sign-in: signing out removes them with it, and whoever signs in next is asked afresh. Switching between the profiles of one Plex account is not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for a profile you are not currently using, so that profile can be switched to again with no internet. A report waiting to be sent is deleted once it is sent, and a queued report of a category you switch off, or that you sign out of, is deleted at that moment; one report that the sender had already picked up at that moment may still be sent, and no further report is picked up after it. The event log rotates continuously and the storage snapshot is replaced when its bounded status changes. Delete all local data removes all of it. A report that has already been sent is held by the service that received it, under that service’s own retention schedule; write to the contact below to ask what those periods currently are. The app language preference belongs to this television and is kept when you sign out; Delete all local data resets it.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention_body"
+  },
+  "settings.legal.privacy.choices": {
+    "value": "YOUR CHOICES AND HOW TO ASK",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices"
+  },
+  "settings.legal.privacy.choices_body": {
+    "value": "Both optional reports are off until you turn them on, and either can be turned off again at any time in Settings. A one-off sign-in problem report is sent only when you press Send report. Delete all local data removes what PlxNative stored on this television; it does not reach anything already sent. To ask what crash reports or product analytics hold for your installation, or to have them deleted, write to the contact below and quote your Crash report ID or Analytics ID from Settings, or the Report ID shown after a one-off report. Each identifier is the only handle its reports carry. Turning a category off deletes its identifier from this television, and so does signing out; reports already sent keep the old one, so copy it down first if you intend to ask for their deletion.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices_body"
+  },
+  "settings.legal.privacy.processing": {
+    "value": "WHERE DATA IS PROCESSED",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.processing"
+  },
+  "settings.legal.privacy.processing_body": {
+    "value": "Optional crash reports are processed by Sentry in Germany and optional product analytics by PostHog in Germany. Plex processes what its own services receive under Plex’s Privacy Policy. A Plex Media Server you connect to may be located anywhere and is operated by whoever runs it, not by PlxNative’s developer.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.processing_body"
+  },
+  "settings.legal.privacy.uninstall": {
+    "value": "UNINSTALLING",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.uninstall"
+  },
+  "settings.legal.privacy.uninstall_body": {
+    "value": "Removing PlxNative removes the application, but webOS gives an application no way to run code as it is removed, so anything kept outside the application’s own directory can survive. Your sign-in is deliberately kept there so that reinstalling does not sign you out. Your optional-reporting answers and their Crash report ID and Analytics ID are kept with that sign-in, so that a decision you have already made is not put to you again after a reinstall. Your app language preference is also kept there. Use Delete all local data BEFORE uninstalling if you want nothing of PlxNative left on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.uninstall_body"
+  },
+  "settings.legal.privacy.contact": {
+    "value": "CONTACT",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.contact"
+  },
+  "settings.legal.privacy.contact_body": {
+    "value": "Privacy questions: support@plxnative.com",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.contact_body"
+  },
+  "settings.legal.ffmpeg.body": {
+    "value": "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is copyright (c) the FFmpeg developers; PlxNative does not own FFmpeg.\n\nThe FFmpeg libraries are unmodified and loaded dynamically, and may be replaced with an interface-compatible build. The complete corresponding FFmpeg 9.0 source, exact configure line and build script are published with every PlxNative release.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.body"
+  },
+  "settings.legal.trademarks.body": {
+    "value": "Plex, the Plex logo and Plex Media Server are trademarks of Plex, Inc.\n\nLG and webOS are trademarks of LG Electronics Inc.\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.body"
+  },
+  "settings.legal.contact.body": {
+    "value": "Privacy questions may be sent to support@plxnative.com.\n\nSecurity vulnerabilities may be reported privately through GitHub Security Advisories for GLinnik21/plx-native. Please do not include Plex tokens, server addresses or personal media information in a report.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.body"
+  },
+  "settings.legal.opensource.body": {
+    "value": "PlxNative is open-source software licensed under GPL-3.0-or-later. Copyright (c) 2026 Gleb Linnik and contributors. You may modify and redistribute it under these terms. There is no warranty, to the extent permitted by law.\n\nThird-party components retain their own licences. The package includes THIRD-PARTY-NOTICES.md and licence texts for the Rust runtime and crates, FFmpeg, Sentry Native, libunwind, NanoSVG, fonts and icons. Platform libraries have separate terms.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.body"
+  },
+  "settings.legal.source.body": {
+    "value": "Source for build {build}:\n\nhttps://github.com/GLinnik21/plx-native/tree/{build}\n\nLocal migration candidates may contain unpublished changes. Their matching source snapshot is provided with the candidate evidence. A published binary must be accompanied by its version-specific complete source bundle and build instructions; a moving branch is not the corresponding-source record. See LICENSING.md in the package.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.body",
+    "args": {
+      "build": "str"
+    }
+  },
+  "settings.about.body": {
+    "value": "Version {version}\nBuild {build}\n\nDeveloped by Gleb Linnik\n© 2026 Gleb Linnik\n\nOpen source under GPL-3.0-or-later\ngithub.com/GLinnik21/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.body",
+    "args": {
+      "build": "str",
+      "version": "str"
+    }
+  },
+  "settings.consent.preview.crash_intro": {
+    "value": "Crashes / Errors — what is actually sent to Sentry in Germany, and only when error reporting is on. Random and build-specific values are placeholders; fixed classes below are representative values from the closed domains in the Privacy notice. Nothing else is sent. The crash report identifier is random, is created only when crash reports are enabled, and is shown here as a placeholder.\n\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.crash_intro"
+  },
+  "settings.consent.preview.usage_intro": {
+    "value": "Analytics / Usage — what is actually sent to PostHog in Germany, and only when usage reporting is on, with a random Analytics ID. Random and build-specific values are placeholders; fixed classes below are representative values from the closed domains in the Privacy notice. Nothing else is sent. The usage identifier is random and is created only when product analytics is enabled.\n\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage_intro"
+  },
+  "settings.consent.preview.native": {
+    "value": "Native crash report (only when error reporting is on):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.native"
+  },
+  "settings.consent.preview.fallback": {
+    "value": " (only if native capture is unavailable):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.fallback"
+  },
+  "settings.consent.preview.handled": {
+    "value": "\n\nHandled playback error (only when error reporting is on):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.handled"
+  },
+  "settings.consent.analytics.absent": {
+    "value": "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {contact} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports do not use this identifier. They carry a separate Crash report ID, shown on its own row while crash reports are on.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics.absent",
+    "args": {
+      "contact": "str"
+    }
+  },
+  "settings.consent.analytics.present": {
+    "value": "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one Analytics ID: one uninterrupted opt-in on one television. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports, which carry a separate Crash report ID of their own.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {contact} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics.present",
+    "args": {
+      "contact": "str",
+      "id": "str"
+    }
+  },
+  "settings.consent.errors.absent": {
+    "value": "NO CRASH REPORT ID\n\nCrash reports are off, so this installation has no crash report identifier and is sending no crash or error reports.\n\nAn identifier is created only when you turn crash reports on, and deleting it is what turning them off does. If you had crash reports on before and want reports from that period deleted, write to {contact} — but note that the identifier they carry was destroyed when crash reports were turned off, so it can no longer be looked up from this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors.absent",
+    "args": {
+      "contact": "str"
+    }
+  },
+  "settings.consent.errors.present": {
+    "value": "YOUR CRASH REPORT ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned crash reports on. It is attached to every crash and error report so that repeated crashes under one Crash report ID are counted once, which is what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics, which has a separate Analytics ID of its own.\n\nHOW TO HAVE THESE REPORTS DELETED\n\nWrite to {contact} and quote the identifier above. It is the only handle these reports carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning crash reports off deletes this identifier, and turning them on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Reports already sent keep the old identifier, which is why it is worth copying down before you turn crash reports off if you intend to ask for their deletion.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors.present",
+    "args": {
+      "contact": "str",
+      "id": "str"
+    }
+  },
+  "settings.consent.preview.usage_heading": {
+    "value": "Usage events (only when usage reporting is on):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage"
+  },
+  "settings.back": {
+    "value": "Back",
+    "description": "Settings, consent or sign-in UI: settings.back"
+  },
+  "settings.profiles.failed": {
+    "value": "Can’t change profile",
+    "description": "Settings, consent or sign-in UI: settings.profiles.failed"
+  },
+  "settings.playback.section": {
+    "value": "Playback",
+    "description": "Settings, consent or sign-in UI: settings.playback.section"
+  },
+  "settings.playback.title": {
+    "value": "Video & playback",
+    "description": "Settings, consent or sign-in UI: settings.playback.title"
+  },
+  "settings.playback.detail": {
+    "value": "Default quality and Direct Play.",
+    "description": "Settings, consent or sign-in UI: settings.playback.detail"
+  },
+  "settings.audio.title": {
+    "value": "Audio & subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.title"
+  },
+  "settings.audio.detail": {
+    "value": "Language preferences synced with your Plex account.",
+    "description": "Settings, consent or sign-in UI: settings.audio.detail"
+  },
+  "settings.playback.quality": {
+    "value": "Default quality",
+    "description": "Settings, consent or sign-in UI: settings.playback.quality"
+  },
+  "settings.playback.direct_play": {
+    "value": "Direct Play",
+    "description": "Settings, consent or sign-in UI: settings.playback.direct_play"
+  },
+  "settings.audio.language": {
+    "value": "Preferred audio language",
+    "description": "Settings, consent or sign-in UI: settings.audio.language"
+  },
+  "settings.audio.subtitles": {
+    "value": "Subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitles"
+  },
+  "settings.audio.subtitle_language": {
+    "value": "Subtitle language",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitle_language"
+  },
+  "settings.audio.forced_subtitles": {
+    "value": "Forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.forced_subtitles"
+  },
+  "settings.playback.force_body": {
+    "value": "Bypasses playback compatibility checks and always uses original quality. Playback may have no sound, display incorrectly, freeze, or crash the app. PlxNative will not automatically switch to compatible playback and may not recover gracefully.\n\nEnable this only if you understand these risks and know how to restart the app and return Direct Play to Auto.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_body"
+  },
+  "settings.playback.force_note": {
+    "value": "Advanced override. Playback may fail or crash; automatic fallback is off. Return to Auto if problems occur.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_note"
+  },
+  "settings.audio.account_note": {
+    "value": "Saved to this Plex profile and shared with your other Plex apps. Changes may take time to affect playback; selections already made for an item still take priority.",
+    "description": "Settings, consent or sign-in UI: settings.audio.account_note"
+  },
+  "settings.playback.copy": {
+    "value": "Playback defaults for this television. Quality is also available in the player's More menu. Changes here apply to the next playback.",
+    "description": "Settings, consent or sign-in UI: settings.playback.copy"
+  },
+  "settings.playback.enable_force": {
+    "value": "Enable Force",
+    "description": "Settings, consent or sign-in UI: settings.playback.enable_force"
+  },
+  "settings.playback.force_question": {
+    "value": "Force Direct Play?",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_question"
+  },
+  "settings.audio.saving": {
+    "value": "Saving to your Plex account…",
+    "description": "Settings, consent or sign-in UI: settings.audio.saving"
+  },
+  "settings.audio.loading": {
+    "value": "Loading your Plex account preferences…",
+    "description": "Settings, consent or sign-in UI: settings.audio.loading"
+  },
+  "settings.playback.saving": {
+    "value": "Saving playback preference…",
+    "description": "Settings, consent or sign-in UI: settings.playback.saving"
+  },
+  "settings.audio.manual": {
+    "value": "Off (manual selection)",
+    "description": "Settings, consent or sign-in UI: settings.audio.manual"
+  },
+  "settings.audio.foreign": {
+    "value": "When audio isn't in my language",
+    "description": "Settings, consent or sign-in UI: settings.audio.foreign"
+  },
+  "settings.audio.always": {
+    "value": "Always",
+    "description": "Settings, consent or sign-in UI: settings.audio.always"
+  },
+  "settings.audio.prefer_regular": {
+    "value": "Prefer non-forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_regular"
+  },
+  "settings.audio.prefer_forced": {
+    "value": "Prefer forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_forced"
+  },
+  "settings.audio.only_forced": {
+    "value": "Only forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_forced"
+  },
+  "settings.audio.only_regular": {
+    "value": "Only non-forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_regular"
+  },
+  "settings.audio.original": {
+    "value": "Original",
+    "description": "Settings, consent or sign-in UI: settings.audio.original"
+  },
+  "settings.audio.no_preference": {
+    "value": "No preference",
+    "description": "Settings, consent or sign-in UI: settings.audio.no_preference"
+  },
+  "settings.audio.not_set": {
+    "value": "Not set",
+    "description": "Settings, consent or sign-in UI: settings.audio.not_set"
+  },
+  "settings.playback.overridden": {
+    "value": "Overridden by Force Direct Play: Original quality.",
+    "description": "Settings, consent or sign-in UI: settings.playback.overridden"
+  },
+  "settings.audio.selection_off": {
+    "value": "Automatic selection is off in Plex. Choosing a language enables it.",
+    "description": "Settings, consent or sign-in UI: settings.audio.selection_off"
+  },
+  "settings.audio.retry": {
+    "value": "Retry",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry"
+  },
+  "settings.audio.retry_detail": {
+    "value": "Try the account request again.",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry_detail"
+  },
+  "settings.audio.sign_in_again": {
+    "value": "Sign in to this Plex profile again to edit its account preferences.",
+    "description": "Settings, consent or sign-in UI: settings.audio.sign_in_again"
+  },
+  "settings.playback.save_failed": {
+    "value": "Could not save or load this preference. Please try again.",
+    "description": "Settings, consent or sign-in UI: settings.playback.save_failed"
+  },
+  "settings.playback.auto": {
+    "value": "Auto",
+    "description": "Settings, consent or sign-in UI: settings.playback.auto"
+  },
+  "settings.playback.forced": {
+    "value": "Force Direct Play (advanced)",
+    "description": "Settings, consent or sign-in UI: settings.playback.forced"
+  },
+  "settings.playback.disabled": {
+    "value": "Disabled",
+    "description": "Settings, consent or sign-in UI: settings.playback.disabled"
+  },
+  "settings.plaintext.connect": {
+    "value": "Connect",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connect"
+  },
+  "settings.plaintext.not_now": {
+    "value": "Not now",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.not_now"
+  },
+  "settings.plaintext.question": {
+    "value": "Connect without encryption?",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.question"
+  },
+  "settings.plaintext.body": {
+    "value": "Your Plex sign-in will travel without encryption over this network, to this server only.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.body"
+  },
+  "settings.plaintext.section": {
+    "value": "Unencrypted connections",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.section"
+  },
+  "settings.plaintext.server": {
+    "value": "Plex server",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.server"
+  },
+  "settings.plaintext.denied": {
+    "value": "Not allowed. Only encrypted connections.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.denied"
+  },
+  "settings.plaintext.connected": {
+    "value": "Allowed on this network. Connected without encryption.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connected"
+  },
+  "settings.plaintext.allowed": {
+    "value": "Allowed on this network when a secure connection fails.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.allowed"
+  },
+  "settings.login.continue_unsaved": {
+    "value": "Continue",
+    "description": "Settings, consent or sign-in UI: settings.login.continue_unsaved"
+  },
+  "settings.login.details": {
+    "value": "Details",
+    "description": "Settings, consent or sign-in UI: settings.login.details"
+  },
+  "settings.login.send_report": {
+    "value": "Send report",
+    "description": "Settings, consent or sign-in UI: settings.login.send_report"
+  },
+  "settings.login.close": {
+    "value": "Close",
+    "description": "Settings, consent or sign-in UI: settings.login.close"
+  },
+  "settings.login.report_question": {
+    "value": "Send a report about this sign-in problem?",
+    "description": "Settings, consent or sign-in UI: settings.login.report_question"
+  },
+  "settings.login.report_body": {
+    "value": "The report says which sign-in step failed and how the connection answered, storage failure stages and error numbers, plus the app version. It never includes your account name, tokens, PIN, sign-in code or network addresses.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_body"
+  },
+  "settings.login.unreachable": {
+    "value": "Can’t reach Plex. Check your TV’s internet connection.",
+    "description": "Settings, consent or sign-in UI: settings.login.unreachable"
+  },
+  "settings.login.report_sending": {
+    "value": "Sending report…",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sending"
+  },
+  "settings.login.report_sent": {
+    "value": "Report sent. Thank you.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sent"
+  },
+  "settings.login.report_saved": {
+    "value": "Report saved. It will be sent later.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_saved"
+  },
+  "settings.login.report_failed": {
+    "value": "Report couldn’t be sent.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_failed"
+  },
+  "settings.login.save_failed_title": {
+    "value": "Couldn’t save your sign-in",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_title"
+  },
+  "settings.login.save_failed_body": {
+    "value": "Your sign-in couldn’t be saved on this TV. You can continue, but you’ll be asked to sign in again next time.",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_body"
+  },
+  "settings.login.unknown_device": {
+    "value": "unknown set",
+    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+  },
+  "settings.login.your_servers": {
+    "value": "your servers",
+    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+  },
+  "settings.language.saving": {
+    "value": "Saving language…",
+    "description": "Settings, consent or sign-in UI: settings.language.saving"
+  },
+  "settings.audio.error_retry": {
+    "value": "{reason} Select Retry.",
+    "description": "Settings, consent or sign-in UI: settings.audio.error_retry",
+    "args": {
+      "reason": "str"
+    }
+  },
+  "settings.login.report_id": {
+    "value": "Report ID: {id}",
+    "description": "Settings, consent or sign-in UI: settings.login.report_id",
+    "args": {
+      "id": "str"
+    }
+  },
+  "settings.legal.privacy.plaintext_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "For a server you were asked about, PlxNative also keeps whether you allowed an unencrypted connection on your home network, for the Plex account that answered. Only the answer is stored. The permission itself is never stored and ends when a fresh check no longer reaches the same server address, at sign-in or sign-out, at a profile switch unless the new profile reaches that server at the same address, or when the app returns from the background."
+  },
+  "settings.legal.privacy.signin_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "If signing in fails, the same channel can carry a sign-in problem report: which sign-in step failed (or which fixed kind of failure inside the app stopped it), how the connection answered (an error class with its HTTP status or network error number), rounded try counts and durations, how many codes were shown, and, when a sign-in could not be saved, a storage failure class, which key-service step it stopped at and the key service's own numeric error code, fixed storage-helper failure stages and error codes, storage-candidate errno numbers (never file paths or owners), the app version and when it happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With crash reports on, it is sent automatically under your Crash report ID, and the sign-in screen shows its Report ID. Otherwise it is sent only if you press Send report on the sign-in screen, once, without any Crash report ID and with a random Report ID that identifies only that one report."
+  },
+  "settings.consent.preview.incident": {
+    "value": "\n\nSign-in problem report (automatically only when error reporting is on; otherwise only when you press Send report, and then without the crash report identifier):\n",
+    "description": "Heading in the crash-report preview above the sign-in problem report sample. Privacy disclosure: keep the conditions exact. 'Send report' names the button."
+  },
+  "settings.consent.placeholder.address": {
+    "value": "address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.flags": {
+    "value": "flags",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.fault_address": {
+    "value": "fault address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.caller_address": {
+    "value": "caller address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.symbol_address": {
+    "value": "symbol address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.compiled_function": {
+    "value": "compiled function",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_line": {
+    "value": "source line",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_column": {
+    "value": "source column",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_location": {
+    "value": "validated compile-time source:line",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.record_id": {
+    "value": "stable id for this crash-log record",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crashed_build_id": {
+    "value": "crashed ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.running_build_id": {
+    "value": "running ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.error_event_id": {
+    "value": "random per-error event id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_event_id": {
+    "value": "random id for this crash",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.message_hash": {
+    "value": "message hash",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.load_address": {
+    "value": "load address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.mapped_bytes": {
+    "value": "mapped bytes",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_release": {
+    "value": "kernel release",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_build": {
+    "value": "kernel build suffix",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.debug_id": {
+    "value": "ELF debug id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.build_id": {
+    "value": "ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.code_id": {
+    "value": "ELF code id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.virtual_address": {
+    "value": "ELF virtual address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.bytes": {
+    "value": "bytes",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_address": {
+    "value": "thread instruction address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_id": {
+    "value": "thread id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_label": {
+    "value": "internal thread label",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_release": {
+    "value": "webOS release",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_codename": {
+    "value": "webOS release codename",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_api": {
+    "value": "webOS API version",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.soc_class": {
+    "value": "SoC/platform class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.revision_class": {
+    "value": "hardware revision class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.model_class": {
+    "value": "device model class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_time": {
+    "value": "crash time",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_report_id": {
+    "value": "crash report id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.session_id": {
+    "value": "random session id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.event_time": {
+    "value": "event time",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.random_id": {
+    "value": "random id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.project_key": {
+    "value": "project key",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.app_version": {
+    "value": "app version",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for this app's version number."
+  },
+  "settings.consent.placeholder.webos_codename_short": {
+    "value": "webOS codename",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for the TV software's release codename."
+  }
+}

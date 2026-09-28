@@ -136,8 +136,11 @@ fn item(rk: &str, reverse: bool) -> Detail {
     d
 }
 fn boot() -> (Dispatcher<TestHost>, TestRig) {
+    boot_with(item("a", false))
+}
+fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
     test_store().run(MetadataCmd::Clear);
-    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("a", false)));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new() };
@@ -376,4 +379,71 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
     *rk = "changed-retained-key".into();
     assert_ne!(d.state_hash(), before, "cold registry CONTENTS are hashed, not only their count");
     test_store().run(MetadataCmd::Clear);
+}
+
+/// **The pseudo-locale sweep.** Draw the whole detail page with every catalog accessor on this
+/// thread answering in the expanded pseudo-locale, through the text-recording painter that sees
+/// every run the page hands to the text renderer. A run is accounted for when it came through the
+/// catalog (it carries the `[!! … !!]` marker, or on a wrapped line the pseudo-locale's accented
+/// vowels), is made of the fixture's own server values, or has
+/// no letters at all (numbers, separators, glyph marks). Anything else is English the app drew
+/// without the catalog — what `ci/check-localization.py` hunts for in source, caught here on the
+/// drawn page itself.
+fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
+    use crate::ui::screen::DrawFrame;
+    let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
+    let (mut d, _rig) = boot_with(detail);
+    let runs = crate::text::capture_text_runs_for_test(|| {
+        let entry = d.nav.tabs.stack.top_mut().expect("detail page");
+        let owner = InputOwner::Entry(entry.id);
+        let inst = entry.inst.as_mut().expect("mounted detail");
+        let measure = FixtureMeasure;
+        let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
+            press: Default::default(), focus: Default::default(), owner };
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
+        crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+    });
+    assert!(runs.iter().any(|run| run.contains("[!!")), "the page drew catalog text: {runs:?}");
+    // A wrapped catalog paragraph draws its later lines without the brackets, but still in the
+    // pseudo-locale's accented vowels, which no English run and no fixture value here contains.
+    let pseudo = |run: &str| run.contains("[!!") || run.contains(['á', 'ë', 'ï', 'ö', 'ü']);
+    runs.into_iter()
+        .filter(|run| !pseudo(run))
+        .filter(|run| {
+            // Strip every server value, then anything left that is a word is the app's own.
+            let mut rest = run.replace('\u{a0}', " ");
+            for value in server_values {
+                rest = rest.replace(value, "");
+            }
+            rest.chars().any(char::is_alphabetic)
+        })
+        .collect()
+}
+
+#[test]
+fn every_app_owned_run_on_a_show_page_comes_from_the_catalog() {
+    let _guard = crate::testlock::serial();
+    let stray = stray_runs(item("a", false),
+        &["Season", "Episode", "Person", "Actor"]);
+    assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
+}
+
+#[test]
+fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
+    let _guard = crate::testlock::serial();
+    let stream = |codec: &str| crate::metadata::Stream {
+        lang: "Deutsch".into(), lang_code: "deu".into(), codec: codec.into(), channels: 6,
+        ..Default::default()
+    };
+    let film = Detail {
+        sid: ServerId::UNSET, rk: "a".into(), kind: "movie".into(), title: "Zzyzx".into(),
+        year: 1999, summary: "Qwerty".into(), rating: "R".into(),
+        genres: vec!["Drama".into()], directors: vec!["Person 9".into()],
+        audio: vec![crate::metadata::Stream { ad: true, ..stream("eac3") }],
+        subs: vec![crate::metadata::Stream { sdh: true, ..stream("srt") }],
+        ..Default::default()
+    };
+    let stray = stray_runs(film, &["Zzyzx", "Qwerty", "Vlox", "Drama", "Person", "Deutsch",
+        "EAC3", "SRT", "R", "Dolby Digital Plus", "Dolby"]);
+    assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
 }

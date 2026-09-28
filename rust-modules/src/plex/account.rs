@@ -241,8 +241,8 @@ impl AccountClient {
     ///
     /// Two headers the official webOS client sends are **deliberately absent from both surfaces**,
     /// and the reasons are in `Client::playback_identity`: `X-Plex-Device-Screen-Resolution` and
-    /// `X-Plex-Features`. `X-Plex-Language` is present when `identity::language` can derive an
-    /// honest tag from the process locale, and omitted when the launcher supplied no locale.
+    /// `X-Plex-Features`. `X-Plex-Language` carries the UI language resolved at boot by
+    /// `identity::language`, including the English fallback.
     fn headers(&self) -> Vec<String> {
         use super::identity as id;
         let mut h = vec![

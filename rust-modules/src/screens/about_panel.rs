@@ -310,6 +310,7 @@ impl AboutPanelScreen {
             tagline: if tagline.is_empty() { 0.0 } else { FINE_LEAD },
         };
         let syn = TextView::new(summary, theme::size::BODY, theme::TEXT_READING)
+            .h(theme::alert::TEXT_ALIGN)
             .leading(SYN_LEAD)
             .max_lines(syn_lines(b));
         b.synopsis = if summary.is_empty() {
@@ -326,7 +327,7 @@ impl AboutPanelScreen {
         // ---- content ----
         let cx = r.x + PAD;
         let run = |text: &str, y: f32, sz, lead: f32, col, bold| {
-            let mut v = TextView::new(text, sz, col).leading(lead).max_lines(1);
+            let mut v = TextView::new(text, sz, col).h(theme::alert::TEXT_ALIGN).leading(lead).max_lines(1);
             if bold {
                 v = v.bold();
             }
@@ -334,7 +335,7 @@ impl AboutPanelScreen {
         };
 
         run(
-            "ABOUT",
+            crate::i18n::msg::browse_detail_about_heading(),
             s.eyebrow,
             theme::size::CAPTION,
             EYEBROW_LEAD,
@@ -356,7 +357,7 @@ impl AboutPanelScreen {
         }
         rule(p, r, s.rule);
 
-        let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+        let hint = KeyHint::translated(crate::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
         // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
         // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
         // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's

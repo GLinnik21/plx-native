@@ -88,22 +88,12 @@ const FEATHER: f32 = theme::alert::FEATHER;
 /// Air between the prose column and the rail beside it.
 const RAIL_GAP: f32 = theme::space::MD;
 
-/// Letter-tracking on the eyebrow: `.08em` of its own rung. A kicker is read as a LABEL rather than
-/// as a word, and tracking is what says so; the [`widgets::pass_capsule`] label spends .06em for the
-/// same reason one rung of emphasis down.
-const EYEBROW_TRACK: f32 = theme::size::CAPTION as f32 * 0.08;
-/// The eyebrow, pre-split per character — [`widgets::tracked_run`] explains why a tracked run is
-/// spelled this way, and why it is only worth it for a constant word.
-const EYEBROW: [&std::ffi::CStr; 6] = [c"P", c"E", c"R", c"S", c"O", c"N"];
-
 /// The footer's right-hand hint, as its three runs — assembled by the shared
 /// [`widgets::KeyHint`], which owns the cap, the gaps and the measure. This module used to lay the
 /// line out itself (three `text_width` calls, its own `HINT_GAP` and a bare `key_cap`), which was
 /// the same arithmetic the widget already does and the place a fourth copy of the design's `gap`
 /// would have drifted — it did drift, to 14 against the spec's 12.
-const HINT_PRE: &std::ffi::CStr = c"Press";
 const HINT_KEY: &std::ffi::CStr = c"BACK";
-const HINT_POST: &std::ffi::CStr = c"to return";
 
 /// The dot-separated identity line's air either side of its separator — `detail.rs`'s facts row
 /// spends the same, and the two lines are the same idiom.
@@ -429,7 +419,7 @@ fn text_w() -> f32 {
 /// One paragraph's view. Built in ONE place so its measure and its draw cannot disagree about the
 /// rung, the ink or the leading — `person.rs::bio_view` carries the same note for the same reason.
 fn para_view(text: &str) -> TextView<'_> {
-    TextView::new(text, theme::size::BODY, theme::TEXT_READING).leading(BIO_LEAD)
+    TextView::new(text, theme::size::BODY, theme::TEXT_READING).h(theme::alert::TEXT_ALIGN).leading(BIO_LEAD)
 }
 
 /// The scrolling viewport's rect — what the clip cuts to and what the feather rides.
@@ -541,23 +531,12 @@ fn scroll_for_page(person: &Person, page: usize) -> f32 {
 /// The dates arrive pre-formatted; this function does no date work, so it stays testable without a
 /// locale or a clock.
 pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -> Vec<String> {
-    let mut v: Vec<String> = Vec::new();
-    // `Born ` is the design's own wording (§1C: "Actor, Singer" · "Born 8 Jan 1987" · "London,
-    // England"), and it is not decoration: a bare date sitting between a role list and a city has
-    // nothing to say which date it is. Its sibling `Died ` was labelled from the start, which is
-    // what made the asymmetry easy to miss.
-    for (label, value) in [
-        ("", roles),
-        ("Born ", born),
-        ("Died ", died),
-        ("", birthplace),
-    ] {
-        let value = value.trim();
-        if !value.is_empty() {
-            v.push(format!("{label}{value}"));
-        }
-    }
-    v
+    let mut runs = Vec::new();
+    if !roles.trim().is_empty() { runs.push(roles.trim().to_owned()); }
+    if !born.trim().is_empty() { runs.push(crate::i18n::msg::browse_person_born(born.trim())); }
+    if !died.trim().is_empty() { runs.push(crate::i18n::msg::browse_person_died(died.trim())); }
+    if !birthplace.trim().is_empty() { runs.push(birthplace.trim().to_owned()); }
+    runs
 }
 
 /// The footer's left-hand line: **what this page actually knows** about the person's presence in
@@ -573,18 +552,13 @@ pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -
 /// at a `CardRow`'s spring count, and "24" on a person with 60 films would be the cap posing as a
 /// fact about the library.
 pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
-    let noun = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-    let body = match (films, shows) {
-        (0, 0) => return None,
-        (f, 0) => noun(f, "film", "films"),
-        (0, s) => noun(s, "show", "shows"),
-        (f, s) => format!(
-            "{} and {}",
-            noun(f, "film", "films"),
-            noun(s, "show", "shows")
-        ),
-    };
-    Some(format!("{body} in this library"))
+    match (films, shows) {
+        (0, 0) => None,
+        (films, 0) => Some(crate::i18n::msg::browse_person_library_one(&crate::i18n::msg::browse_person_films(films as i64))),
+        (0, shows) => Some(crate::i18n::msg::browse_person_library_one(&crate::i18n::msg::browse_person_shows(shows as i64))),
+        (films, shows) => Some(crate::i18n::msg::browse_person_library_both(
+            &crate::i18n::msg::browse_person_films(films as i64), &crate::i18n::msg::browse_person_shows(shows as i64))),
+    }
 }
 
 // ---- draw ----------------------------------------------------------------------------------------
@@ -593,22 +567,8 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
 fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
     let mut y = c.y;
-    // **Every y in this block is a CAP TOP**, which is what makes the ladder comparable to §1A's and
-    // §1B's — both of those place through `TextView`/`Label`, i.e. `VAlign::CapTop`. `tracked_run`
-    // is the one run here that reaches `Painter::text` directly, so it converts, exactly as the
-    // identity line below does. Drawn at a bare `y` it started ~7px low, which put `PERSON` 7px
-    // closer to the name on top of the 12 the old rung ladder was already costing.
-    let (eyebrow_cap, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
-    widgets::tracked_run(
-        p,
-        &EYEBROW,
-        c.x,
-        y - eyebrow_cap,
-        theme::size::CAPTION,
-        theme::TEXT_TERTIARY,
-        1,
-        EYEBROW_TRACK,
-    );
+    Label::new(crate::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
     y += theme::alert::EYEBROW_LEAD + theme::alert::GAP_EYEBROW_TITLE;
 
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
@@ -618,6 +578,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
         measure.width_str(t, theme::size::TITLE, true)
     })) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+            .h(theme::alert::TEXT_ALIGN)
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(c.x, y, c.w, 0.0));
@@ -705,7 +666,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
     }
     // …and the hint, right-anchored: the widget measures itself, so the whole run ends on the
     // content box's right edge — the same edge the rail and the hairlines end on.
-    let hint = widgets::KeyHint::new(HINT_PRE, HINT_KEY, HINT_POST);
+    let hint = widgets::KeyHint::translated(crate::i18n::msg::widgets_hint_return("\u{fffc}"), HINT_KEY);
     hint.draw(p, c.x + c.w - hint.width(measure), cy, measure);
 }
 

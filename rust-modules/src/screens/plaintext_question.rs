@@ -1,4 +1,4 @@
-//! **"Connect without encryption?" — the one question, and every surface that asks it**
+//! **crate::i18n::msg::settings_plaintext_question() — the one question, and every surface that asks it**
 //! (PLX-NATIVE-10).
 //!
 //! Four surfaces ask it: the sign-in read-out, Home's and a Library source's failure read-out
@@ -36,18 +36,14 @@ use crate::ui::screen::{
 };
 use crate::ui::{Painter, Rect};
 
-/// The read-out's primary while the question can be asked — and the question's affirmative verb,
-/// the same word, so the reason's "Select Connect" names the button either way.
-pub(crate) const CONNECT: &CStr = c"Connect";
-/// The read-out's primary once the person has answered (or on any other failure).
-pub(crate) const TRY_AGAIN: &CStr = c"Try again";
-pub(crate) const NOT_NOW: &CStr = c"Not now";
-/// The question — a choice, not a failure report.
-pub(crate) const QUESTION: &CStr = c"Connect without encryption?";
-/// Its one line: what saying yes does, in the words a person uses. True of `crate::plex::grant`:
-/// the sign-in travels only to the one verified address, on this network.
-pub(crate) const BODY: &str =
-    "Your Plex sign-in will travel without encryption over this network, to this server only.";
+/// The shared question and verbs, resolved from this launch's locale.
+pub(crate) use crate::i18n::msg::{
+    settings_plaintext_connect_c as connect,
+    browse_action_retry_c as try_again,
+    settings_plaintext_not_now_c as not_now,
+    settings_plaintext_question_c as question,
+    settings_plaintext_body as body,
+};
 
 /// **Does a read-out about `verdict` ask the question?** Only for a server the same-network rule
 /// lets the person be asked about (`PlaintextVerdict::offers`) that they have NOT answered: once
@@ -57,9 +53,9 @@ pub(crate) fn asks(verdict: Option<&PlaintextVerdict>) -> bool {
     verdict.is_some_and(|v| v.offers() && v.choice == PlaintextChoice::Undecided)
 }
 
-/// The read-out's primary for `verdict`: [`CONNECT`] when it [`asks`], [`TRY_AGAIN`] otherwise.
+/// The read-out's primary: [`connect`] when it [`asks`], [`try_again`] otherwise.
 pub(crate) fn primary(verdict: Option<&PlaintextVerdict>) -> &'static CStr {
-    if asks(verdict) { CONNECT } else { TRY_AGAIN }
+    if asks(verdict) { connect() } else { try_again() }
 }
 
 /// The reason line a SIGNED-IN read-out (Home, a Library source) shows for `verdict` — the one
@@ -99,13 +95,13 @@ impl PlaintextQuestion {
     /// an OK held through the press that opened it never answers yes.
     pub(crate) fn open(&mut self, alert: &mut DecisionAlert, machine_id: &str, sid: Option<ServerId>) {
         alert.set_tone(Tone::Neutral);
-        alert.open_with_body(QUESTION, BODY);
+        alert.open_with_body(question(), body());
         self.subject = Some(Subject { machine_id: machine_id.to_owned(), sid });
     }
 
     /// The two verbs the host draws the alert with: *Not now* / *Connect*.
     pub(crate) fn verbs() -> (&'static CStr, &'static CStr) {
-        (NOT_NOW, CONNECT)
+        (not_now(), connect())
     }
 
     /// **The person answered** — *Connect* (`allow`) or *Not now* / BACK. Dismisses the alert (an
@@ -367,8 +363,8 @@ impl PlaintextAlert {
         }
         self.alert.draw_scrim();
         let (cancel, affirm) = PlaintextQuestion::verbs();
-        self.alert.draw(cancel, affirm);
-        let frames = self.alert.frames();
+        self.alert.draw(cancel, affirm, f.measure);
+        let frames = self.alert.frames(f.measure);
         self.frames.set(Some(frames));
         if self.alert.is_open() && self.alert.settled() {
             for (elem, rect) in [(self.cancel, frames.0), (self.affirm, frames.1)] {
@@ -455,8 +451,8 @@ impl OfferWatch {
 /// carries the server — that it is connected without encryption now.
 pub(crate) fn settings_detail(on: bool, connected: bool) -> &'static str {
     match (on, connected) {
-        (false, _) => "Not allowed. Only encrypted connections.",
-        (true, true) => "Allowed on this network. Connected without encryption.",
-        (true, false) => "Allowed on this network when a secure connection fails.",
+        (false, _) => crate::i18n::msg::settings_plaintext_denied(),
+        (true, true) => crate::i18n::msg::settings_plaintext_connected(),
+        (true, false) => crate::i18n::msg::settings_plaintext_allowed(),
     }
 }

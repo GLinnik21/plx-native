@@ -265,7 +265,8 @@ impl ReadoutCase {
     /// [`readout_case`]'s doc.
     pub(crate) fn canned_login_failure(
         self,
-    ) -> (&'static str, crate::telemetry::incident::IncidentContext) {
+    ) -> (std::borrow::Cow<'static, str>, crate::telemetry::incident::IncidentContext) {
+        use crate::i18n::msg;
         use crate::telemetry::incident::{
             DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger, IncidentContext,
             IncidentKind, LinkClass,
@@ -277,65 +278,47 @@ impl ReadoutCase {
             DiscoveryEvidence { trigger: DiscoveryTrigger::Login, target: Some(target) }
         }
         match self {
-            Self::PinCreate => (
-                "Couldn\u{2019}t reach Plex. Check your internet connection, then try again.",
-                ctx(IncidentKind::PinCreate),
-            ),
-            Self::PinExpired => ("Sign-in timed out \u{2014} try again.", ctx(IncidentKind::PinExpired)),
-            Self::Authorization => (
-                "Plex didn't accept this sign-in. Try again.",
-                ctx(IncidentKind::Authorization),
-            ),
+            Self::PinCreate => (msg::browse_auth_plex_unreachable().into(), ctx(IncidentKind::PinCreate)),
+            Self::PinExpired => (msg::browse_auth_timeout().into(), ctx(IncidentKind::PinExpired)),
+            Self::Authorization => (msg::browse_auth_signin_refused().into(), ctx(IncidentKind::Authorization)),
             Self::DiscoveryNoServers => (
-                "This Plex account has no server yet.",
+                msg::browse_auth_no_servers().into(),
                 ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)),
             ),
             Self::DiscoveryRefused => (
-                "Your Plex server refused the connection \u{2014} check its network access settings.",
+                msg::browse_auth_refused().into(),
                 ctx(IncidentKind::Discovery(DiscoveryClass::Refused)),
             ),
             Self::DiscoveryServersSilent => {
                 let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
                 c.discovery = Some(plextv(DiscoveryTarget::Servers));
-                (
-                    "plex.tv listed your servers, but none of them answered. Make sure your Plex \
-                     Media Server is on and online, then try again.",
-                    c,
-                )
+                (msg::browse_auth_servers_unreachable().into(), c)
             }
             Self::DiscoveryPlexTvDns => {
                 let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
                 c.link = LinkClass::Dns;
                 c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                ("This TV couldn't find plex.tv, so your servers weren't checked.", c)
+                (msg::browse_auth_plex_dns_retry(1).into(), c)
             }
             Self::DiscoveryPlexTvTls => {
                 let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
                 c.link = LinkClass::Tls;
                 c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (
-                    "This TV couldn't make a secure connection to plex.tv. Check the TV's date and \
-                     time, then try again.",
-                    c,
-                )
+                (msg::browse_auth_plex_tls().into(), c)
             }
             Self::DiscoveryPlexTvAnswered => {
                 let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
                 c.link = LinkClass::Answered5xx;
                 c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (
-                    "plex.tv is having trouble right now, so your servers weren't checked. Try \
-                     again in a few minutes.",
-                    c,
-                )
+                (msg::browse_auth_plex_unavailable().into(), c)
             }
             Self::DiscoveryPlexTvOther => {
                 let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
                 c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                ("This TV couldn't reach plex.tv, so your servers weren't checked.", c)
+                (msg::browse_auth_plex_connect_retry(1).into(), c)
             }
             Self::DiscoveryInsecureOnly => (
-                "This server only offers an unencrypted connection.",
+                msg::browse_auth_insecure().into(),
                 ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)),
             ),
             // The real "Couldn't save your sign-in" warning arrives through a different path
@@ -343,7 +326,7 @@ impl ReadoutCase {
             // ordinary `Phase::Error` route instead, which draws a different caption ("Couldn't
             // sign in") but the SAME page-placed `Failed` layout and the SAME `KeyBadgeAlert`
             // glyph, which is the only thing this trigger exists to show.
-            Self::SaveFailed => ("Couldn\u{2019}t sign in", ctx(IncidentKind::SaveFailed)),
+            Self::SaveFailed => (msg::browse_login_failed().into(), ctx(IncidentKind::SaveFailed)),
         }
     }
 }
@@ -1045,6 +1028,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "home" => crate::screens::family::SettingsPage::Favourites,
                 "privacy" => crate::screens::family::SettingsPage::Privacy,
                 "legal" => crate::screens::family::SettingsPage::Legal,
+                "language" => crate::screens::family::SettingsPage::Language,
+                "contribute" => crate::screens::family::SettingsPage::Contribute,
                 "playback" => crate::screens::family::SettingsPage::Playback,
                 "audio" => crate::screens::family::SettingsPage::AudioSubtitles,
                 _other => {
@@ -1196,7 +1181,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     };
     crate::app::bridge::nav_push(&mut app.pages, AppArg::Content(
         crate::screens::registry::ContentArg::Collection {
-            sid, rk: rk.clone(), sec: 0, tag: 0, name: "Collection".into(),
+            sid, rk: rk.clone(), sec: 0, tag: 0, name: crate::i18n::msg::browse_collection_kind().into(),
         }));
     #[cfg(feature = "devtriggers")]
     crate::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));

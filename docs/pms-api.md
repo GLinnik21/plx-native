@@ -935,8 +935,8 @@ against a PMS, which nobody has run.
 `rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) always emits
 nine fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
 `-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The central PMS request choke
-point conditionally sends **`X-Plex-Language` as a header** from the inherited process locale on
-every operation, omitting it for an absent or neutral locale. `X-Plex-Device-Vendor` is sent to
+point sends **`X-Plex-Language` as a header** on every operation, using the UI language resolved
+at boot from the app preference and TV locale (English fallback). `X-Plex-Device-Vendor` is sent to
 plex.tv's authorized-device surface but not PMS;
 `X-Plex-Device-Screen-Resolution` and `X-Plex-Features` remain absent from both. The table is the
 target; this paragraph is the state.

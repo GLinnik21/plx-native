@@ -362,7 +362,7 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
     assert_eq!(rig.auth_read().0.phase, Phase::Profiles,
         "failure kind {failure}, cached={cached}: completed work cannot leave an empty picker loading");
     assert_eq!(rig.auth_read().0.users.len(), usize::from(cached));
-    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { crate::auth::owner::ROSTER_UNREACHABLE });
+    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { crate::auth::owner::roster_unreachable() });
     assert!(rig.session.snapshot_init().pending.is_empty());
     assert!(rig.take_session_ready().is_none());
     rig.session_adapter.cancel_all();

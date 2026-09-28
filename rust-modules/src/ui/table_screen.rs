@@ -218,10 +218,12 @@ where
 }
 
 /// **The action band** (spec §10 `TableScreen{table, band}`; route_screen's rules 2, 4, 6, 7):
-/// up to two pills at the bottom of the narrative column, one `Row` group with `Seat::Remembered`
-/// whose UP is the geometric move back into the content column (rule 3), whose DOWN is the floor
+/// up to two pills at the bottom of the narrative column. They form a `Row` when their measured
+/// labels fit, or a `Column` when they need two rows, with `Seat::Remembered`
+/// whose UP above the first control leaves geometrically (rule 3), whose DOWN after the last is the floor
 /// (rule 4), whose LEFT off the leading control is BACK unless an edit is at stake (rule 9), and
 /// whose RIGHT off the trailing control returns to the content column geometrically (rule 7).
+/// A stacked pair uses UP/DOWN between peers and RIGHT to reach the content column.
 /// Every control is a `Control` element (a non-holdable press with the tvOS dip) and a hit stop.
 ///
 /// Geometry from the `Measure` capability rather than `Button::pill_w`, so the band's placement
@@ -264,6 +266,16 @@ impl BandPart<'_> {
         }
     }
 
+    /// The band's actual occupied region, including a second row when labels reflow.
+    pub(crate) fn extent(&self, measure: &dyn Measure) -> Rect {
+        self.rects(measure).into_iter().reduce(|a, b| a.union(b)).unwrap_or(self.layout.action)
+    }
+
+    fn stacked(&self, measure: &dyn Measure) -> bool {
+        let rects = self.rects(measure);
+        rects.len() > 1 && rects[0].y != rects[1].y
+    }
+
     fn key<H: Host>(&self, i: usize) -> FocusKey<H::Elem>
     where
         H::Elem: IndexElem,
@@ -283,13 +295,13 @@ impl<H: Host> Focusable<H> for BandPart<'_>
 where
     H::Elem: IndexElem,
 {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.labels.is_empty() {
             return;
         }
         out.push(GroupSpec {
             id: self.group,
-            kind: GroupKind::Row { wrap: false },
+            kind: if self.stacked(cx.measure) { GroupKind::Column } else { GroupKind::Row { wrap: false } },
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [
@@ -298,7 +310,7 @@ where
                 if self.uncommitted { EdgeRule::Stop } else { EdgeRule::Nav(NavOpKind::Back) },
                 EdgeRule::Geometric,
             ],
-            extent: self.layout.action,
+            extent: self.extent(cx.measure),
             len: self.labels.len(),
             elem: ElemKind::Control,
         });
@@ -307,11 +319,18 @@ where
         let i = key.index()?.checked_sub(BAND_BASE)? as usize;
         (i < self.labels.len()).then_some(self.group)
     }
-    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = key.elem.index().and_then(|i| i.checked_sub(BAND_BASE)) else {
             return Step::Edge;
         };
         let i = i as usize;
+        let dir = if self.stacked(cx.measure) {
+            match dir {
+                Dir::Up => Dir::Left,
+                Dir::Down => Dir::Right,
+                Dir::Left | Dir::Right => return Step::Edge,
+            }
+        } else { dir };
         match dir {
             Dir::Left if i > 0 => Step::Move(self.key::<H>(i - 1)),
             Dir::Right if i + 1 < self.labels.len() => Step::Move(self.key::<H>(i + 1)),
@@ -431,10 +450,10 @@ impl<H: Host> Composed<H> for TableScreen<'_>
 where
     H::Elem: IndexElem,
 {
-    fn layout(&self, _cx: &Cx<'_, H>) -> Vec<(PartId, Rect)> {
+    fn layout(&self, cx: &Cx<'_, H>) -> Vec<(PartId, Rect)> {
         let mut v = vec![(PartId(0), self.header.layout.narrative), (PartId(1), self.table.frame)];
-        if self.band.is_some() {
-            v.push((PartId(2), self.header.layout.action));
+        if let Some(band) = &self.band {
+            v.push((PartId(2), band.extent(cx.measure)));
         }
         v
     }
@@ -711,7 +730,7 @@ mod tests {
     // siblings): `part()` materialises a `&dyn Part` vtable, whose `draw` reaches `TextView` and
     // SDL2_ttf — which the host suite cannot LINK (`ui/CLAUDE.md`'s boundary). The composed fns
     // are the fixture screen's subject already.
-    fn cx<'a>(m: &'a FixtureMeasure, v: &'a FixtureView) -> Cx<'a, FixtureHost> {
+    fn cx<'a>(m: &'a dyn Measure, v: &'a FixtureView) -> Cx<'a, FixtureHost> {
         Cx {
             views: FixtureViews { store: v },
             tick: Tick::default(),
@@ -812,4 +831,43 @@ mod tests {
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Down, &cx), Step::Move(_)), "not at the end: DOWN scrolls inside");
         assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document(true)));
     }
+    /// The real Belarusian consent labels overflowed the horizontal band's width and aborted
+    /// the simulator. Use Unicode-scalar measurement so UTF-8 byte length cannot create this
+    /// regression artificially; each individual label still fits the normal narrative width.
+    #[test]
+    fn long_cyrillic_actions_reflow_without_clipping_or_losing_remote_navigation() {
+        struct CyrillicMeasure;
+        impl Measure for CyrillicMeasure {
+            fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.65
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        // Preserve the generic long-action fallback independently of consent's concise verbs.
+        let labels = [c"Адпраўляць справаздачы", c"Не адпраўляць"];
+        let layout = RouteLayout::screen();
+        let band = BandPart { layout, labels: &labels, group: G, entry: E,
+            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None };
+        let (measure, view) = (CyrillicMeasure, FixtureView::default());
+        let cx = cx(&measure, &view);
+        let rects = band.rects(&measure);
+        assert!(rects[0].y + rects[0].h <= rects[1].y);
+        for (label, rect) in labels.iter().zip(&rects) {
+            assert!(rect.w >= pill_w(&measure, label, theme::size::BODY));
+            assert!(rect.x + rect.w <= layout.action.x + layout.action.w);
+        }
+        let mut groups = Vec::new();
+        Focusable::<FixtureHost>::groups(&band, &cx, &mut groups);
+        assert!(matches!(groups[0].kind, GroupKind::Column));
+        let first = band.key::<FixtureHost>(0);
+        let last = band.key::<FixtureHost>(1);
+        assert!(matches!(Focusable::<FixtureHost>::neighbour(&band, first, Dir::Down, &cx), Step::Move(k) if k == last));
+        assert!(matches!(Focusable::<FixtureHost>::neighbour(&band, last, Dir::Up, &cx), Step::Move(k) if k == first));
+        for (i, key) in [first, last].into_iter().enumerate() {
+            let placed = Focusable::<FixtureHost>::place(&band, &key.elem, &cx, At::SpringTarget).unwrap();
+            assert!(same(placed.rest_rect, rects[i]));
+        }
+    }
+
 }

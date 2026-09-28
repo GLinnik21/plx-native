@@ -739,7 +739,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
@@ -1174,7 +1174,13 @@ CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
 CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
-check: lint
+# Catalog completeness is checked by the Rust build; this checks UI text entry points too.
+.PHONY: check-localization
+check-localization:
+	python3 ci/test_check_localization.py
+	python3 ci/check-localization.py
+
+check: lint check-localization
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than

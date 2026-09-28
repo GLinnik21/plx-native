@@ -131,24 +131,23 @@ impl Kind {
     /// The shelf heading.
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Kind::Movie => "Movies",
-            Kind::Show => "TV Shows",
-            Kind::Episode => "Episodes",
-            Kind::Person => "Cast & Crew",
-            Kind::Collection => "Collections",
+            Kind::Movie => crate::i18n::msg::browse_kind_movies(),
+            Kind::Show => crate::i18n::msg::browse_kind_tv_shows(),
+            Kind::Episode => crate::i18n::msg::browse_kind_episodes(),
+            Kind::Person => crate::i18n::msg::browse_detail_cast(),
+            Kind::Collection => crate::i18n::msg::browse_kind_collections(),
         }
     }
-    /// The count read-out beside it — how many RESULTS are on this shelf. People are counted as
-    /// people; everything else as results. The other count on this screen — how many things are
-    /// inside ONE collection ("12 items") — is `ui::fmt::item_count`, shared with every collection
-    /// tile and the collection page, so a heading saying "3 results" and a tile saying "12 items"
-    /// are two different questions answered by two different formatters.
-    pub(crate) fn count_word(self, n: usize) -> &'static str {
-        match (self, n) {
-            (Kind::Person, 1) => "person",
-            (Kind::Person, _) => "people",
-            (_, 1) => "result",
-            (_, _) => "results",
+    /// The count read-out beside it — how many RESULTS are on this shelf, as one complete
+    /// localized phrase: people are counted as people, everything else as results. The other
+    /// count on this screen — how many things are inside ONE collection ("12 items") — is
+    /// `ui::fmt::item_count`, shared with every collection tile and the collection page, so a
+    /// heading saying "3 results" and a tile saying "12 items" are two different questions
+    /// answered by two different formatters.
+    pub(crate) fn count_label(self, n: usize) -> String {
+        match self {
+            Kind::Person => crate::i18n::msg::browse_search_people(n as i64),
+            _ => crate::i18n::msg::browse_search_count(n as i64),
         }
     }
     /// Which hub identifiers feed this shelf.
@@ -1078,7 +1077,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             let counts: Vec<String> = KINDS
                 .iter()
                 .enumerate()
-                .map(|(k, kind)| format!("{}={}", kind.title(), items[k].len()))
+                .map(|(k, kind)| format!("{}={}", kind.hubs()[0], items[k].len()))
                 .collect();
             crate::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a

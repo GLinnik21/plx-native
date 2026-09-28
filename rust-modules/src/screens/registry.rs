@@ -80,6 +80,7 @@ pub(crate) enum PreferenceCmd {
     },
     Quality { quality: crate::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
     DirectPlay { mode: crate::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
+    Language { language: crate::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
 }
 
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
@@ -1441,7 +1442,7 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -1911,6 +1912,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
+    "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::screens::preferences::SHAPE,
 ];
 
@@ -2004,8 +2006,10 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 // movie sections list their collections too, and its layout reserves an empty answer's read-out
 // band (`LibraryLayout{…empty:bool…}`); the previous pin was 0x44f2_b3ed_2851_659a. Linked
 // collection shelves then moved it from 0x9f04_34b2_c8db_d655, and the detail collection shelf
-// from 0x38a9_2955_0af8_72f6 (see the doc paragraphs above).
-const SCREEN_SHAPES_PIN: u64 = 0xbb81_9301_0d21_bc8a;
+// from 0x38a9_2955_0af8_72f6 (see the doc paragraphs above), to 0xbb81_9301_0d21_bc8a on main.
+// Localization's Settings pages then join it as LocalizationSettingsV4, with the language
+// picker's busy state and the login report alert (0x677d_0944_ef25_3900 before the collections).
+const SCREEN_SHAPES_PIN: u64 = 0x668c_44dc_797c_5b0f;
 
 #[cfg(test)]
 mod arg_tests {

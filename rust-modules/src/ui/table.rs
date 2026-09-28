@@ -23,10 +23,10 @@ pub enum Badge {
 impl Badge {
     fn text(&self) -> &str {
         match self {
-            Badge::Ad => "AD",
-            Badge::Forced => "FORCED",
-            Badge::Sdh => "SDH",
-            Badge::Cc => "CC",
+            Badge::Ad => crate::i18n::msg::widgets_badge_ad(),
+            Badge::Forced => crate::i18n::msg::widgets_badge_forced(),
+            Badge::Sdh => crate::i18n::msg::widgets_badge_sdh(),
+            Badge::Cc => crate::i18n::msg::widgets_badge_cc(),
             Badge::Text(s) => s.as_str(),
         }
     }
@@ -121,7 +121,7 @@ impl Row {
     fn readout(&self) -> Option<&str> {
         match (&self.value, self.toggle) {
             (Some(v), _) => Some(v.as_str()),
-            (None, Some(on)) => Some(if on { "On" } else { "Off" }),
+            (None, Some(on)) => Some(if on { crate::i18n::msg::widgets_toggle_on() } else { crate::i18n::msg::widgets_toggle_off() }),
             (None, None) => None,
         }
     }
@@ -297,6 +297,8 @@ pub const PILL_INSET: f32 = 3.0;
 const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade masks + badge knockout
 /// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
 const BADGE_GAP: f32 = 10.0;
+const ACCESSORY_GAP: f32 = 14.0;
+const ACCESSORY_ICON_W: f32 = 26.0;
 /// The trailing read-out's WEIGHT: `size::LABEL` **bold**, which is what the `PlxNative Design
 /// System`'s `TableView` authors it as (`var(--font-weight-bold) var(--size-label)`) and what its
 /// prose says in words. The product drew it regular until 2026-08-21 — a rung below the row's
@@ -310,8 +312,8 @@ const BADGE_GAP: f32 = 10.0;
 /// their regular twins, so measuring on one flag and painting on the other under-counts `trailing`
 /// — and `trailing` is the LABEL's elision budget (`text_w` below), so the label would be elided
 /// as though the read-out were narrower than it is and run right into it. The BADGE run is not at
-/// risk and cannot be: it is placed before this block adds `vw`, which is exactly why the read-out
-/// sits INSIDE it rather than the other way round.
+/// risk: it is placed outside the read-out, while the complete trailing-width calculation
+/// reserves both runs before measuring the label.
 const VALUE_BOLD: std::os::raw::c_int = 1;
 
 pub struct TableView {
@@ -542,6 +544,71 @@ impl TableView {
         self.content_h() + TOP_PAD + BOT_PAD
     }
 
+    /// Intrinsic panel width for complete labels at the table's own typography. Action menus
+    /// use this before placing their panel, rather than sizing it for one English label.
+    pub(crate) fn measured_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        let (size, bold) = self.label_style();
+        let mut width: f32 = 0.0;
+        for section in &self.sections {
+            if !section.header.is_empty() {
+                let header = measure.width_str(&section.header.to_uppercase(), theme::size::CAPTION, false);
+                let accessory = if section.accessory.is_empty() { 0.0 } else {
+                    GAP + measure.width_str(&section.accessory, theme::size::MICRO, false).min(ACCESSORY_W)
+                };
+                width = width.max(2.0 * CONTENT_X + header + accessory);
+            }
+            for row in section.rows.iter().filter(|row| !row.sep) {
+                let label = measure.width_str(&row.label, size, bold);
+                let detail = measure.width_str(&row.detail, theme::size::CAPTION, false);
+                width = width.max(2.0 * CONTENT_X + CHECK_W + GAP
+                    + label.max(detail) + Self::trailing_width(row, measure));
+            }
+        }
+        width.ceil()
+    }
+
+    /// Every row label or sub-line that a `frame_w`-wide panel would end in an ellipsis, with
+    /// `headroom` of each row's label budget to spare — for the per-language text-fit tests, which
+    /// measure with the device's own advances (`fontcov::advances::ShippedMeasure`).
+    #[cfg(test)]
+    pub(crate) fn elided_rows(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<String> {
+        let (size, bold) = self.label_style();
+        let mut out = Vec::new();
+        for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| !r.sep) {
+            let budget = self.label_width(row, frame_w, measure) * headroom;
+            for (text, size, bold) in [(&row.label, size, bold), (&row.detail, theme::size::CAPTION, false)] {
+                let w = measure.width_str(text, size, bold);
+                if w > budget {
+                    out.push(format!("{text:?} is {w:.0}px in a {budget:.0}px column"));
+                }
+            }
+        }
+        out
+    }
+
+    fn label_style(&self) -> (std::os::raw::c_int, bool) {
+        if self.compact { (theme::size::BODY, false) } else { (theme::size::HEADLINE, true) }
+    }
+
+    fn trailing_width(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        let mut width = if row.ticon.is_some() || row.ticon_slot {
+            ACCESSORY_ICON_W + ACCESSORY_GAP
+        } else { 0.0 };
+        if !row.badges.is_empty() {
+            width += row.badges.iter().map(|badge| crate::ui::widgets::badge_w(badge.text(), None, measure)).sum::<f32>()
+                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
+        }
+        if let Some(value) = row.readout() {
+            width += measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP;
+        }
+        width
+    }
+
+    /// The same label budget used by rendering and intrinsic-width checks.
+    pub(crate) fn label_width(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - Self::trailing_width(row, measure)).max(0.0)
+    }
+
     /// The nearest **selectable** row to `i`: `i` itself when it is one, else the first non-separator
     /// after it, else the last one before it — so selection cannot come to rest on a grouping
     /// hairline, whoever set it. The one exception is a list that is ALL separators, which has no
@@ -690,7 +757,7 @@ impl TableView {
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn crate::ui::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
-                c"No tracks".as_ptr(),
+                crate::i18n::msg::widgets_tracks_empty_c().as_ptr(),
                 theme::size::BODY,
                 theme::TEXT_TERTIARY,
             )
@@ -856,12 +923,12 @@ impl TableView {
             // trailing accessory (SVG)
             let mut trailing = 0.0f32;
             if let Some(ti) = row.ticon {
-                let cs = 26.0f32;
+                let cs = ACCESSORY_ICON_W;
                 let cr = Rect::new(text_right - cs, cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, ti, cr, base);
-                trailing = cs + 14.0;
+                trailing = cs + ACCESSORY_GAP;
             } else if row.ticon_slot {
-                trailing = 26.0 + 14.0; // reserved, drawn empty — see `Row::ticon_slot`
+                trailing = ACCESSORY_ICON_W + ACCESSORY_GAP; // reserved, drawn empty — see `Row::ticon_slot`
             }
             // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
             // three trailing runs (the design system's cell is a flex row whose label block takes
@@ -894,7 +961,7 @@ impl TableView {
                     };
                     bx += crate::ui::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
                 }
-                trailing += run + 14.0;
+                trailing += run + ACCESSORY_GAP;
             }
             // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
             // switch, or any word). One step behind the label in ink, so the label is what you read
@@ -907,7 +974,6 @@ impl TableView {
                 if let Ok(vc) = std::ffi::CString::new(v) {
                     let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
-                    let vw = measure.width(&vc, vsz, VALUE_BOLD != 0);
                     p.text(
                         vc.as_ptr(),
                         text_right - trailing,
@@ -917,7 +983,6 @@ impl TableView {
                         2,
                         VALUE_BOLD,
                     );
-                    trailing += vw + 14.0;
                 }
             }
             // Single-line rows centre their label on the row by cap band. Two-line rows stack a
@@ -948,7 +1013,7 @@ impl TableView {
             } else {
                 (theme::size::HEADLINE, 1)
             };
-            let text_w = text_right - label_x - trailing;
+            let text_w = self.label_width(row, frame.w, measure);
             let lbl = crate::text::elide_by(&row.label, text_w, false, |t| {
                 measure.width_str(t, lsz, lbold != 0)
             });

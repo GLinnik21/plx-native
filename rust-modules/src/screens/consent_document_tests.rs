@@ -173,3 +173,31 @@ fn first_run_leaves_only_the_two_documents_in_its_reading_list() {
     assert_eq!(crash.table.n_rows(), 2);
     assert_eq!(crash.band_labels().len(), 2, "first run always carries its two answers in the band");
 }
+
+/// **Every `<placeholder>` the previews show is translated.** The previews are the real payloads,
+/// so their placeholder names come from the serialisers; a new one there must arrive in the
+/// catalog too, or a Spanish or Belarusian reader meets English prose in the one document whose
+/// whole purpose is to be read before agreeing to it.
+#[test]
+fn every_preview_placeholder_is_translated() {
+    let text = preview();
+    let mut seen = 0;
+    let mut missing = std::collections::BTreeSet::new();
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('<') {
+        let tail = &rest[open + 1..];
+        let Some(close) = tail.find('>') else { break };
+        let token = &tail[..close];
+        // A placeholder is a short run of words; anything with JSON punctuation or a line break
+        // is a `<` that belongs to the payload itself.
+        if !token.is_empty() && token.len() < 80 && !token.contains(['"', '\n', '{', '}', '<']) {
+            if placeholder(token).is_none() {
+                missing.insert(token);
+            }
+            seen += 1;
+        }
+        rest = &tail[close + 1..];
+    }
+    assert!(missing.is_empty(), "preview placeholders with no catalog entry: {missing:?}");
+    assert!(seen > 10, "the previews should carry placeholders (found {seen})");
+}

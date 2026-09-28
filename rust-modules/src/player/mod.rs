@@ -567,7 +567,7 @@ pub(crate) fn support_line(kind: FailureKind) -> String {
 }
 fn support_line_of(i: &crate::webos::Info, hw: &crate::webos::Hardware, kind: FailureKind) -> String {
     let set = hw.set_line();
-    let set: &str = if set.is_empty() { "unknown set" } else { &set };
+    let set: &str = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
         crate::plex::identity::PRODUCT,
@@ -762,11 +762,11 @@ fn runtime_failure(
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
-        caption: c"Playback failed — this TV's sandbox blocks native video",
-        panel: "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
-        readout: "This set's sandbox does not give the app /dev/rtkmem",
+        caption: crate::i18n::msg::widgets_failure_jail_c(),
+        panel: crate::i18n::msg::widgets_panel_jail(),
+        readout: crate::i18n::msg::widgets_reason_jail(),
         detail: std::borrow::Cow::Borrowed(
-            "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
+            crate::i18n::msg::widgets_reason_jail_help(),
         ),
         no_pass: false,
     }
@@ -794,11 +794,11 @@ fn error_shape(
     if let Some(v) = verdict {
         return ErrorShape {
             kind: FailureKind::DecisionRefused,
-            caption: c"Playback failed — the server cannot play or convert this file",
+            caption: crate::i18n::msg::widgets_failure_refused_c(),
             // The panel's line is ours and static; the server's sentence rides on `detail`, whose
             // surface (the full-screen read-out) is the one that can hold a whole sentence.
-            panel: "the server refused the item at /decision — it can neither direct play nor convert it",
-            readout: "The server cannot play or convert this file",
+            panel: crate::i18n::msg::widgets_panel_refused(),
+            readout: crate::i18n::msg::widgets_reason_refused(),
             // OWNED since phase 9: the verdict is borrowed from the caller's session publication
             // rather than from a `static mut`, so it cannot be lent for `'static`. One allocation,
             // on the path where a playback has already failed.
@@ -809,13 +809,13 @@ fn error_shape(
     if no_video && transcoding {
         return ErrorShape {
             kind: FailureKind::NoVideoTranscodeTarget,
-            caption: c"Playback failed — server sent audio only",
+            caption: crate::i18n::msg::widgets_failure_audio_only_c(),
             panel: if no_pass {
-                "server sent audio only — it found no usable video transcode target (server has no Plex Pass)"
+                crate::i18n::msg::widgets_panel_audio_only_no_pass()
             } else {
-                "server sent audio only — it found no usable video transcode target"
+                crate::i18n::msg::widgets_panel_audio_only()
             },
-            readout: "The server sent audio only — it found no usable video transcode target",
+            readout: crate::i18n::msg::widgets_reason_audio_only(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass,
         };
@@ -823,9 +823,9 @@ fn error_shape(
     if no_video {
         return ErrorShape {
             kind: FailureKind::NoVideoTrack,
-            caption: c"Playback failed — no video in the file",
-            panel: "the stream carries no video track",
-            readout: "This file has no video track",
+            caption: crate::i18n::msg::widgets_failure_no_video_c(),
+            panel: crate::i18n::msg::widgets_panel_no_video(),
+            readout: crate::i18n::msg::widgets_reason_no_video(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         };
@@ -833,25 +833,25 @@ fn error_shape(
     match runtime {
         RuntimeFailure::MediaSource => ErrorShape {
             kind: FailureKind::MediaSource,
-            caption: c"Playback failed — the media stream could not be opened",
-            panel: "the media stream could not be opened or read",
-            readout: "The media stream could not be opened",
+            caption: crate::i18n::msg::widgets_failure_open_c(),
+            panel: crate::i18n::msg::widgets_panel_open(),
+            readout: crate::i18n::msg::widgets_reason_open(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::PlaybackInterrupted => ErrorShape {
             kind: FailureKind::PlaybackInterrupted,
-            caption: c"Playback failed — playback stopped after starting",
-            panel: "the media producer stopped before playback completed",
-            readout: "Playback stopped after it had started",
+            caption: crate::i18n::msg::widgets_failure_stopped_c(),
+            panel: crate::i18n::msg::widgets_panel_stopped(),
+            readout: crate::i18n::msg::widgets_reason_stopped(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::TvPipeline => ErrorShape {
             kind: FailureKind::TvPipeline,
-            caption: c"Playback failed — the TV rejected the stream",
-            panel: "the television media pipeline rejected the stream",
-            readout: "This TV could not start the video stream",
+            caption: crate::i18n::msg::widgets_failure_tv_rejected_c(),
+            panel: crate::i18n::msg::widgets_panel_tv_rejected(),
+            readout: crate::i18n::msg::widgets_reason_tv_rejected(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -861,17 +861,17 @@ fn error_shape(
         // that was never given.
         RuntimeFailure::LoadTimeout => ErrorShape {
             kind: FailureKind::LoadTimeout,
-            caption: c"Playback failed — the TV did not finish starting the stream",
-            panel: "the television media pipeline did not finish starting the stream in time",
-            readout: "This TV did not finish starting the video stream in time",
+            caption: crate::i18n::msg::widgets_failure_load_timeout_c(),
+            panel: crate::i18n::msg::widgets_panel_load_timeout(),
+            readout: crate::i18n::msg::widgets_reason_load_timeout(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
-            caption: c"Playback failed",
-            panel: "the player stopped without a reported cause",
-            readout: "The player stopped before it could identify the problem",
+            caption: crate::i18n::msg::widgets_status_failed_c(),
+            panel: crate::i18n::msg::widgets_panel_unknown(),
+            readout: crate::i18n::msg::widgets_reason_unknown(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -904,13 +904,13 @@ fn with_forced_playback_context(mut shape: ErrorShape, forced: bool) -> ErrorSha
     if !forced { return shape; }
     if shape.kind == FailureKind::DecisionRefused {
         shape.kind = FailureKind::PlaybackPolicy;
-        shape.caption = c"Playback failed — Force Direct Play could not play this stream";
-        shape.panel = "Force Direct Play could not use the original stream; automatic fallback is disabled";
-        shape.readout = "Force Direct Play could not play this stream";
+        shape.caption = crate::i18n::msg::widgets_failure_forced_playback_c();
+        shape.panel = crate::i18n::msg::widgets_panel_forced_playback();
+        shape.readout = crate::i18n::msg::widgets_reason_forced_playback();
         // The policy verdict already names the specific limitation and the return-to-Auto step.
     } else {
         shape.detail = std::borrow::Cow::Borrowed(
-            "Force Direct Play is enabled. Automatic fallback is off. Return Direct Play to Auto in Settings. Restart the app if it stops responding.",
+            crate::i18n::msg::widgets_reason_forced_playback_help(),
         );
     }
     shape.no_pass = false;
@@ -1156,6 +1156,8 @@ fn playable_buffer_ms(
 }
 
 impl Diag {
+    /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn vp_mode_str(&self) -> &'static str {
         match self.vp_mode {
             VP_EXPORTED => "exported window (webOS 5+)",
@@ -1192,6 +1194,7 @@ impl Diag {
     /// state a healthy playback sits in most of the time, because the feeder deliberately stays
     /// within `MAX_FEED_AHEAD_NS` of the presented position. The first person to see the panel in
     /// the wild asked why playback was stuck; it was not.
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn feed_state_str(&self) -> &'static str {
         match self.feed_state {
             1 => "accepting",
@@ -2297,7 +2300,11 @@ mod tests {
             &crate::webos::Hardware::default(),
             FailureKind::Unspecified,
         );
-        assert!(bare.contains("webOS unknown · unknown set · unspecified"), "{bare}");
+        assert!(bare.contains(&format!(
+            "{} · {} · unspecified",
+            crate::i18n::msg::browse_diagnostics_unknown_os(),
+            crate::i18n::msg::settings_login_unknown_device(),
+        )), "{bare}");
     }
 
     #[test]

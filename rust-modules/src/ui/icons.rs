@@ -408,7 +408,9 @@ fn downsample_alpha(src: &[u8], sw: i32, ss: i32) -> Vec<u8> {
 /// times the tint = a solid-colour icon; tint alpha fades it). No-op if rasterization failed.
 pub(crate) fn draw(p: Painter, id: Icon, r: Rect, tint: [f32; 4]) {
     let px = r.w.max(r.h).round() as i32;
-    if px <= 0 {
+    // A text-recording painter submits no primitive; rasterising the mask for it would only
+    // spend the transition's prewarm budget on something it then does not draw.
+    if px <= 0 || p.is_recording() {
         return;
     }
     let tex = tex_for(id, px);

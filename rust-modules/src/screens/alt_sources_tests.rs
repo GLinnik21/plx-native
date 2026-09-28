@@ -441,7 +441,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     let after = rows(copies(), house, "4");
     assert_eq!(
         after.iter().map(|r| r.detail.clone()).collect::<Vec<_>>(),
-        [OWN_ACCOUNT, "friend"],
+        [own_account(), "friend"],
         "the row follows the registry off a credit without waiting for a re-resolve"
     );
     assert_eq!(
@@ -472,7 +472,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     );
     assert_eq!(
         drawn(&p),
-        [OWN_ACCOUNT, "friend"],
+        [own_account(), "friend"],
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(
@@ -552,7 +552,7 @@ fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bu
         .collect();
     assert_eq!(
         drawn,
-        [OWN_ACCOUNT, OWN_ACCOUNT, "friend"],
+        [own_account(), own_account(), "friend"],
         "the unnamed share reads as this account, exactly as the household's does — the \
          empty-credit bug `docs/shared-servers.md` carries, unchanged and out of scope here"
     );

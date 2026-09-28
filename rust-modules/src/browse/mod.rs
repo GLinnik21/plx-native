@@ -328,23 +328,29 @@ impl LibraryType {
     }
 
     pub(crate) fn title(self, kind: SecKind) -> &'static str {
+        self.title_in(kind, crate::i18n::current())
+    }
+
+    fn title_in(self, kind: SecKind, locale: &crate::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => "Movies",
-            (Self::Primary, SecKind::Show) => "TV Shows",
-            (Self::Seasons, _) => "Seasons",
-            (Self::Episodes, _) => "Episodes",
-            (Self::Collections, _) => "Collections",
+            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_kind_movies_in(locale),
+            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_kind_tv_shows_in(locale),
+            (Self::Seasons, _) => crate::i18n::msg::browse_kind_seasons_in(locale),
+            (Self::Episodes, _) => crate::i18n::msg::browse_kind_episodes_in(locale),
+            (Self::Collections, _) => crate::i18n::msg::browse_kind_collections_in(locale),
         }
     }
 
-    /// The lower-case plural an empty read-out names ("No collections in Films").
-    pub(crate) fn noun(self, kind: SecKind) -> &'static str {
+    /// The empty read-out for this type in the library titled `library` ("No collections in
+    /// Films"): one whole catalog phrase per type, because the noun's case and the phrase's word
+    /// order differ by language.
+    pub(crate) fn empty_readout(self, kind: SecKind, library: &str) -> String {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => kind.noun(),
-            (Self::Primary, SecKind::Show) => "TV shows",
-            (Self::Seasons, _) => "seasons",
-            (Self::Episodes, _) => "episodes",
-            (Self::Collections, _) => "collections",
+            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_library_no_movies(library),
+            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_library_no_shows(library),
+            (Self::Seasons, _) => crate::i18n::msg::browse_library_no_seasons(library),
+            (Self::Episodes, _) => crate::i18n::msg::browse_library_no_episodes(library),
+            (Self::Collections, _) => crate::i18n::msg::browse_library_no_collections(library),
         }
     }
 
@@ -2520,19 +2526,11 @@ impl SecKind {
             SecKind::Show => "show",
         }
     }
-    /// The Sources row's count noun ("187 films") — plural, and the singular-less form the row
-    /// falls back to when no count has landed is [`SecKind::plural`].
-    pub(crate) fn noun(self) -> &'static str {
-        match self {
-            SecKind::Movie => "films",
-            SecKind::Show => "shows",
-        }
-    }
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
     pub(crate) fn plural(self) -> &'static str {
         match self {
-            SecKind::Movie => "Films",
-            SecKind::Show => "TV shows",
+            SecKind::Movie => crate::i18n::msg::browse_kind_films(),
+            SecKind::Show => crate::i18n::msg::browse_kind_tv_shows_sentence(),
         }
     }
 }
@@ -2564,7 +2562,7 @@ fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
         sorts.push(SortEntry {
             key: PLAYS_SORT_KEY.into(),
             desc_key: String::new(),
-            title: "Plays".into(),
+            title: crate::i18n::msg::browse_library_plays().into(),
             default_desc: true,
         });
     }
@@ -2731,7 +2729,10 @@ pub(crate) struct SrcRow {
 
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        format!("{count} {}", kind.noun())
+        match kind {
+            SecKind::Movie => crate::i18n::msg::browse_person_films(count),
+            SecKind::Show => crate::i18n::msg::browse_person_shows(count),
+        }
     } else {
         kind.plural().to_string()
     }
@@ -3263,3 +3264,27 @@ mod reachability_tests;
 
 #[cfg(test)]
 mod library_type_tests;
+
+#[cfg(test)]
+mod localized_type_tests {
+    use super::{LibraryType, SecKind};
+
+    #[test]
+    fn library_type_titles_translate_without_changing_the_pms_query_type() {
+        use crate::i18n::{LocaleContext, Preference};
+        for (preference, expected) in [
+            (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections"]),
+            (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones"]),
+            (Preference::Be, ["Фільмы", "Калекцыі", "Серыялы", "Сезоны", "Серыі", "Калекцыі"]),
+        ] {
+            let locale = LocaleContext::resolve(preference, None, None, None, None);
+            let rows = LibraryType::offered(SecKind::Movie).iter().map(|&t| (t, SecKind::Movie))
+                .chain(LibraryType::offered(SecKind::Show).iter().map(|&t| (t, SecKind::Show)));
+            let wire = [None, Some(18), Some(2), Some(3), Some(4), Some(18)];
+            for (((kind, section), wire_type), title) in rows.zip(wire).zip(expected) {
+                assert_eq!(kind.title_in(section, &locale), title);
+                assert_eq!(kind.plex_type(section), wire_type);
+            }
+        }
+    }
+}

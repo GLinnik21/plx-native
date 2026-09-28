@@ -2126,7 +2126,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let measure = FixtureMeasure;
     let overlay = status_overlay(view, &s.plaintext).unwrap();
-    assert_eq!(overlay.action, Some(plaintext_question::CONNECT));
+    assert_eq!(overlay.action, Some(plaintext_question::connect()));
     let reason = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(reason.as_ref()));
     let drawn = overlay.action_frame_measured(&measure).unwrap();
@@ -2162,7 +2162,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     crate::plex::grant::answer("account", "lan-machine", PlaintextChoice::Declined);
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let overlay = status_overlay(view, &s.plaintext).unwrap();
-    assert_eq!(overlay.action, Some(plaintext_question::TRY_AGAIN));
+    assert_eq!(overlay.action, Some(plaintext_question::try_again()));
     assert!(overlay.reason.and_then(|r| r.to_str().ok()).is_some_and(|r|
         r.contains("Settings \u{2192} Unencrypted connections")), "{:?}", overlay.reason);
     let (_, retried, _) = step(&mut s, view, hero, &ScreenEvent::Activate(HERO_PLAY_ELEM));

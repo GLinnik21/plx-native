@@ -187,7 +187,7 @@ fn source_draft(
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = Section::new("Sort by");
+    let mut section = Section::new(crate::i18n::msg::browse_library_sort_by());
     let mut rows = Vec::new();
     let mut stamp = Stamp::default();
     stamp.tag(7);
@@ -248,7 +248,7 @@ fn listing_kind(
 
 /// The TYPE menu: every [`LibraryType`] the section's kind offers, the current one checked.
 fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
-    let mut section = Section::new("Filter by");
+    let mut section = Section::new(crate::i18n::msg::browse_library_filter_by());
     let mut rows = Vec::new();
     let mut selected = 0;
     for (index, &kind) in LibraryType::offered(section_kind).iter().enumerate() {
@@ -264,11 +264,11 @@ fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
-    let mut section = Section::new("Filter")
-        .row(Row::new("Unwatched only").toggle(unwatched));
+    let mut section = Section::new(crate::i18n::msg::browse_library_filter())
+        .row(Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched));
     if genres_supported { section = section.row(
-            Row::new("Genre")
-                .value(genre.map(|g| g.title.as_str()).unwrap_or("All"))
+            Row::new(crate::i18n::msg::browse_library_genre())
+                .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
                 .chevron(true),
         ); }
     let mut stamp = Stamp::default();
@@ -293,7 +293,7 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
-    let mut section = Section::new("Genre").row(Row::new("All Genres").checked(current.is_none()));
+    let mut section = Section::new(crate::i18n::msg::browse_library_genre()).row(Row::new(crate::i18n::msg::browse_library_all_genres()).checked(current.is_none()));
     let mut rows = vec![("genre:all".into(), Action::Edit(QueryEdit::Genre(None)), 0)];
     let mut stamp = Stamp::default();
     stamp.tag(10);
@@ -418,11 +418,11 @@ impl LibraryMenu {
         let mut sections = Vec::new();
         let selected = 0i32;
         let title = match self.kind {
-            LibraryMenuKind::Type => "Filter by",
-            LibraryMenuKind::Sort => "Sort by",
-            LibraryMenuKind::Filter => "Filter",
-            LibraryMenuKind::Genre => "Genre",
-            LibraryMenuKind::Sources => "Libraries",
+            LibraryMenuKind::Type => crate::i18n::msg::browse_library_filter_by(),
+            LibraryMenuKind::Sort => crate::i18n::msg::browse_library_sort_by(),
+            LibraryMenuKind::Filter => crate::i18n::msg::browse_library_filter(),
+            LibraryMenuKind::Genre => crate::i18n::msg::browse_library_genre(),
+            LibraryMenuKind::Sources => crate::i18n::msg::browse_library_libraries(),
         };
         let mut section = Section::new(title);
         match self.kind {
@@ -450,7 +450,7 @@ impl LibraryMenu {
                         directory.sections(),
                     );
                 }
-                section = section.row(Row::new("Check for new shares"));
+                section = section.row(Row::new(crate::i18n::msg::browse_library_check_shares()));
                 rows.push(("recheck".into(), Action::Recheck, 0));
             }
         }
@@ -1166,4 +1166,25 @@ mod tests {
     }
 
     include!("menu_contract_tests.rs");
+
+    /// **Every TYPE row fits the popover, in every shipped language** — movie and TV sections
+    /// alike, Collections included, with the section header. Measured with the device's
+    /// whole-pixel advances at the popover's fixed width.
+    #[test]
+    fn every_type_row_fits_the_popover_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            for kind in [SecKind::Movie, SecKind::Show] {
+                let draft = type_draft(kind, LibraryType::Collections);
+                let mut table = TableView::new();
+                table.set_sections(draft.sections, draft.selected, false);
+                out.extend(table.elided_rows(650.0, &ShippedMeasure, HEADROOM)
+                    .into_iter().map(|e| format!("{} {kind:?}: {e}", language.tag())));
+            }
+        }
+        assert!(out.is_empty(), "TYPE rows the popover would end in an ellipsis:\n  {}", out.join("\n  "));
+    }
 }

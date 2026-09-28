@@ -365,6 +365,33 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotEqual(before, validate(self.path)['snapshot_sha256'])
 
+    def test_producer_keeps_locale_catalogs_as_build_inputs(self):
+        catalogs = {
+            'locales/en/widgets.json': b'{"widgets.title":{"value":"Information"}}',
+            'locales/es/widgets.json': '{"widgets.title":"Información"}'.encode(),
+            'locales/be/widgets.json': '{"widgets.title":"Звесткі"}'.encode(),
+        }
+        for name, data in catalogs.items():
+            self.contents[name] = data, 0o644
+        self.refresh()
+        _repo, command = self.producer_fixture()
+        result = subprocess.run(command, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = validate(self.path)['files']
+        with tarfile.open(self.path, 'r:*') as archive:
+            for name, data in catalogs.items():
+                self.assertIn(name, files, "catalogs are required Cargo build inputs")
+                self.assertEqual(archive.extractfile(name).read(), data)
+
+    def test_producer_untracked_locale_catalog_refused(self):
+        repo, command = self.producer_fixture()
+        catalog = repo / 'locales/en/new.json'
+        catalog.parent.mkdir(parents=True)
+        catalog.write_text('{"widgets.new":{"value":"New label"}}')
+        result = subprocess.run(command, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'untracked source', result.stderr)
+
     def test_producer_untracked_source_refused(self):
         repo, command = self.producer_fixture()
         (repo / 'src').mkdir()

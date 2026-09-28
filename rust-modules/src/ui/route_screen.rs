@@ -77,6 +77,12 @@
 //!    [`crate::ui::table::TableView::hit_row`]); a click activates whatever is parked; a click that
 //!    parks nothing does nothing.
 
+//! **Long translated action labels reflow as a column.** In that shape UP/DOWN move between
+//! the two answers, RIGHT reaches the content column, and UP above the first action leaves the
+//! band. First-run consent uses contextual answer labels in one row and a measured reading
+//! column. Exceptional overflow scrolls on UP/DOWN while the selected answer retains focus.
+//! The paragraph is never shortened to make translated actions fit.
+
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
 use crate::ui::machine::Measure;
@@ -699,10 +705,9 @@ impl RouteLayout {
     ///
     /// The default is the Home hero's editorial measure (660), which is right for a screen whose
     /// COPY is the screen: Settings' narrative column carries the sentence that explains the list
-    /// beside it. It is wrong for a screen whose LIST is the screen. The Filmography route states
-    /// 480 and takes the 180 back for its content column (`Person Screen.dc.html`, 2026-09-06:
-    /// "titles were truncating while half the frame held a static heading") — a caption does not
-    /// need a hero's measure.
+    /// beside it. A route whose LIST is the screen can prefer a narrower measure: Filmography
+    /// starts at 480, then `screen_for_title` accommodates its translated title, reclaiming space (`Person Screen.dc.html`, 2026-09-06:
+    /// "titles were truncating while half the frame held a static heading").
     ///
     /// **The REGION GAP does not move with it.** `COLUMN_GAP` is what makes the two columns read as
     /// related rather than as two screens side by side, and it is the one number here that belongs
@@ -719,6 +724,47 @@ impl RouteLayout {
             narrative,
             content,
             action,
+        }
+    }
+
+    /// Allocate enough narrative width for an unbreakable title word at HERO size, while
+    /// preserving the caller's minimum content width. Short titles keep the preferred measure.
+    /// This is shared layout: tabs, rows, focus and paint must all consume the returned columns.
+    pub(crate) fn screen_for_title(
+        preferred_copy_w: f32,
+        min_content_w: f32,
+        title: &str,
+        measure: &dyn Measure,
+    ) -> Self {
+        let longest_word = title
+            .split(|c: char| c.is_whitespace() && c != '\u{a0}')
+            .map(|word| measure.width_str(word, theme::size::HERO, true))
+            .fold(0.0f32, f32::max);
+        let max_copy_w = (SAFE.w - COLUMN_GAP - min_content_w).max(0.0);
+        // Keep a short feature name on one line when possible, including expansion markers.
+        // Longer multiword titles use the bounded column and the shared title's wrapping policy.
+        let title_width = measure.width_str(title, theme::size::HERO, true);
+        Self::screen_with_copy_w(preferred_copy_w.max(longest_word).max(title_width).ceil().min(max_copy_w))
+    }
+
+    /// Keep a complete disclosure above its peer actions, reclaiming unused narrative width
+    /// before requiring scrolling. The other column keeps its measured minimum width. `fits`
+    /// uses the same title/body flow as drawing; the returned columns serve focus and paint.
+    pub(crate) fn screen_for_reading(
+        min_action_w: f32,
+        min_content_w: f32,
+        fits: impl Fn(Self) -> bool,
+    ) -> Self {
+        let max_copy_w = (SAFE.w - COLUMN_GAP - min_content_w).max(NARRATIVE_W);
+        let mut width = NARRATIVE_W.max(min_action_w).min(max_copy_w);
+        loop {
+            let mut layout = Self::screen_with_copy_w(width);
+            // The answer row can use the inter-column whitespace without narrowing either
+            // reading column. Keep one control gap before the related-link column.
+            let action_limit = layout.content.x - layout.action.x - crate::ui::widgets::CONTROL_GAP;
+            layout.action.w = layout.action.w.max(min_action_w.min(action_limit));
+            if fits(layout) || width >= max_copy_w { return layout; }
+            width = (width + theme::space::MD).min(max_copy_w);
         }
     }
 
@@ -768,11 +814,12 @@ impl RouteLayout {
         )
     }
 
-    /// Place two controls on one action row, as ONE GROUP.
+    /// Place two peer controls in a row when they fit, otherwise in a bottom-anchored column.
     ///
     /// Their relationship belongs here: the leading one starts on the shared margin, the trailing
-    /// one follows by [`widgets::CONTROL_GAP`], and both inherit the action band's Y/height. A
-    /// screen supplies measured widths, never a second pair of coordinates.
+    /// one follows by [`widgets::CONTROL_GAP`]. When the pair needs a column, that same gap
+    /// separates them vertically and the trailing control retains the bottom anchor. Both retain
+    /// the normal control height. A screen supplies measured widths, never private coordinates.
     ///
     /// **Its one caller is first-run consent's two answers, and they are EQUALS** — no primary,
     /// no secondary, no danger face. This doc used to describe a primary beside a BACK
@@ -782,15 +829,18 @@ impl RouteLayout {
     /// a separate hint, and two peer answers at that distance read as two unrelated controls
     /// sharing a row rather than one question's two faces.
     pub(crate) fn action_pair(self, leading_w: f32, trailing_w: f32) -> (Rect, Rect) {
-        let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
-        let trailing = Rect::new(
-            leading.x + leading.w + crate::ui::widgets::CONTROL_GAP,
-            self.action.y,
-            trailing_w,
-            self.action.h,
-        );
-        debug_assert!(trailing.x + trailing.w <= self.action.x + self.action.w);
-        (leading, trailing)
+        let gap = crate::ui::widgets::CONTROL_GAP;
+        if leading_w + gap + trailing_w <= self.action.w {
+            let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
+            let trailing = Rect::new(leading.x + leading.w + gap, self.action.y, trailing_w, self.action.h);
+            (leading, trailing)
+        } else {
+            // Preserve label size and equal treatment. The final control retains the bottom
+            // anchor; the first moves up and the narrative reserves the resulting full extent.
+            let leading = Rect::new(self.action.x, self.action.y - self.action.h - gap, leading_w, self.action.h);
+            let trailing = Rect::new(self.action.x, self.action.y, trailing_w, self.action.h);
+            (leading, trailing)
+        }
     }
 
     /// Draw the return crumb — `‹ <where BACK goes>` — in the band whose top is at `top`.
@@ -811,6 +861,16 @@ impl RouteLayout {
         } else {
             self.narrative.y
         }
+    }
+
+    /// The available prose region after the complete title and before the actual action group.
+    /// A scrolling disclosure uses exactly the same title flow as an ordinary route header.
+    pub(crate) fn narrative_copy_frame(self, has_crumb: bool, title: &str,
+        actions_top: f32, measure: &dyn Measure) -> Rect {
+        let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
+        let top = self.narrative_top(has_crumb) + title_h + theme::space::MD;
+        Rect::new(self.narrative.x, top, self.narrative.w,
+            (actions_top - theme::space::MD - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
@@ -843,11 +903,12 @@ impl RouteLayout {
     /// `.leading(TITLE_LEADING)` from the builder below — reverting the whole fix, putting the copy
     /// 19.4px back down on all eight callers of this function — left it green. A test that grades a
     /// constant grades the constant. Building the view here lets it grade the thing that is drawn.
+    /// App-owned titles and questions wrap completely; following content uses their measured height.
     pub(crate) fn narrative_title(title: &str) -> TextView<'_> {
         TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
             .bold()
+            .break_long_words()
             .leading(TITLE_LEADING)
-            .max_lines(2)
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -970,6 +1031,40 @@ mod tests {
     /// of that correction as arithmetic, and it is here rather than in `filmography.rs` because the
     /// route that noticed it is not the only one that drew it.
     #[test]
+    fn translated_route_titles_grow_without_taking_the_content_minimum() {
+        struct TitleMeasure;
+        impl Measure for TitleMeasure {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let measure = TitleMeasure;
+        let min_content = RouteLayout::screen().content.w;
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let title = crate::i18n::msg::browse_person_filmography_in(&locale);
+            let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
+            let full_width = measure.width_str(title, theme::size::HERO, true);
+            assert!(layout.narrative.w >= full_width, "route label must fit in full: {title}");
+            assert!(layout.content.w >= min_content);
+            assert!(inside_safe(layout.content));
+            assert!(inside_safe(layout.narrative));
+            if preference == crate::i18n::Preference::Be {
+                assert!(layout.narrative.w > 480.0, "exercise the clipped screenshot's narrow column");
+            }
+        }
+        // Expansion beyond available width must wrap, never steal the content column.
+        let title = "ФільмаграфіяФільмаграфія";
+        let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
+        assert_eq!(layout.content.w, min_content);
+        let view = RouteLayout::narrative_title(title).with_measure(&measure);
+        assert!(view.measure_h(layout.narrative.w) > TITLE_LEADING);
+        assert!(!view.truncates(layout.narrative.w));
+    }
+
+    #[test]
     fn the_narrative_title_sets_at_the_design_systems_own_line_height() {
         assert!(
             (TITLE_LEADING - theme::size::HERO as f32 * 1.05).abs() < 0.01,
@@ -993,6 +1088,34 @@ mod tests {
             TITLE_LEADING > theme::size::HERO as f32,
             "a pitch under the em box would clip a descender between two wrapped title lines"
         );
+    }
+
+    /// Real consent questions need a third HERO line in Spanish and Belarusian. The shared
+    /// title must keep the whole question and move the disclosure region by that same height.
+    #[test]
+    fn translated_consent_questions_keep_their_complete_titles() {
+        struct QuestionMeasure;
+        impl crate::ui::machine::Measure for QuestionMeasure {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let measure = QuestionMeasure;
+        let layout = RouteLayout::screen();
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            for question in [crate::i18n::msg::settings_consent_crash_title_in(&locale),
+                crate::i18n::msg::settings_consent_product_title_in(&locale)] {
+                let title = RouteLayout::narrative_title(question).with_measure(&measure);
+                assert!(!title.truncates(layout.narrative.w), "question was elided: {question}");
+                let height = title.measure_h(layout.narrative.w);
+                let copy = layout.narrative_copy_frame(false, question, layout.action.y, &measure);
+                assert_eq!(copy.y, layout.narrative_top(false) + height + theme::space::MD);
+                assert!(copy.h > theme::size::BODY as f32 * 6.0, "disclosure keeps a readable viewport");
+            }
+        }
     }
 
     #[test]

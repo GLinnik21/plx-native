@@ -75,14 +75,14 @@ const FACTS_R: f32 = crate::ui::consts::SCR_W
 const HERO_ICON_RATIO: f32 = 1.15;
 const HERO_ICON_GAP: f32 = 12.0;
 
-pub(crate) const ALT_LABEL: &CStr = c"Also available";
+pub(crate) fn alt_label() -> &'static CStr { crate::i18n::msg::browse_detail_also_available_c() }
 
-const MARK_WATCHED_LABEL: &CStr = c"Mark as Watched";
-const MARK_UNWATCHED_LABEL: &CStr = c"Mark as Unwatched";
-const MARK_SHOW_WATCHED_LABEL: &CStr = c"Mark Show as Watched";
-const MARK_SHOW_UNWATCHED_LABEL: &CStr = c"Mark Show as Unwatched";
-const PLAY_FROM_START_LABEL: &CStr = c"Play from Start";
-const TRAILER_LABEL: &CStr = c"Trailer";
+fn mark_watched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_watched_c() }
+fn mark_unwatched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_unwatched_c() }
+fn mark_show_watched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_show_watched_c() }
+fn mark_show_unwatched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_show_unwatched_c() }
+fn play_from_start_label() -> &'static CStr { crate::i18n::msg::browse_detail_play_start_c() }
+fn trailer_label() -> &'static CStr { crate::i18n::msg::browse_detail_trailer_c() }
 
 /// A control in the hero action row, named rather than numbered — ported verbatim from
 /// `ui/detail.rs::HeroCtl`.
@@ -304,12 +304,12 @@ pub(crate) fn watch_names_show(d: &Detail) -> bool {
 /// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS.
 pub(crate) fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
-        (HeroCtl::Restart, _) => Some((0, PLAY_FROM_START_LABEL)),
-        (HeroCtl::Trailer, _) => Some((1, TRAILER_LABEL)),
-        (HeroCtl::MarkWatched, false) => Some((2, MARK_WATCHED_LABEL)),
-        (HeroCtl::MarkWatched, true) => Some((2, MARK_SHOW_WATCHED_LABEL)),
-        (HeroCtl::MarkUnwatched, false) => Some((2, MARK_UNWATCHED_LABEL)),
-        (HeroCtl::MarkUnwatched, true) => Some((2, MARK_SHOW_UNWATCHED_LABEL)),
+        (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
+        (HeroCtl::Trailer, _) => Some((1, trailer_label())),
+        (HeroCtl::MarkWatched, false) => Some((2, mark_watched_label())),
+        (HeroCtl::MarkWatched, true) => Some((2, mark_show_watched_label())),
+        (HeroCtl::MarkUnwatched, false) => Some((2, mark_unwatched_label())),
+        (HeroCtl::MarkUnwatched, true) => Some((2, mark_show_unwatched_label())),
         _ => None,
     }
 }
@@ -324,9 +324,9 @@ pub(crate) fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
 /// The Play pill's label — the word the press will actually perform.
 pub(crate) fn hero_pill_label(has_restart: bool) -> &'static CStr {
     if has_restart {
-        c"Resume"
+        crate::i18n::msg::browse_detail_resume_c()
     } else {
-        c"Play"
+        crate::i18n::msg::browse_detail_play_c()
     }
 }
 
@@ -360,7 +360,7 @@ pub(crate) fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
 }
 
 pub(crate) fn alt_pill_w(measure: &dyn Measure) -> f32 {
-    pill_w(measure, ALT_LABEL, theme::size::BODY, false, true)
+    pill_w(measure, alt_label(), theme::size::BODY, false, true)
 }
 
 /// Every measured width the row's accumulation needs, as one value — ported verbatim from
@@ -488,10 +488,10 @@ pub(crate) fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
             .filter(|credit| credit.role.contains("Writer"))
             .map(|credit| credit.tag.as_str())
             .collect();
-        return (!names.is_empty()).then_some(("Created by", names));
+        return (!names.is_empty()).then_some((crate::i18n::msg::browse_detail_created_by(), names));
     }
     let names: Vec<&str> = d.directors.iter().map(String::as_str).collect();
-    (!names.is_empty()).then_some(("Directed by", names))
+    (!names.is_empty()).then_some((crate::i18n::msg::browse_detail_directed_by(), names))
 }
 
 pub(crate) fn has_people(d: &Detail) -> bool {
@@ -509,7 +509,7 @@ pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn M
             .take(PEOPLE_CAST)
             .map(|credit| credit.tag.as_str())
             .collect();
-        bottom -= people_line(p, "Starring", &names, x, bottom, measure);
+        bottom -= people_line(p, crate::i18n::msg::browse_detail_starring(), &names, x, bottom, measure);
     }
     if let Some((label, names)) = hero_credit(d) {
         people_line(p, label, &names, x, bottom, measure);
@@ -545,13 +545,10 @@ fn hero_facts(d: &Detail) -> (String, Option<String>) {
             return (date, None);
         }
         let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let season_word = if seasons == 1 { "season" } else { "seasons" };
+        let seasons = crate::i18n::msg::browse_detail_seasons(seasons as i64);
         let extent = if episodes > 0 {
-            let episode_word = if episodes == 1 { "episode" } else { "episodes" };
-            format!("{seasons} {season_word}, {episodes} {episode_word}")
-        } else {
-            format!("{seasons} {season_word}")
-        };
+            crate::i18n::msg::browse_detail_extent(&crate::i18n::msg::browse_detail_episodes(episodes), &seasons)
+        } else { seasons };
         return (date, Some(extent));
     }
     (
@@ -588,7 +585,7 @@ fn item_subscription(d: &Detail) -> crate::plex::serverinfo::Subscription {
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
-const CONVERTS_ON_SERVER_C: &CStr = c"Converts on server";
+fn converts_on_server_c() -> &'static CStr { crate::i18n::msg::browse_detail_converts_c() }
 
 #[derive(Clone, Copy)]
 enum Bit {
@@ -617,18 +614,18 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     match play_note(preview, d.hdr, item_subscription(d)) {
         PlayNote::Quiet => push(Bit::Word(
             match preview {
-                crate::route::Preview::DirectPlay => c"Direct Play",
-                crate::route::Preview::Remux => c"Direct Stream",
-                crate::route::Preview::Converts => CONVERTS_ON_SERVER_C,
+                crate::route::Preview::DirectPlay => crate::i18n::msg::browse_detail_direct_play_c(),
+                crate::route::Preview::Remux => crate::i18n::msg::browse_detail_direct_stream_c(),
+                crate::route::Preview::Converts => converts_on_server_c(),
             },
             crate::ui::detail_layout::FACTS_INK,
             0,
         )),
         PlayNote::Soft => {
-            push(Bit::Word(CONVERTS_ON_SERVER_C, crate::ui::detail_layout::FACTS_INK, 0));
+            push(Bit::Word(converts_on_server_c(), crate::ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
-                c"hardware conversion needs",
+                crate::i18n::msg::browse_detail_hardware_needs_c(),
                 theme::TEXT_SECONDARY,
                 0,
             ));
@@ -640,7 +637,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
             push(Bit::Sep(theme::space::SM));
-            push(Bit::Word(c"tone-mapping needs", theme::TEXT_SECONDARY, 0));
+            push(Bit::Word(crate::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);
         }
@@ -921,33 +918,33 @@ mod tests {
     fn each_watch_disc_writes_its_own_verb() {
         assert_eq!(
             disc_verb(HeroCtl::Restart, false),
-            Some((0, PLAY_FROM_START_LABEL))
+            Some((0, play_from_start_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::Restart, true),
-            Some((0, PLAY_FROM_START_LABEL))
+            Some((0, play_from_start_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkWatched, false),
-            Some((2, MARK_WATCHED_LABEL))
+            Some((2, mark_watched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkWatched, true),
-            Some((2, MARK_SHOW_WATCHED_LABEL))
+            Some((2, mark_show_watched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, false),
-            Some((2, MARK_UNWATCHED_LABEL))
+            Some((2, mark_unwatched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, true),
-            Some((2, MARK_SHOW_UNWATCHED_LABEL))
+            Some((2, mark_show_unwatched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::Trailer, false),
-            Some((1, TRAILER_LABEL))
+            Some((1, trailer_label()))
         );
-        assert_eq!(disc_verb(HeroCtl::Trailer, true), Some((1, TRAILER_LABEL)));
+        assert_eq!(disc_verb(HeroCtl::Trailer, true), Some((1, trailer_label())));
         assert_eq!(
             disc_verb(HeroCtl::Play, false),
             None,
@@ -1080,8 +1077,8 @@ mod tests {
     #[test]
     fn the_two_spellings_of_the_conversion_notice_are_the_same_bytes() {
         assert_eq!(
-            CONVERTS_ON_SERVER_C.to_str().unwrap(),
-            crate::ui::fmt::CONVERTS_ON_SERVER
+            converts_on_server_c().to_str().unwrap(),
+            crate::ui::fmt::converts_on_server()
         );
     }
 

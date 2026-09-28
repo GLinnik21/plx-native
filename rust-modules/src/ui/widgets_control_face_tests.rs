@@ -606,3 +606,14 @@ fn the_focus_cast_is_a_contact_and_a_pool_at_twice_the_css_blur() {
         assert!(a > 0.0 && a < 0.5, "a lift, not a hole: {a}");
     }
 }
+
+#[test]
+fn a_selected_player_tab_keeps_a_quiet_face_until_it_owns_focus() {
+    let pill = || TabPill::new(c"Chapters".as_ptr(), theme::size::BODY, Rect::new(0.0, 0.0, 200.0, 64.0))
+        .ground(ControlGround::Unkeyed).selected(true);
+    let selected = pill().face();
+    assert_eq!(selected, (Some(theme::TAB_PLATE_SELECTED), theme::TEXT_PRIMARY, 1.0));
+    assert_ne!(selected.0, Some(crate::ui::ACCENT));
+    let focused = pill().focused(true).face();
+    assert_eq!(focused, (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, 1.0));
+}

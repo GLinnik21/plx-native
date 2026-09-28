@@ -171,72 +171,11 @@ $1|$2
   return 1
 }
 
-# wholly_test_files: paths (under $SRC) that carry NO #[cfg(test)] marker of their own but are
-# entirely test code anyway — the mutators call-site gate's per-file brace-depth skip only ever
-# looks INSIDE the file it is scanning, so a file like this reads as 100% production to it.
-# **Derived, never hand-listed** — a transcribed list rots the moment a new one is added and
-# nothing here compiles Bash comments (D3 census finding). Two shapes:
-#   (i)  a bare `#[cfg(test)]` immediately followed by `mod <name>;` — a DECLARATION with no body,
-#        naming a test module split into its own sibling file (`screens/detail/mod.rs:14`'s
-#        `mod tests;` names `screens/detail/tests.rs`) — optionally with a `#[path = "<file>"]`
-#        between the two, in which case the named file is that path, relative to the declaring
-#        file's directory (`auth.rs`'s `#[path = "auth_registry_tests.rs"] mod registry_tests;`).
-#   (ii) `include!("<name>.rs")` found while walking INSIDE a `#[cfg(test)] mod { … }` block
-#        (`app/bridge.rs`'s own test module `include!`s `detail_panel_tests.rs` and friends).
-# Plain POSIX awk (no gawk `match(...,arr)` — this runs under BSD/one-true-awk too).
-# ONE `awk` per shape for the WHOLE tree, not seven processes per file. The previous spelling ran
-# `dirname`, two `awk`s, a `grep`, a `sed` and two `while read` subshells for each of the 420 files
-# under $SRC — roughly 2900 processes, ~2.5 s of pure fork/exec, for an answer that is the same two
-# state machines run over the same bytes. `FNR==1` gives each file its own `dir` and resets the
-# machine, which is exactly what a fresh process used to do; the `include!` extraction moved inside
-# the second `awk` because it is what the `grep -oE | sed` pair did to that `awk`'s output. The
-# trailing `/dev/null` keeps `awk` off stdin if `find` ever comes back empty, and the existence
-# filter is a `[ -f ]` builtin in ONE loop rather than a subshell per file.
+# Resolve external test modules (including #[path], visibility and intervening attributes)
+# and include! files from Rust tokens. Test ownership propagates through descendants; any
+# production reference keeps a shared file in the scan. No filename suffix grants an exemption.
 wholly_test_files() {
-  {
-    find "$SRC" -name '*.rs' -print0 | xargs -0 awk '
-      FNR==1 {
-        dir=FILENAME; sub(/\/[^\/]*$/, "", dir)
-        moddir=FILENAME; sub(/\.rs$/, "", moddir)
-        if (FILENAME ~ /\/(mod|lib|main)\.rs$/) moddir=dir
-        prevcfg=0; path=""
-      }
-      /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; path=""; next }
-      prevcfg==1 && /^#\[path = "[^"]+"\][ \t]*$/ {
-        path=$0; sub(/^#\[path = "/,"",path); sub(/"\].*/,"",path)
-        next
-      }
-      prevcfg==1 && /^mod [a-z_]+;/ {
-        line=$0; sub(/^mod /,"",line); sub(/;.*/,"",line)
-        if (path != "") print dir "/" path
-        else { print moddir "/" line ".rs"; print moddir "/" line "/mod.rs" }
-      }
-      { prevcfg=0; path="" }
-    ' /dev/null
-    find "$SRC" -name '*.rs' -print0 | xargs -0 awk '
-      FNR==1 { dir=FILENAME; sub(/\/[^\/]*$/, "", dir); skip=0; depth=0; prev="" }
-      skip>0 {
-        n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m
-        line=$0
-        while (match(line, /include!\("[^"]+"\)/)) {
-          inc=substr(line, RSTART, RLENGTH)
-          sub(/^include!\("/, "", inc); sub(/"\)$/, "", inc)
-          print dir "/" inc
-          line=substr(line, RSTART+RLENGTH)
-        }
-        if (depth<=0) skip=0
-        prev=$0; next
-      }
-      prev=="#[cfg(test)]" && /^mod / {
-        skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}")
-        if (depth<=0) skip=0
-        prev=$0; next
-      }
-      { prev=$0 }
-    ' /dev/null
-  } | while IFS= read -r cand; do
-    [ -f "$cand" ] && printf '%s\n' "$cand"
-  done | sort -u
+  python3 ci/rust_test_modules.py "$SRC"
 }
 
 # is_wholly_test <path>: the `wholly_test` list as a builtin lookup. Three gates below asked this
@@ -270,6 +209,8 @@ gate() {
 }
 
 echo "== check-deps =="
+wholly_test="$(wholly_test_files)" || { fail "Rust test-module classification failed"; exit 1; }
+wholly_test_index_init "$wholly_test"
 
 # browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
 # and is deliberately gone. Reject both the old storage/selector machinery and every free
@@ -577,8 +518,6 @@ fi
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
 # test's reference colour maths is not logical state.
-wholly_test="$(wholly_test_files)"
-wholly_test_index_init "$wholly_test"
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
 libm_bad=0
@@ -637,7 +576,6 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 # production lines of ui/detail.rs go unscanned. `stores::<store>::apply(` lines are the new
 # spelling and are excluded by name; a SCREEN's own `crate::ui::person::open(` is not a store
 # call and is masked before the match.
-mut_wholly_test="$wholly_test"
 mut_bad=0
 while IFS= read -r f; do
   if is_wholly_test "$f"; then continue; fi

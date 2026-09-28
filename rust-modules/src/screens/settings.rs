@@ -52,7 +52,7 @@ use crate::ui::{theme, Painter, Rect};
 
 use super::family::{inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
-use super::registry::{word, DirectoryLike};
+use super::registry::{word, AppFx, DirectoryLike};
 
 /// Which ceremony the surface carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -447,6 +447,8 @@ fn mount_page(
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
+        SettingsPage::Language => Box::new(LanguagePage::new(entry)),
+        SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
         SettingsPage::Legal => Box::new(super::legal::LegalIndex::new(entry)),
@@ -949,8 +951,10 @@ impl Mounter<InnerHost> for RouteSurface {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
+    Language,
     Playback,
-    AudioSubtitles,    Favourites,
+    AudioSubtitles,
+    Favourites,
     Privacy,
     Legal,
     AutoSignIn,
@@ -971,7 +975,7 @@ pub(crate) struct RootPage {
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
     pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
-    /// The servers the signed-in account answered "Connect without encryption?" for, then the
+    /// The servers the signed-in account answered crate::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
     plaintext_rows: Vec<(String, bool)>,
@@ -988,6 +992,7 @@ struct RootState {
     sel: i32,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    language: crate::i18n::Preference,
     /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
     /// one, so every other root's digest is unchanged.
     plaintext: Vec<bool>,
@@ -995,7 +1000,7 @@ struct RootState {
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32).bool(self.auto_sign_in).bool(self.trailer_autoplay);
+        w.u32(self.sel as u32).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1005,8 +1010,8 @@ impl LogicalState for RootState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "root sel={} auto_sign_in={} trailer_autoplay={}",
-            self.sel, self.auto_sign_in, self.trailer_autoplay
+            "root sel={} auto_sign_in={} trailer_autoplay={} language={}",
+            self.sel, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
@@ -1031,6 +1036,7 @@ impl RootPage {
                 sel: 0,
                 auto_sign_in: false,
                 trailer_autoplay: true,
+                language: crate::i18n::Preference::System,
                 plaintext: Vec::new(),
             },
         };
@@ -1049,6 +1055,7 @@ impl RootPage {
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
+        self.state.language = crate::i18n::saved_preference();
 
         let mut actions = Vec::new();
         let mut sections = Vec::new();
@@ -1057,13 +1064,10 @@ impl RootPage {
             // The section is Libraries and the row is Favorite libraries: the switch governs the
             // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
             sections.push(
-                Section::new("Libraries").row(
-                    Row::new("Favorite libraries")
-                        .detail("Which libraries this television shows.")
-                        .value(format!(
-                            "{n} {}",
-                            if n == 1 { "favorite" } else { "favorites" }
-                        ))
+                Section::new(crate::i18n::msg::settings_libraries_section()).row(
+                    Row::new(crate::i18n::msg::settings_libraries_title())
+                        .detail(crate::i18n::msg::settings_libraries_detail())
+                        .value(crate::i18n::msg::settings_libraries_count(n as i64))
                         .chevron(true),
                 ),
             );
@@ -1073,50 +1077,53 @@ impl RootPage {
             }
         }
         sections.push(
-            Section::new("Privacy")
+            Section::new(crate::i18n::msg::settings_privacy_section())
                 .row(
-                    Row::new("Privacy & data")
-                        .detail("Optional reports, privacy information and local data.")
+                    Row::new(crate::i18n::msg::settings_privacy_title())
+                        .detail(crate::i18n::msg::settings_privacy_detail())
                         .chevron(true),
                 )
                 .row(
-                    Row::new("Legal notices")
-                        .detail("Privacy, licences, source code, trademarks and contact.")
+                    Row::new(crate::i18n::msg::settings_legal_title())
+                        .detail(crate::i18n::msg::settings_legal_detail())
                         .chevron(true),
                 ),
         );
         actions.extend([Action::Privacy, Action::Legal]);
-        let mut system = Section::new("System");
+        let mut system = Section::new(crate::i18n::msg::settings_system_section());
         // A one-person account already skips the picker; the switch only changes a multi-user boot.
         if signed_in && multi_user {
             system = system.row(
-                Row::new("Automatically Sign In")
-                    .detail("Skip the profile list when the app starts.")
+                Row::new(crate::i18n::msg::settings_auto_sign_in_title())
+                    .detail(crate::i18n::msg::settings_auto_sign_in_detail())
                     .toggle(auto_sign_in),
             );
             actions.push(Action::AutoSignIn);
         }
         if signed_in {
             system = system.row(
-                Row::new("Play trailers automatically")
-                    .detail("After a moment on a title, play its trailer with sound.")
+                Row::new(crate::i18n::msg::settings_trailers_title())
+                    .detail(crate::i18n::msg::settings_trailers_detail())
                     .toggle(trailer_autoplay),
             );
             actions.push(Action::TrailerAutoplay);
         }
         system = system.row(
-            Row::new("About PlxNative")
-                .detail("Version, copyright and project information.")
+            Row::new(crate::i18n::msg::settings_about_title())
+                .detail(crate::i18n::msg::settings_about_detail())
                 .chevron(true),
         );
+        system = system.row(Row::new(crate::i18n::msg::settings_language_title())
+            .detail(crate::i18n::msg::settings_language_detail())
+            .value(preference_name(self.state.language)).chevron(true));
         sections.push(system);
-        actions.push(Action::About);
-        let mut playback = Section::new("Playback").row(
-            Row::new("Video & playback").detail("Default quality and Direct Play.").chevron(true));
+        actions.extend([Action::About, Action::Language]);
+        let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
+            Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
         actions.push(Action::Playback);
         if signed_in {
-            playback = playback.row(Row::new("Audio & subtitles")
-                .detail("Language preferences synced with your Plex account.").chevron(true));
+            playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
+                .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
             actions.push(Action::AudioSubtitles);
         }
         sections.push(playback);
@@ -1128,7 +1135,7 @@ impl RootPage {
     }
 
     /// **Unencrypted connections**: one switch per server the signed-in account answered
-    /// "Connect without encryption?" for (`grant::choices` — this session's answers over the
+    /// crate::i18n::msg::settings_plaintext_question() for (`grant::choices` — this session's answers over the
     /// session file's, for THIS account only), so an allowed one is here to turn off again — and,
     /// switched off, one per server discovery offers the question for that nobody has answered
     /// (`grant::offers`), so a signed-in person whose server went plaintext-only has a place to
@@ -1161,7 +1168,7 @@ impl RootPage {
         if self.plaintext_rows.is_empty() {
             return None;
         }
-        let mut section = Section::new("Unencrypted connections");
+        let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
         let offers = crate::plex::grant::offers();
         for (i, (machine, on)) in self.plaintext_rows.iter().enumerate() {
             // An offered server was never reached, so the session file does not know it yet:
@@ -1173,7 +1180,7 @@ impl RootPage {
                 .or_else(|| sess.sources.iter()
                     .find(|s| s.machine_id == *machine && !s.name.is_empty())
                     .map(|s| s.name.as_str()))
-                .unwrap_or("Plex server");
+                .unwrap_or(crate::i18n::msg::settings_plaintext_server());
             let connected = *on && crate::plex::grant::granted_origin(machine).is_some();
             section = section.row(Row::new(name).detail(plaintext_question::settings_detail(*on, connected)).toggle(*on));
             actions.push(Action::Plaintext(i));
@@ -1186,8 +1193,8 @@ impl RootPage {
             Header::new(
                 RouteLayout::screen(),
                 None,
-                "Settings",
-                "Manage this television and your Plex profile. Language preferences sync with your Plex account; playback defaults apply to this television.",
+                crate::i18n::msg::settings_title(),
+                crate::i18n::msg::settings_root_copy(),
             ),
             &self.table,
             GroupId(0),
@@ -1242,6 +1249,7 @@ impl RootPage {
             Action::Privacy => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Privacy))),
             Action::Legal => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Legal))),
             Action::About => fx.push(Fx::Nav(NavOp::Push(SettingsPage::About))),
+            Action::Language => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Language))),
         }
     }
 }
@@ -1431,6 +1439,10 @@ mod test_support;
 mod draw_and_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "settings_text_fit_tests.rs"]
+mod text_fit_tests;
+
+#[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
 mod root_navigation_tests;
 
@@ -1441,3 +1453,173 @@ mod pop_and_remember_tests;
 #[cfg(test)]
 #[path = "settings_composed_tests.rs"]
 mod composed_tests;
+
+// The picker persists an installation preference, while the immutable LocaleContext continues
+// to render the current session. Choosing a language never remounts a screen or resets playback.
+fn preference_name(preference: crate::i18n::Preference) -> &'static str {
+    if preference == crate::i18n::Preference::System {
+        crate::i18n::msg::settings_language_system()
+    } else {
+        preference.native_name()
+    }
+}
+
+const LANGUAGES: [crate::i18n::Preference; 4] = [
+    crate::i18n::Preference::System, crate::i18n::Preference::En,
+    crate::i18n::Preference::Es, crate::i18n::Preference::Be,
+];
+
+struct LanguagePage {
+    entry: EntryId,
+    table: TableView,
+    state: LanguageState,
+    save: Option<(crate::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
+}
+
+struct LanguageState {
+    selected: crate::i18n::Preference,
+    sel: i32,
+    failed: bool,
+    busy: bool,
+}
+
+impl LogicalState for LanguageState {
+    fn write(&self, w: &mut Canon) {
+        w.u32(self.sel as u32).u8(LANGUAGES.iter().position(|p| *p == self.selected).unwrap_or(0) as u8).bool(self.failed).bool(self.busy);
+    }
+    fn probe(&self, out: &mut String) {
+        out.push_str(&format!("language selected={} sel={} failed={} busy={}", self.selected.tag(), self.sel, self.failed, self.busy));
+    }
+}
+
+impl LanguagePage {
+    fn new(entry: EntryId) -> Self {
+        let selected = crate::i18n::saved_preference();
+        let sel = LANGUAGES.iter().position(|language| *language == selected).unwrap_or(0) as i32;
+        let mut page = Self { entry, table: TableView::new(), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
+        page.rebuild();
+        page
+    }
+
+    fn pending(&self) -> bool {
+        self.state.selected != crate::i18n::current().preference()
+    }
+
+    fn rebuild(&mut self) {
+        let mut choices = Section::new("");
+        for language in LANGUAGES {
+            choices = choices.row(Row::new(preference_name(language)).checked(language == self.state.selected).dim(self.state.busy));
+        }
+        let contribution = Section::new("").row(
+            Row::new(crate::i18n::msg::settings_language_contribute())
+                .detail(crate::i18n::msg::settings_language_help()).chevron(true));
+        self.table.compact = false;
+        self.table.set_sections(vec![choices, contribution], self.state.sel, false);
+        self.table.list_focused = true;
+    }
+
+    fn view(&self) -> TableScreen<'_> {
+        let copy = if self.state.busy {
+            crate::i18n::msg::settings_language_saving()
+        } else if self.state.failed {
+            crate::i18n::msg::settings_language_save_failed()
+        } else if self.pending() {
+            crate::i18n::msg::settings_language_pending()
+        } else {
+            crate::i18n::msg::settings_language_copy()
+        };
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(crate::i18n::msg::settings_title()),
+            crate::i18n::msg::settings_language_title(), copy), &self.table, GroupId(0), self.entry)
+    }
+
+    fn activate(&mut self, row: u32, fx: &mut Effects<'_, InnerHost>) {
+        if row == LANGUAGES.len() as u32 {
+            fx.push(Fx::Nav(NavOp::Push(SettingsPage::Contribute)));
+        } else if let Some(&preference) = LANGUAGES.get(row as usize) {
+            if self.state.busy || preference == self.state.selected { return; }
+            let (reply, receipt) = std::sync::mpsc::channel();
+            self.save = Some((preference, receipt));
+            self.state.busy = true;
+            self.state.failed = false;
+            fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::Language {
+                language: preference, reply,
+            })));
+            self.rebuild();
+        }
+    }
+
+    fn poll_save(&mut self) -> bool {
+        let Some((preference, receipt)) = &self.save else { return false; };
+        let success = match receipt.try_recv() {
+            Ok(success) => success,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+        };
+        if success { self.state.selected = *preference; }
+        self.state.failed = !success;
+        self.state.busy = false;
+        self.save = None;
+        self.rebuild();
+        true
+    }
+}
+
+impl Machine<InnerHost> for LanguagePage {
+    type Ev = ScreenEvent<InnerHost>;
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        match ev {
+            ScreenEvent::Mount => {
+                // The generic modal Enter runs before queued mount effects. Remembering a
+                // row afterward cannot move its already-seated cursor, so request an explicit
+                // Enter just as first-run consent does. A child return does not remount this
+                // page and still restores the surface's remembered contribution row.
+                fx.push(Fx::Deliver(
+                    MachineId::Instance(InstanceId(0)),
+                    Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::Elem(FocusKey {
+                            entry: self.entry,
+                            elem: self.state.sel as u32,
+                        }),
+                    })),
+                ));
+                Handled::Yes
+            }
+            ScreenEvent::Tick(t) => {
+                if self.poll_save() { fx.invalidate(crate::ui::present::Provenance::Input); }
+                self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                Handled::Yes
+            }
+            ScreenEvent::FocusMoved { to, .. } => {
+                table_focus(&mut self.table, to.elem); self.state.sel = self.table.sel; Handled::Yes
+            }
+            ScreenEvent::Activate(row) => { self.activate(*row, fx); Handled::Yes }
+            ScreenEvent::Input(crate::ui::machine::InputEvent { kind: crate::ui::machine::InputKind::Key {
+                key: Key::Right, at_edge: true, .. }, .. }) => {
+                if let Some(k) = cx.focus.current {
+                    if self.table.row_opens(k.elem as i32) { self.activate(k.elem, fx); }
+                }
+                Handled::Yes
+            }
+            _ => Handled::No,
+        }
+    }
+}
+
+crate::focusable_via_view!(LanguagePage, InnerHost, view);
+
+impl Screen<InnerHost> for LanguagePage {
+    fn name(&self) -> &'static str { "language" }
+    fn state(&self) -> &dyn LogicalState { &self.state }
+    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(crate::i18n::msg::settings_title())) }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        crate::ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
+    }
+    fn render(&self) -> RenderStrategy { RenderStrategy::Page }
+    fn focus_source(&self) -> FocusSource { FocusSource::Engine }
+    fn hit_source(&self) -> HitSource { HitSource::Engine }
+}
+
+#[cfg(test)]
+#[path = "settings_language_tests.rs"]
+mod language_tests;

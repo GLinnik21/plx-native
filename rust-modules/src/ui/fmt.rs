@@ -2,16 +2,16 @@
 //! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
 //! drift this replaces).
 
-pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+pub(crate) fn converts_on_server() -> &'static str { crate::i18n::msg::core_converts_on_server() }
 
 /// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
 pub(crate) fn dur_short(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h}h {m}m")
+        crate::i18n::msg::core_duration_short_hours(h, m)
     } else {
-        format!("{m}m")
+        crate::i18n::msg::core_duration_short_minutes(m)
     }
 }
 
@@ -25,9 +25,9 @@ pub(crate) fn dur_short(ms: i64) -> String {
 pub(crate) fn secs_short(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
-        format!("{}.{} s", ms / 1_000, (ms % 1_000) / 100)
+        crate::i18n::msg::core_seconds(&crate::i18n::current().decimal(ms / 100, 1))
     } else {
-        format!("{} s", ms / 1_000)
+        crate::i18n::msg::core_seconds(&crate::i18n::current().number(ms / 1_000))
     }
 }
 
@@ -47,9 +47,9 @@ pub(crate) fn dur_long(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h} hr {m} min")
+        crate::i18n::msg::core_duration_long_hours(h, m)
     } else {
-        format!("{m} min")
+        crate::i18n::msg::core_duration_long_minutes(m)
     }
 }
 
@@ -59,9 +59,9 @@ pub(crate) fn time_left(remaining_ms: i64) -> String {
     let mins = ((remaining_ms + 59_999) / 60_000).max(1);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h} hr {m} min left")
+        crate::i18n::msg::core_time_left_hours(h, m)
     } else {
-        format!("{m} min left")
+        crate::i18n::msg::core_time_left_minutes(m)
     }
 }
 
@@ -99,10 +99,10 @@ pub(crate) fn clock(ms: i64) -> String {
 pub(crate) fn episode_address(season: i64, index: i64) -> String {
     let mut parts: Vec<String> = Vec::new();
     if season > 0 {
-        parts.push(format!("S{season}"));
+        parts.push(crate::i18n::msg::core_season(season));
     }
     if index > 0 {
-        parts.push(format!("E{index}"));
+        parts.push(crate::i18n::msg::core_episode(index));
     }
     parts.join(" \u{b7} ")
 }
@@ -110,11 +110,11 @@ pub(crate) fn episode_address(season: i64, index: i64) -> String {
 /// A collection's size — `"1 item"`, `"12 items"`. ONE formatter for the collection page's meta
 /// line and every collection tile's caption, so the two cannot count one collection two ways.
 pub(crate) fn item_count(n: i64) -> String {
-    format!("{n} {}", if n == 1 { "item" } else { "items" })
+    crate::i18n::msg::browse_search_items(n)
 }
 
 pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
-    format!("S{season}, E{index}")
+    crate::i18n::msg::core_episode_ordinal(index, season)
 }
 
 /// The source attribution — `"Shared by friend"` — or `None` when there is nobody to credit.
@@ -136,7 +136,7 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
 /// read-out. It was written twice with two different empty-handle behaviours and interpolated a
 /// third time inline — exactly the drift this module exists to prevent.
 pub(crate) fn shared_by(handle: &str) -> Option<String> {
-    (!handle.is_empty()).then(|| format!("Shared by {handle}"))
+    (!handle.is_empty()).then(|| crate::i18n::msg::core_shared_by(handle))
 }
 
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
@@ -240,11 +240,8 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
             parts[1].parse::<usize>(),
             parts[2].parse::<i64>(),
         ) {
-            const MON: [&str; 12] = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ];
-            if (1..=12).contains(&mo) {
-                return format!("{da} {} {y}", MON[mo - 1]);
+            if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
+                if let Some(date) = crate::i18n::current().date(y, m, d) { return date; }
             }
         }
     }
@@ -261,8 +258,60 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
 pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> String {
     match art {
-        crate::metadata::RatingArt::Imdb => format!("{value:.1}"),
-        _ => format!("{}%", (value * 10.0).round().clamp(0.0, 100.0) as i64),
+        crate::metadata::RatingArt::Imdb => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        _ => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
+    }
+}
+
+/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (Spanish and
+/// Belarusian set it off with a no-break space; English does not).
+pub(crate) fn percent(value: i64) -> String {
+    crate::i18n::msg::core_percent(&crate::i18n::current().number(value))
+}
+
+/// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
+pub(crate) fn decimal(value: f64, scale: i16) -> String {
+    let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
+    crate::i18n::current().decimal((value * factor).round() as i64, scale)
+}
+
+/// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
+pub(crate) fn signed_decimal(value: f64, scale: i16) -> String {
+    let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
+    let scaled = (value * factor).round() as i64;
+    let digits = crate::i18n::current().decimal(scaled, scale);
+    if scaled >= 0 {
+        format!("+{digits}")
+    } else {
+        digits
+    }
+}
+
+/// A bitrate given in kbps: `28.9 Mbps` from a megabit up, otherwise whole `640 kbps`, in the UI
+/// locale's numerals and unit spelling.
+pub(crate) fn bitrate(kbps: i64) -> String {
+    if kbps >= 1000 {
+        crate::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
+    } else {
+        crate::i18n::msg::widgets_tracks_kbps(&crate::i18n::current().number(kbps))
+    }
+}
+
+/// A byte count in binary units with the UI locale's numerals — `2.50 GB`, `12.3 MB`, `640 kB`.
+/// `scales` is the number of fractional digits for GB, MB and kB respectively; a count below a
+/// kilobyte is whole bytes (`B`).
+pub(crate) fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
+    use crate::i18n::msg;
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= K * K * K {
+        msg::core_unit_gb(&decimal(b / (K * K * K), scales.0))
+    } else if b >= K * K {
+        msg::core_unit_mb(&decimal(b / (K * K), scales.1))
+    } else if b >= K {
+        msg::core_unit_kb(&decimal(b / K, scales.2))
+    } else {
+        msg::core_unit_b(&crate::i18n::current().number(bytes))
     }
 }
 

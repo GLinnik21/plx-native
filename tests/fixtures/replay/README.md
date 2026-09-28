@@ -143,6 +143,14 @@ freshly recorded against shape `13142456728797643905` and passed Targets and Res
 difference counters. Account/preference I/O remains outside the controlled replay domain: typed
 preference effects are rejected by the bridge before capture, worker admission, or persistence.
 
+Localization adds the captured language preference to the controlled initial input
+(`ControlledHomeInitV6` / `SessionInitV5`); controlled System resolves to en-US with a 24-hour
+clock whatever the host's `LANG`. The #217 anchors were observed being refused on that shape, then
+all three were freshly recorded against shape `14389175148146224086` and passed Targets and
+Resolve with zero difference counters. The recorded text differs where the change meant it to:
+Settings gains the Language destination, the Filmography count is measured as it wraps, and
+Detail's release date is the locale's short numeric date (`3/14/2011`, no longer `14 Mar 2011`).
+
 The collection page (#205) adds `AppArg`'s Collection argument, its page memory and the
 Collection screen's logical state to the screen census. The prior anchors were observed being
 refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
@@ -168,3 +176,13 @@ memory, which moves the screen census again. The anchors recorded against `29556
 were observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three,
 both modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
 `12050413345652660670` and passed Targets and Resolve with zero difference counters.
+
+Merging the collections work into the localization branch combines both census moves: the
+captured language preference with the collection page, the Library's Collections type, linked
+shelf headings and the detail collection shelf. The anchors recorded against
+`12050413345652660670` were observed being refused (`replay: REFUSED — invalid or incompatible
+recording`, all three, both modes), then all three were re-recorded with `tools/plxnative-rec
+rerecord` against shape `12097267434420408384` and passed Targets and Resolve with zero difference
+counters. The closed alphabet gains the Settings root's shortened crash-report sub-line
+("Your crash report identifier and how to have reports deleted."), which the fit-to-slot
+translation pass introduced and the Settings recording now measures.

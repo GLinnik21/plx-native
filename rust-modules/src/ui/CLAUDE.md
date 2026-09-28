@@ -57,6 +57,23 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    bespoke widget is only justified when nothing here is close — and then it lands *here*, as a
    reusable `View`, so the next screen gets it for free.
 
+## Localization and shared reading layout
+
+App-owned text comes from typed `i18n::msg` accessors. Keep protocol identifiers and server-returned
+metadata untouched. Measure translated labels with the injected `Measure`; focused captions and
+complete questions must remain inside their safe frames at the shared theme sizes.
+
+Alert titles, eyebrows and reading text use `theme::alert::TEXT_ALIGN`: the common left padding
+edge. Decision dialogs follow the same rule as the About, biography and track-information panels.
+Button labels and paired trailing values retain their own control/column alignment.
+
+`RouteLayout::screen_for_title` measures translated titles; `screen_for_reading` allocates space
+for complete first-run consent disclosures and one row of concise answers. Exceptional overflow
+uses the event-time measured `DocumentReader` bounds while the answer retains visible focus.
+Do not add a separate reader outline or keycap hint. Route crumbs already name the BACK destination;
+read-only alert panels retain their dismissal hint. Contribution caption and URL lines are centered
+on the QR allocation.
+
 ## The architecture (restructure spec v4)
 
 The owner's goal, verbatim from the spec: *"the application's behaviour is described by several
@@ -71,7 +88,7 @@ can follow.
 
 | layer | may name |
 |---|---|
-| `ui/` — the LIBRARY | `crate::{gfx,text,paths,task}` — **never an application type** |
+| `ui/` — the LIBRARY | `crate::{gfx,text,paths,task,i18n}` — **never an application type** |
 | `screens/` — the application's screens | `ui/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
 | `stores/` | data crates and `ui::machine` only — never `screens/` |
 | `app/` | everything |
@@ -187,7 +204,7 @@ presentation in a design pass.
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
    a control, not prose, and caps is how the app says *pressable*. Use the shared
-   `text_view::MORE_MARK` rather than a screen-local literal — the drift that caused this rule was
+   `text_view::more_mark()` rather than a screen-local literal — the drift that caused this rule was
    two screens each holding their own copy. A tab pill reading "More" is a pill, not a text mark.
 
 3. **The player HUD gets a state glyph, not a transport row.** No `<<` `||` `>>` `■` buttons. The

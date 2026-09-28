@@ -711,7 +711,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
 #[test]
 fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     use crate::plex::session::PlaintextChoice;
-    use super::super::plaintext_question::CONNECT;
+    use super::super::plaintext_question::connect;
     let _guard = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
@@ -742,7 +742,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     tick(&mut page);
     let (caption, reason) = page.status_text(&cx);
     assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
-    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(CONNECT));
+    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(connect()));
     let mut out = Vec::new();
     let mut present = crate::ui::present::Present::new();
     page.activate(RETRY, false, &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));

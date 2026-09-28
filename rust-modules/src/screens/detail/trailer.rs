@@ -33,7 +33,12 @@ use crate::ui::player_hud::{LINGER_MS, PLAY_MARK_MS};
 /// non-information while "Official Trailer" or "Teaser 2" do not.
 pub(super) fn transport_title<'a>(film_title: &'a str, extra_title: &'a str) -> &'a str {
     let trimmed = extra_title.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(crate::metadata::TRAILER_CONTEXT) {
+    // PMS scans the boilerplate title in English whatever the UI language, so both the kicker's
+    // own word and the server's "Trailer" count as saying nothing new.
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("trailer")
+        || trimmed.to_lowercase() == crate::metadata::ExtraContext::Trailer.label().to_lowercase()
+    {
         film_title
     } else {
         extra_title
@@ -454,7 +459,7 @@ impl Transport {
         if let Ok(title) = CString::new(transport_title(film_title, extra_title)) {
             crate::ui::player_hud::draw_title(
                 p,
-                crate::ui::player_hud::Kicker::Context(crate::metadata::TRAILER_CONTEXT_C.as_ptr()),
+                crate::ui::player_hud::Kicker::Context(crate::i18n::msg::browse_detail_trailer_c().as_ptr()),
                 title.as_ptr(),
             );
         }
@@ -486,7 +491,7 @@ impl Transport {
         if self.hint <= 0.01 {
             return;
         }
-        let hint = KeyHint::glyph(c"", Icon::ChevronUp, c"Full screen");
+        let hint = KeyHint::translated_glyph(crate::i18n::msg::browse_detail_full_screen_hint("\u{fffc}"), Icon::ChevronUp);
         let x = hint_cx(hint.width(measure));
         hint.draw(p.alpha(self.hint), x, cy, measure);
     }

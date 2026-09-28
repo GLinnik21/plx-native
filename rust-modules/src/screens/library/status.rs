@@ -63,34 +63,33 @@ impl LibraryScreen {
         let (caption, reason) = match self.readout {
             Readout::Failed => {
                 let source = directory.source().map(|(_, source)| source);
-                let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("server");
+                let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or(crate::i18n::msg::browse_library_server());
                 let owner = source.map(|source| source.handle.as_str()).filter(|owner| !owner.is_empty());
                 // Your own server is "your Plex server", the words Home uses for the same fault;
                 // a borrowed one is named, since "your" would be untrue of it.
                 let caption = match owner {
-                    None => "Can\u{2019}t reach your Plex server".to_string(),
-                    Some(_) => format!("Can\u{2019}t reach {name}"),
+                    None => crate::i18n::msg::browse_home_failed().to_string(),
+                    Some(_) => crate::i18n::msg::browse_library_unreachable(name),
                 };
                 // A server discovery offers "Connect without encryption?" for says why instead,
                 // and names what *Connect* / *Try again* does (`auth::plaintext_copy`).
                 let reason = match self.plaintext.verdict() {
                     Some(verdict) => Some(crate::auth::plaintext_copy(Some(verdict),
                         crate::auth::ReadoutSurface::SignedIn).into_owned()),
-                    None => owner.map(|owner| format!("Shared by {owner} · your own server is fine.")),
+                    None => owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)),
                 };
                 (caption, reason)
             }
             Readout::Empty => {
-                let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }
-                    else if directory.sections().is_empty() { "No libraries on this server".into() }
-                    else if listing.unwatched() || listing.genre().is_some() { "Nothing here matches".into() }
+                let caption = if self.wanted_kind.is_some() { crate::i18n::msg::browse_library_no_matches().into() }
+                    else if directory.sections().is_empty() { crate::i18n::msg::browse_library_empty().into() }
+                    else if listing.unwatched() || listing.genre().is_some() { crate::i18n::msg::browse_library_no_matches().into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        let noun = listing.library_type().noun(section.kind);
-                        format!("No {noun} in {}", section.row.title)
-                    } else { "Nothing here matches".into() };
+                        listing.library_type().empty_readout(section.kind, &section.row.title)
+                    } else { crate::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }
-            Readout::Loading => ("Loading…".into(), None),
+            Readout::Loading => (crate::i18n::msg::browse_library_loading().into(), None),
             Readout::Grid => (String::new(), None),
         };
         (CString::new(caption).unwrap_or_default(), reason.map(|reason| CString::new(reason).unwrap_or_default()))

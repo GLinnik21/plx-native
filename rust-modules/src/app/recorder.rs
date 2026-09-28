@@ -2314,7 +2314,11 @@ mod tests {
         // the hubs initial state, so a recorded collection row is no longer byte-identical to one
         // without its count. The predecessor 0x5232_f81a_719f_4c3c is kept here for the same
         // reason every value above it is.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x4687_2768_0762_9a4d);
+        //
+        // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5,
+        // moving main's census (0x4687_2768_0762_9a4d, above; 0x3b46_89f3_2380_2be7 before the
+        // collections member count) to this value.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0xa1e4_897f_3373_3a4e);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result

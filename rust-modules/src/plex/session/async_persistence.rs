@@ -1076,7 +1076,7 @@ pub(crate) fn clear() -> Result<Receipt, AdmissionError> {
 /// Consent may delegate to this receipt; it must not announce independent durability.
 ///
 /// **Not yet wired to the live sign-out path, and that is a decision, not an oversight.**
-/// `plex::session::clear()` is the entry point the adapter's queued clear actually calls,
+/// `plex::session::clear_for_erase()` is the entry point the adapter's queued clear actually calls,
 /// and it stays a synchronous, [`super::IO`]-locked implementation — `commit_cleared` then, on a
 /// durable commit, `persistence::cleanup_after_confirmed_clear` — for the same reason `save()`'s
 /// live write path is still synchronous: routing sign-out through this coordinator would admit it
@@ -1183,7 +1183,7 @@ fn execute_clear() -> DiskOutcome {
     // `persistence::ClearCleanupOutcome`, distinguishing "authority read-back did not confirm
     // Cleared" from "confirmed Cleared but a legacy candidate could not be retired" (AUTH-09
     // Finding B). This call site still collapses both into one `cleanup_failed` bool, inheriting
-    // the same conflation Finding B fixes on the synchronous `session::clear()` path — this path
+    // the same conflation Finding B fixes on the synchronous `session::clear_for_erase()` path — this path
     // is not live-wired to sign-out today (see the doc comment above), so it is not a live hole,
     // but it is left AS-IS here deliberately rather than silently patched over: a future package
     // wiring this path up should carry `ClearCleanupOutcome` through `ClearOutcome`/`DiskOutcome`

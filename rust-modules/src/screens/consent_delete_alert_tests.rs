@@ -5,6 +5,55 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+#[test]
+fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_answering() {
+    use crate::ui::machine::Measure;
+    use crate::ui::rec::{Measurements, TableMeasure};
+    // Deliberately large advances exercise future expanded disclosure text without changing any
+    // production strings or injecting a draw-time extent into the alert.
+    struct ExpandedMetrics;
+    impl Measure for ExpandedMetrics {
+        fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 3.0
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.32 }
+    }
+    static METRICS: ExpandedMetrics = ExpandedMetrics;
+    let _guard = crate::testlock::serial();
+    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let run_without_drawing = |measure: &dyn Measure| {
+        let fixture = FixtureMeasure;
+        let mut cx = test_cx(&fixture);
+        cx.measure = measure;
+        let (mut out, mut present) = sink();
+        let mut page = ConsentPage::settings(EntryId(1), &cx, &mut mk_fx(&mut out, &mut present));
+        let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+        page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
+        cx.focus.current = Some(FocusKey { entry: EntryId(1), elem: ALERT });
+        out.clear();
+        let before = page.state.hash();
+        page.step(&key_down(Key::Down), &cx, &mut mk_fx(&mut out, &mut present));
+        let scrolled = page.state.hash();
+        assert_ne!(scrolled, before, "scrolling must work before any draw, using cx.measure");
+        assert_eq!(page.alert.choice(), AlertChoice::Cancel);
+        assert!(page.alert.is_open() && out.is_empty());
+        page.step(&key_down(Key::Up), &cx, &mut mk_fx(&mut out, &mut present));
+        assert_eq!(page.state.hash(), before, "scroll position, not input count, belongs in replay state");
+        page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
+        assert!(!page.alert.is_open());
+        assert!(!out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::DeleteAllLocalData)))));
+        [before, scrolled, page.state.hash()]
+    };
+    let recorded = Measurements::record(&METRICS);
+    let expected = run_without_drawing(&recorded);
+    let table = recorded.drain().unwrap().into_iter().collect::<std::collections::HashMap<_, _>>();
+    assert!(!table.is_empty(), "event-time bounds must be captured for replay");
+    let replay = Measurements::Replay(TableMeasure::new(table));
+    assert_eq!(run_without_drawing(&replay), expected);
+    replay.drain().expect("all headless scroll measurements must come from the recorded table");
+}
+
 // ---- the delete alert traps focus, and only the loop ever deletes ---------------------
 
 /// Opening the alert traps focus on it — the same mechanism `first_run`'s own mount fix uses,
@@ -32,7 +81,7 @@ fn confirming_the_alert_asks_the_loop_to_delete_and_reseats_the_table() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    page.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
+    page.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
     page.alert.set_choice(AlertChoice::Destructive);
     out.clear();
     page.alert_answer(true, &mut mk_fx(&mut out, &mut present));
@@ -49,7 +98,7 @@ fn cancelling_the_alert_never_asks_the_loop_to_delete_anything() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    page.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
+    page.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
     page.alert.set_choice(AlertChoice::Cancel);
     out.clear();
     page.alert_answer(false, &mut mk_fx(&mut out, &mut present));

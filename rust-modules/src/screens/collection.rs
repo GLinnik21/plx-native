@@ -57,12 +57,12 @@ fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measu
         .with_measure(measure)
         .leading(SUMMARY_LEAD)
         .max_lines(SUMMARY_LINES)
-        .fade_last(measure.width(crate::ui::text_view::MORE_MARK, theme::size::LABEL, true) + MORE_GAP)
+        .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::LABEL, true) + MORE_GAP)
 }
 
 pub(crate) fn member_label(item: &PmsMovie) -> String {
     match item.kind {
-        2 if item.season_index > 0 => format!("SEASON {}", item.season_index),
+        2 if item.season_index > 0 => crate::i18n::msg::browse_collection_season_mark(item.season_index as i64),
         3 => crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
         _ => String::new(),
     }
@@ -285,12 +285,12 @@ impl CollectionScreen {
     fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
         measure: &dyn crate::ui::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
-            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), c"Loading collection…", StatusKind::Working).phase(tick),
-            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), c"This collection is empty", StatusKind::Empty),
-            CollectionStatus::Unavailable => StatusOverlay::new(Self::status_frame(), c"This collection is not available", StatusKind::Empty),
+            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
+            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
+            CollectionStatus::Unavailable => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_unavailable_c(), StatusKind::Empty),
             CollectionStatus::Failed => {
-                let overlay = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
-                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(c"Try again");
+                let overlay = StatusOverlay::new(Rect::FULL, crate::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
+                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(crate::i18n::msg::browse_action_retry_c());
                 match collection {
                     Some(c) => overlay.glyph_ceiling(Self::header_text_bottom(c, measure)),
                     None => overlay,
@@ -393,9 +393,9 @@ impl CollectionScreen {
         // A count of zero is only an answer once the listing says so; before the header lands (and
         // on a failed load) the line is the kind alone rather than a false "0 items".
         let meta = if count == 0 && collection.status != CollectionStatus::Empty {
-            CString::new("Collection").unwrap_or_default()
+            crate::i18n::msg::browse_collection_kind_c().to_owned()
         } else {
-            CString::new(format!("{} · Collection", crate::ui::fmt::item_count(count as i64)))
+            CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count as i64)))
                 .unwrap_or_default()
         };
         Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)
@@ -410,7 +410,7 @@ impl CollectionScreen {
         }
         view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
         if self.summary_more {
-            Label::new(crate::ui::text_view::MORE_MARK.as_ptr(), theme::size::LABEL,
+            Label::new(crate::ui::text_view::more_mark().as_ptr(), theme::size::LABEL,
                 if focused && self.header_marked { theme::TEXT_SECONDARY } else { theme::TEXT_TERTIARY })
                 .bold().h(HAlign::Right).v(VAlign::CapTop)
                 .draw(p, Rect::new(COL_X, view.last_line_cap_y(summary_y, h), TEXT_W, 0.0));
@@ -875,5 +875,71 @@ mod tests {
         let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
         assert_eq!(got, focus);
         assert_eq!(restored.focused_item(Some(got), &cx(store.view(), Some(got))).unwrap().rk, "b");
+    }
+
+    /// **The collection page's fixed slots fit in every shipped language**: the season mark on a
+    /// grid poster (`widgets::poster_label` elides to the card less its insets) and the one-line
+    /// meta line beside the artwork. Measured with the device's whole-pixel advances.
+    #[test]
+    fn the_collection_pages_fixed_slots_fit_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use crate::ui::machine::Measure;
+        let m = ShippedMeasure;
+        let mark_budget = (CARD_W - 2.0 * 16.0) * HEADROOM;
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let season = PmsMovie { kind: 2, season_index: 99, ..Default::default() };
+            let mark = member_label(&season);
+            let w = m.width_str(&mark, theme::size::LABEL, true);
+            if w > mark_budget { out.push(format!("{}: {mark:?} is {w:.0}px in {mark_budget:.0}px", language.tag())); }
+            for meta in [msg::browse_collection_kind().to_owned(),
+                msg::browse_collection_meta(&crate::ui::fmt::item_count(99_999))] {
+                let w = m.width_str(&meta, theme::size::BODY, false);
+                if w > TEXT_W * HEADROOM { out.push(format!("{}: {meta:?} is {w:.0}px in {TEXT_W:.0}px", language.tag())); }
+            }
+        }
+        assert!(out.is_empty(), "collection text the television would clip:\n  {}", out.join("\n  "));
+    }
+
+    /// **The pseudo-locale sweep of the collection page**, as `detail/identity_tests.rs` does for
+    /// Detail: every run the page hands the text renderer, in each status it can show, is catalog
+    /// text (the `[!! … !!]` marker or the pseudo-locale's accented vowels), the fixture's own
+    /// server values, or letter-free. Anything else is English drawn without the catalog.
+    #[test]
+    fn every_app_owned_run_on_the_collection_page_comes_from_the_catalog() {
+        use crate::ui::screen::DrawFrame;
+        let _serial = crate::testlock::serial();
+        let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
+        let server = ["Set", "Qwerty", "Zzyzx", "Vlox"];
+        let season = PmsMovie { rk: "s".into(), kind: 2, season_index: 3, title: "Zzyzx".into(),
+            show_title: "Vlox".into(), ..Default::default() };
+        let mut stray = Vec::new();
+        for status in [CollectionStatus::Ready, CollectionStatus::Loading, CollectionStatus::Empty,
+            CollectionStatus::Unavailable, CollectionStatus::Failed] {
+            let (mut store, mut screen) = seeded();
+            store.edit_for_test(|c| {
+                c.summary = "Qwerty".into();
+                c.items.push(season.clone());
+                c.child_count = c.items.len();
+                c.status = status;
+                if status != CollectionStatus::Ready { c.items.clear(); c.child_count = 0; }
+            });
+            screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+            let context = cx(store.view(), None);
+            let runs = crate::text::capture_text_runs_for_test(|| {
+                let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
+                crate::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
+            });
+            assert!(runs.iter().any(|run| run.contains("[!!")), "{status:?} drew catalog text: {runs:?}");
+            let pseudo = |run: &str| run.contains("[!!") || run.contains(['á', 'ë', 'ï', 'ö', 'ü']);
+            stray.extend(runs.into_iter().filter(|run| !pseudo(run)).filter(|run| {
+                let mut rest = run.replace('\u{a0}', " ");
+                for value in server { rest = rest.replace(value, ""); }
+                rest.chars().any(char::is_alphabetic)
+            }).map(|run| format!("{status:?}: {run:?}")));
+        }
+        assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
     }
 }

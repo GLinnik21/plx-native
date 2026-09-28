@@ -78,11 +78,11 @@ impl ChromeSnapshot {
         if self.tabs_generation != Some(generation) {
             self.labels.clear();
             self.keys.clear();
-            self.labels.push("Home".into());
+            self.labels.push(crate::i18n::msg::browse_chrome_home().into());
             self.keys.push(STRIP_BASE);
             for i in 0..directory.tab_count() {
                 let Some(kind) = directory.tab_kind(i) else { continue };
-                self.labels.push(match kind { SecKind::Movie => "Movies", SecKind::Show => "TV Shows" }.into());
+                self.labels.push(match kind { SecKind::Movie => crate::i18n::msg::browse_kind_movies(), SecKind::Show => crate::i18n::msg::browse_kind_tv_shows() }.into());
                 self.keys.push(STRIP_BASE + match kind {
                     SecKind::Movie => 1,
                     SecKind::Show => 2,

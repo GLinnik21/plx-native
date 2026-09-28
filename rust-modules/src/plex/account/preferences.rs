@@ -48,12 +48,12 @@ pub(crate) enum PreferenceError {
 impl PreferenceError {
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::Stale => "Your profile or preferences changed. Reload settings and try again.",
-            Self::Refused => "Plex did not authorize this account request. Sign in again and retry.",
-            Self::TimedOut => "Plex took too long to respond. Please retry.",
-            Self::Unavailable => "Could not reach Plex. Check your connection and retry.",
-            Self::InvalidResponse => "Plex returned an unexpected response. Please retry.",
-            Self::InvalidPreference => "This preference value is not supported.",
+            Self::Stale => crate::i18n::msg::browse_preferences_stale(),
+            Self::Refused => crate::i18n::msg::browse_preferences_refused(),
+            Self::TimedOut => crate::i18n::msg::browse_preferences_timed_out(),
+            Self::Unavailable => crate::i18n::msg::browse_preferences_unavailable(),
+            Self::InvalidResponse => crate::i18n::msg::browse_preferences_invalid_response(),
+            Self::InvalidPreference => crate::i18n::msg::browse_preferences_invalid_preference(),
         }
     }
 }

@@ -206,7 +206,7 @@ impl LibraryScreen {
                     .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
             }
         }
-        card_row::draw_heading(p, "All", "", MARGIN_X,
+        card_row::draw_heading(p, crate::i18n::msg::browse_library_all(), "", MARGIN_X,
             y, layout::GRID_RIGHT - MARGIN_X, f.measure);
     }
 

@@ -22,19 +22,19 @@
 //!
 //! **Details is a card, never an expansion** (owner, 2026-09-19: "3 buttons and labels. Looks like
 //! a mess."). The read-out itself never grows: *Details* opens the same [`DecisionAlert`] the
-//! question uses, titled "Details", whose body is the Report ID (once there is one) and the
+//! question uses, titled crate::i18n::msg::settings_login_details(), whose body is the Report ID (once there is one) and the
 //! support line, and whose answers are *Close* and — only while a report can still be sent —
 //! *Send report*, which starts focused when it is there on open. While the card stays open its
 //! content follows the incident, retaining valid focus as receipts and answers change. BACK or *Close* puts focus back on
 //! *Details*; *Send report* closes the card too. Ordinary failure read-outs then show
-//! "Sending report…" beside its spinner; helper save warnings keep their storage stage visible. The QR screen's *Details* opens the same card.
+//! crate::i18n::msg::settings_login_report_sending() beside its spinner; helper save warnings keep their storage stage visible. The QR screen's *Details* opens the same card.
 //!
 //! **The calm default.** Until somebody acts (or a standing Yes sends one), the failure is the
 //! design system's `StatusOverlay` failed and nothing else: verdict, reason, *Try again* /
 //! *Details*. A report adds at most ONE short status line under the row ([`report_status`]); a
 //! helper save warning uses that line for its photographable storage stage. The
 //! Report ID lives only inside the Details card. A report still on its way carries the shared inline
-//! spinner beside "Sending report…" wherever that line is drawn — the QR screen's stall line keeps
+//! spinner beside crate::i18n::msg::settings_login_report_sending() wherever that line is drawn — the QR screen's stall line keeps
 //! its own spinner too.
 //!
 //! The constructor and each `Tick` consume one immutable [`auth::SessionRead`] publication through
@@ -67,7 +67,7 @@ use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
 use crate::ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect, View};
 
-use super::plaintext_question::{self, PlaintextQuestion, CONNECT};
+use super::plaintext_question::{self, PlaintextQuestion, connect};
 use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 
 /// The screen's elements. The read-out's primary action and *Details* share [`CONTROL_GROUP`];
@@ -84,13 +84,7 @@ const ALERT_SEND: u32 = 4;
 const CONTROL_GROUP: GroupId = GroupId(0);
 const ALERT_GROUP: GroupId = GroupId(1);
 
-const DETAILS_LABEL: &CStr = c"Details";
 /// The Details card's title — the pill's own word, so the card names what opened it.
-const DETAILS_TITLE: &CStr = c"Details";
-const SEND_REPORT: &CStr = c"Send report";
-const NOT_NOW: &CStr = c"Not now";
-const CLOSE: &CStr = c"Close";
-const REPORT_QUESTION: &CStr = c"Send a report about this sign-in problem?";
 /// The report alert's disclosure — short, because it is read from the sofa. **Every clause is a
 /// claim about `telemetry::incident::event_body`** and must stay true of it: "which sign-in step
 /// failed and how the connection answered" is the `incident` context (kind, link class, HTTP
@@ -98,9 +92,6 @@ const REPORT_QUESTION: &CStr = c"Send a report about this sign-in problem?";
 /// `release`; and every category it rules out — the same five `PRIVACY.md`'s onboarding section
 /// names — is not in the body at all. The full field list lives in `PRIVACY.md` and the in-app
 /// Privacy Policy, not here.
-pub(crate) const REPORT_BODY: &str = "The report says which sign-in step failed and how the \
-connection answered, storage failure stages and error numbers, plus the app version. It never includes your account name, tokens, PIN, \
-sign-in code or network addresses.";
 
 /// How long a working phase runs before the read-out grows a way out.
 ///
@@ -144,11 +135,8 @@ fn discovery_trouble_visible(phase: Phase, retry: Option<auth::DiscoveryRetryPro
 /// wedged request has its result discarded when it finally returns, and it re-runs only the leg
 /// that failed — discovery when the pin already yielded an account credential, a whole fresh pin
 /// when it did not.
-const ESCAPE: &CStr = c"Try again";
-const SIGN_IN: &CStr = c"Sign in";
 /// AUTH-03: acknowledges a fresh save the disk could not confirm — proceed, knowing the next
 /// launch may ask you to sign in again.
-const CONTINUE_UNSAVED: &CStr = c"Continue";
 
 /// How long a QR code may go unscanned before the screen offers to replace it on request.
 ///
@@ -213,13 +201,13 @@ fn qr_cache_stale(cached: u64, live: u64, phase: Phase) -> bool {
 fn deleted_readout(leftovers: usize) -> (&'static CStr, &'static CStr) {
     if leftovers == 0 {
         (
-            c"Local data deleted",
-            c"Credentials, preferences, telemetry and local diagnostics have been removed.",
+            crate::i18n::msg::browse_login_deleted_c(),
+            crate::i18n::msg::browse_login_deleted_detail_c(),
         )
     } else {
         (
-            c"Signed out, and most local data deleted",
-            c"Some files could not be removed and may still be on this television.",
+            crate::i18n::msg::browse_login_partial_c(),
+            crate::i18n::msg::browse_login_partial_detail_c(),
         )
     }
 }
@@ -239,13 +227,13 @@ fn deleted_readout(leftovers: usize) -> (&'static CStr, &'static CStr) {
 /// thing to say is where the fault most likely is.
 fn waiting_status(code_replaced: bool, stalled: bool, unreachable: bool) -> &'static CStr {
     if unreachable {
-        c"Can\u{2019}t reach Plex. Check your TV\u{2019}s internet connection."
+        crate::i18n::msg::settings_login_unreachable_c()
     } else if stalled {
-        c"Still waiting — press OK for a new code"
+        crate::i18n::msg::browse_login_stalled_c()
     } else if code_replaced {
-        c"That code expired — scan this one"
+        crate::i18n::msg::browse_login_expired_c()
     } else {
-        c"Waiting for you to sign in…"
+        crate::i18n::msg::browse_login_waiting_c()
     }
 }
 
@@ -260,9 +248,21 @@ struct QrLayout {
     card: Rect,
     code: Rect,
     status: Rect,
+    status_text: Rect,
+    status_spinner: Rect,
 }
 
-fn qr_layout(layout: RouteLayout) -> QrLayout {
+/// Preserve the QR status mark's existing radius; its dots are part of the measured gutter.
+const STATUS_SPINNER_R: f32 = 15.0;
+
+fn waiting_view<'a>(status: &'a CStr, measure: &'a dyn Measure) -> TextView<'a> {
+    TextView::new(status.to_str().unwrap_or_default(), theme::size::BODY, theme::TEXT_SECONDARY)
+        .with_measure(measure)
+        .leading(theme::size::BODY as f32 + theme::space::XS)
+        .break_long_words()
+}
+
+fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLayout {
     const SIDE: f32 = 420.0;
     let card = Rect::new(
         layout.content.cx() - SIDE * 0.5,
@@ -273,6 +273,23 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
     let url_h = theme::size::TITLE as f32 + theme::space::XS;
     let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
     let status_h = theme::size::BODY as f32 + theme::space::SM;
+    let status_top = card.y + card.h + theme::space::LG + code_h + theme::space::MD;
+    let spinner_extent = STATUS_SPINNER_R + Spinner::dot_r(STATUS_SPINNER_R);
+    let gutter = spinner_extent * 2.0 + theme::space::SM;
+    let text_w = measure.width(status, theme::size::BODY, false)
+        .min((layout.content.w - gutter).max(1.0));
+    let row_w = text_w + gutter;
+    let row_x = layout.content.cx() - row_w * 0.5;
+    // The first line retains the old cap-band anchor. Further lines flow below it, and their
+    // complete measured extent also owns the retry hit/focus rectangle.
+    let cap_h = measure.cap_h(theme::size::BODY);
+    let text_top = status_top + (status_h - cap_h).max(0.0) * 0.5;
+    let text_h = waiting_view(status, measure).measure_h(text_w);
+    let status_text = Rect::new(row_x + gutter, text_top, text_w, text_h);
+    let status_spinner = Rect::new(row_x, text_top + cap_h * 0.5 - spinner_extent,
+        spinner_extent * 2.0, spinner_extent * 2.0);
+    let status_frame = Rect::new(row_x, status_top, row_w,
+        status_h.max(text_top - status_top + text_h));
     QrLayout {
         url: Rect::new(
             layout.content.x,
@@ -287,12 +304,9 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
             layout.content.w,
             code_h,
         ),
-        status: Rect::new(
-            layout.content.x,
-            card.y + card.h + theme::space::LG + code_h + theme::space::MD,
-            layout.content.w,
-            status_h,
-        ),
+        status: status_frame,
+        status_text,
+        status_spinner,
     }
 }
 
@@ -377,10 +391,10 @@ enum ControlKind {
 
 fn label_for(kind: ControlKind) -> &'static CStr {
     match kind {
-        ControlKind::RestartWait | ControlKind::Retry => ESCAPE,
-        ControlKind::StartLogin => SIGN_IN,
-        ControlKind::ContinueUnsaved => CONTINUE_UNSAVED,
-        ControlKind::ConnectPlaintext => CONNECT,
+        ControlKind::RestartWait | ControlKind::Retry => crate::i18n::msg::browse_action_retry_c(),
+        ControlKind::StartLogin => crate::i18n::msg::browse_action_sign_in_c(),
+        ControlKind::ContinueUnsaved => crate::i18n::msg::settings_login_continue_unsaved_c(),
+        ControlKind::ConnectPlaintext => connect(),
     }
 }
 
@@ -433,6 +447,7 @@ struct ReportState {
     details_open: bool,
     /// `Some(send_focused)` while the alert is open
     alert: Option<bool>,
+    alert_scroll: u32,
     resolved: Option<(u32, u32)>,
 }
 
@@ -473,7 +488,7 @@ impl LogicalState for LoginState {
         });
         w.bool(r.link_trouble).bool(r.details_open);
         w.option(r.alert, |w, send| {
-            w.bool(send);
+            w.bool(send).u32(r.alert_scroll);
         });
         w.option(r.resolved, |w, (id, revision)| {
             w.u32(id).u32(revision);
@@ -526,8 +541,6 @@ struct Report {
     /// The offer the alert was opened for. Set once per offer, so an answered offer is not asked
     /// again when its state flickers back.
     alert_for: Option<u32>,
-    /// The alert's answers as last drawn — `Focusable` answers with `&self`.
-    alert_frames: Option<(Rect, Rect)>,
     /// The last `(id, revision)` this screen resolved, so a pending offer is resolved once rather
     /// than on every frame the owner has yet to answer.
     last_resolve: Option<(u32, u32)>,
@@ -542,7 +555,7 @@ struct Report {
 enum Sheet {
     Question,
     Details,
-    /// "Connect without encryption?" — *Not now* / *Connect*, asked from the read-out's primary.
+    /// crate::i18n::msg::settings_plaintext_question() — *Not now* / *Connect*, asked from the read-out's primary.
     Plaintext,
 }
 
@@ -558,7 +571,6 @@ impl Report {
             support_for: None,
             alert,
             alert_for: None,
-            alert_frames: None,
             last_resolve: None,
             pop: CtlPop::new(),
         }
@@ -570,6 +582,7 @@ impl Report {
             link_trouble: self.link_trouble,
             details_open: self.alert.is_open() && self.sheet == Sheet::Details,
             alert: self.alert.is_open().then(|| self.alert.choice() == Choice::Destructive),
+            alert_scroll: self.alert.scroll_target_bits(),
             resolved: self.last_resolve,
         }
     }
@@ -614,10 +627,10 @@ impl Report {
 fn report_status(state: &auth::owner::IncidentState) -> Option<(&'static CStr, bool)> {
     use auth::owner::IncidentState as S;
     Some(match state {
-        S::Sending | S::AutoSending | S::Queued { .. } => (c"Sending report\u{2026}", true),
-        S::Delivered { .. } => (c"Report sent. Thank you.", false),
-        S::Saved { .. } => (c"Report saved. It will be sent later.", false),
-        S::Failed => (c"Report couldn\u{2019}t be sent.", false),
+        S::Sending | S::AutoSending | S::Queued { .. } => (crate::i18n::msg::settings_login_report_sending_c(), true),
+        S::Delivered { .. } => (crate::i18n::msg::settings_login_report_sent_c(), false),
+        S::Saved { .. } => (crate::i18n::msg::settings_login_report_saved_c(), false),
+        S::Failed => (crate::i18n::msg::settings_login_report_failed_c(), false),
         S::Pending | S::Offered { .. } | S::OnRequest { .. } | S::NotNow | S::Dropped => return None,
     })
 }
@@ -640,7 +653,7 @@ fn group_report_id(receipt: &str) -> String {
 
 /// The Details card's line that carries the Report ID — labelled, its own paragraph.
 fn report_id_line(receipt: &str) -> String {
-    format!("Report ID: {}", group_report_id(receipt))
+    crate::i18n::msg::settings_login_report_id(&group_report_id(receipt))
 }
 
 /// The report's one status line, and whether a spinner turns beside it.
@@ -658,7 +671,7 @@ struct Note {
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     use crate::telemetry::incident::LinkClass;
     let set = crate::webos::device().set_line();
-    let set = if set.is_empty() { "unknown set".to_string() } else { set };
+    let set = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device().to_string() } else { set };
     let code = match offer.key.link {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
         link => format!("{}.{}", offer.key.kind.code(), link.code()),
@@ -667,7 +680,7 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     let discovery = offer.readout_context().and_then(|ctx| ctx.discovery.map(|e| {
         let target = e.target.map_or("discovery", |target| match target {
             crate::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
-            crate::telemetry::incident::DiscoveryTarget::Servers => "your servers",
+            crate::telemetry::incident::DiscoveryTarget::Servers => crate::i18n::msg::settings_login_your_servers(),
         });
         let attempts = ctx.discovery_attempts
             .map_or(String::new(), |n| format!(" attempts:{n}"));
@@ -1019,7 +1032,7 @@ impl LoginScreen {
             {
                 self.report.alert_for = Some(o.id);
                 self.report.sheet = Sheet::Question;
-                self.report.alert.open_with_body(REPORT_QUESTION, REPORT_BODY);
+                self.report.alert.open_with_body(crate::i18n::msg::settings_login_report_question_c(), crate::i18n::msg::settings_login_report_body());
                 Self::enter_group(fx, ALERT_GROUP);
             }
         }
@@ -1039,7 +1052,7 @@ impl LoginScreen {
             use crate::ui::decision_alert::Answers;
             let body = self.report.details_body();
             let answers = if self.report.sendable() { Answers::Two } else { Answers::One };
-            self.report.alert.reconcile_card(DETAILS_TITLE, body, answers);
+            self.report.alert.reconcile_card(crate::i18n::msg::settings_login_details_c(), body, answers);
         }
         self.report.alert.update(t.dt());
         let focused = cx
@@ -1079,7 +1092,7 @@ impl LoginScreen {
         self.phase == Phase::Error && plaintext_question::asks(self.plaintext.as_ref())
     }
 
-    /// Ask "Connect without encryption?" — the shared question on this screen's alert.
+    /// Ask crate::i18n::msg::settings_plaintext_question() — the shared question on this screen's alert.
     fn open_plaintext<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
         let Some(v) = self.plaintext.as_ref().filter(|_| self.plaintext_asks()) else {
             return;
@@ -1163,7 +1176,7 @@ impl LoginScreen {
         self.report.sheet = Sheet::Details;
         self.report
             .alert
-            .open_card(DETAILS_TITLE, body, if sendable { Answers::Two } else { Answers::One });
+            .open_card(crate::i18n::msg::settings_login_details_c(), body, if sendable { Answers::Two } else { Answers::One });
         if sendable {
             self.report.alert.set_choice(Choice::Destructive);
         }
@@ -1175,7 +1188,7 @@ impl LoginScreen {
         if !self.details_offered() {
             return None;
         }
-        let w = Button::pill_w_measured(DETAILS_LABEL, theme::size::BODY, false, false, measure);
+        let w = Button::pill_w_measured(crate::i18n::msg::settings_login_details_c(), theme::size::BODY, false, false, measure);
         Some(RouteLayout::screen().action_pair(w, 0.0).0)
     }
 
@@ -1193,7 +1206,7 @@ impl LoginScreen {
             ControlKind::ContinueUnsaved => true, // the warning sentence is unconditional
             ControlKind::ConnectPlaintext => true, // `auth::insecure_only_copy` always states one
         };
-        let details = self.details_offered().then_some(DETAILS_LABEL);
+        let details = self.details_offered().then_some(crate::i18n::msg::settings_login_details_c());
         ([Some(label_for(kind)), details], has_reason)
     }
 
@@ -1209,6 +1222,11 @@ impl LoginScreen {
             Phase::Deleted => StatusKind::Empty,
             _ => StatusKind::Working,
         }
+    }
+
+    /// The current status, shared by its measured layout and its draw.
+    fn waiting_label(&self) -> &'static CStr {
+        waiting_status(self.qr_replaced, qr_escape_offered(self.phase_ms), self.report.link_trouble)
     }
 
     /// The `Failed` read-out's glyph — from the SAME evidence the caption came from, so the two
@@ -1240,7 +1258,7 @@ impl LoginScreen {
             return match elem {
                 // The QR screen's escape is a SENTENCE, not a button (see `waiting_status`'s doc),
                 // so its geometry is the status line's own rect rather than a computed pill.
-                CONTROL => Some(qr_layout(RouteLayout::screen()).status),
+                CONTROL => Some(qr_layout(RouteLayout::screen(), self.waiting_label(), measure).status),
                 DETAILS => self.waiting_details(measure),
                 _ => None,
             };
@@ -1433,7 +1451,7 @@ impl LoginScreen {
     /// The failed sign-in's read-out: the verdict, the phase's reason and its controls.
     fn failed_readout<'a>(&self, reason: &'a CStr, note: Option<&'a Note>) -> StatusOverlay<'a> {
         self.readout(
-            c"Couldn\u{2019}t sign in",
+            crate::i18n::msg::browse_login_failed_c(),
             StatusKind::Failed,
             (!reason.is_empty()).then_some(reason),
             note,
@@ -1498,7 +1516,7 @@ impl LoginScreen {
         let stuck = self.has_control();
         let discovery_trouble = discovery_trouble_visible(self.phase, self.discovery_retry,
             self.phase_ms, self.discovery_retry_observed_phase_ms)
-            .then(|| CString::new(auth::DISCOVERY_TROUBLE).unwrap_or_default());
+            .then(|| CString::new(auth::discovery_trouble()).unwrap_or_default());
         self.draw_readout(
             f,
             p,
@@ -1507,7 +1525,7 @@ impl LoginScreen {
             StatusKind::Working,
             // The reason arrives WITH the control, and only then: it exists to explain why a
             // button just appeared under a spinner that was doing fine a moment ago.
-            discovery_trouble.as_deref().or_else(|| stuck.then_some(c"This is taking longer than usual.")),
+            discovery_trouble.as_deref().or_else(|| stuck.then_some(crate::i18n::msg::browse_login_slow_c())),
             focus,
         );
     }
@@ -1525,9 +1543,9 @@ impl LoginScreen {
             f,
             p,
             env,
-            c"Couldn\u{2019}t save your sign-in",
+            crate::i18n::msg::settings_login_save_failed_title_c(),
             StatusKind::Failed,
-            Some(c"Your sign-in couldn\u{2019}t be saved on this TV. You can continue, but you\u{2019}ll be asked to sign in again next time."),
+            Some(crate::i18n::msg::settings_login_save_failed_body_c()),
             focus,
         );
     }
@@ -1586,12 +1604,13 @@ impl LoginScreen {
         layout.draw_narrative(
             p,
             None,
-            "Sign in to Plex",
-            "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
+            crate::i18n::msg::browse_login_title(),
+            crate::i18n::msg::browse_login_instructions(),
             theme::size::LABEL,
             f.measure,
         );
-        let right = qr_layout(layout);
+        let status = self.waiting_label();
+        let right = qr_layout(layout, status, f.measure);
 
         TextView::new("plex.tv/link", theme::size::TITLE, theme::TEXT_HEADING)
             .bold()
@@ -1636,30 +1655,16 @@ impl LoginScreen {
             );
         }
 
-        let wr = 15.0;
-        let wy = right.status.cy();
         let escaping = qr_escape_offered(self.phase_ms);
-        let status = waiting_status(self.qr_replaced, escaping, self.report.link_trouble);
-        let status_w = f.measure.width(status, theme::size::BODY, false);
-        let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
-        Spinner::new(sx + wr, wy, wr)
+        Spinner::new(right.status_spinner.cx(), right.status_spinner.cy(), STATUS_SPINNER_R)
             .phase(self.spin_ms as u32)
             .tint(theme::TEXT_SECONDARY)
             .draw(&Env::inert(), p);
-        let ty = crate::text::text_vcenter_y(theme::size::BODY, 0, wy);
-        p.text(
-            status.as_ptr(),
-            sx + wr * 2.0 + theme::space::SM,
-            ty,
-            theme::size::BODY,
-            theme::TEXT_SECONDARY,
-            0,
-            0,
-        );
+        waiting_view(status, f.measure).draw(p, right.status_text);
 
         let details = self.waiting_details(f.measure);
         if let Some(rect) = details {
-            Button::new(DETAILS_LABEL.as_ptr(), theme::size::BODY, rect)
+            Button::new(crate::i18n::msg::settings_login_details_c().as_ptr(), theme::size::BODY, rect)
                 .focused(focus == Some(DETAILS))
                 .scale(self.report.pop.scale_with(1, f.press.scale))
                 .draw(&Env::inert(), p);
@@ -1709,13 +1714,12 @@ impl LoginScreen {
         }
         self.report.alert.draw_scrim();
         let (cancel, affirm) = match self.report.sheet {
-            Sheet::Question => (NOT_NOW, SEND_REPORT),
-            Sheet::Details => (CLOSE, SEND_REPORT),
+            Sheet::Question => (crate::i18n::msg::settings_plaintext_not_now_c(), crate::i18n::msg::settings_login_send_report_c()),
+            Sheet::Details => (crate::i18n::msg::settings_login_close_c(), crate::i18n::msg::settings_login_send_report_c()),
             Sheet::Plaintext => PlaintextQuestion::verbs(),
         };
-        self.report.alert.draw(cancel, affirm);
-        let frames = self.report.alert.frames();
-        self.report.alert_frames = Some(frames);
+        self.report.alert.draw(cancel, affirm, f.measure);
+        let frames = self.report.alert.frames(f.measure);
         if self.report.alert.is_open() && self.report.alert.settled() {
             for &elem in self.alert_elems() {
                 let rect = if elem == ALERT_SEND { frames.1 } else { frames.0 };
@@ -1774,13 +1778,10 @@ impl LoginScreen {
 }
 
 impl LoginScreen {
-    /// The alert's answer rects as last drawn. Before the first draw there is no measured panel;
-    /// the answers are not stops until the sheet has settled anyway.
-    fn alert_rect(&self, elem: u32) -> Rect {
-        self.report
-            .alert_frames
-            .map(|(not_now, send)| if elem == ALERT_SEND { send } else { not_now })
-            .unwrap_or(Rect::FULL)
+    /// The same measured geometry serves pre-paint focus, controlled replay and drawing.
+    fn alert_rect(&self, elem: u32, measure: &dyn Measure) -> Rect {
+        let (cancel, send) = self.report.alert.frames(measure);
+        if elem == ALERT_SEND { send } else { cancel }
     }
 
     fn key(&self, elem: u32) -> crate::ui::machine::FocusKey<u32> {
@@ -1812,7 +1813,7 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
                 extent: self
                     .alert_elems()
                     .iter()
-                    .map(|&e| self.alert_rect(e))
+                    .map(|&e| self.alert_rect(e, cx.measure))
                     .reduce(|a, b| a.union(b))
                     .unwrap_or(Rect::FULL),
                 len: self.alert_elems().len(),
@@ -1880,7 +1881,7 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
             if !self.alert_elems().contains(key) {
                 return None;
             }
-            let rect = self.alert_rect(*key);
+            let rect = self.alert_rect(*key, cx.measure);
             return Some(Placed {
                 rect,
                 rest_rect: rect,
@@ -1972,6 +1973,12 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
                     use crate::ui::consts;
                     return match input.kind {
                         InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
+                            direction @ (consts::Key::Up | consts::Key::Down) if edge != Edge::Up => {
+                                self.report.alert.scroll_by(cx.measure,
+                                    if matches!(direction, consts::Key::Up) { -1 } else { 1 });
+                                self.sync_state();
+                                Handled::Yes
+                            }
                             consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
                                 self.alert_answer(false, fx);
                                 Handled::Yes
@@ -2092,9 +2099,9 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
                 Phase::Error => self.draw_failed(f, p, &env, focus),
                 Phase::Deleted => self.draw_deleted(f, p, &env, focus),
                 Phase::Discovering => {
-                    self.draw_working(f, p, &env, "Finding your server\u{2026}", focus)
+                    self.draw_working(f, p, &env, crate::i18n::msg::browse_login_finding(), focus)
                 }
-                _ => self.draw_working(f, p, &env, "Connecting to Plex\u{2026}", focus),
+                _ => self.draw_working(f, p, &env, crate::i18n::msg::browse_login_connecting(), focus),
             }
         }
         self.draw_alert(f);
@@ -2132,6 +2139,10 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
         HitSource::Engine
     }
 }
+
+#[cfg(test)]
+#[path = "login_text_fit_tests.rs"]
+mod text_fit_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2412,13 +2423,76 @@ mod tests {
     #[test]
     fn qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_column() {
         let route = RouteLayout::screen();
-        let q = qr_layout(route);
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let q = qr_layout(route, waiting_status(false, false, false), &measure);
         assert_eq!(q.card.cy(), Rect::FULL.cy());
         for r in [q.url, q.card, q.code, q.status] {
             assert!(r.x >= route.content.x);
             assert!(r.x + r.w <= route.content.x + route.content.w);
             assert!(inside_safe(r));
         }
+    }
+
+    /// The old single line was 1222px wide for this real Belarusian message under the Unicode
+    /// fixture metrics: centred in an 884px column, its right edge landed at 1993, outside even
+    /// the 1920px canvas. The old 44px hit box also could not contain two BODY lines.
+    #[test]
+    fn translated_waiting_status_wraps_completely_inside_the_qr_column() {
+        use crate::i18n::{LocaleContext, Preference};
+        struct UnicodeMeasure;
+        impl Measure for UnicodeMeasure {
+            fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let _guard = crate::testlock::serial();
+        let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+        let measure = UnicodeMeasure;
+        let route = RouteLayout::screen();
+        let belarusian = LocaleContext::resolve(Preference::Be, None, None, None, None);
+        let old_text_w = measure.width(crate::i18n::msg::settings_login_unreachable_c_in(&belarusian), theme::size::BODY, false);
+        let old_row_w = old_text_w + 30.0 + theme::space::SM;
+        assert!(route.content.cx() + old_row_w * 0.5 > Rect::FULL.w,
+            "the actual translated sentence reproduces the former off-canvas row");
+        for locale in [
+            LocaleContext::resolve(Preference::En, None, None, None, None),
+            LocaleContext::resolve(Preference::Es, None, None, None, None),
+            belarusian,
+            LocaleContext::pseudo_for_test(),
+        ] {
+            for message in [
+                crate::i18n::msg::settings_login_unreachable_c_in(&locale),
+                crate::i18n::msg::browse_login_stalled_c_in(&locale),
+                crate::i18n::msg::browse_login_expired_c_in(&locale),
+                crate::i18n::msg::browse_login_waiting_c_in(&locale),
+            ] {
+                let q = qr_layout(route, message, &measure);
+                assert_eq!(q.card.cy(), Rect::FULL.cy(), "the QR anchor must not move");
+                assert!(q.status.y >= q.code.y + q.code.h + theme::space::MD);
+                for frame in [q.status, q.status_text, q.status_spinner] {
+                    assert!(inside_safe(frame), "message={message:?} frame={frame:?}");
+                    assert!(frame.x >= route.content.x);
+                    assert!(frame.x + frame.w <= route.content.x + route.content.w + 0.01);
+                    assert!(frame.y >= q.status.y);
+                    assert!(frame.y + frame.h <= q.status.y + q.status.h + 0.01);
+                }
+                let text = waiting_view(message, &measure);
+                assert!(!text.truncates(q.status_text.w), "never elide the waiting instruction");
+                assert_eq!(q.status_text.h, text.measure_h(q.status_text.w));
+                if measure.width(message, theme::size::BODY, false) > q.status_text.w {
+                    assert!(q.status_text.h >= (theme::size::BODY as f32 + theme::space::XS) * 2.0);
+                    assert!(q.status.h > theme::size::BODY as f32 + theme::space::SM);
+                }
+            }
+        }
+        let mut screen = bare_screen(Phase::Waiting, 60_000.0);
+        screen.report.link_trouble = true;
+        let drawn = qr_layout(route, screen.waiting_label(), &measure).status;
+        let hit = screen.elem_rect(CONTROL, &measure).expect("retry is offered after 60 seconds");
+        assert_eq!((hit.x, hit.y, hit.w, hit.h), (drawn.x, drawn.y, drawn.w, drawn.h),
+            "the complete wrapped instruction must share its draw/focus/hit geometry");
     }
 
     /// A bare screen, built with NO read of `crate::auth` at all — for testing [`ControlKind`]'s
@@ -2593,8 +2667,8 @@ mod tests {
     #[test]
     fn a_stalled_working_readout_sits_its_action_pill_lower_than_a_settled_one() {
         let m = crate::ui::fixture::FixtureMeasure;
-        let working = status_action_rect(&m, ESCAPE, StatusKind::Working, true);
-        let settled = status_action_rect(&m, ESCAPE, StatusKind::Empty, true);
+        let working = status_action_rect(&m, crate::i18n::msg::browse_action_retry_c(), StatusKind::Working, true);
+        let settled = status_action_rect(&m, crate::i18n::msg::browse_action_retry_c(), StatusKind::Empty, true);
         assert!(
             working.y > settled.y,
             "Working straddles the centre with the spinner above it; a settled read-out centres \
@@ -2609,8 +2683,8 @@ mod tests {
     fn a_reason_line_pushes_the_action_pill_down_further() {
         let m = crate::ui::fixture::FixtureMeasure;
         for kind in [StatusKind::Working, StatusKind::Empty, StatusKind::Failed] {
-            let with_reason = status_action_rect(&m, ESCAPE, kind, true);
-            let without = status_action_rect(&m, ESCAPE, kind, false);
+            let with_reason = status_action_rect(&m, crate::i18n::msg::browse_action_retry_c(), kind, true);
+            let without = status_action_rect(&m, crate::i18n::msg::browse_action_retry_c(), kind, false);
             assert!(with_reason.y > without.y, "{kind:?}");
         }
     }
@@ -2690,12 +2764,12 @@ mod tests {
             for has_reason in [false, true] {
                 // Geometry only — the glyph never moves the action row, so any `Icon` measures identically.
                 let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind)
-                    .page(crate::ui::icons::Icon::ClockBadgeAlert).action(ESCAPE);
+                    .page(crate::ui::icons::Icon::ClockBadgeAlert).action(crate::i18n::msg::browse_action_retry_c());
                 if has_reason {
-                    o = o.reason(c"This is taking longer than usual.");
+                    o = o.reason(crate::i18n::msg::browse_login_slow_c());
                 }
                 let want = o.action_frame().expect("an action was set above");
-                let got = status_action_rect(&RawTextMeasure, ESCAPE, kind, has_reason);
+                let got = status_action_rect(&RawTextMeasure, crate::i18n::msg::browse_action_retry_c(), kind, has_reason);
                 assert_eq!(
                     (got.x, got.y, got.w, got.h),
                     (want.x, want.y, want.w, want.h),
@@ -3461,7 +3535,7 @@ mod tests {
         assert!(!enters_group(&fx, ALERT_GROUP), "the report question is not raised");
         assert!(!s.report.alert.is_open());
         assert_eq!(s.control_kind(), Some(ControlKind::ConnectPlaintext));
-        assert_eq!(s.readout_labels().0, [Some(CONNECT), Some(DETAILS_LABEL)]);
+        assert_eq!(s.readout_labels().0, [Some(connect()), Some(crate::i18n::msg::settings_login_details_c())]);
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
         assert_eq!(s.state.plaintext, Some(false));
         assert!(answers(&fx).is_empty(), "nothing is answered for the person");
@@ -3478,8 +3552,8 @@ mod tests {
         let _serial = crate::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let mut failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
-        for (choice, want) in [(PlaintextChoice::Undecided, CONNECT), (PlaintextChoice::Declined, ESCAPE),
-            (PlaintextChoice::Revoked, ESCAPE), (PlaintextChoice::Allowed, ESCAPE)] {
+        for (choice, want) in [(PlaintextChoice::Undecided, connect()), (PlaintextChoice::Declined, crate::i18n::msg::browse_action_retry_c()),
+            (PlaintextChoice::Revoked, crate::i18n::msg::browse_action_retry_c()), (PlaintextChoice::Allowed, crate::i18n::msg::browse_action_retry_c())] {
             if let Some(v) = failed.plaintext.as_mut() {
                 v.choice = choice;
             }
@@ -3563,12 +3637,12 @@ mod tests {
         let r = || "0123abcd".to_string();
         let line = |state: S| report_status(&state).map(|(t, busy)| (t.to_str().unwrap().to_string(), busy));
         let expect = |text: &str, busy: bool| Some((text.to_string(), busy));
-        assert_eq!(line(S::Sending), expect("Sending report\u{2026}", true));
-        assert_eq!(line(S::AutoSending), expect("Sending report\u{2026}", true));
-        assert_eq!(line(S::Queued { receipt: r() }), expect("Sending report\u{2026}", true));
-        assert_eq!(line(S::Saved { receipt: r() }), expect("Report saved. It will be sent later.", false));
-        assert_eq!(line(S::Delivered { receipt: r() }), expect("Report sent. Thank you.", false));
-        assert_eq!(line(S::Failed), expect("Report couldn\u{2019}t be sent.", false));
+        assert_eq!(line(S::Sending), expect(crate::i18n::msg::settings_login_report_sending(), true));
+        assert_eq!(line(S::AutoSending), expect(crate::i18n::msg::settings_login_report_sending(), true));
+        assert_eq!(line(S::Queued { receipt: r() }), expect(crate::i18n::msg::settings_login_report_sending(), true));
+        assert_eq!(line(S::Saved { receipt: r() }), expect(crate::i18n::msg::settings_login_report_saved(), false));
+        assert_eq!(line(S::Delivered { receipt: r() }), expect(crate::i18n::msg::settings_login_report_sent(), false));
+        assert_eq!(line(S::Failed), expect(crate::i18n::msg::settings_login_report_failed(), false));
         for quiet in [S::Pending, S::NotNow, S::Dropped, S::Offered { revision: 0 }, S::OnRequest { revision: 0 }] {
             assert_eq!(line(quiet.clone()), None, "{quiet:?}");
         }
@@ -3682,7 +3756,7 @@ mod tests {
         }
         let delivered = S::Delivered { receipt: "41de4cd388e4041654de38f2787c3922".into() };
         let s = screen_with(Phase::Error, delivered, pin);
-        assert_eq!(text(s.report_note()).as_deref(), Some("Report sent. Thank you."));
+        assert_eq!(text(s.report_note()).as_deref(), Some(crate::i18n::msg::settings_login_report_sent()));
     }
 
     /// **(e) A report on its way keeps the inline spinner turning over a settled read-out** — the

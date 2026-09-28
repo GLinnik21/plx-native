@@ -443,19 +443,21 @@ fn a_merged_shelf_is_capped_at_the_card_rows_spring_count() {
 #[test]
 fn a_person_shelf_counts_people_and_everything_else_counts_results() {
     assert_eq!(
-        (Kind::Person.title(), Kind::Person.count_word(1)),
-        ("Cast & Crew", "person")
+        (Kind::Person.title(), Kind::Person.count_label(1)),
+        ("Cast & Crew", "1 person".to_owned())
     );
-    assert_eq!(Kind::Person.count_word(2), "people");
-    assert_eq!(Kind::Movie.count_word(1), "result");
-    assert_eq!(Kind::Collection.count_word(0), "results");
+    assert_eq!(Kind::Person.count_label(2), "2 people");
+    assert_eq!(Kind::Movie.count_label(1), "1 result");
+    assert_eq!(Kind::Collection.count_label(0), "0 results");
 
     assert_eq!(
-        (Kind::Collection.count_word(3), crate::ui::fmt::item_count(12).as_str()),
-        ("results", "12 items")
+        (Kind::Collection.count_label(3), crate::ui::fmt::item_count(12)),
+        ("3 results".to_owned(), "12 items".to_owned())
     );
     assert_eq!(crate::ui::fmt::item_count(1), "1 item");
-    assert_eq!(crate::ui::fmt::item_count(0), "0 items");
+    // Cardinal rules apply to the absolute value, including negative wire counts.
+    assert_eq!((crate::ui::fmt::item_count(0), crate::ui::fmt::item_count(-1)),
+        ("0 items".to_owned(), "-1 item".to_owned()));
 }
 
 /// **`includeCollections=1` hands the Collections shelf full rows**, and those are KIND-4 cards

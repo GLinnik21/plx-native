@@ -1,5 +1,6 @@
-//! The owned person page for restructure phase 7. It preserves the legacy page's measured layout,
-//! shelves, biography panel and animation, while navigation and focus are now explicit contracts:
+//! The owned person page for restructure phase 7. Its measured header keeps the Filmography
+//! action below the biography in the text column. Shelves, biography panel and animation share
+//! the UI system, while navigation and focus are explicit contracts:
 //! the engine is the only cursor, card keys preserve item identity across store reshapes, and page
 //! changes leave through `ContentReq` effects. Filmography is a separate modal `Screen`; this page
 //! presents it and never imports or stores a sibling screen. The Person owner observes the
@@ -72,8 +73,7 @@ enum Located {
 }
 
 // -------------------------------------------------------------------------------------------
-// geometry constants — verbatim from `ui/person.rs` (the port this screen replaces); the values
-// are the shipped, photographed design, not a re-derivation
+// geometry constants — the shared person header, biography and compact Filmography action
 // -------------------------------------------------------------------------------------------
 
 const PORTRAIT_EXP: f32 = 320.0;
@@ -178,10 +178,9 @@ fn entry_reachable(p: &Person) -> bool {
 }
 
 // -------------------------------------------------------------------------------------------
-// header measurement (ported verbatim from `ui/person.rs`; whether the meta/life lines have
-// anything to draw becomes an explicit `bool` parameter each, so the pure half stays testable
-// with no `PersonScreen` in scope — `header_flow` only ever asked these two "empty or not",
-// never their content, so the runs themselves don't need to cross this seam at all)
+// Header measurement uses explicit meta/life presence flags, so the pure layout remains
+// testable without a PersonScreen or server data. The measured entry frame belongs to this
+// same flow and is reused for painting, focus and hit geometry.
 // -------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Default)]
@@ -250,7 +249,7 @@ fn header_flow(
         f.portrait_y = (f.exp_h - f.exp_d) * 0.5;
         let ty = (f.exp_h - y) * 0.5;
         f.name_y = ty;
-        for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y]
+        for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y, &mut f.entry_y]
             .into_iter()
             .flatten()
         {
@@ -269,7 +268,7 @@ fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> 
     .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(measure.width(crate::ui::text_view::MORE_MARK, theme::size::BODY, true) + BIO_MORE_GAP)
+    .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::BODY, true) + BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -837,25 +836,25 @@ impl PersonScreen {
         self.life_parts = Vec::new();
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
-            self.life_parts.push(format!("Born {born}"));
+            self.life_parts.push(crate::i18n::msg::browse_person_born(&born));
         }
         if !p.birthplace.is_empty() {
             self.life_parts.push(p.birthplace.clone());
         }
         let died = crate::ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
-            self.life_parts.push(format!("Died {died}"));
+            self.life_parts.push(crate::i18n::msg::browse_person_died(&died));
         }
 
         for k in 0..NSHELF {
             self.shelf_count_c[k] = match p.total(k) {
                 0 => CString::default(),
-                n => CString::new(n.to_string()).unwrap_or_default(),
+                n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
             };
         }
         self.entry_count_c = match crate::person::filmography_total(p) {
             0 => CString::default(),
-            n => CString::new(n.to_string()).unwrap_or_default(),
+            n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
         };
     }
 
@@ -927,12 +926,17 @@ impl PersonScreen {
     /// below fell back to bare `MARGIN_X` — under the circular portrait. `col_x(self.header.
     /// exp_d)` is the one expression both read, so the drawn pill and its focus/hit rect cannot
     /// disagree about where it sits.
+    /// The Filmography entry: the shared linked-heading control, titled from the catalog.
+    fn entry_heading(&self) -> LinkedHeading<'_> {
+        LinkedHeading::entry(crate::i18n::msg::browse_person_filmography(), self.entry_count_c.to_str().unwrap_or(""))
+    }
+
     fn entry_rect(&self, _p: &Person, measure: &dyn Measure) -> Rect {
         let x = col_x(self.header.exp_d);
         let Some(ey) = self.header.entry_y else {
             return Rect::new(x, HEADER_TOP, 0.0, 1.0);
         };
-        let entry = LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or(""));
+        let entry = self.entry_heading();
         let measured = entry.measure(measure);
         entry.face_rect(
             x,
@@ -1260,7 +1264,7 @@ impl PersonScreen {
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
                 Label::new(
-                    crate::ui::text_view::MORE_MARK.as_ptr(),
+                    crate::ui::text_view::more_mark().as_ptr(),
                     theme::size::BODY,
                     match mark.is_some() {
                         true => theme::TEXT_SECONDARY,
@@ -1279,7 +1283,7 @@ impl PersonScreen {
         if let Some(y) = flow.entry_y {
             // Same x the name/roles/life column starts at (`col_x_`, above) — never bare
             // `MARGIN_X`, which is the pre-phase-7 regression `entry_rect`'s doc explains.
-            let entry = LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or(""));
+            let entry = self.entry_heading();
             let measured = entry.measure(measure);
             entry.draw(p, col_x_, y, f32::from(focus_elem == Some(ENTRY_ELEM)), &measured, measure);
         }
@@ -1291,7 +1295,7 @@ impl PersonScreen {
         let cur_col = if focused { row.focus() } else { -1 };
         let hy = -row.lift();
         Label::new(
-            SHELF_TITLE[kind].as_ptr(),
+            shelf_title()[kind].as_ptr(),
             theme::size::HEADLINE,
             theme::TEXT_HEADING,
         )
@@ -1299,7 +1303,7 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
         if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = measure.width(SHELF_TITLE[kind], theme::size::HEADLINE, true);
+            let tw = measure.width(shelf_title()[kind], theme::size::HEADLINE, true);
             Label::new(
                 self.shelf_count_c[kind].as_ptr(),
                 theme::size::CAPTION,
@@ -1365,7 +1369,7 @@ impl PersonScreen {
         }
         StatusOverlay::new(
             band,
-            c"Nothing from this person is in your libraries",
+            crate::i18n::msg::browse_person_empty_c(),
             StatusKind::Empty,
         )
         .draw(env, p);
@@ -1374,7 +1378,7 @@ impl PersonScreen {
 }
 
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows.
-const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
+fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [crate::i18n::msg::browse_kind_movies_c(), crate::i18n::msg::browse_kind_shows_c()] }
 
 // -------------------------------------------------------------------------------------------
 // Focusable / Machine / Screen
@@ -1825,7 +1829,7 @@ impl PersonScreen {
         if entry_reachable(person) {
             let r = self.entry_rect(person, f.measure);
             if crate::ui::on_axis(r.y, r.h, SCR_H, 0.0) {
-                LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or("")).stop(
+                self.entry_heading().stop(
                     f,
                     r,
                     crate::ui::machine::FocusKey { entry: self.entry, elem: ENTRY_ELEM },
@@ -2255,6 +2259,53 @@ mod tests {
             "the pill must sit in the text column, exactly where the name/roles start"
         );
         store.run(PersonCmd::Close);
+    }
+
+    /// The Filmography entry follows the biography's text column, and in the compact header with
+    /// no biography it stays in the centred identity stack.
+    #[test]
+    fn person_filmography_entry_follows_the_biography_text_column() {
+        let measure = FixtureMeasure;
+        let long = "A long biography whose visible lines must all remain above Filmography. ".repeat(60);
+        for (pending, bio) in [(false, "Short biography."), (false, long.as_str()), (true, "")] {
+            let flow = header_flow(pending, bio, true, true, true, &measure);
+            let entry_y = flow.entry_y.expect("credits offer the entry");
+            let biography_top = flow.bio_y.expect("biography or its placeholder is present");
+            let biography_h = if pending { BIO_LEAD * BIO_LINES as f32 }
+                else { bio_view(bio, 1.0, &measure).measure_h(BIO_W) };
+            assert!(col_x(flow.exp_d) >= MARGIN_X + flow.exp_d + BAND_GAP,
+                "the action must sit under the text, not the portrait");
+            assert!((entry_y - biography_top - biography_h - ENTRY_GAP).abs() < 0.01);
+            assert!(flow.exp_h >= entry_y + LinkedHeading::HEIGHT, "the next shelf clears the action");
+        }
+        let bare = header_flow(false, "", false, false, true, &measure);
+        let entry_y = bare.entry_y.unwrap();
+        assert!((entry_y - bare.name_y - measure.cap_h(theme::size::DISPLAY) - ENTRY_GAP).abs() < 0.01,
+            "without biography the centered identity and action remain one text stack");
+        assert!(bare.exp_h >= entry_y + LinkedHeading::HEIGHT);
+    }
+
+    /// Every shipped translation of the entry, and the expanded pseudo-locale, fits at rest and
+    /// focused inside the safe frame at its existing size.
+    #[test]
+    fn person_filmography_entry_keeps_translated_labels_and_focus_inside_the_safe_frame() {
+        let measure = FixtureMeasure;
+        let flow = header_flow(false, "A short biography.", true, false, true, &measure);
+        let mut labels = Vec::new();
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            labels.push(crate::i18n::msg::browse_person_filmography_in(&locale).to_owned());
+        }
+        labels.push("[!! Fïlmöögrááphy !!]".to_owned());
+        for label in &labels {
+            let entry = LinkedHeading::entry(label, "9 223 372 036 854 775 807");
+            let measured = entry.measure(&measure);
+            let y = HEADER_TOP + flow.entry_y.unwrap();
+            for focus in [0.0, 1.0] {
+                assert!(inside_safe(entry.face_rect(col_x(flow.exp_d), y, focus, &measured)),
+                    "{label:?} at focus {focus} must keep the safe inset");
+            }
+        }
     }
 
     /// The entry stop is appended after the shelf stops, so a stale unscrolled pill rectangle

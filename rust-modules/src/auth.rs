@@ -110,7 +110,7 @@ pub enum Phase {
     Deleted,
 }
 
-pub(crate) const DISCOVERY_TROUBLE: &str = "Plex isn't responding. Still trying…";
+pub(crate) fn discovery_trouble() -> &'static str { crate::i18n::msg::browse_auth_discovery_trouble() }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DiscoveryRetryRun { Resources, HomeUsers }
@@ -927,7 +927,7 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         };
         if matches!(status, Some(401 | 403)) {
             return Some((
-                "Plex didn't accept this sign-in. Try again.".into(),
+                crate::i18n::msg::browse_auth_signin_refused().into(),
                 IncidentContext::new(IncidentKind::Authorization, Some(*last)),
             ));
         }
@@ -936,18 +936,18 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::Ok { .. } | Discovery::Cancelled => return None,
         Discovery::NoServers(evidence) => {
             return Some((
-                "This Plex account has no server yet.".into(),
+                crate::i18n::msg::browse_auth_no_servers().into(),
                 IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
                     .with_no_servers(*evidence),
             ));
         }
         Discovery::Refused => (
-            "Your Plex server refused the connection — check its network access settings.",
+            crate::i18n::msg::browse_auth_refused(),
             DiscoveryClass::Refused,
             None,
         ),
         Discovery::ServersUnreachable { trigger } => return Some((
-            "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.".into(),
+            crate::i18n::msg::browse_auth_servers_unreachable().into(),
             IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), None)
                 .with_discovery(DiscoveryEvidence { trigger: *trigger,
                     target: Some(DiscoveryTarget::Servers) }),
@@ -955,17 +955,15 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::PlexTvFailed(run) => {
             let (link, _, _) = crate::telemetry::incident::classify(Some(run.last));
             let message = match link {
-                crate::telemetry::incident::LinkClass::Dns => retry_copy(
-                    "This TV couldn't find plex.tv, so your servers weren't checked.", run.attempts),
+                crate::telemetry::incident::LinkClass::Dns => crate::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
                 crate::telemetry::incident::LinkClass::Tls =>
-                    "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.".into(),
+                    crate::i18n::msg::browse_auth_plex_tls().into(),
                 crate::telemetry::incident::LinkClass::Answered2xx
                 | crate::telemetry::incident::LinkClass::Answered4xx
                 | crate::telemetry::incident::LinkClass::Answered5xx
                 | crate::telemetry::incident::LinkClass::AnsweredOther =>
-                    "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.".into(),
-                _ => retry_copy(
-                    "This TV couldn't reach plex.tv, so your servers weren't checked.", run.attempts),
+                    crate::i18n::msg::browse_auth_plex_unavailable().into(),
+                _ => crate::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
             };
             let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), Some(run.last))
                 .with_retry_run(run.attempts, run.elapsed)
@@ -990,13 +988,6 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
     Some((message.into(), IncidentContext::new(IncidentKind::Discovery(class), last)))
 }
 
-fn retry_copy(prefix: &str, attempts: u32) -> String {
-    if attempts == 1 {
-        format!("{prefix} We tried once. Check the TV's internet connection, then try again.")
-    } else {
-        format!("{prefix} We tried {attempts} times. Check the TV's internet connection, then try again.")
-    }
-}
 
 /// The server a failed discovery may offer a plaintext connection to — the read-out's primary asks
 /// about it. `None` for every other verdict, and for an insecure-only one that is not eligible.
@@ -1017,7 +1008,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // that can show every sign-in cause's glyph without a network call or an account.
     if let Some(case) = crate::dev::scenarios::readout_case() {
         let (message, incident) = case.canned_login_failure();
-        return output_failed(output, epoch, message, incident, None);
+        return output_failed(output, epoch, &message, incident, None);
     }
     let ac = AccountClient::new(&cid, None);
 
@@ -1049,7 +1040,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
             PollEnd::Expired(tail) => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
                 let incident = expired_incident(&tail, generation);
-                return output_failed(output, epoch, "Sign-in timed out — try again.", incident, None);
+                return output_failed(output, epoch, crate::i18n::msg::browse_auth_timeout(), incident, None);
             }
         }
     };
@@ -1142,8 +1133,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
             // signed in. Drawn as the reason under "Couldn't sign in" (`screens/login.rs`).
             output_failed(output,
                 epoch,
-                "Couldn\u{2019}t reach Plex. Check your internet connection. An internet connection is \
-                 needed to sign in.",
+                crate::i18n::msg::browse_auth_plex_unreachable(),
                 IncidentContext::new(IncidentKind::PinCreate, Some(last))
                     .with_link_state(0, None, generation),
                 None,
@@ -1728,10 +1718,8 @@ struct PlexTvFailure {
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
 /// cannot say two different things about the same verdict (plan §4).
 ///
-/// Owner-approved wording; keep byte-identical.
-const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
-    "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
-     allows secure connections, then try again.";
+/// The English catalog preserves the approved wording; translations retain its remedy.
+fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
@@ -1757,50 +1745,50 @@ pub(crate) enum ReadoutSurface {
 /// * **eligible, declined or turned off** — the primary is *Try again*; on the sign-in read-out it
 ///   asks again, signed in the reason points at Settings → Unencrypted connections;
 /// * **remote-only plaintext** — never offered; the fix is the server's Remote Access;
-/// * everything else — the owner-approved [`DISCOVERY_INSECURE_ONLY_MESSAGE`], unchanged for the
+/// * everything else — the owner-approved [`discovery_insecure_only_message`], unchanged for the
 ///   household's own server, and a line naming the owner for a shared one.
 ///
 /// A SHARED server is named by its owner ([`PlaintextVerdict::shared_by`]) — on screen only; the
 /// report never carries it.
 pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
+    plaintext_copy_in(verdict, surface, crate::i18n::current())
+}
+
+// Explicit locale keeps the entire verdict testable without changing the process locale.
+// Each catalog sentence owns the server/owner grammar and the named action.
+fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
+    locale: &crate::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
+    use crate::i18n::msg;
     use std::borrow::Cow;
-    let Some(v) = verdict else { return Cow::Borrowed(DISCOVERY_INSECURE_ONLY_MESSAGE) };
+    let fallback = || Cow::Borrowed(msg::browse_auth_insecure_in(locale));
+    let Some(v) = verdict else { return fallback() };
     let owner = v.shared_by.as_str();
-    let (server, subject) = if owner.is_empty() {
-        ("your Plex server".to_owned(), "Your Plex server".to_owned())
-    } else {
-        (format!("{owner}\u{2019}s server"), format!("{owner}\u{2019}s server"))
-    };
     if v.offers() {
-        return Cow::Owned(match (v.choice, surface) {
-            (PlaintextChoice::Undecided, _) => format!(
-                "{subject} is on this network but can\u{2019}t be reached securely. Select Connect to connect without encryption."),
-            (PlaintextChoice::Allowed, _) => format!(
-                "{subject} is on this network but can\u{2019}t be reached securely. Select Try again to connect without encryption."),
-            (PlaintextChoice::Declined, ReadoutSurface::SignIn) => format!(
-                "You chose not to connect to {server} without encryption. Select Try again to be asked again."),
-            (PlaintextChoice::Revoked, ReadoutSurface::SignIn) => format!(
-                "Unencrypted connections to {server} are off. Select Try again to be asked again."),
-            (PlaintextChoice::Declined, ReadoutSurface::SignedIn) => format!(
-                "You chose not to connect to {server} without encryption. Allow it in Settings \u{2192} Unencrypted connections."),
-            (PlaintextChoice::Revoked, ReadoutSurface::SignedIn) => format!(
-                "Unencrypted connections to {server} are off. Turn them on in Settings \u{2192} Unencrypted connections."),
-        });
+        return if owner.is_empty() {
+            Cow::Borrowed(match (v.choice, surface) {
+                (PlaintextChoice::Undecided, _) => msg::browse_auth_plaintext_offer_in(locale),
+                (PlaintextChoice::Allowed, _) => msg::browse_auth_plaintext_allowed_in(locale),
+                (PlaintextChoice::Declined, ReadoutSurface::SignIn) => msg::browse_auth_plaintext_declined_signin_in(locale),
+                (PlaintextChoice::Revoked, ReadoutSurface::SignIn) => msg::browse_auth_plaintext_revoked_signin_in(locale),
+                (PlaintextChoice::Declined, ReadoutSurface::SignedIn) => msg::browse_auth_plaintext_declined_signed_in_in(locale),
+                (PlaintextChoice::Revoked, ReadoutSurface::SignedIn) => msg::browse_auth_plaintext_revoked_signed_in_in(locale),
+            })
+        } else {
+            Cow::Owned(match (v.choice, surface) {
+                (PlaintextChoice::Undecided, _) => msg::browse_auth_plaintext_shared_offer_in(locale, owner),
+                (PlaintextChoice::Allowed, _) => msg::browse_auth_plaintext_shared_allowed_in(locale, owner),
+                (PlaintextChoice::Declined, ReadoutSurface::SignIn) => msg::browse_auth_plaintext_shared_declined_signin_in(locale, owner),
+                (PlaintextChoice::Revoked, ReadoutSurface::SignIn) => msg::browse_auth_plaintext_shared_revoked_signin_in(locale, owner),
+                (PlaintextChoice::Declined, ReadoutSurface::SignedIn) => msg::browse_auth_plaintext_shared_declined_signed_in_in(locale, owner),
+                (PlaintextChoice::Revoked, ReadoutSurface::SignedIn) => msg::browse_auth_plaintext_shared_revoked_signed_in_in(locale, owner),
+            })
+        };
     }
     match (v.eligibility, owner.is_empty()) {
-        (PlaintextEligibility::NotLocal, true) => Cow::Borrowed(
-            "Your Plex server answered only without encryption, from outside this network. Check \
-             Remote Access in its settings.",
-        ),
-        (PlaintextEligibility::NotLocal, false) => Cow::Owned(format!(
-            "{subject} answered only without encryption, from outside this network. Its Remote \
-             Access needs checking."
-        )),
-        (_, false) => Cow::Owned(format!(
-            "{subject} answered only without encryption. Its owner can check it allows secure \
-             connections."
-        )),
-        (_, true) => Cow::Borrowed(DISCOVERY_INSECURE_ONLY_MESSAGE),
+        (PlaintextEligibility::NotLocal, true) => Cow::Borrowed(msg::browse_auth_plaintext_remote_in(locale)),
+        (PlaintextEligibility::NotLocal, false) => Cow::Owned(msg::browse_auth_plaintext_shared_remote_in(locale, owner)),
+        (_, false) => Cow::Owned(msg::browse_auth_plaintext_shared_insecure_in(locale, owner)),
+        (_, true) => fallback(),
     }
 }
 
@@ -3788,7 +3776,7 @@ fn switch_failure(pin_submitted: bool) -> (String, bool) {
         (String::new(), true)
     } else {
         (
-            "Couldn't switch profile — check the connection.".into(),
+            crate::i18n::msg::browse_auth_switch_failed().into(),
             false,
         )
     }
@@ -3897,7 +3885,7 @@ fn offline_switch_outcome(
             // pick is needed first).
             ProfileSwitchOutcomeProgress::Failed {
                 error: String::from(
-                    "No internet connection. Pick this profile once while online, and it will work offline.",
+                    crate::i18n::msg::browse_auth_offline_profile(),
                 ),
                 pin_denied: false,
             }
@@ -4064,9 +4052,9 @@ pub(crate) fn profile_switch_worker_with_io(
             // person to a router that is fine. The PIN was already accepted by this point, so
             // this is never the PIN flash either.
             let error = if crate::plex::account::refused_identity(&evidence).is_some() {
-                format!("plex.tv refused {}\u{2019}s sign-in. Try again.", tile.title)
+                crate::i18n::msg::browse_auth_profile_signin_refused(&tile.title)
             } else {
-                "Couldn't switch profile — check the connection.".into()
+                crate::i18n::msg::browse_auth_switch_failed().into()
             };
             output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
@@ -4085,7 +4073,7 @@ pub(crate) fn profile_switch_worker_with_io(
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: format!("{} has no server access", tile.title),
+                error: crate::i18n::msg::browse_auth_no_access(&tile.title),
                 pin_denied: false,
             },
         }));
@@ -4183,15 +4171,15 @@ pub(crate) fn profile_switch_worker_with_io(
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
                 error: if insecure_only {
-                    DISCOVERY_INSECURE_ONLY_MESSAGE.to_owned()
+                    discovery_insecure_only_message().to_owned()
                 } else if let Some((name, _)) = refusal {
-                    format!("{name} refused {}. Try again.", tile.title)
+                    crate::i18n::msg::browse_auth_server_profile_refused(&tile.title, &name)
                 } else if malformed {
-                    "Couldn't switch profile — the server sent an invalid response.".into()
+                    crate::i18n::msg::browse_auth_switch_invalid().into()
                 } else if !admission_failures.is_empty() {
-                    "Couldn't switch profile — check the connection.".into()
+                    crate::i18n::msg::browse_auth_switch_failed().into()
                 } else {
-                    format!("{} has no access to this server", tile.title)
+                    crate::i18n::msg::browse_auth_no_source_access(&tile.title)
                 },
                 pin_denied: false,
             },

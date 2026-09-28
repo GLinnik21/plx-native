@@ -62,6 +62,10 @@ pub(crate) fn pre_home_ground(hubs: crate::pms::HubsView<'_>) -> SessionGround {
 pub(crate) enum SettingsPage {
     /// The Settings root (`ui::settings`'s table).
     Root,
+    /// Install-wide language choice, applied next launch.
+    Language,
+    /// Translation contribution guide with an offline QR link.
+    Contribute,
     /// Install-wide playback defaults.
     Playback,
     /// Plex account audio and subtitle preferences.
@@ -91,6 +95,8 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Root => 100,
             SettingsPage::Playback => 108,
             SettingsPage::AudioSubtitles => 109,
+            SettingsPage::Language => 110,
+            SettingsPage::Contribute => 111,
             SettingsPage::Favourites => 101,
             SettingsPage::Privacy => 102,
             SettingsPage::Legal => 103,
@@ -126,6 +132,8 @@ impl LogicalState for SettingsPage {
         w.discriminant(ScreenArg::id(self).0);
         w.u8(match self {
             SettingsPage::Root
+            | SettingsPage::Language
+            | SettingsPage::Contribute
             | SettingsPage::Playback
             | SettingsPage::AudioSubtitles
             | SettingsPage::Favourites
@@ -138,6 +146,8 @@ impl LogicalState for SettingsPage {
     fn probe(&self, out: &mut String) {
         out.push_str(match self {
             SettingsPage::Root => "root",
+            SettingsPage::Language => "language",
+            SettingsPage::Contribute => "contribute",
             SettingsPage::Playback => "playback",
             SettingsPage::AudioSubtitles => "audio-subtitles",
             SettingsPage::Favourites => "favourites",
@@ -300,6 +310,8 @@ mod tests {
     fn every_settings_page_variant_has_its_own_screen_id() {
         let pages = [
             SettingsPage::Root,
+            SettingsPage::Language,
+            SettingsPage::Contribute,
             SettingsPage::Playback,
             SettingsPage::AudioSubtitles,
             SettingsPage::Favourites,

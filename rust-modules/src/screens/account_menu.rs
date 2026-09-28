@@ -66,9 +66,6 @@ pub(crate) enum Action {
     SendDiagnostics,
 }
 
-/// Header for a session we cannot name — signed in but no roster has landed yet (and the
-/// signed-out case, where naming an account we do not have would be the same lie in reverse).
-const HEADER_FALLBACK: &str = "Account";
 
 /// The pinned ~24px corner radius.
 const PANEL_RAD: f32 = 24.0;
@@ -115,7 +112,7 @@ fn rows_for(acc: &Account, switch_refused: bool) -> &'static [Action] {
 /// agree with the menu the chip opens. Every arm is one of this module's own answers:
 ///
 /// - a name — the active managed profile, else the persisted roster's owner ([`Account::name`]);
-/// - signed in and nameless — [`HEADER_FALLBACK`], the same word the menu heads itself with, which
+/// - signed in and nameless — the localized Account label, the same word the menu heads itself with, which
 ///   is a missing NAME and not a missing user;
 /// - signed out — the label of the one row the menu then offers, so the chip and the menu behind it
 ///   cannot say different things about the same press.
@@ -127,18 +124,18 @@ fn rows_for(acc: &Account, switch_refused: bool) -> &'static [Action] {
 pub(crate) fn chip_label(acc: &Account) -> String {
     match (&acc.name, acc.signed_in) {
         (Some(n), _) => n.clone(),
-        (None, true) => HEADER_FALLBACK.to_string(),
+        (None, true) => crate::i18n::msg::settings_account_title().to_string(),
         (None, false) => label(Action::SignIn).to_string(),
     }
 }
 
 fn label(a: Action) -> &'static str {
     match a {
-        Action::ChangeProfile => "Change profile",
-        Action::SignIn => "Sign in",
-        Action::SignOut => "Sign out",
-        Action::Settings => "Settings",
-        Action::SendDiagnostics => "Send diagnostics",
+        Action::ChangeProfile => crate::i18n::msg::settings_account_change_profile(),
+        Action::SignIn => crate::i18n::msg::settings_account_sign_in(),
+        Action::SignOut => crate::i18n::msg::settings_account_sign_out(),
+        Action::Settings => crate::i18n::msg::settings_account_settings(),
+        Action::SendDiagnostics => crate::i18n::msg::settings_account_diagnostics(),
         Action::None => "",
     }
 }
@@ -209,7 +206,7 @@ impl AccountMenuScreen {
     pub(crate) fn new(entry: EntryId) -> Self {
         Self {
             entry,
-            header: HEADER_FALLBACK.to_string(),
+            header: crate::i18n::msg::settings_account_title().to_string(),
             rows: &[],
             table: TableView::new(),
             built: false,
@@ -230,7 +227,7 @@ impl AccountMenuScreen {
         let acc = sess.account(cur.as_ref());
         self.switch_refused = switch_refused;
         self.rows = rows_for(&acc, switch_refused);
-        self.header = acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string());
+        self.header = acc.name.unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string());
         let mut sec = Section::new(self.header.clone());
         for a in self.rows {
             sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)).destructive(destructive(*a)));
@@ -643,7 +640,7 @@ mod tests {
         let acc = s.account(active);
         let rows = rows_for(&acc, false);
         (
-            acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string()),
+            acc.name.unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string()),
             rows.iter().map(|a| label(*a)).collect(),
         )
     }
@@ -787,7 +784,7 @@ mod tests {
             ..Default::default()
         })
         .account(None);
-        assert_eq!(chip_label(&nameless), HEADER_FALLBACK);
+        assert_eq!(chip_label(&nameless), crate::i18n::msg::settings_account_title());
 
         // Signed out: the chip says exactly what the ACCOUNT row behind it says. That row is
         // first, and the assertion is on `[0]` rather than on the whole set — the set also carries

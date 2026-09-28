@@ -58,25 +58,27 @@ impl LibraryScreen {
                 Some(GridAction::LibraryType(kind)) => *kind,
                 _ => listing.library_type(),
             };
-            (c"Type", kind.title(self.kind).to_owned())
+            (crate::i18n::msg::browse_library_type_c(), kind.title(self.kind).to_owned())
         } else if elem == SORT {
             let sort = match queued {
                 Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
                 _ => listing.sorts().get(listing.sort_index()),
             };
-            (c"Sort", sort.map_or("Title", |sort| sort.title.as_str()).to_owned())
+            (crate::i18n::msg::browse_library_sort_c(), sort.map_or(crate::i18n::msg::browse_library_title(), |sort| sort.title.as_str()).to_owned())
         } else {
             let genre = match queued {
                 Some(GridAction::Genre { id }) => id.as_ref().and_then(|id| listing.genres().iter().find(|genre| &genre.id == id)),
                 _ => listing.genre(),
-            }.map_or("All", |genre| genre.title.as_str());
+            }.map(|genre| genre.title.as_str());
             let unwatched = match queued {
                 Some(GridAction::Unwatched { desired }) => *desired,
                 _ => listing.unwatched(),
             };
-            (c"Filter", match (genre, unwatched) {
-                ("All", false) => "All".into(), ("All", true) => "Unwatched".into(),
-                (genre, false) => genre.into(), (genre, true) => format!("{genre} · Unwatched"),
+            (crate::i18n::msg::browse_library_filter_c(), match (genre, unwatched) {
+                (None, false) => crate::i18n::msg::browse_library_all().into(),
+                (None, true) => crate::i18n::msg::browse_library_unwatched().into(),
+                (Some(genre), false) => genre.into(),
+                (Some(genre), true) => crate::i18n::msg::browse_library_genre_unwatched(genre),
             })
         };
         Chip { name, value: CString::new(format!(" · {value}")).unwrap_or_default(), note: None }

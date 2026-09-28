@@ -84,30 +84,30 @@ pub(crate) enum Tail {
 fn state_word(s: SourceState) -> Option<&'static str> {
     match s {
         SourceState::NotProbed | SourceState::Reachable => None,
-        SourceState::Unauthorized => Some(UNAUTHORIZED),
-        SourceState::Unreachable => Some(UNREACHABLE),
-        SourceState::InsecureOnly => Some(INSECURE_ONLY),
+        SourceState::Unauthorized => Some(unauthorized()),
+        SourceState::Unreachable => Some(unreachable()),
+        SourceState::InsecureOnly => Some(insecure_only()),
     }
 }
 
 /// The server answered and **refused our token**: a sharing-grant problem, never a network one.
 ///
-/// It has to read as a different KIND of fault from [`UNREACHABLE`], because it has a different
+/// It has to read as a different KIND of fault from [`unreachable`], because it has a different
 /// remedy and the wrong word costs the user an evening — "not reachable" sends somebody to look at
 /// a router for something no router was ever part of. The remedy is in this same panel, one row
 /// down: *Check for new shares* is the `/api/v2/resources` refetch that reissues the per-(user,
 /// server) `accessToken`, which is why this run does not have to carry an instruction as well.
-const UNAUTHORIZED: &str = "Not authorized";
+fn unauthorized() -> &'static str { crate::i18n::msg::widgets_source_unauthorized() }
 /// Did not answer at all — refused, timed out, or unresolvable.
-const UNREACHABLE: &str = "Not reachable";
+fn unreachable() -> &'static str { crate::i18n::msg::widgets_source_unreachable() }
 /// Answered, verified as the right machine, but only over a transport this build may not put a
-/// credential on without the person's consent (issue #95, PLX-NATIVE-10). A different kind of fault from [`UNREACHABLE`] again — the server IS
+/// credential on without the person's consent (issue #95, PLX-NATIVE-10). A different kind of fault from [`unreachable`] again — the server IS
 /// there, it is the connection to it that has to change (HTTPS), not the server itself.
 ///
 /// Deliberately NOT the consent flow's "without encryption" wording: this row names a state no
 /// question can change (the server was ineligible, or not yet offered); an eligible server is
 /// asked through `screens::plaintext_question`, and a granted one reads as connected.
-const INSECURE_ONLY: &str = "Not secure";
+fn insecure_only() -> &'static str { crate::i18n::msg::widgets_source_insecure() }
 
 /// The word a WORKING group's connection tier is said in — `None` when there is nothing worth
 /// saying.
@@ -125,8 +125,8 @@ const INSECURE_ONLY: &str = "Not secure";
 fn tier_word(t: Location) -> Option<&'static str> {
     match t {
         Location::Local => None,
-        Location::Remote => Some("Remote"),
-        Location::Relay => Some("Relay"),
+        Location::Remote => Some(crate::i18n::msg::widgets_source_remote()),
+        Location::Relay => Some(crate::i18n::msg::widgets_source_relay()),
     }
 }
 
@@ -220,7 +220,7 @@ pub(crate) fn sections(
                     // is the library that works.
                     .value_dim(r.last_pinned)
                     .detail(if r.last_pinned {
-                        "The app needs one library".to_string()
+                        crate::i18n::msg::widgets_source_needs_library().to_string()
                     } else {
                         r.count_line.clone()
                     }),
@@ -240,7 +240,7 @@ pub(crate) fn sections(
         acts.push(SrcAction::None);
         // no leading glyph, deliberately: on the Browse level that column carries the picker's
         // tick, and an action mark in it would be a second grammar for one column
-        last.rows.push(Row::new("Check for new shares"));
+        last.rows.push(Row::new(crate::i18n::msg::widgets_source_new_shares()));
         acts.push(SrcAction::Recheck);
     }
     (out, acts)

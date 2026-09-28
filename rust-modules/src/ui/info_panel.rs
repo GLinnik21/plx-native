@@ -228,13 +228,13 @@ impl InfoPanelState {
         let focus = self.focus;
         let env = crate::ui::Env::inert();
         for (i, label) in acts.iter().enumerate() {
-            let icon = if *label == "From Beginning" {
+            let icon = if i == 0 {
                 Icon::Play
             } else {
                 Icon::Info
             };
             if let Ok(cs) = CString::new(*label) {
-                crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, button_rect(i))
+                crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, button_rect(i, measure))
                     .icon(icon)
                     .focused(i as c_int == focus)
                     .scale(self.ctl_pop.scale(i))
@@ -245,7 +245,7 @@ impl InfoPanelState {
         // text block (between the still and the buttons): title + synopsis + tags, cap-band centred as a
         // group. Title is the playing leaf's own name (episode name / movie title) — the show-title +
         // SxEy treatment lives on the transport HUD under the playbar, not this card.
-        let bx = button_rect(0).x; // the action column's own left edge, every row shares it
+        let bx = button_rect(0, measure).x; // the action column's own left edge, every row shares it
         let tx = sx + sw + 34.0;
         let tright = bx - 34.0;
         let tw = tright - tx;
@@ -379,13 +379,13 @@ impl InfoPanelState {
                 push(tag, ChipKind::Badge);
             }
             if !subs.is_empty() {
-                push("CC".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_cc().to_string(), ChipKind::Badge);
             }
             if subs.iter().any(|s| s.sdh) {
-                push("SDH".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_sdh().to_string(), ChipKind::Badge);
             }
             if audio.iter().any(|s| s.ad) {
-                push("AD".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_ad().to_string(), ChipKind::Badge);
             }
 
             let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);
@@ -531,12 +531,12 @@ where
             _ => Step::Edge,
         }
     }
-    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()? as usize;
         if i >= N_ACTIONS {
             return None;
         }
-        let r = button_rect(i);
+        let r = button_rect(i, cx.measure);
         Some(Placed {
             rect: r,
             rest_rect: r,
@@ -566,7 +566,7 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
         for i in 0..N_ACTIONS {
-            let r = button_rect(i);
+            let r = button_rect(i, f.measure);
             f.stop(
                 p,
                 Stop {
@@ -600,11 +600,11 @@ fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
 /// is drawn ([`InfoPanelState::draw`]).
 fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
     [
-        "From Beginning",
+        crate::i18n::msg::widgets_info_from_beginning(),
         if is_episode(meta) {
-            "Go to Show"
+            crate::i18n::msg::widgets_info_go_show()
         } else {
-            "Go to Movie"
+            crate::i18n::msg::widgets_info_go_movie()
         },
     ]
 }
@@ -621,12 +621,19 @@ fn card_geometry() -> (Rect, f32) {
     (Rect::new(cx, cyt, cw, ch), 28.0f32)
 }
 
-/// The `i`-th action button's rect, exactly as [`InfoPanelState::draw`] paints it — the same
-/// formula [`InfoPanelPart::place`] answers the focus engine with, so a stop built from it lands
+/// The `i`-th action button's rect, widened for the longest translated action label. The same
+/// measured formula [`InfoPanelPart::place`] answers the focus engine with, so a stop built from it lands
 /// on the pixel the button was drawn at.
-fn button_rect(i: usize) -> Rect {
+fn button_rect(i: usize, measure: &dyn crate::ui::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
-    let bw = 352.0f32;
+    let labels = [
+        crate::i18n::msg::widgets_info_from_beginning_c(),
+        crate::i18n::msg::widgets_info_go_show_c(),
+        crate::i18n::msg::widgets_info_go_movie_c(),
+    ];
+    let bw = labels.iter().map(|label| {
+        crate::ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, false, measure)
+    }).fold(352.0f32, f32::max);
     let bh = 70.0f32;
     let bx = card.x + card.w - pad - bw;
     let n = N_ACTIONS;
@@ -728,17 +735,17 @@ pub(crate) fn playback_now(
         return None;
     }
     if !transcoding {
-        return Some("Direct Play".to_string());
+        return Some(crate::i18n::msg::widgets_playback_direct_play().to_string());
     }
     if remux {
-        return Some("Direct Stream".to_string());
+        return Some(crate::i18n::msg::widgets_playback_direct_stream().to_string());
     }
     let name = video_codec_name(vcodec);
     // a re-encode whose output codec we somehow do not know still converted — say that much
     Some(if name.is_empty() {
-        "Converting".to_string()
+        crate::i18n::msg::widgets_playback_converting().to_string()
     } else {
-        format!("Converting \u{b7} {name}")
+        crate::i18n::msg::widgets_playback_converting_codec(&name)
     })
 }
 
@@ -1066,7 +1073,7 @@ mod focus_tests {
             for i in 0..N_ACTIONS as u32 {
                 let placed = <InfoPanelPart as Focusable<HostFixture>>::place(&part, &i, cx, At::Drawn)
                     .expect("both buttons are placeable");
-                let want = button_rect(i as usize);
+                let want = button_rect(i as usize, cx.measure);
                 assert_eq!(
                     (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
                     (want.x, want.y, want.w, want.h)
@@ -1079,7 +1086,8 @@ mod focus_tests {
     /// "From Beginning" above "Go to Show"/"Go to Movie".
     #[test]
     fn the_two_buttons_share_a_column_and_stack_in_draw_order() {
-        let (a, b) = (button_rect(0), button_rect(1));
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let (a, b) = (button_rect(0, &measure), button_rect(1, &measure));
         assert_eq!(a.x, b.x);
         assert_eq!(a.w, b.w);
         assert!(a.y < b.y, "From Beginning sits above the second action");

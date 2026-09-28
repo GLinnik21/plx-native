@@ -65,7 +65,7 @@ pub(crate) const WORD: &str = "player";
 pub(crate) const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64,commit_at:u32},origin:Option<u32>,repair_alert:{open:bool,confirm:bool}}";
+     ns:i64,commit_at:u32},origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -133,7 +133,7 @@ pub(crate) struct PlayerScreen {
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
     repair_alert: crate::ui::decision_alert::DecisionAlert,
-    repair_frames: std::cell::Cell<Option<(Rect, Rect)>>,
+    repair_scroll: u32,
 }
 
 impl PlayerScreen {
@@ -155,7 +155,7 @@ impl PlayerScreen {
                 alert.set_tone(crate::ui::decision_alert::Tone::Neutral);
                 alert
             },
-            repair_frames: std::cell::Cell::new(None),
+            repair_scroll: 0,
         }
     }
 
@@ -397,7 +397,7 @@ const GROUP_FAILURE: GroupId = GroupId(3);
 const GROUP_REPAIR: GroupId = GroupId(4);
 const REPAIR_CANCEL: u32 = 40_000;
 const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
-const REPAIR_BODY: &str = "Use Homebrew Channel’s root access to update PlxNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.";
+
 
 impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for PlayerScreen {
     type Ev = ScreenEvent<H>;
@@ -462,6 +462,11 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
                         InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
                             consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
                                 self.repair_answer(false, fx); Handled::Yes
+                            }
+                            direction @ (consts::Key::Up | consts::Key::Down) if edge != Edge::Up => {
+                                self.repair_scroll = self.repair_alert.scroll_by(cx.measure,
+                                    if matches!(direction, consts::Key::Up) { -1 } else { 1 });
+                                Handled::Yes
                             }
                             consts::Key::Left { .. } | consts::Key::Right { .. } | consts::Key::Ok | consts::Key::Exit => Handled::No,
                             _ => Handled::Yes,
@@ -552,7 +557,8 @@ impl PlayerScreen {
     fn failure_action<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
         if crate::player::error_now(ps).kind == crate::player::FailureKind::JailMissingRtkmem {
             if ps.repair_status == crate::webos::jail_repair::State::Idle && !self.repair_alert.visible() {
-                self.repair_alert.open_with_body(c"Repair PlxNative’s sandbox?", REPAIR_BODY);
+                self.repair_scroll = 0;
+                self.repair_alert.open_with_body(crate::i18n::msg::widgets_repair_question_c(), crate::i18n::msg::widgets_repair_body());
                 Self::repair_focus(fx, GROUP_REPAIR);
             }
         } else {
@@ -565,8 +571,9 @@ impl PlayerScreen {
         if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
         Self::repair_focus(fx, GROUP_FAILURE);
     }
-    fn repair_rect(&self, confirm: bool) -> Rect {
-        self.repair_frames.get().map(|(cancel, repair)| if confirm { repair } else { cancel }).unwrap_or(Rect::FULL)
+    fn repair_rect(&self, confirm: bool, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        let (cancel, repair) = self.repair_alert.frames(measure);
+        if confirm { repair } else { cancel }
     }
 
     /// One registered click's element resolves to an action — the pointer twin of `handle_key`'s
@@ -1057,7 +1064,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.repair_alert.visible() {
             out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
-                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false).union(self.repair_rect(true)), len: 2, elem: crate::ui::screen::ElemKind::Control });
+                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false, cx.measure).union(self.repair_rect(true, cx.measure)), len: 2, elem: crate::ui::screen::ElemKind::Control });
             return;
         }
         out.push(GroupSpec {
@@ -1090,7 +1097,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::tab_hit_rect(0, has_ch).unwrap_or(Rect::FULL),
+            extent: player_hud::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
             len: if has_ch { 2 } else { 1 },
             elem: crate::ui::screen::ElemKind::Control,
         });
@@ -1138,7 +1145,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         if self.repair_alert.visible() {
             if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
-            let rect = self.repair_rect(*key == REPAIR_CONFIRM);
+            let rect = self.repair_rect(*key == REPAIR_CONFIRM, cx.measure);
             return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
         }
         let rect = match *key {
@@ -1149,6 +1156,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             e if (ELEM_TAB_BASE..ELEM_FAILURE_OK).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
                 crate::ui::chapters_panel::has_chapters(H::metadata(cx)),
+                cx.measure,
             )?,
             e if e == ELEM_FAILURE_OK => player_hud::failure_ok_hit_rect(),
             _ => return None,
@@ -1192,7 +1200,7 @@ impl LogicalState for PlayerScreen {
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });
-        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == crate::ui::decision_alert::Choice::Destructive);
+        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == crate::ui::decision_alert::Choice::Destructive).u32(self.repair_scroll);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(WORD);
@@ -1250,9 +1258,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         crate::ui::player_hud::draw_readout(ps, self.busy, now, f.measure);
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
-            self.repair_alert.draw(c"Cancel", c"Repair");
-            let frames = self.repair_alert.frames();
-            self.repair_frames.set(Some(frames));
+            self.repair_alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::widgets_repair_action_c(), f.measure);
         }
         self.record_stops(f, hud_drawn);
     }

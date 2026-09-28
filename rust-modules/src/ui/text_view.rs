@@ -69,10 +69,10 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
 /// The one mark drawn to open a truncated block of text — the About card's footer and the person
 /// page's bio panel are its two callers today. **Clickable text marks are always ALL CAPS** (owner
 /// rule, 2026-09-19): it is a general rule for clickable text blocks, not a per-screen style
-/// choice, so every screen reads this constant rather than spelling its own literal. An earlier
+/// choice, so every screen reads this accessor rather than spelling its own literal. An earlier
 /// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
 /// the reason this exists as one definition instead of two that can drift apart.
-pub(crate) const MORE_MARK: &std::ffi::CStr = c"MORE";
+pub(crate) fn more_mark() -> &'static std::ffi::CStr { crate::i18n::msg::browse_action_more_c() }
 
 pub struct TextView<'a> {
     measure: Option<&'a dyn crate::ui::machine::Measure>,
@@ -84,6 +84,7 @@ pub struct TextView<'a> {
     leading: f32, // line pitch; 0 = derive from sz
     align: HAlign,
     max_lines: usize,                      // 0 = unlimited
+    break_long_words: bool, // preserve oversized words by wrapping at UTF-8 character boundaries
     trailing: Option<(&'a str, [f32; 4])>, // inline run after the last line when truncated (e.g. "MORE")
     /// Inline BOLD run before the first word (e.g. the detail hero's `S2, E3 · Laura:` episode
     /// prefix). The mirror of [`TextView::trailing`], and it has to be part of the view rather than a
@@ -125,6 +126,7 @@ impl<'a> TextView<'a> {
             leading: 0.0,
             align: HAlign::Left,
             max_lines: 0,
+            break_long_words: false,
             trailing: None,
             lead: None,
             lead_bold: true,
@@ -175,7 +177,14 @@ impl<'a> TextView<'a> {
         self.align = a;
         self
     }
-    /// cap the block to `n` lines, ellipsizing the last (0 = unlimited).
+    /// Preserve the complete text of an oversized word by wrapping it across lines. Opt in
+    /// for app-owned route names and reading copy; media titles retain their usual elision.
+    pub fn break_long_words(mut self) -> Self {
+        self.break_long_words = true;
+        self
+    }
+
+    /// Cap the block to `n` lines, ellipsizing the last (0 = unlimited).
     pub fn max_lines(mut self, n: usize) -> Self {
         self.max_lines = n;
         self
@@ -308,6 +317,7 @@ impl<'a> TextView<'a> {
         self.bold.hash(&mut h);
         (width as i32).hash(&mut h);
         self.max_lines.hash(&mut h);
+        self.break_long_words.hash(&mut h);
         // the lead run narrows line 0, so two views differing only in it wrap differently
         self.lead.map(|(r, _)| r).unwrap_or("").hash(&mut h);
         if let Some(measure) = self.measure {
@@ -352,6 +362,7 @@ impl<'a> TextView<'a> {
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
         let mut i = 0;
+        let mut word_offset = 0;
         // line 0 shares its row with the bold lead run, so it wraps into the column MINUS that run;
         // every later line gets the whole column back
         let lead_w = self.lead_w();
@@ -363,21 +374,40 @@ impl<'a> TextView<'a> {
             }
         };
         while i < words.len() {
+            let word = &words[i][word_offset..];
+            if self.break_long_words && cur.is_empty() && self.measure(word) > avail(lines.len()) {
+                // Keep progress even in a degenerate column narrower than one glyph. The final
+                // safety elision below remains responsible for that impossible-to-fit case.
+                let mut end = word.chars().next().map(char::len_utf8).unwrap_or(0);
+                for (at, c) in word.char_indices() {
+                    let next = at + c.len_utf8();
+                    if self.measure(&word[..next]) > avail(lines.len()) { break; }
+                    end = next;
+                }
+                lines.push(word[..end].to_string());
+                word_offset += end;
+                if word_offset == words[i].len() {
+                    i += 1;
+                    word_offset = 0;
+                }
+                if self.max_lines > 0 && lines.len() == self.max_lines { break; }
+                continue;
+            }
             let trial = if cur.is_empty() {
-                words[i].to_string()
+                word.to_string()
             } else {
-                format!("{cur} {}", words[i])
+                format!("{cur} {word}")
             };
             if !cur.is_empty() && self.measure(&trial) > avail(lines.len()) {
                 lines.push(std::mem::take(&mut cur));
                 if self.max_lines > 0 && lines.len() == self.max_lines {
                     break; // out of line budget; `i` still points at unplaced words → truncated
                 }
-                cur = words[i].to_string();
-            } else {
-                cur = trial;
+                continue; // reconsider the word in a fresh, full-width line
             }
+            cur = trial;
             i += 1;
+            word_offset = 0;
         }
         if !cur.is_empty() && (self.max_lines == 0 || lines.len() < self.max_lines) {
             lines.push(cur);
@@ -396,8 +426,8 @@ impl<'a> TextView<'a> {
                 *last = self.elide(last, w);
             }
         }
-        // safety: a lone token wider than the column can't be word-broken (a long URL/compound word,
-        // or a space-less script that yields one "word") — ellipsize any over-wide line so it never
+        // Safety for views that retain word elision (and columns narrower than one glyph):
+        // ellipsize any over-wide line so it never
         // paints past the column (Painter has no clip). Also covers the whole-text-is-one-token case
         // that slips past the truncation gate above.
         let mut widths = Vec::with_capacity(lines.len());
@@ -596,25 +626,56 @@ impl<'a> TextView<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_word_wrapping_preserves_utf8_and_respects_line_limits() {
+        struct Measure;
+        impl crate::ui::machine::Measure for Measure {
+            fn width(&self, s: &std::ffi::CStr, _: i32, _: bool) -> f32 {
+                s.to_string_lossy().chars().count() as f32 * 10.0
+            }
+            fn cap_h(&self, _: i32) -> f32 { 20.0 }
+            fn line_h(&self, _: i32) -> f32 { 28.0 }
+        }
+        let _guard = ForbidLive::enter();
+        let word = "Фільмаграфія";
+        let view = TextView::new(word, theme::size::HERO, theme::TEXT_PRIMARY)
+            .with_measure(&Measure).break_long_words();
+        let full = view.wrap(50.0);
+        assert!(!full.truncated);
+        let joined = full.lines.iter().map(|line| line.to_str().unwrap()).collect::<String>();
+        assert_eq!(joined, word, "long word loses no characters to ellipsis");
+        assert!(full.lines.iter().all(|line| line.to_str().unwrap().chars().count() <= 5));
+        let shortened = view.max_lines(2).wrap(50.0);
+        assert!(shortened.truncated, "a real line limit must still report hidden text");
+        assert_eq!(shortened.lines.len(), 2);
+        let prose = TextView::new("A Фільмаграфія Z", theme::size::BODY, theme::TEXT_PRIMARY)
+            .with_measure(&Measure).break_long_words().wrap(50.0);
+        assert_eq!(prose.lines.iter().map(|s| s.to_str().unwrap()).collect::<Vec<_>>(),
+            ["A", "Фільм", "аграф", "ія Z"]);
+    }
+
     use super::*;
     use crate::ui::theme;
 
     /// Owner rule, 2026-09-19: a clickable text mark (the truncation/expand affordance) is always
     /// ALL CAPS — it is a general rule for clickable text blocks, not a per-screen style choice.
-    /// `fc63c0c1` drew the person page's mark as sentence-case `"More"`, which this constant exists
-    /// to make impossible to repeat: every screen reads `MORE_MARK` instead of spelling its own
+    /// `fc63c0c1` drew the person page's mark as sentence-case `"More"`, which this accessor exists
+    /// to make impossible to repeat: every screen reads `more_mark()` instead of spelling its own
     /// literal, so a future edit that lowers the case fails HERE, citing the rule, rather than
     /// silently drifting one screen away from every other.
     #[test]
-    fn the_more_mark_is_ascii_uppercase() {
-        let s = MORE_MARK.to_str().expect("MORE_MARK must be valid UTF-8");
+    fn the_more_mark_is_uppercase_in_supported_locales() {
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+        let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+        let s = crate::i18n::msg::browse_action_more_in(&locale);
         assert_eq!(
             s,
-            s.to_ascii_uppercase(),
-            "clickable text marks are ALL CAPS (owner rule, 2026-09-19) — MORE_MARK in \
+            s.to_uppercase(),
+            "clickable text marks are ALL CAPS (owner rule, 2026-09-19) — more_mark() in \
              ui/text_view.rs must stay uppercase; see fc63c0c1 for the sentence-case regression \
              this test exists to catch"
         );
+        }
     }
 
     #[test]

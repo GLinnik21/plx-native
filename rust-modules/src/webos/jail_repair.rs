@@ -33,20 +33,6 @@ pub(crate) enum Failure {
     Unsupported,
 }
 
-impl Failure {
-    pub(crate) const fn message(self) -> &'static str {
-        match self {
-            Self::StartFailed => "Could not start the repair. Close and reopen PlxNative to try again.",
-            Self::HbcUnavailable => "Homebrew Channel service is unavailable.",
-            Self::NotRoot => "Homebrew Channel service is not running as root.",
-            Self::CommandFailed => "The sandbox repair command failed.",
-            Self::Timeout => "Repair outcome is unknown. Close and reopen the app to check again.",
-            Self::Unreadable => "Repair completed, but this app cannot see /dev/rtkmem yet. Close and reopen the app.",
-            Self::Unsupported => "Sandbox repair is not available on this device.",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum State {
     Idle,
