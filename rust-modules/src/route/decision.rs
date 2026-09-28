@@ -232,6 +232,10 @@ pub(crate) struct PlaybackSession {
     /// subtitles are separate (client-rendered from the demuxer, player::request_subtitle).
     cur_audio_sid: i64,
     cur_sub_sid: i64,
+    /// The subtitle-language preference this play resolved under — the show's pref if it set one,
+    /// else the account's — carried straight from [`super::plan::Plan::sub_pref_lang`] so the
+    /// Subtitles menu's "yours" grouping (`ui::track_menu::sub_layout`) survives a reload.
+    cur_sub_pref_lang: Option<String>,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
     cur_part_id: i64,
@@ -367,6 +371,7 @@ impl PlaybackSession {
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
         cur_sub_sid: 0,
+        cur_sub_pref_lang: None,
         cur_part_id: 0,
         sess: String::new(),
         machine_id: String::new(),
@@ -436,6 +441,7 @@ impl PlaybackSession {
             cur_sid,
             cur_audio_sid,
             cur_sub_sid,
+            cur_sub_pref_lang,
             cur_part_id,
             sess,
             machine_id,
@@ -486,6 +492,7 @@ impl PlaybackSession {
             cur_sid: *cur_sid,
             cur_audio_sid: *cur_audio_sid,
             cur_sub_sid: *cur_sub_sid,
+            cur_sub_pref_lang: cur_sub_pref_lang.clone(),
             cur_part_id: *cur_part_id,
             sess: sess.clone(),
             machine_id: machine_id.clone(),
@@ -3865,6 +3872,12 @@ pub(crate) fn set_subtitle(ps: &mut PlaybackSession, sid: i64) {
 pub(crate) fn cur_sub_sid(ps: &PlaybackSession) -> i64 {
     ps.cur_sub_sid
 }
+/// The subtitle-language preference this play resolved under (show pref, else account pref), as
+/// a BCP-47 code — `ui::track_menu::sub_layout`'s "yours" grouping reads this, never a Plex
+/// account type.
+pub(crate) fn cur_sub_pref_lang(ps: &PlaybackSession) -> Option<&str> {
+    ps.cur_sub_pref_lang.as_deref()
+}
 /// ratingKey of the currently-playing item (for /:/timeline progress reports).
 pub(crate) fn cur_rk(ps: &PlaybackSession) -> String {
     ps.cur_rk.clone()
@@ -6128,6 +6141,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
+            cur_sub_pref_lang: plan.sub_pref_lang,
             cur_part_id: plan.part_id,
             sess: plan.sess,
             machine_id,

@@ -406,6 +406,7 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
 /// tell them apart; a forced track never merges into a full one. First-seen order is preserved,
 /// which is the server's order, so the list still reads in container sequence.
 pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
+    use crate::metadata::track_label::{self, Kind};
     // (key, name, detail-head, count) — a Vec rather than a map so first-seen order survives; a
     // subtitle list is a handful of entries, so the linear scan is not worth a hash.
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
@@ -415,10 +416,17 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         } else {
             s.lang.clone()
         };
+        // The shared parser (`metadata::track_label`, §1): the SAME kind/source split the
+        // Subtitles menu draws, instead of this panel re-deriving its own "Forced"/"SDH" tags
+        // from the raw flags and the raw `s.title` (which double-counted a title that only
+        // repeated its own kind word, e.g. "Форс. iTunes" used to read `FORCED · Форс. iTunes`).
+        let label = track_label::parse(&s.title, s.forced, s.sdh);
         let mut head = s.codec.to_uppercase();
         for (on, tag) in [
-            (s.forced, crate::i18n::msg::widgets_tracks_forced()),
-            (s.sdh, crate::i18n::msg::widgets_badge_sdh()),
+            // Both flags can be set on one track (a forced SDH file): show both, as this panel
+            // always has; the parsed kind only ADDS a flag the title spelled out.
+            (s.forced || label.kind == Kind::Forced, crate::i18n::msg::widgets_tracks_forced()),
+            (s.sdh || label.kind == Kind::Sdh, crate::i18n::msg::widgets_badge_sdh()),
             (s.external, crate::i18n::msg::widgets_tracks_external()),
         ] {
             if on {
@@ -429,11 +437,11 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
                 };
             }
         }
-        if !s.title.trim().is_empty() && !s.title.eq_ignore_ascii_case(&name) {
+        if !label.source.trim().is_empty() && !label.source.eq_ignore_ascii_case(&name) {
             head = if head.is_empty() {
-                s.title.clone()
+                label.source.clone()
             } else {
-                format!("{head} \u{b7} {}", s.title.trim())
+                format!("{head} \u{b7} {}", label.source.trim())
             };
         }
         let key = format!("{}\u{0}{}", name, head);

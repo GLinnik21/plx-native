@@ -192,6 +192,35 @@ pub(crate) struct PlayerOverlayScreen {
     suppressed: bool,
 }
 
+/// **"Your languages"**, in preference order, for the Subtitles menu's grouping
+/// (`ui::track_menu::sub_layout`, plan `subtitle-menu-capsule` §2-3): the subtitle-language
+/// preference this play resolved under (the show's own, else the account's —
+/// `route::cur_sub_pref_lang`), then the playing audio's language, then the current subtitle's
+/// own — each only if it names one. `ui/` never sees a Plex account type, only these codes.
+fn subtitle_yours_langs(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Vec<String> {
+    let mut yours = Vec::new();
+    if let Some(pref) = crate::route::cur_sub_pref_lang(ps) {
+        if !pref.trim().is_empty() {
+            yours.push(pref.to_string());
+        }
+    }
+    if let Some(item) = meta.playing() {
+        let asid = crate::route::cur_audio_sid(ps);
+        if let Some(a) = item.audio.iter().find(|s| s.id == asid) {
+            if !a.lang_code.trim().is_empty() {
+                yours.push(a.lang_code.clone());
+            }
+        }
+        let ssid = crate::route::cur_sub_sid(ps);
+        if let Some(s) = item.subs.iter().find(|s| s.id == ssid) {
+            if !s.lang_code.trim().is_empty() {
+                yours.push(s.lang_code.clone());
+            }
+        }
+    }
+    yours
+}
+
 impl PlayerOverlayScreen {
     /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
     /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
@@ -201,7 +230,9 @@ impl PlayerOverlayScreen {
     pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => {
-                Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(ps, meta, tab))
+                let yours = subtitle_yours_langs(ps, meta);
+                let yours: Vec<&str> = yours.iter().map(String::as_str).collect();
+                Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(ps, meta, tab, &yours))
             }
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
@@ -275,7 +306,10 @@ impl PlayerOverlayScreen {
     ) -> Option<crate::ui::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
             p.focus_row(row);
-            return p.on_ok(ps, meta);
+            return match p.on_ok(ps, meta) {
+                Some(crate::ui::track_menu::TrackOk::Commit(commit)) => Some(commit),
+                Some(crate::ui::track_menu::TrackOk::OpenTiming) | None => None,
+            };
         }
         None
     }
@@ -328,11 +362,20 @@ impl PlayerOverlayScreen {
             Panel::Tracks(p) => {
                 // asked BEFORE `on_ok`, which may rebuild the rows under the cursor
                 let stays = p.ok_keeps_open();
-                if let Some(commit) = p.on_ok(ps, H::metadata(cx)) {
-                    fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
+                match p.on_ok(ps, H::metadata(cx)) {
+                    Some(crate::ui::track_menu::TrackOk::Commit(commit)) => {
+                        fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
+                    }
+                    Some(crate::ui::track_menu::TrackOk::OpenTiming) => {
+                        // lane B: hand off Tracks → Timing here (`self.dismiss(fx)` then
+                        // `Self::ask(fx, PlayerReq::OpenOverlay(OverlayKind::Timing))`, per plan
+                        // §4) once the Timing capsule overlay exists. A no-op placeholder until
+                        // then — it compiles and is exhaustively matched, but opens nothing.
+                    }
+                    None => {}
                 }
                 if stays {
-                    // a Timing step: the viewer is watching the caption move, so the transport
+                    // a Color cycle: the viewer is watching the tone change, so the transport
                     // keeps a menu's read time rather than starting to close
                     self.moved(fx);
                 } else {

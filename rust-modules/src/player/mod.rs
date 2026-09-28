@@ -1497,7 +1497,10 @@ pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
 /// The earliest a SIDECAR goes. Its whole file is in memory (`sidecar`), so an advance is exactly
 /// as servable as a delay.
 pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -30_000;
-/// The Timing rows' step.
+/// The Timing capsule's step (plan `subtitle-menu-capsule` §4) — unused until lane B's
+/// `ui::timing_capsule` lands and reads it; the Subtitles menu's own Timing row no longer steps
+/// anything itself, it only opens the capsule (`ui::track_menu::TrackOk::OpenTiming`).
+#[allow(dead_code)]
 pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
 
 /// **The offset range for the selected subtitle, in milliseconds (`(earliest, latest)`)** — the
