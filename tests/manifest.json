@@ -1790,6 +1790,65 @@
       }
     },
     {
+      "name": "audio_enhancement_normalize",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 · 1080p · 1 audio track — live Normalize Loudness toggle (issue #266) turns a direct play into an enhanced remux",
+      "comment": "The Audio tab's row layout (track_menu.rs's build_audio) appends the two Plex Pass DSP rows AFTER the audio tracks: this item has exactly 1 (make_fixtures.py's movie_h264_ac3_1080p SHAPES entry), so row 0 is the AC-3 track, row 1 is Boost Dialog and row 2 is Normalize Loudness — the row this case picks.",
+      "covers": [
+        "audio-enhancement-normalize",
+        "enhancement-applied",
+        "enhancement-remux-not-reencode"
+      ],
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "audio_enhancement",
+          "row": 2
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "codec": "h264",
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "known_gap": false
+    },
+    {
+      "name": "audio_enhancement_normalize_reset",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 · 1080p · cleanup: releases the Normalize Loudness preference `audio_enhancement_normalize` left ON",
+      "comment": "Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality, so a case that toggles it ON must not leave it there for whatever runs next on this install. `menupick_arm` (dev/scenarios.rs) fires its trigger exactly once per app launch, so the release cannot be a second operation in the SAME case — this is instead a second, immediately-following case: a FRESH boot inherits the persisted preference, which the resolve applies up front (route/plan.rs turns an otherwise direct-playable candidate into an enhanced remux before the first frame — hence `expect.decision` here is `transcode`, not `directplay`), and picking the SAME row again reconciles it back to NONE, releasing straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect).",
+      "covers": [
+        "audio-enhancement-cleanup"
+      ],
+      "run_secs": 50,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "audio_enhancement",
+          "row": 2,
+          "mode": "release"
+        }
+      ],
+      "expect": {
+        "decision": "transcode",
+        "codec": "h264",
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "known_gap": false
+    },
+    {
       "name": "subtitle_text_srt",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",

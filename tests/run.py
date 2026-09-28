@@ -1046,6 +1046,14 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
+        elif kind == "audio_enhancement":
+            # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
+            # appended after the audio tracks (`track_menu.rs`'s `build_audio`) — an ABSOLUTE
+            # `TableView` row, exactly the row `menupick` already expects (headers do not count).
+            # The manifest states the row directly rather than a track count, because computing K
+            # here would just be re-deriving the shape SHAPES already states once in
+            # `tests/fixtures/make_fixtures.py`.
+            files.append(("plxnative-menupick", f'0,{op["row"]}'))
         elif kind == "pause_resume":
             files.append((
                 "plxnative-autopause",
@@ -3504,6 +3512,12 @@ def a_no_demux_failure(lines):
 # still grades.
 AUDIO_NATIVE_SWITCH_LINES = ("route transition: native audio idx=", "audio switch (native)")
 AUDIO_RETRANSCODE_LINES = ("route transition: user retranscode", "re-transcode:")
+# issue #266: `route/decision.rs`'s `retranscode_as` logs this ONLY when `EnhancementOutcome`
+# becomes `Applied` — the server demonstrably ran the DSP params, not merely accepted a request a
+# source-copy would have produced anyway (`EnhancementOutcome`'s own doc). `decision output: v=..
+# a=..` is the SAME call's statement of what the negotiated codecs actually are.
+RE_ENHANCEMENT_APPLIED = re.compile(r"enhancement: applied boost=(\d) loudness=(\d)")
+RE_DECISION_OUTPUT = re.compile(r"decision output: v=(\S+) a=(\S+)")
 
 
 def _find_any(lines, needles):
@@ -3556,6 +3570,75 @@ def op_audio_transcode(lines):
         return False, (f"video was RE-ENCODED across the audio switch ({cs[0][0]} -> {cs[-1][0]}); "
                        f"expected a copy :: {cs[-1][3].strip()}")
     return True, f"transcode switch OK (video copied, {cs[-1][0] if cs else '?'}) :: {rl_t.strip()}"
+
+
+def op_audio_enhancement(lines):
+    """A live Boost Dialog / Normalize Loudness toggle (issue #266), asked for mid-play through
+    the SAME single-shot `plxnative-menupick` mechanism `op_audio_switch`/`op_subtitle` use.
+
+    Proves three things, in order: the ask actually reached the server and TOOK EFFECT — the
+    app's own `enhancement: applied boost=.. loudness=..` line, printed only when
+    `EnhancementOutcome::Applied` (`route/decision.rs`'s `retranscode_as`), so a request the
+    server merely accepted (or silently ignored) does not pass here; the route it produced is a
+    REMUX and not a full re-encode — the video codec is unchanged across the switch, the same
+    copy-proof `op_audio_transcode` uses; and the resulting stream is `start.mkv`
+    (`TranscodeDelivery::ProgressiveMkv`), the one delivery PMS 1.43.4 answers a DSP param with —
+    an HLS re-encode under a fixed rung would be `start.m3u8` and is a different, non-enhanced
+    contract by design (`enhancement_step`'s `NotInvolved` under a capped rung).
+    """
+    hit = find(lines, "enhancement: applied boost=")
+    if hit is None:
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `enhancement: applied` line :: {no_commit.strip()}"
+        refused = find(lines, "enhancement: refused/ignored by server")
+        if refused is not None:
+            return False, f"the server refused/ignored the enhancement :: {refused.strip()}"
+        return False, "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)"
+    m = RE_ENHANCEMENT_APPLIED.search(hit)
+    if not m or m.group(2) != "1":
+        return False, f"applied line does not show loudness=1 :: {hit.strip()}"
+    hit_i = lines.index(hit)
+    cs = codec_ids(lines)
+    if len(cs) < 2:
+        return False, f"no codec line after the switch to check video copy :: {hit.strip()}"
+    if cs[-1][0] != cs[0][0]:
+        return False, (f"video was RE-ENCODED across the enhancement toggle "
+                       f"({cs[0][0]} -> {cs[-1][0]}); expected a copy (remux) :: {cs[-1][3].strip()}")
+    # `decision output:` precedes `enhancement: applied` in the same call (retranscode_as logs its
+    # own negotiated codecs first) — search backward from the applied line, not forward from it.
+    dec = next((ln for ln in reversed(lines[:hit_i + 1]) if RE_DECISION_OUTPUT.search(ln)), None)
+    if dec is None:
+        return False, f"no `decision output:` line at/before the toggle :: {hit.strip()}"
+    dm = RE_DECISION_OUTPUT.search(dec)
+    if dm.group(2) != "ac3":
+        return False, f"audio payload is {dm.group(2)}, not ac3 :: {dec.strip()}"
+    stream = next((ln for ln in lines[hit_i:] if RE_STREAM_PATH.search(ln)), None)
+    if stream is None or "start.mkv" not in stream:
+        return False, (f"no post-toggle `stream: .. path=..start.mkv` line (not a remux) :: "
+                       f"{redact((stream or hit).strip())}")
+    return True, (f"enhancement applied and running as a remux with ac3 audio :: "
+                  f"{hit.strip()} / {redact(stream.strip())}")
+
+
+def op_audio_enhancement_release(lines):
+    """The cleanup half of `audio_enhancement_normalize`: from a FRESH boot that inherits the
+    prior case's persisted preference (the resolve applies it up front — see
+    `route/plan.rs`'s cold-start `audio = ... enhancement_for(...)`, which turns an otherwise
+    direct-playable candidate into an enhanced remux before the first frame), the SAME row is
+    picked again, which reconciles the preference back to NONE.  `enhancement_step` releases a
+    directly-playable candidate straight back to it (`route/decision.rs`'s
+    `EnhancementStep::ReleaseToDirect` -> `recover_auto_to_original_for(.. EnhancementReleased)`),
+    logging one of two lines depending on whether the candidate itself direct-plays or only
+    remuxes; both share the `enhancement: released to Original` prefix this greps for.
+    """
+    hit = find(lines, "enhancement: released to Original")
+    if hit is None:
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `enhancement: released` line :: {no_commit.strip()}"
+        return False, "no `enhancement: released to Original ..` line (release never took effect)"
+    return True, f"enhancement released back to Original :: {hit.strip()}"
 
 
 def op_subtitle(lines):
@@ -4175,6 +4258,10 @@ def evaluate(case, lines):
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
             results.append(("audio_transcode", *op_audio_transcode(lines)))
+        elif k == "audio_enhancement" and op.get("mode") == "release":
+            results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
+        elif k == "audio_enhancement":
+            results.append(("audio_enhancement", *op_audio_enhancement(lines)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":

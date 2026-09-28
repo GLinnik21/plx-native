@@ -6801,6 +6801,17 @@ fn retranscode_as(
         "decision output: v={} a={}",
         output_codecs.0, output_codecs.1,
     ));
+    // A harness-readable statement of what actually took effect, distinct from the ask: only
+    // `Applied` means the server demonstrably ran the params (`EnhancementOutcome`'s own doc), so
+    // an on-device case grading a live toggle has one line to key on instead of inferring the
+    // outcome from the codec/URL lines above.
+    if matches!(enhancement, EnhancementOutcome::Applied) {
+        crate::player::log(&format!(
+            "enhancement: applied boost={} loudness={}",
+            i32::from(audio.boost_dialog),
+            i32::from(audio.normalize_loudness),
+        ));
+    }
     if !expected_encoder.is_empty() && expected_encoder != qsess {
         let old = expected_encoder;
         let worker_old = old.clone();

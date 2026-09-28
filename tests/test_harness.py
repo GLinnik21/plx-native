@@ -3168,6 +3168,100 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertFalse(run.op_audio_transcode([h264, "reload_transcode: fresh Load at offset 5s"])[0],
                          "a transcode reload with no switch line is not an audio switch")
 
+    def test_audio_enhancement_op_writes_an_absolute_menupick_row(self):
+        """issue #266: `audio_enhancement` reuses `plxnative-menupick` at tab 0 with the row taken
+        literally from the manifest — no track count is derived here, since the shape (and hence
+        the row) already lives once in `tests/fixtures/make_fixtures.py`."""
+        files = run.triggers_for_case({"rk": "1", "operations": [
+            {"op": "play"}, {"op": "audio_enhancement", "row": 2},
+        ]})
+        self.assertIn(("plxnative-menupick", "0,2"), files)
+
+    def test_audio_enhancement_op_grades_applied_remux_and_ac3(self):
+        """A live Normalize Loudness pick that took effect: the server ran the DSP params
+        (`enhancement: applied ..`, printed only for `EnhancementOutcome::Applied`), the video
+        codec is unchanged across the switch (a copy, i.e. a remux and not a full re-encode), the
+        negotiated audio is ac3, and the resulting stream is `start.mkv` (ProgressiveMkv)."""
+        h264 = "ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
+        good = [
+            h264,
+            "decision output: v=h264 a=ac3",
+            "enhancement: applied boost=0 loudness=1",
+            "stream: example.com path=/video/:/transcode/universal/start.mkv?a=1",
+            h264,
+        ]
+        ok, why = run.op_audio_enhancement(good)
+        self.assertTrue(ok, why)
+        # No `enhancement: applied` line at all -- the pick never took effect.
+        no_commit = [h264, "menupick: row 2 already active — no commit"]
+        ok, why = run.op_audio_enhancement(no_commit)
+        self.assertFalse(ok, why)
+        self.assertIn("no `enhancement: applied` line", why)
+        refused = [h264, "enhancement: refused/ignored by server; current stream retained"]
+        ok, why = run.op_audio_enhancement(refused)
+        self.assertFalse(ok, why)
+        self.assertIn("refused/ignored", why)
+        # `enhancement: applied` present but for the WRONG field (boost, not loudness) fails --
+        # this case's row is specifically Normalize Loudness.
+        wrong_field = [h264, "decision output: v=h264 a=ac3", "enhancement: applied boost=1 loudness=0", h264]
+        ok, why = run.op_audio_enhancement(wrong_field)
+        self.assertFalse(ok, why)
+        self.assertIn("loudness=1", why)
+        # Applied, but the video was RE-ENCODED across the switch -- not a remux.
+        hevc = "ff: v=#0 codec=hevc codec_id=173 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
+        reencoded = [h264, "decision output: v=hevc a=ac3", "enhancement: applied boost=0 loudness=1", hevc]
+        ok, why = run.op_audio_enhancement(reencoded)
+        self.assertFalse(ok, why)
+        self.assertIn("RE-ENCODED", why)
+        # Applied and copied, but the negotiated audio is not ac3.
+        not_ac3 = [h264, "decision output: v=h264 a=aac", "enhancement: applied boost=0 loudness=1", h264]
+        ok, why = run.op_audio_enhancement(not_ac3)
+        self.assertFalse(ok, why)
+        self.assertIn("not ac3", why)
+        # Applied, copied, ac3 -- but no post-toggle stream line naming start.mkv (e.g. it stayed
+        # on start.m3u8, a capped-rung re-encode rather than a remux).
+        no_remux = [h264, "decision output: v=h264 a=ac3", "enhancement: applied boost=0 loudness=1",
+                    "stream: example.com path=/video/:/transcode/universal/start.m3u8?a=1", h264]
+        ok, why = run.op_audio_enhancement(no_remux)
+        self.assertFalse(ok, why)
+        self.assertIn("not a remux", why)
+
+    def test_audio_enhancement_release_op_grades_the_cleanup_leg(self):
+        """`audio_enhancement_normalize_reset`'s own assertion: a second pick of the same row,
+        from a fresh boot that inherited the persisted preference, must release the route back to
+        Original (`enhancement: released to Original ..`, either the direct-play or the remux
+        spelling — `route/decision.rs`'s two `RecoveryCause::EnhancementReleased` arms)."""
+        ok, why = run.op_audio_enhancement_release(
+            ["enhancement: released to Original direct play; remux encoder held pending frames"])
+        self.assertTrue(ok, why)
+        ok, why = run.op_audio_enhancement_release(
+            ["enhancement: released to Original remux; previous encoder held pending frames"])
+        self.assertTrue(ok, why)
+        ok, why = run.op_audio_enhancement_release(["menupick: row 2 already active — no commit"])
+        self.assertFalse(ok, why)
+        self.assertIn("no `enhancement: released` line", why)
+        ok, why = run.op_audio_enhancement_release(["some unrelated line"])
+        self.assertFalse(ok, why)
+
+    def test_audio_enhancement_dispatch_picks_release_by_mode(self):
+        """`evaluate()`'s per-operation dispatch: `mode: release` grades the cleanup leg, and its
+        absence grades the ordinary apply leg -- the same `mode` idiom `audio_switch` already
+        uses for native vs. transcode."""
+        case = {
+            "rk": "1", "operations": [{"op": "play"}, {"op": "audio_enhancement", "row": 2}],
+            "expect": {},
+        }
+        h264 = "ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
+        lines = [h264, "decision output: v=h264 a=ac3", "enhancement: applied boost=0 loudness=1",
+                 "stream: example.com path=/video/:/transcode/universal/start.mkv?a=1", h264]
+        _, results = run.evaluate(case, lines)
+        self.assertIn("audio_enhancement", dict((label, ok) for label, ok, _ in results))
+        release_case = dict(case)
+        release_case["operations"] = [{"op": "play"}, {"op": "audio_enhancement", "row": 2, "mode": "release"}]
+        _, results = run.evaluate(release_case,
+                                  ["enhancement: released to Original direct play; remux encoder held pending frames"])
+        self.assertIn("audio_enhancement_release", dict((label, ok) for label, ok, _ in results))
+
     def test_seek_inplace_ignores_a_reload_that_preceded_the_seek(self):
         """`original_then_auto_and_seek`, 2026-09-02: handing playback to Auto now restarts the
         source (`route transition: adaptive direct reload` -> `reload_at: fresh Load at 12s`), and
