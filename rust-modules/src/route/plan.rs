@@ -1842,6 +1842,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
         // the enhancement, on the same session, and remember that this server said no.
         crate::player::log("enhancement: refused/ignored by server; fell back");
+        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+            boost_dialog: audio.boost_dialog,
+            normalize_loudness: audio.normalize_loudness,
+        });
         plan.contract.audio = crate::plex::AudioEnhancements::NONE;
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
         if enhanced_from_direct {
@@ -1871,6 +1875,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         decision = client.transcode_decision(&sp);
     } else if probe_refused_enhancement && pre_audio.any() {
         // The remote remux probe already asked and was refused; the play was built without it.
+        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+            boost_dialog: pre_audio.boost_dialog,
+            normalize_loudness: pre_audio.normalize_loudness,
+        });
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);

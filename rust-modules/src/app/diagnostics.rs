@@ -676,6 +676,17 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     if crate::route::stream_immersive(ps) {
         audio.push_str(" · Dolby Atmos");
     }
+    // Issue #266: only when the server DEMONSTRABLY applied the DSP — `Unverified`/`Refused`/`Off`
+    // say nothing was provably added to this stream, so the row must not claim it.
+    if crate::route::cur_enhancement_label(ps) == Some("applied") {
+        let asked = crate::route::cur_audio_enhancements(ps);
+        if asked.boost_dialog {
+            audio.push_str(" · dialog boost");
+        }
+        if asked.normalize_loudness {
+            audio.push_str(" · loudness");
+        }
+    }
     v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
 
     // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
@@ -842,7 +853,13 @@ fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> St
         (true, true) => crate::i18n::msg::browse_diagnostics_remux(),
         (true, false) => crate::i18n::msg::browse_diagnostics_transcode(),
     };
-    format!("{transport} · {transform}")
+    // Issue #266: the server's own verdict on the Plex Pass DSP ask, distinct from `transform`
+    // (which only says remux vs re-encode) — absent entirely while the enhancement is Off, so an
+    // ordinary playback's route line is unchanged.
+    match crate::route::cur_enhancement_label(ps) {
+        Some(word) => format!("{transport} · {transform} · enh={word}"),
+        None => format!("{transport} · {transform}"),
+    }
 }
 
 /// The video plane's whole state as one sentence, and whether it is a fault. Split out because the
@@ -1854,6 +1871,77 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::route::{reset_player_control_for_test, EnhTestRoute};
+
+    /// Issue #266 PR 4: the Audio row's " · dialog boost"/" · loudness" suffix names what the
+    /// server DEMONSTRABLY did with the ask (`EnhancementOutcome::Applied`), never merely what the
+    /// viewer requested — `Unverified`/`Refused`/`Off` all say nothing was provably added, so the
+    /// suffix must be silent for every one of them.
+    #[test]
+    fn audio_row_suffix_only_when_applied() {
+        let _g = crate::testlock::serial();
+        let both = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+        for (applied, refused, expect_suffix) in [
+            (both, false, true),   // Applied: cur_enhancement derives Applied from `applied.any()`
+            (crate::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
+            (both, true, false),   // Refused: asked, but the server did not honour it
+        ] {
+            let (ps, _sid) =
+                crate::route::enhancement_test_session(EnhTestRoute { applied, refused, ..Default::default() });
+            let d = crate::player::Diag::default();
+            let audio_row = pipeline_rows(&ps, &d, (0, 0, 0), 0)
+                .into_iter()
+                .find(|f| f.key == crate::i18n::msg::browse_diagnostics_field_audio())
+                .expect("an Audio row is always drawn");
+            let val = audio_row.val.unwrap_or_default();
+            assert_eq!(
+                val.contains("dialog boost") || val.contains("loudness"),
+                expect_suffix,
+                "applied={applied:?} refused={refused} -> {val:?}",
+            );
+            reset_player_control_for_test(&ps);
+            crate::plex::reset_servers_for_test();
+        }
+    }
+
+    /// The route line's `enh=<word>` suffix mirrors the server's own verdict — absent entirely
+    /// while the enhancement is Off (an ordinary playback's route line is byte-for-byte
+    /// unchanged), and naming `refused`/`unverified` distinctly from `applied` otherwise.
+    #[test]
+    fn route_line_shows_refused_and_unverified() {
+        let _g = crate::testlock::serial();
+        let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+        let d = crate::player::Diag::default();
+
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute::default());
+        assert!(!route_line(&ps, &d).contains("enh="), "Off: no enh= at all");
+        reset_player_control_for_test(&ps);
+        crate::plex::reset_servers_for_test();
+
+        let (ps, _sid) =
+            crate::route::enhancement_test_session(EnhTestRoute { applied: asked, ..Default::default() });
+        assert!(route_line(&ps, &d).contains("enh=applied"));
+        reset_player_control_for_test(&ps);
+        crate::plex::reset_servers_for_test();
+
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute {
+            applied: asked,
+            refused: true,
+            ..Default::default()
+        });
+        assert!(route_line(&ps, &d).contains("enh=refused"));
+        reset_player_control_for_test(&ps);
+        crate::plex::reset_servers_for_test();
+
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute {
+            applied: asked,
+            unverified: true,
+            ..Default::default()
+        });
+        assert!(route_line(&ps, &d).contains("enh=unverified"));
+        reset_player_control_for_test(&ps);
+        crate::plex::reset_servers_for_test();
+    }
     use crate::ui::consts::{SCR_H, SCR_W};
 
     fn header_fixture(idle: bool, head: [String; 2]) -> Diagnostics {

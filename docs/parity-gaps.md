@@ -225,8 +225,13 @@ Worth deciding *not* to build, rather than discovering mid-implementation:
   pipeline; there is no rate primitive on the seam, and the symbol is unproven (the stub-`.so` trick
   makes every link succeed whether or not the symbol exists on the device). Needs `bind-tv-lib-abi`
   proof before any code.
-- **Audio boost / normalisation / downmix — architecturally impossible.** We pass *compressed* audio
-  through to LG's pipeline; there is no PCM stage we own to apply gain in.
+- **Audio boost / normalisation / downmix, done client-side — architecturally impossible.** We pass
+  *compressed* audio through to LG's pipeline; there is no PCM stage we own to apply gain in.
+  **Correction (issue #266, landed):** Boost dialog and Normalize loudness are NOT client-side DSP —
+  PMS 1.43.4+ Plex Pass servers apply `boostDialog`/`normalizeLoudness` on the TRANSCODER, so the
+  client only ever asks for the params on an Original-family route (direct play or the
+  codec-preserving remux) and reads the server's own verdict back. Downmix remains an unclaimed
+  gap; see the audio-settings entries below.
 - **Deinterlace / video-sync settings — impossible and moot.** Decode, deinterlace and scaling all
   happen inside Starfish/ACB on the hardware plane.
 - **Adaptive quality is no longer in this list.** Auto now owns a measured HLS segment loop and
@@ -1162,7 +1167,14 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No audio settings (boost / passthrough / downmix)** — `minor` / `medium`  
   The official client exposes audio boost for quiet dialogue and a passthrough/stereo-downmix choice. We have no audio preferences: the direct-play audio codec set and the Starfish Load payload are fixed.  
   *Where:* player/engine.rs:22-31 (payload construction would have to become parameterised rather than three consts) and plex/transcoder.rs:22-25/68-98 for the server-side downmix (`audioBoost`/`maxAudioChannels` on the universal-transcoder query); rows in `screens/settings.rs`.  
-  *Verified:* CONFIRMED, with one evidence correction. plex/transcoder.rs:22-25 DP_AUDIO_CODECS/is_dp_audio are fixed; no audioBoost/maxAudioChannels/downmix param is ever sent (transcode_query, transcoder.rs:65-98, sets only audioStreamID + directStreamAudio); a whole-crate grep for audioBoost|passthrough|downmix hits only two unrelated doc comments (plex/client.rs's 'passthrough' in the encoder doc, ui/profile.rs:32 'a passthrough when disabled'). The correction: the Load payloads are NOT fully literal — player/engine.rs:174-194 build_av_payload string-substitutes the real video/audio codec, sink dimensio
+  *Verified:* CONFIRMED, with one evidence correction. plex/transcoder.rs:22-25 DP_AUDIO_CODECS/is_dp_audio are fixed; no audioBoost/maxAudioChannels/downmix param is ever sent (transcode_query, transcoder.rs:65-98, sets only audioStreamID + directStreamAudio); a whole-crate grep for audioBoost|passthrough|downmix hits only two unrelated doc comments (plex/client.rs's 'passthrough' in the encoder doc, ui/profile.rs:32 'a passthrough when disabled'). The correction: the Load payloads are NOT fully literal — player/engine.rs:174-194 build_av_payload string-substitutes the real video/audio codec, sink dimensio  
+  **Update (issue #266, landed):** boost/normalisation are no longer absent. The player's Audio tab
+  (`ui/track_menu.rs`) now carries "Boost dialog"/"Normalize loudness" toggle rows, gated to a
+  known-capable track on a Plex Pass server's Original-family route with no subtitle on screen and
+  no Dolby Vision on the base layer (`route::plan::enhancements_offered`); the rows do not exist at
+  all otherwise — no greyed row, no upsell text. The wire params are `boostDialog=1`/
+  `normalizeLoudness=1` on the universal-transcoder query, per-track gated by
+  `Stream.canNormalizeLoudness` (PMS 1.43.4+). Passthrough and downmix remain unclaimed.
 
 - **Discover / "Movies & Shows on Plex" catalog is absent (adjacent-catalog feature)** — `minor` / `large`  
   ADJACENT CATALOG, not a library feature: the official client has a Discover destination browsing plex.tv's catalog of movies/shows that are not on your server — Trending, and free ad-supported streaming titles playable in-app. We have no notion of a non-server item at all: every screen indexes catalog rows fetched from the PMS.  
@@ -1515,7 +1527,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No audio settings (boost, normalisation, passthrough, downmix)** — `minor` / `large`  
   The reference client's Audio submenu carries audio boost, normalisation and passthrough choices. We have none, and no volume control of any kind in the player.  
   *Where:* Nothing local would host it. The only reachable lever is server-side: the transcode spec in plex/transcoder.rs:78-89 (e.g. request a 2-channel downmix) driven from route.rs:136-145.  
-  *Device:* Client-side boost/normalisation is architecturally impossible here: we pass compressed audio through to LG's pipeline and never hold PCM, and player/CLAUDE.md's ACB rules forbid feeding audio to ACB at all (SOUND_ERROR_019). Implementing it would mean decoding + re-encoding audio on a 32-bit ARM alongside the existing demux, which the thread and CPU budget does not have. Passthrough is likewise the pipeline's decision, not ours. The honest scope is a server-side downmix option only.  
+  *Device:* Client-side boost/normalisation is architecturally impossible here: we pass compressed audio through to LG's pipeline and never hold PCM, and player/CLAUDE.md's ACB rules forbid feeding audio to ACB at all (SOUND_ERROR_019). Implementing it would mean decoding + re-encoding audio on a 32-bit ARM alongside the existing demux, which the thread and CPU budget does not have. Passthrough is likewise the pipeline's decision, not ours.
+  **Update (issue #266, landed):** the "server-side downmix option only" framing undersold what the
+  transcoder itself offers: PMS 1.43.4+'s Plex Pass DSP (`boostDialog`/`normalizeLoudness`) landed
+  as two toggle rows in the player's Audio tab, gated Plex-Pass-only and invisible (not greyed) on
+  every other server. Passthrough and downmix are still unclaimed — see `docs/pms-api.md`'s M1-M5
+  for the measured wire facts.  
   *Verified:* CONFIRMED absent, and the 'architecturally impossible client-side' reasoning checks out: player/ffi.rs:19-45 has no volume/gain/passthrough verb, src/starfish.c:38-68 binds none, and the app never holds PCM (the demuxer emits compressed AC3/EAC3/AAC frames straight to sf_feed). TWO CORRECTIONS. (a) The citation `plex/transcoder.rs:46 audioCodec=ac3` is really inside the `profile_extra()` string at transcoder.rs:36-46 (line :44 `&container=matroska&videoCodec=hevc&audioCodec=ac3`) — it is a capability-profile transcode TARGET, not a query param; there is no audioCodec/audioChannels/maxAudioChan
 
 - **No auto-play-next toggle or countdown control** — `minor` / `small`  

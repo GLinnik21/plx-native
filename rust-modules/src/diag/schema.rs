@@ -67,6 +67,15 @@ pub(crate) enum DiagEvent {
     FeatureUsed {
         feature: Feature,
     },
+    /// **The server refused, or silently ignored, a Plex Pass audio DSP request** (issue #266) —
+    /// distinct from [`Feature::AudioEnhancement`], which fires on the PRESS regardless of what
+    /// the server does with it. The two knobs asked for, never which track, which server, or the
+    /// server's own decision text. Fires where `route::plan`/`route::decision` grade
+    /// `EnhancementOutcome::Refused` (`plan::enhancement_fallback` returning `Retry`).
+    EnhancementRefused {
+        boost_dialog: bool,
+        normalize_loudness: bool,
+    },
 
     // ---- playback -----------------------------------------------------------------------------
     //
@@ -157,6 +166,11 @@ pub(crate) enum Feature {
     /// on" — and it is deliberately the whole of it: the denominator is a topology fact about an
     /// account, which this channel does not carry and is not the place to start carrying.
     LibrarySwitch,
+    /// **A viewer flipped a Boost dialog / Normalize loudness row** (issue #266, Plex Pass only —
+    /// the row is absent without it, so this event cannot fire on an account this build never
+    /// showed the toggle to). Fires from the Audio tab's `on_ok`, one bit at a time, never which
+    /// way it went or which track — see [`DiagEvent::EnhancementRefused`] for the server's answer.
+    AudioEnhancement,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +202,7 @@ impl Feature {
             Self::SkipIntro => "skip_intro",
             Self::SkipCredits => "skip_credits",
             Self::LibrarySwitch => "library_switch",
+            Self::AudioEnhancement => "audio_enhancement",
         }
     }
 }
@@ -502,6 +517,13 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
             "feature.used",
             vec![("feature", Value::Str(feature.code()))],
         ),
+        DiagEvent::EnhancementRefused { boost_dialog, normalize_loudness } => (
+            "enhancement.refused",
+            vec![
+                ("boost_dialog", Value::Str(if boost_dialog { "true" } else { "false" })),
+                ("normalize_loudness", Value::Str(if normalize_loudness { "true" } else { "false" })),
+            ],
+        ),
         DiagEvent::PlaybackRequested { playback_id } => (
             "playback.requested",
             vec![("playback_id", Value::Int(playback_id))],
@@ -613,6 +635,13 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
     EventSpec { name: "signin.failed", fields: &[F { key: "kind", domain: "`pin_create` / `authorization` / `discovery` / `other`" }] },
     EventSpec { name: "signin.cancelled", fields: &[] },
     EventSpec { name: "feature.used", fields: &[F { key: "feature", domain: "one of a fixed list of feature names" }] },
+    EventSpec {
+        name: "enhancement.refused",
+        fields: &[
+            F { key: "boost_dialog", domain: "`true` / `false`" },
+            F { key: "normalize_loudness", domain: "`true` / `false`" },
+        ],
+    },
     EventSpec { name: "playback.requested", fields: &[F { key: "playback_id", domain: PLAYBACK_ID }] },
     EventSpec {
         name: "playback.started",
@@ -782,6 +811,10 @@ mod tests {
             DiagEvent::FeatureUsed {
                 feature: Feature::Pause,
             },
+            DiagEvent::EnhancementRefused {
+                boost_dialog: true,
+                normalize_loudness: false,
+            },
             DiagEvent::PlaybackRequested { playback_id: 7 },
             DiagEvent::PlaybackStarted {
                 playback_id: 7,
@@ -825,6 +858,7 @@ mod tests {
                 DiagEvent::SignInFailed { .. } => {}
                 DiagEvent::SignInCancelled => {}
                 DiagEvent::FeatureUsed { .. } => {}
+                DiagEvent::EnhancementRefused { .. } => {}
                 DiagEvent::PlaybackRequested { .. } => {}
                 DiagEvent::PlaybackStarted { .. } => {}
                 DiagEvent::PlaybackFailed { .. } => {}

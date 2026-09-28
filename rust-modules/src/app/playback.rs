@@ -461,6 +461,7 @@ pub(crate) fn commit_track(
     use crate::ui::track_menu::TrackCommit;
     match commit {
         TrackCommit::Audio(audio) => crate::route::commit_audio_selection(ps, audio),
+        TrackCommit::AudioEnhancement(a) => crate::player::request_audio_enhancement(ps, a),
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
             // What the client can draw itself — an embedded ordinal or an external sidecar — is
             // what an Original route (issue #266's candidate) can carry without a burn.

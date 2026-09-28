@@ -29,6 +29,7 @@ is the final verification for the fixes.
 | **Plex Home (managed users)** | boot who's-watching picker | free account = roster of 1 → boot skips the picker (`Session::boot_shows_picker`); Automatically Sign In skips it on a multi-user roster too | graceful by construction |
 | **Video preview thumbnails (BIF)** | chapter card thumbnails (`chapters_panel.rs`) | `thumb` empty → placeholder card; chapters themselves (embedded) still work | graceful |
 | **Trailers / extras** | Background hero autoplay, Play Trailer menu row, and an Extras shelf of the `/extras` rows | server returns none → no preview and no shelf | graceful |
+| **Audio DSP (`boostDialog`/`normalizeLoudness`)** | player Audio tab toggle rows (`ui/track_menu.rs`, issue #266) | rows are ABSENT, not greyed — `serverinfo::subscription_of(sid) == Subscription::Yes` gates every build of the tab (`route::plan::enhancements_offered`'s first clause); `Unknown` (never fetched, or a pre-1.43.4 PMS) fails exactly like `No` | **built Pass-only from the start** — no fix needed, no retrofit possible: an app build with the feature and one without it send byte-identical URLs against a free or unknown-subscription server, and no locale value for either row names "Plex Pass" (a source-grep test pins this) |
 | Live TV / DVR, music (sonic analysis, lyrics), photos, downloads/sync | not in scope of this app | — | n/a |
 
 ## The pattern this audit exists to kill

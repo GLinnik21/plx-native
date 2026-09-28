@@ -623,6 +623,14 @@
     "value": "Color",
     "description": "tracks color"
   },
+  "widgets.tracks.boost_dialog": {
+    "value": "Boost dialog",
+    "description": "Audio panel of the player's track selector (Plex Pass only, issue #266). Toggle row label; the On/Off read-out comes from the row's own switch state, not this string."
+  },
+  "widgets.tracks.normalize_loudness": {
+    "value": "Normalize loudness",
+    "description": "Audio panel of the player's track selector (Plex Pass only, issue #266). Toggle row label; the On/Off read-out comes from the row's own switch state, not this string."
+  },
   "widgets.tracks.timing": {
     "value": "Timing",
     "description": "tracks timing"

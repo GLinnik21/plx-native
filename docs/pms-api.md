@@ -864,6 +864,34 @@ user-selected fixed rungs remain on the progressive direct-play/start.mkv paths 
 
 ---
 
+## 6a. Plex Pass audio DSP — `boostDialog` / `normalizeLoudness` (issue #266, measured against PMS 1.43.4.10903 with Plex Pass)
+
+Two universal-transcoder query params, each `1` or absent (never `0` — omit to mean off). PMS
+accepts them on the transcode leg only; `Stream.canNormalizeLoudness` (bool, lenient-decoded like
+every other PMS bool) says per-track whether the server has the loudness analysis the DSP needs.
+Every session opened for these measurements was stopped afterward; see `/tmp/plx266/measurements.md`
+for the raw captures behind this table.
+
+| # | Request | Result |
+|---|---|---|
+| M1 | MDE shape `directPlay=1&directStream=1&directStreamAudio=1` plus either param | direct play becomes a Part TRANSCODE: video copy, audio transcoded to ac3 with the same channel count. `directPlayDecisionText` never names the enhancement — there is no wire signal that a DSP-driven remux differs from an ordinary one. Both params `=0` reproduces the baseline (no remux). |
+| M2 | Remux shape `directPlay=0&directStream=1&directStreamAudio=1` (profile matroska, hevc/h264, ac3/eac3) | AC3 2.0: the baseline COPIES the audio; adding a param TRANSCODES it (audio decision `copy`→`transcode` is directly observable — the wire test for "did the server honour the ask"). AAC 5.1: audio transcodes to ac3 6ch with or without the params (already transcoded at baseline, so the ask is unobservable there — this is `EnhancementOutcome::Unverified`). |
+| M3 | Re-encode shapes (`directStream=1` with a quality ceiling; `directStream=0&directStreamAudio=1`) | Audio transcodes even at baseline, and a server-selected SRT is burned into the video. The params change nothing observable — the enhancement is never offered on a re-encode rung (I5) precisely because there is nothing here to verify. |
+| M4 | Enhanced remux plus `subtitleStreamID` for an embedded SRT | `subtitles=embedded` or `=sidecar`: video copy, subtitle decision `unavailable` — PMS refuses to carry a text subtitle into the progressive MKV the enhancement produces. `subtitles=auto`: the server instead re-encodes the video and burns it. Either way a subtitle and the enhancement cannot share a route, which is I6. |
+| M5 | Part GET (`Range: bytes=0-1023`) on a transcode session, after MDE, after MDE followed by an enhanced-remux decision on the same session, and after only an enhanced decision | 206 Partial Content in every case. A previously suspected 503 on this exact sequence did not reproduce. |
+
+**Client-side reading.** `route::plan::enhancements_offered` (I1-I7) gates the ASK; the wire params
+are never sent outside a Direct/Remux target even when the viewer's preference is on (M3, I5).
+`route::EnhancementOutcome` grades the ANSWER from the params' own observability in the table above:
+`Applied` (M1/M2 AC3: the transcode happened and the source codec is in the profile's copy list),
+`Unverified` (M2 AAC: transcoded regardless, so honoring the ask cannot be told apart from ignoring
+it), `Refused` (the server declined the params outright, or the audio decision came back `copy`
+despite them). The player's Audio tab ("Boost dialog"/"Normalize loudness", `ui/track_menu.rs`)
+and the diagnostics Audio-row suffix / `route_line`'s `enh=<word>` both read this outcome, never the
+bare ask.
+
+---
+
 ## 7. Progress reporting — `/:/timeline` (DOCUMENTED ONLY, not called live)
 
 Sources: python-plexapi `plexapi/base.py` (`Playable.updateTimeline`,

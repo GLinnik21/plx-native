@@ -157,6 +157,8 @@
   "widgets.repair.unreadable": "Выпраўленне завершана, але праграма пакуль не мае доступу да /dev/rtkmem. Закрыйце і зноў адкрыйце праграму.",
   "widgets.repair.unsupported": "Выпраўленне ізаляванага асяроддзя недаступнае на гэтай прыладзе.",
   "widgets.tracks.color": "Колер",
+  "widgets.tracks.boost_dialog": "Узмацненне дыялогаў",
+  "widgets.tracks.normalize_loudness": "Нармалізацыя гуку",
   "widgets.tracks.timing": "Сінхранізацыя",
   "widgets.tracks.external_badge": "ВОНКАВЫЯ",
   "widgets.tracks.tone_white": "Белы",
