@@ -1,4 +1,5 @@
-//! Shared durable tier for all Plex image transcodes. The poster workers own fetch/decode;
+//! Shared durable tier for all Plex image transcodes and for the images the app bakes from them
+//! (a collection's fan, [`classify_baked`]). The poster workers own fetch/decode/bake;
 //! this module owns canonical identities, bounded disk storage, and sign-out generations.
 //!
 //! The index is scanned once, lazily on a worker's first access. Steady-state reads/writes use
@@ -117,6 +118,35 @@ pub(crate) fn classify(server_namespace: &str, built_key: &str) -> Option<DiskKe
     Some(DiskKey {
         name: format!("image-{}.img", hex_digest(&identity)),
         legacy,
+    })
+}
+
+/// The durable key of an image the APP rendered (a collection fan), not one the server sent.
+/// It shares the directory, LRU and byte bound with transcodes, but its identity is its own
+/// versioned domain: the namespace (server machine identity plus the profile whose visibility
+/// chose the members), what was baked, the source item, the server's stamp for that item, and
+/// the output size. A new stamp is a new key, so an edited collection re-bakes and the old file
+/// ages out of the LRU. No field is a credential; callers pass identities only.
+pub(crate) fn classify_baked(
+    namespace: &str,
+    kind: &str,
+    rating_key: &str,
+    stamp: &str,
+    w: u32,
+    h: u32,
+) -> Option<DiskKey> {
+    if [namespace, kind, rating_key, stamp].iter().any(|f| f.is_empty()) || w == 0 || h == 0 {
+        return None;
+    }
+    let dims = format!("{w}x{h}");
+    let mut identity = Vec::new();
+    for field in ["plx-baked-v1", namespace, kind, rating_key, stamp, &dims] {
+        identity.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        identity.extend_from_slice(field.as_bytes());
+    }
+    Some(DiskKey {
+        name: format!("image-{}.img", hex_digest(&identity)),
+        legacy: None,
     })
 }
 
