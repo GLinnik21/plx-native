@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 import urllib.request
 
 from mock_pms import (
@@ -68,6 +69,35 @@ class LibraryRail(unittest.TestCase):
                          "the rail's letters come in the listing's titleSort order")
         for row in first["Metadata"]:
             self.assertEqual("thumb" in row, row["childCount"] > 0, row["title"])
+
+    def test_search_with_include_collections_answers_full_collection_rows(self):
+        pms = MockPms(Library())
+        listed = get(pms, "/library/sections/1/collections")["Metadata"]
+        name = listed[0]["title"]
+        query = urllib.parse.quote(name.split()[0])
+
+        def hub(path):
+            return next(h for h in get(pms, path)["Hub"] if h["hubIdentifier"] == "collection")
+
+        # without the flag: tag rows under Directory — no ratingKey, no thumb
+        tags = hub(f"/hubs/search?query={query}&limit=12")
+        self.assertNotIn("Metadata", tags)
+        self.assertTrue(all("ratingKey" not in t and "thumb" not in t for t in tags["Directory"]))
+        # with it: the collection's own full rows under Metadata, both ids intact
+        rows = hub(f"/hubs/search?query={query}&limit=12&includeCollections=1")
+        self.assertNotIn("Directory", rows)
+        self.assertEqual(rows["size"], len(rows["Metadata"]))
+        row = next(r for r in rows["Metadata"] if r["title"] == name)
+        self.assertEqual({k: v for k, v in row.items() if k != "score"}, listed[0])
+        self.assertEqual(row["type"], "collection")
+        self.assertNotEqual(row["index"], int(row["ratingKey"]))
+        self.assertTrue(row["thumb"])
+        # every other hub is unchanged by the flag
+        plain = [h for h in get(pms, f"/hubs/search?query={query}&limit=12")["Hub"]
+                 if h["hubIdentifier"] != "collection"]
+        flagged = [h for h in get(pms, f"/hubs/search?query={query}&limit=12&includeCollections=1")["Hub"]
+                   if h["hubIdentifier"] != "collection"]
+        self.assertEqual(plain, flagged)
 
     def test_default_generated_data_is_stable(self):
         hashes = {

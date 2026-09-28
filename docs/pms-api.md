@@ -386,7 +386,11 @@ A `Directory[]` row is the same `Tag` record the cast row on a detail page is bu
 A **collection** row carries `tag`, `id`, `key`, `count`, `filter`, `librarySectionID`, `reason`,
 `reasonTitle` and a `guid` (`collection://…`) — and **no `tagKey`, no `thumb`, no `ratingKey`**. So
 `key` is the only handle a collection hit gives you, and a screen that keys tags by `tagKey`
-silently drops every collection. A person's `thumb` is an **absolute** `metadata-static.plex.tv`
+silently drops every collection. **The app therefore sends `includeCollections=1`** on every
+search (`plex::Client::search`): the `collection` hub then answers full collection **`Metadata[]`**
+rows — `ratingKey`, `index` (== the tag `id`), `thumb`, `childCount`, `UltraBlurColors`, plus
+`score` — and the table above holds only without the flag. `search::project` keeps the tag shape as
+the fallback for a server that ignores it. A person's `thumb` is an **absolute** `metadata-static.plex.tv`
 URL, not a PMS path (§5's transcoder still fetches it, but nothing may prepend the server host).
 
 **The same person arrives once per library section.** Wallace Shawn comes back twice — section 1

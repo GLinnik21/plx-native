@@ -225,7 +225,7 @@ rather than taken from the spec, and each one decides something:
 |---|---|
 | A one-character query returns every hub empty | `search::MIN_QUERY` is 2 — the first keystroke of every search costs no round trip |
 | Hub ORDER moves per query (`sta` ranks people first, `star` ranks films first) | the shelf order here is FIXED (`search::KINDS`) and ranking is honoured only *inside* a shelf; reordering rows per keystroke would move the row under a typing user's focus |
-| Items arrive in **two** containers — `Metadata[]` for `movie`/`show`/`episode`, `Directory[]` for `actor`/`director`/`collection` | `search::Item` has two variants (`Media`/`Tag`) instead of being one struct. `plex-openapi.json`'s own worked example disagrees with the server, which is why this was probed live; see the table in `Hub::directory`'s doc in `plex/models.rs` |
+| Items arrive in **two** containers — `Metadata[]` for `movie`/`show`/`episode`, `Directory[]` for `actor`/`director`/`collection` | `search::Item` is an enum (`Media`/`Tag`/`Collection`) instead of one struct. The request sends `includeCollections=1`, which turns the `collection` hub into full `Metadata[]` rows (`Item::Collection`: ratingKey, thumb, childCount; OK opens the collection page); a server that ignores it still sends tag rows (`Item::Tag`, opened by section + tag id). `plex-openapi.json`'s own worked example disagrees with the server, which is why this was probed live; see the table in `Hub::directory`'s doc in `plex/models.rs` |
 | A search response carries **every** hub type the server knows, most with `size: 0` | `Hub::size` is the field that says which shelves are worth drawing |
 
 The `actor` and `director` hubs are merged into one **Cast & Crew** shelf. Merging in the data layer

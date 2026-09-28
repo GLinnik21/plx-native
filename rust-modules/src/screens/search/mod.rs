@@ -207,6 +207,7 @@ impl SearchScreen {
             for (slot, item) in shelf.items.iter().enumerate() {
                 let identity = match item {
                     Item::Media(media) if !media.rk.is_empty() => Identity::Media(shelf.kind, media.sid, media.rk.clone()),
+                    Item::Collection(hit) if !hit.item.rk.is_empty() => Identity::Media(shelf.kind, hit.item.sid, hit.item.rk.clone()),
                     Item::Tag(tag) if !tag.tag_key.is_empty() || (!tag.id.is_empty() && tag.id != "0") =>
                         Identity::Tag(shelf.kind, tag.sid, if tag.tag_key.is_empty() { tag.id.clone() } else { tag.tag_key.clone() }),
                     _ => Identity::Slot(shelf.kind, view.query_gen(), slot),
@@ -278,6 +279,18 @@ impl SearchScreen {
                         SearchReq::ItemMenu { sid: media.sid, rk: media.rk.clone() }
                     } else { SearchReq::Detail { sid: media.sid, rk: media.rk.clone() } })));
                 }
+                // A collection opens its page; it has no item menu, so a hold does the same.
+                Item::Collection(hit) if !hit.item.rk.is_empty() => {
+                    self.remember(fx);
+                    fx.push(Fx::App(AppFx::Search(SearchReq::Collection {
+                        sid: hit.item.sid, rk: hit.item.rk.clone(), tag: hit.tag })));
+                }
+                Item::Tag(tag) if row.kind == Kind::Collection => {
+                    if let Some(crate::screens::registry::ContentArg::Collection { sid, tag, .. }) = tag.collection_route() {
+                        self.remember(fx);
+                        fx.push(Fx::App(AppFx::Search(SearchReq::Collection { sid, rk: String::new(), tag })));
+                    }
+                }
                 Item::Tag(tag) if row.kind == Kind::Person && !held => {
                     let key = if tag.id.is_empty() || tag.id == "0" { &tag.tag_key } else { &tag.id };
                     if !key.is_empty() {
@@ -286,7 +299,7 @@ impl SearchScreen {
                             guid: tag.tag_key.clone(), name: tag.name.clone(), thumb: tag.thumb.clone() })));
                     }
                 }
-                _ => {} // Collections are intentionally informative, not an invented detail route.
+                _ => {}
             }
             return Handled::Yes;
         }
@@ -509,7 +522,8 @@ impl SearchScreen {
         let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).and_then(|col|
                 H::search(cx).shelves().get(row)?.items.get(col)).and_then(|item| match item {
-                    Item::Media(media) if media.has_blur => Some(media.blur), _ => None,
+                    Item::Media(media) if media.has_blur => Some(media.blur),
+                    Item::Collection(hit) if hit.item.has_blur => Some(hit.item.blur), _ => None,
                 })));
         self.ground.key(colours, crate::ui::widgets::PageGround::CARD_W, tick.dt());
         let target = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|

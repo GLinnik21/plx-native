@@ -4,7 +4,9 @@
 //! **A hub does NOT always carry its items in `.metadata[]`** — this line said it did, which is
 //! the exact misconception that renders two of the search screen's five shelves as nothing at
 //! all, silently. The home hubs are `Metadata[]` only because a home shelf holds media;
-//! `/hubs/search` also answers with people and collections, and those arrive in `.directory[]`.
+//! `/hubs/search` also answers with people, and those arrive in `.directory[]` — as do
+//! collections, unless the request carries `includeCollections=1` (which [`Client::search`]
+//! always sends; they then arrive as full `.metadata[]` rows).
 //! See [`super::Hub::directory`] for the per-type split and [`Client::search`] for the endpoint.
 use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
@@ -101,7 +103,8 @@ impl Client {
         )
     }
 
-    /// GET /hubs/search?query=…[&limit=…][&sectionId=…] — the search screen → `.hub[]`.
+    /// GET /hubs/search?query=…[&limit=…][&sectionId=…]&includeCollections=1 — the search screen
+    /// → `.hub[]`.
     ///
     /// **Both numbers are optional and 0 means "don't send it"** — `limit` 0 = the server's own
     /// default (3 rows per hub), `section_id` 0 = the whole server. Neither may go on the wire as
@@ -113,9 +116,16 @@ impl Client {
     /// about the response shape. The written form is `docs/pms-api.md` §3b.
     ///
     /// * **Items arrive in TWO containers** — `movie`/`show`/`episode`/`album`/`artist`/`track` as
-    ///   `Metadata[]`, `actor`/`director`/`collection` as `Directory[]`. See [`super::Hub::directory`];
-    ///   a reader that assumes `Metadata` draws **two** of the five design shelves as nothing,
-    ///   silently — those three hub types feed Cast & Crew (`actor` + `director`) and Collections.
+    ///   `Metadata[]`, `actor`/`director` as `Directory[]`. See [`super::Hub::directory`]; a reader
+    ///   that assumes `Metadata` draws the Cast & Crew shelf as nothing, silently.
+    /// * **`includeCollections=1` is always sent**, because it moves the `collection` hub from
+    ///   `Directory[]` TAG rows (a tag `id`, `count` and `key` — no `ratingKey`, no `thumb`) into
+    ///   full collection `Metadata[]` rows (`ratingKey`, `index` == the tag id, `thumb`,
+    ///   `childCount`, `UltraBlurColors`), which is what lets a search hit carry artwork and open
+    ///   the collection page by ratingKey. Measured live (docs/pms-api.md §2b); every other hub is
+    ///   unchanged by it, so the person page's resolve (which reads only `actor`/`director`) is
+    ///   indifferent. A server that ignores the flag still answers the old tag rows, which
+    ///   `search::project` keeps as the fallback.
     /// * **`sectionId` RANKS, it does not filter.** With `sectionId=1` (Movies) the `movie` hub moves
     ///   ahead of `show`, but every row from every *other* section still comes back — the section 2
     ///   episodes, shows and actors are all present and unchanged. So it cannot be used to scope a
@@ -143,12 +153,14 @@ impl Client {
 /// The `/hubs/search` path, split out of [`Client::search`] so the query this app puts on the wire
 /// is host-testable without a server — the transport is what makes the method itself untestable,
 /// and both numbers here have a value (0) that the server rejects with a body this layer reports
-/// as `None`, indistinguishably from a dead socket.
+/// as `None`, indistinguishably from a dead socket. `includeCollections=1` rides on every request
+/// ([`Client::search`] says why).
 fn search_path(query: &str, limit: i64, section_id: i64) -> String {
     QueryBuilder::new("/hubs/search")
         .str("query", query)
         .opt_int("limit", limit)
         .opt_int("sectionId", section_id)
+        .int("includeCollections", 1)
         .build()
 }
 
@@ -165,12 +177,12 @@ mod tests {
     fn the_typed_query_is_percent_encoded_because_a_user_can_type_anything() {
         assert_eq!(
             search_path("tom & jerry", 8, 0),
-            "/hubs/search?query=tom%20%26%20jerry&limit=8"
+            "/hubs/search?query=tom%20%26%20jerry&limit=8&includeCollections=1"
         );
         // an apostrophe, an accent and a '+' are all reserved or non-ASCII here
         assert_eq!(
             search_path("l'été+", 5, 0),
-            "/hubs/search?query=l%27%C3%A9t%C3%A9%2B&limit=5"
+            "/hubs/search?query=l%27%C3%A9t%C3%A9%2B&limit=5&includeCollections=1"
         );
     }
 
@@ -186,20 +198,32 @@ mod tests {
     fn a_zero_sends_no_parameter_because_the_server_rejects_both_zeros() {
         assert_eq!(
             search_path("wallace", 0, 0),
-            "/hubs/search?query=wallace",
+            "/hubs/search?query=wallace&includeCollections=1",
             "neither number"
         );
         assert_eq!(
             search_path("wallace", 8, 0),
-            "/hubs/search?query=wallace&limit=8"
+            "/hubs/search?query=wallace&limit=8&includeCollections=1"
         );
         assert_eq!(
             search_path("wallace", 0, 1),
-            "/hubs/search?query=wallace&sectionId=1"
+            "/hubs/search?query=wallace&sectionId=1&includeCollections=1"
         );
         assert_eq!(
             search_path("wallace", 8, 1),
-            "/hubs/search?query=wallace&limit=8&sectionId=1"
+            "/hubs/search?query=wallace&limit=8&sectionId=1&includeCollections=1"
         );
+    }
+
+    /// **Collections are asked for as full rows.** Without `includeCollections=1` the server
+    /// files its `collection` hub as tag-shaped `Directory[]` rows with no `ratingKey` and no
+    /// `thumb` (measured, docs/pms-api.md §2b), and the search shelf can neither draw the
+    /// collection's poster nor open its page by ratingKey.
+    #[test]
+    fn every_search_asks_for_collections_as_full_metadata_rows() {
+        for (limit, section) in [(0, 0), (8, 0), (0, 1), (8, 1)] {
+            let path = search_path("wallace", limit, section);
+            assert!(path.ends_with("&includeCollections=1"), "{path}");
+        }
     }
 }

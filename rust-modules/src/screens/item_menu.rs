@@ -22,8 +22,9 @@
 //! **What remains excluded is excluded for a reason that does not dissolve.** A tile that is a
 //! PERSON or a TAG has no rating key and no watch state at all, so every row this module can build
 //! would be absent and the hold would open an empty panel: the detail page's cast headshots, and
-//! Search's Cast & Crew / Collections rows (`search::Item::Tag` has no rating key). A hold there
-//! keeps doing nothing, deliberately.
+//! Search's Cast & Crew rows (`search::Item::Tag` has no rating key). A collection has a rating
+//! key but no watch state and no row here either ([`has_actions`] refuses it), so a hold on a
+//! Collections tile opens the collection page as OK does.
 //!
 //! **Navigation owns its lifetime, phase and input scope** (restructure phase 10). It was
 //! `ui/item_menu.rs` — a `Popover` plus six `static mut`s (`POP`, `TABLE`, `ACTS`, `OPENER`,
