@@ -13,7 +13,34 @@ on:
     # for `release.yml`'s `line` input, so it gets the same push gate `main` does — otherwise the
     # first time a hotfix's changes are compiled in a clean checkout is the release run itself.
     branches: [main, 'release/v*']
+    # This gate is host checks (lint + unit suite) and an ARM cross-build — expensive (#261 spent
+    # ~20 runner-minutes on a README-only PR), and neither stage reads prose. Verified by walking
+    # the `make check` chain: no gate here parses `.md` content EXCEPT `docs/screenshots/CREDITS.md`
+    # (read by `tests/test_demo_library.py`) and `PRIVACY.md` (pulled in via `include_str!`, so it
+    # stays compiled into the binary and must stay a trigger via the leading `'**'`). `site/` is
+    # deployed separately by `pages.yml`, not built or checked here, EXCEPT `site/credits.html`,
+    # which the same `test_demo_library.py` reads and cross-checks against the `.md` source — so
+    # both credits files are re-included below despite the broad excludes. Files under
+    # `docs/measurements/*.log` are read by `tools/test_*.py` but are not `.md`, so the `!docs/**/
+    # *.md` exclude never touches them; they stay covered by the leading `'**'`. If a future gate
+    # starts reading some other doc, add it back here as its own re-include line, in order, after
+    # the exclude that would otherwise drop it — `paths` patterns are evaluated in the order they
+    # appear, so a later positive pattern re-includes what an earlier negative one dropped.
+    # There are no required status checks on `main` (branch protection allows merging without a
+    # green run), so a run this filter skips can never wedge a PR waiting on it.
+    paths: &ci_paths
+      - '**'
+      - '!README.md'
+      - '!docs/**/*.md'
+      # graded by tests/test_demo_library.py (make check): must stay a trigger
+      - 'docs/screenshots/CREDITS.md'
+      - '!site/**'
+      # graded by tests/test_demo_library.py (make check): must stay a trigger
+      - 'site/credits.html'
+      - '!.agents/**/*.md'
+      - '!rust-modules/**/*.md'
   pull_request:
+    paths: *ci_paths
   workflow_dispatch:
 
 permissions:

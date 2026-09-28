@@ -7,6 +7,9 @@ on:
       - '.github/workflows/simulators.yml'
       - 'Makefile'
       - 'rust-modules/**'
+      # Nested guides such as rust-modules/src/player/CLAUDE.md read by no gate in this workflow;
+      # a docs-only edit there should not cost a ~20 min macOS+Linux simulator build.
+      - '!rust-modules/**/*.md'
       - 'src/svg.c'
       - 'src/ass.c'
       - 'src/ass_composite.h'
