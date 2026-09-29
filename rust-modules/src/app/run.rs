@@ -2611,7 +2611,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             // Taken on every presented frame for the counters' reason above: a span belongs to
             // the frame it ran in, never to the next slow one.
             let spans = crate::diag::spans::take();
-            if let Some(line) = app.instr.frame_drop_line(&|| {
+            let mark = crate::diag::heartbeat::FrameMark { dip: app.pages.dip_word(), spans: &spans };
+            if let Some(line) = app.instr.frame_drop_line(mark, &|| {
                 format!(
                     "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}",
                     app.pages.dip_word(),

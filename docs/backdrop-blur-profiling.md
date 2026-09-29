@@ -1601,8 +1601,9 @@ revision still invalidates.
 PageDip no longer releases solely because its 140 ms In ramp ended. The destination continues to
 tick and load behind the held image until page-owned motion and first-frame resource work are both
 quiet, with a documented 600 ms maximum hold. It then takes one settled replacement capture
-off-screen, presents that image, and switches to matching live output on the next frame. The old
-live-page-plus-full-screen-image dissolve is gone. `FRAMEDROP` now carries
+off-screen, presents that image, and switches to matching live output on the next frame
+(superseded 2026-09-29: the replacement capture is gone; the hand-off is now a cut from the held
+image to live output, see that section). The old live-page-plus-full-screen-image dissolve is gone. `FRAMEDROP` now carries
 `dip=out|hold|in|held|live` for phase attribution.
 
 These changes were host-tested only in this lane. No television was contacted, so the requested
@@ -1671,3 +1672,119 @@ drops into a baseline.
 - New FRAMEDROP spans: `text` (a glyph-cache miss), `host`, `src`, `warm` and `warmdrain`. They
   are there so the television can attribute what is left. The GPU-side `clear` waits and the 1080p
   backdrop upload are not addressed here.
+
+## 2026-09-29: round 2 — what the 100-cycle logs attribute, and three changes (host evidence only)
+
+No television was contacted in this round. Evidence is the 2026-09-28 bench logs
+(`fps-{push,modal,deep}-100.log`) plus host tests.
+
+**The logs predate round 1.** Round 1 added a `host` span to every non-player frame. No line in
+these logs carries one, so they came from a build before that commit. Round 1's surface-text
+recording is not yet measured on the television, and neither is anything below.
+
+**Most of the large frames are ungraded boot frames.** These all happen before `bench: settled`,
+which is where the benches start counting:
+
+- the 108 ms `disc:66.7` frame;
+- every `gndkick`/`gndread` ground readback;
+- Home's held `page:49.4`/`page:42.4` frames;
+- the `prepare` 12–20 ms poster-landing frames.
+
+This round leaves class 3 (the held-ground readback) alone: no graded miss contains one.
+
+**The 12 graded misses, by class:**
+
+| class | cycles | shape |
+|---|---|---|
+| cold first open | modal c1 (Settings) | 56.5 ms, `disc:8.2`, `surf:39.6`. This is round 1's target. |
+| cold first open | push c1, deep c1 (Detail) | two held frames each. Frame A: `prepare` 21.7 / 25.0 with `up=0`. Frame B: `prepare` 22.6 / 28.4 with `up=1 px=2073600` (the 1080p backdrop). |
+| `clear` backlog | push c5, c44, c89; deep c82, c86, c97, c104 | `clear` 17.5–31.x ms on `dip=in`, held, or floor-capture frames. The page's own GPU work is one full-screen quad and the chrome. |
+| other | modal c90 (account-menu close) | 26.0 ms, with the wait in `scrims:16.4`. Once in 100 cycles. |
+
+### Fixed: the render thread copied every decoded image
+
+`poster::drain_decoded` copied each decoded image out of the worker's `malloc` buffer into a
+`Box<[u8]>`, on the main thread, inside `prepare`. Its doc said a poster costs "tens of
+microseconds". A 1080p backdrop is 8.3 MB. Frame A above is that copy (plus faulting in the fresh
+8 MB allocation). `prepare` was 21.7–25.0 ms with nothing uploaded, and the upload itself landed
+on the next frame. On the boot frames, a 3.7 MB image cost 11.9 ms the same way.
+
+`tex::Decoded::rgba` is now a `tex::Pixels`. It either wraps a Rust allocation or adopts the
+worker's `malloc` buffer as it stands (`Pixels::adopt_malloc`) and frees it on drop.
+`drain_decoded` hands the buffer over without touching the bytes.
+
+Test: `app::adapters::poster::tests::a_decoded_image_reaches_the_uploader_without_a_render_thread_copy`
+asserts that the uploader reads the worker's own pointer. It failed against the copy (a different
+address) and passes now.
+
+### Removed: the settled page's second off-screen capture
+
+At quiescence, `PageImage::plan` returned `ReplacementCapture`. That frame rendered the settled
+page into the shared FrameCache, drew it as a full-screen quad, and set the snapshot fence, which
+can defer presents. The next frame released the image and drew the same page live.
+
+The replacement image equals the live frame that follows it. It differs from the held image by
+exactly what the live frame does, so it adds no visual step. It is a whole extra page pass, a quad
+and a fence per navigation. The hand-off is now a cut from the held image straight to live output
+on the first quiescent frame.
+
+The hold's text gate (the held page is walked through the text recorder, and quiescence waits for
+that queue) is unchanged. It now protects the live draw rather than the capture. The logs do not
+show a replacement frame immediately before a graded miss, so this is removal of GPU waste, not a
+proven fix for a counted miss.
+
+Tests:
+
+- `ui::containers::transition::page_image_tests::frozen_settle_handoff_goes_live_without_a_second_capture`
+- `…::a_page_that_never_settles_goes_live_at_the_hold_bound`
+- `ui::containers::tests::frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain`,
+  which now expects 2 captures, not 3.
+- `…::a_held_page_has_its_text_resident_before_it_draws_live_again`
+
+All four were watched red first.
+
+### Instrumented: the `clear` backlog is not attributable from these logs
+
+A `clear` wait is the first framebuffer-0 command absorbing the GPU work that earlier frames
+queued. Those earlier frames were under the 17 ms threshold, so they printed nothing. From these
+logs it is impossible to say whether the backlog was built by:
+
+- a page capture;
+- a capture rendering into the single shared FrameCache texture that queued frames still sample
+  (the floor capture reuses the outgoing image's texture, which forces the driver to serialise or
+  shadow-copy);
+- text-drain uploads during the dip.
+
+The instrument now closes that gap.
+
+- `FRAMEDROP` gains `iv=` (the present-to-present interval) and the previous presented frame's
+  `prev_total= prev_dip= prev_up= prev_spans=`.
+- A frame under the threshold whose interval still missed a refresh (`round(iv/16.67) - 1 >= 1`,
+  the benches' own measure) now prints as `FRAMEMISS`, with the same fields. `tests/run.py`
+  grades only `^FRAMEDROP`, so these lines are attribution only.
+- A page drawn into a capture is spanned as `page.cap`, not `page`, and runs under the
+  `page.capture` profile phase, so `plxnative-gputime.jsonl` times it on the GPU.
+
+Tests: `diag::heartbeat::tests::a_frame_drop_line_names_its_present_interval_and_the_frame_before_it`
+and `…::a_short_frame_whose_interval_missed_a_refresh_prints_a_framemiss_line`.
+
+### Class 4: `pagex2`/`clearx2` on Home `dip=live`
+
+On the Home `dip=live` frames with `pagex2`/`clearx2`, each second pass was a real blur-source
+refresh under `ui/frame/backdrop.rs` policy: Home settling at boot, and posters landing. The dither
+tile is static and is not part of source identity. Among graded misses, only modal c90's frame has
+a `pagex2`, and its wait was in `scrims`, not in the second pass. Nothing is changed here.
+
+### GPU-bound, and proposed only
+
+- **Frame B, the 2 Mpx backdrop upload**, is `glTexImage2D` plus the residency warm on the CPU:
+  22.6–28.4 ms in one frame. Proposal: upload textures over ~1 Mpx in horizontal stripes
+  (`glTexSubImage2D`) across frames, and draw only once the last stripe lands. This is not
+  verifiable off the TV: Mali may defer the format conversion to the warm draw.
+- **The `clear` backlog.** If the new `prev_spans=` show `page.cap` before the waits, the
+  proposal is a double-buffered transition snapshot. That means two FrameCache targets
+  alternating between outgoing and floor captures (+8 MB at 1080p), so a capture never renders
+  into a texture an in-flight frame samples. Measure first.
+- **Discovery walks presented surfaces.** Nothing at or above `Z::surface(0)` is recorded
+  during discovery, so that walk is CPU waste. Skipping it would move a cold surface's cost into
+  `surf` rather than remove it, so it is not done here.

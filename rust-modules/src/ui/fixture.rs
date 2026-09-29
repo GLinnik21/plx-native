@@ -1150,7 +1150,7 @@ impl super::adapters::Adapters<FixtureHost> for FixtureRig {
                 result: Ok(Decoded {
                     w: 4,
                     h: 4,
-                    rgba: vec![0; 64].into_boxed_slice(),
+                    rgba: vec![0; 64].into_boxed_slice().into(),
                 }),
             }),
         }
@@ -1247,7 +1247,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         result: Ok(Decoded {
             w: 4,
             h: 4,
-            rgba: vec![0; 64].into_boxed_slice(),
+            rgba: vec![0; 64].into_boxed_slice().into(),
         }),
     });
     d.budget.note_queued(rig.cache.has_pending());
@@ -1906,7 +1906,7 @@ fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
     // the plumbing. Accepting must not itself reach the cache's resolved/uploaded state.
     rig.cache.accept(PosterReady {
         key: PosterKey(11),
-        result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice() }),
+        result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice().into() }),
     });
     assert!(rig.cache.resolve(PosterKey(11)).is_none(), "accepted, not yet uploaded — prepare has not run");
 
@@ -1941,7 +1941,7 @@ fn a_bare_cache_driven_past_capacity_does_not_latch_pending_forever() {
     for i in 0..9u32 {
         rig.cache.accept(PosterReady {
             key: PosterKey(100 + i),
-            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice() }),
+            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice().into() }),
         });
         d.budget.note_queued(rig.cache.has_pending());
         let r = d.frame(&mut rig, tick(16 * (i + 1)), vec![], vec![], &mut NoTap);

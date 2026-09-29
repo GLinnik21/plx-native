@@ -1101,9 +1101,10 @@ pub(crate) fn begin_frame() {
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
 /// DECODED hands its pixels to the render cache as one `PosterReady` and becomes READY. No GL
-/// here — the cache uploads in PREPARE ([`prepare`]). The pixels are copied once out of the
-/// decoder's C allocation into the owned `Decoded` (a 250x375 poster is ~375 KB, tens of
-/// microseconds) so the library owns what it uploads.
+/// here — the cache uploads in PREPARE ([`prepare`]). The decoder's `malloc` buffer is ADOPTED
+/// into the owned `Decoded` ([`tex::Pixels::adopt_malloc`]), never copied: the copy this replaced
+/// cost 11.9 ms for a 3.7 MB image and 21.7–25.0 ms for a 1080p backdrop on the TV, all of it
+/// inside one frame's `prepare`.
 pub(crate) fn drain_decoded() {
     loop {
         let (idx, px, w, h, current) = {
@@ -1127,20 +1128,19 @@ pub(crate) fn drain_decoded() {
         let key = PosterKey(idx as u32);
         let result = if px != 0 && w > 0 && h > 0 && w <= u16::MAX as c_int && h <= u16::MAX as c_int {
             let n = (w as usize) * (h as usize) * 4;
-            // SAFETY: the worker decoded exactly w*h RGBA bytes at `px` (img::img_decode_rgba's
-            // contract) and handed the pointer over under the lock; it is freed right below.
-            let rgba: Box<[u8]> = unsafe { std::slice::from_raw_parts(px as *const u8, n) }.into();
-            Ok(Decoded {
-                w: w as u16,
-                h: h as u16,
-                rgba,
-            })
+            // SAFETY: the worker decoded exactly w*h RGBA bytes into this `malloc` buffer
+            // (img::img_decode_rgba's contract) and handed the pointer over under the lock, which
+            // cleared `s.px`; nothing else frees it. `Pixels` frees it when the cache drops it.
+            match unsafe { tex::Pixels::adopt_malloc(px as *mut u8, n) } {
+                Some(rgba) => Ok(Decoded { w: w as u16, h: h as u16, rgba }),
+                None => Err(PosterError::Decode),
+            }
         } else {
+            if px != 0 {
+                img::img_free(px as *mut c_uchar);
+            }
             Err(PosterError::Decode)
         };
-        if px != 0 {
-            img::img_free(px as *mut c_uchar);
-        }
         tex::accept(PosterReady { key, result });
         let mut g = store();
         // Rejection may synchronously notify unresident during accept. Preserve that verdict.
@@ -2010,6 +2010,59 @@ mod tests {
         );
     }
 
+    /// **The render thread adopts a decoded image; it does not copy it.** `drain_decoded` runs on
+    /// the main thread inside the prepare window. It used to copy every decode out of the
+    /// worker's buffer into a fresh `Box` — for a 1920x1080 Detail backdrop, 8.3 MB allocated,
+    /// written and freed on the render thread. On the television that frame's `prepare=` was
+    /// 21.7–25.0 ms with `up=0` (push-100 and deep-100 cycle 1, the frame before the backdrop's
+    /// upload), and 11.9 ms for a 3.7 MB 1280x720 one: a cost linear in the bytes copied. The
+    /// uploader must now see the very buffer the worker published.
+    #[test]
+    fn a_decoded_image_reaches_the_uploader_without_a_render_thread_copy() {
+        struct Seen(Vec<usize>);
+        impl Uploader for Seen {
+            fn upload(&mut self, d: &Decoded) -> Tex {
+                self.0.push(d.rgba.as_ptr() as usize);
+                Tex { id: self.0.len() as u32, w: d.w, h: d.h }
+            }
+            fn warm(&mut self, _: Tex) {}
+            fn free(&mut self, _: Tex) {}
+        }
+        const BYTES: usize = 2 * 2 * 4;
+        let (_fresh, sid, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(1 << 20);
+        let path = key_for(sid, "/library/metadata/42/art", 2, 2, 0);
+        let px = img::img_malloc_copy(&[7u8; BYTES], String::new);
+        assert!(!px.is_null());
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.px = px as usize;
+            slot.pw = 2;
+            slot.ph = 2;
+            slot.state = P_DECODED;
+        }
+
+        drain_decoded();
+
+        let mut budget = crate::ui::frame::Budget::new();
+        budget.begin_frame(0);
+        let mut present = crate::ui::present::Present::new();
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut seen = Seen(Vec::new());
+        assert_eq!(tex::prepare(&mut budget, &mut seen, &mut present_handle, || 0), 1);
+        assert_eq!(seen.0, vec![px as usize],
+            "the uploader reads the worker's own buffer: the render thread copied nothing");
+        tex::reset_for_test(16);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
     /// The whole product loop, using the installed [`PosterSource`], the thread-local product
     /// cache and the global poster store: resident → byte-pressure release → dormant EVICTED → a
     /// real DRAW probe → WANT + condition-variable wake → worker publication → resident again. A
@@ -2057,7 +2110,7 @@ mod tests {
             result: Ok(Decoded {
                 w: 2,
                 h: 2,
-                rgba: vec![0; BYTES].into_boxed_slice(),
+                rgba: vec![0; BYTES].into_boxed_slice().into(),
             }),
         };
         tex::accept(decoded(PosterKey(0)));

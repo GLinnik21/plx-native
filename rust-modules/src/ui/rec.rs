@@ -945,7 +945,7 @@ thread_local! {
 /// 0.0): the pass asks about states the recorded session may never have drawn, and which of them
 /// it asks about is the prewarm's policy, not the product's behaviour. Flow 12 is the case: its
 /// Detail page is held as an image while the Down key focuses a cast card, and the Person page is
-/// pushed before any replacement capture draws that card, so the anchor never measured the focused
+/// pushed before the Detail page goes live again to draw that card, so the anchor never measured the focused
 /// caption the held-page walk warms. The pass itself draws nothing and decides nothing; replay
 /// still grades every frame's state hash, presents, effects, and Focus/Hit resolutions, so an
 /// answer that leaked out of the pass into the product would diverge there, not pass silently.

@@ -185,6 +185,12 @@ enum WorkOutcome {
 
 Use owned `tex::Decoded` across the mailbox. Copy C-decoder pixels into a validated `Box<[u8]>` on the worker and immediately free the C allocation, instead of retaining an integer pointer in shared state. Validate dimensions and checked `width * height * 4` arithmetic on ARM32 before copying. This moves the existing copy off the loop; it is not a zero-copy claim and temporarily holds both allocations. Keep this resource-ownership change separately reviewable from queue ordering. No new `unsafe impl Send` or “pointer as usize makes it safe” argument is needed.
 
+Status 2026-09-29: the loop-side copy this paragraph moves is already gone, by a different route.
+`drain_decoded` adopts the worker's `malloc` buffer into `tex::Decoded` without copying
+(`tex::Pixels::adopt_malloc`, which does carry an `unsafe impl Send`). The integer pointer in
+`Pslot` remains, so this paragraph's ownership proposal still stands. A 1080p backdrop's
+render-thread copy measured 21.7–25.0 ms on the TV (docs/backdrop-blur-profiling.md).
+
 ### Admission, promotion, claim, and landing
 
 ```rust

@@ -1629,7 +1629,8 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     let _guard = crate::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
-    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: Default::default() });
+    let image_drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: image_drawn.clone() });
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
     d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true); // outgoing capture
@@ -1656,25 +1657,28 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     crate::ui::idle::frame_begin(1.0 / 60.0);
     d.budget.note_queued(false);
     d.frame_with(&mut rig, tick(480), vec![], vec![], &mut NoTap, false);
-    d.draw(&mut rig, true); // the one off-screen settled replacement capture
-    assert!(page_draw_order(&d) > held);
-    assert_eq!(begins.get(), 3, "outgoing, incoming floor, and exactly one settled replacement");
+    let image_before = image_drawn.get();
+    d.draw(&mut rig, true); // quiescent: the page goes straight back to live output
+    let live = page_draw_order(&d);
+    assert!(live > held, "the settled page draws live on the first quiescent frame");
+    assert_eq!(image_drawn.get(), image_before, "no image is drawn over (or instead of) the live page");
+    assert_eq!(begins.get(), 2,
+        "outgoing and incoming floor only: the settled page is never rendered off-screen a second time");
 
-    let replacement = page_draw_order(&d);
     crate::ui::idle::frame_begin(1.0 / 60.0);
     d.frame_with(&mut rig, tick(496), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true);
-    assert!(page_draw_order(&d) > replacement, "live begins only after the matching image frame");
-    assert_eq!(begins.get(), 3, "the handoff never captures a second replacement");
+    assert!(page_draw_order(&d) > live, "and stays live");
+    assert_eq!(begins.get(), 2, "the handoff never captures");
 }
 
-/// **A page's text is resident before its replacement capture draws it.** Content that lands
-/// after the dip's floor — a detail page's metadata — is drawn by nothing while the image stands in
-/// for the page, so the one settled capture used to rasterise every new string in a single frame
-/// (84 ms on the television, 48 ms of it text). The held page is walked through the text recorder
-/// instead, and the capture waits for that queue to drain.
+/// **A page's text is resident before the held image hands back to the live page.** Content that
+/// lands after the dip's floor — a detail page's metadata — is drawn by nothing while the image
+/// stands in for the page, so the first draw after it used to rasterise every new string in a
+/// single frame (84 ms on the television, 48 ms of it text). The held page is walked through the
+/// text recorder instead, and the handoff waits for that queue to drain.
 #[test]
-fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
+fn a_held_page_has_its_text_resident_before_it_draws_live_again() {
     let _guard = crate::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1730,17 +1734,17 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         crate::text::queue_prewarm(c"late string".as_ptr(), 24, 0);
         d.draw(&mut rig, true);
-        assert_eq!(begins.get(), floor_begins, "a pending prewarm defers the replacement capture");
+        assert_eq!(screen(&d).0, floor_draw, "a pending prewarm keeps the image standing in");
     }
     let settled_at = ms;
-    while begins.get() == floor_begins {
+    while screen(&d).0 == floor_draw {
         ms += 16;
-        assert!(ms < settled_at + 200, "the drained page is captured promptly");
+        assert!(ms < settled_at + 200, "the drained page goes live promptly");
         crate::ui::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         d.draw(&mut rig, true);
     }
-    assert!(screen(&d).0 > floor_draw, "the replacement capture draws the page");
+    assert_eq!(begins.get(), floor_begins, "the handoff to live output renders no further capture");
 }
 
 #[test]

@@ -173,6 +173,21 @@ impl FramePacing {
     }
 }
 
+/// What the loop knows about the presented frame beyond its stamps and counters: the page dip's
+/// phase word and the frame's `spans=` field ([`crate::diag::spans::take`]). Handed to
+/// [`Instruments::frame_drop_line`] on EVERY presented frame, so the next line can name the frame
+/// before it (`prev_*=`) — the frame whose GPU work a vsync wait is paying for.
+#[derive(Clone, Copy)]
+pub(crate) struct FrameMark<'a> {
+    pub dip: &'static str,
+    pub spans: &'a str,
+}
+
+#[cfg(test)]
+impl FrameMark<'_> {
+    pub(crate) const NONE: FrameMark<'static> = FrameMark { dip: "", spans: "" };
+}
+
 pub(crate) struct Instruments {
     armed: bool,
     thresh_ms: f64,
@@ -187,7 +202,21 @@ pub(crate) struct Instruments {
     /// None after startup or a skipped present, so intentional idle gaps are not samples.
     previous_present: Option<u64>,
     pacing: FramePacing,
+    /// The previous PRESENTED frame, for the next line's `prev_*=` fields.
+    prev: Option<PrevFrame>,
 }
+
+/// One presented frame as the line after it reports it (`prev_total= prev_dip= prev_up=
+/// prev_spans=`). The spans buffer is reused frame to frame.
+struct PrevFrame {
+    total: f64,
+    dip: &'static str,
+    uploads: u32,
+    spans: String,
+}
+
+/// One display refresh at the panel's 60 Hz — the benches' `round(iv / 16.67) - 1` unit.
+const REFRESH_MS: f64 = 1000.0 / 60.0;
 
 impl Instruments {
     /// `armed` is the trigger's presence; `thresh_ms` its content (default 22).
@@ -204,6 +233,7 @@ impl Instruments {
             counters: FrameCounters::default(),
             previous_present: None,
             pacing: FramePacing::default(),
+            prev: None,
         }
     }
 
@@ -292,46 +322,92 @@ impl Instruments {
     }
 
     /// At the iteration's tail of a PRESENTED frame: fold the total into the peak and return the
-    /// `FRAMEDROP` line when it crossed the threshold. The four per-frame counters come from
+    /// frame's line, if it has one. The four per-frame counters come from
     /// [`Self::note_frame_counters`] — this frame's, not the accumulation since the last drop
     /// line — and `extra` is the loop's own trailing fields (route, load, snap), appended
     /// verbatim after them.
-    pub(crate) fn frame_drop_line(&mut self, extra: &dyn Fn() -> String) -> Option<String> {
+    ///
+    /// Two lines, one body:
+    /// * `FRAMEDROP` — the frame's own Top->Swap crossed the armed threshold. The harness grades
+    ///   `stall_ceiling_ms` from these (`tests/run.py` `FRAMEDROP_RE`).
+    /// * `FRAMEMISS` — the frame was under the threshold but its present INTERVAL missed a display
+    ///   refresh (`round(iv / 16.67) - 1 >= 1`, the benches' own measure): the wait that made it
+    ///   late ran outside Top->Swap. Never read by a grader; it is attribution only.
+    ///
+    /// Both carry `iv=` (the present interval, `-` after startup or an idle gap) and the PREVIOUS
+    /// presented frame's `prev_total= prev_dip= prev_up= prev_spans=`: a framebuffer-0 command's
+    /// vsync wait (`clear`) pays for the GPU work that frame queued, and a frame under the
+    /// threshold otherwise leaves no trace of what that work was.
+    pub(crate) fn frame_drop_line(&mut self, frame: FrameMark<'_>, extra: &dyn Fn() -> String) -> Option<String> {
         if !self.armed {
             return None;
         }
         let present = self.stamps[Phase::Swap as usize];
-        if let Some(previous) = self.previous_present.replace(present) {
-            self.pacing
-                .note(present.wrapping_sub(previous), self.perf_freq as u64);
-        }
+        let interval = self.previous_present.replace(present).map(|previous| {
+            let ticks = present.wrapping_sub(previous);
+            self.pacing.note(ticks, self.perf_freq as u64);
+            self.ms(ticks)
+        });
         let total = self
             .ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]));
         if total > self.worst {
             self.worst = total;
         }
-        if total <= self.thresh_ms {
-            return None;
-        }
-        // Printed in the frame ALGORITHM's order (spec §8.4), which on the legacy loop is not the
-        // order they ran: navcommit runs before tick_drain there.
-        let c = self.counters;
-        Some(format!(
-            "FRAMEDROP total={total:.1} ingest={:.1} results={:.1} tick_drain={:.1} navcommit={:.1} prepare={:.1} draw={:.1} capture={:.1} swap={:.1} up={} px={} cards={} off={} {}",
-            self.span(Phase::Ingest),
-            self.span(Phase::Results),
-            self.span(Phase::TickDrain),
-            self.span(Phase::NavCommit),
-            self.span(Phase::Prepare),
-            self.span(Phase::Draw),
-            self.span(Phase::Capture),
-            self.span(Phase::Swap),
-            c.uploads,
-            c.upload_px,
-            c.cards,
-            c.cards_off,
-            extra(),
-        ))
+        let missed = interval.is_some_and(|iv| (iv / REFRESH_MS).round() >= 2.0);
+        let word = if total > self.thresh_ms {
+            Some("FRAMEDROP")
+        } else if missed {
+            Some("FRAMEMISS")
+        } else {
+            None
+        };
+        let line = word.map(|word| {
+            // Printed in the frame ALGORITHM's order (spec §8.4), which on the legacy loop is not
+            // the order they ran: navcommit runs before tick_drain there.
+            let c = self.counters;
+            let iv = interval.map_or_else(|| "-".to_string(), |iv| format!("{iv:.1}"));
+            let prev = match &self.prev {
+                Some(p) => format!(
+                    "prev_total={:.1} prev_dip={} prev_up={} prev_spans={}",
+                    p.total,
+                    if p.dip.is_empty() { "-" } else { p.dip },
+                    p.uploads,
+                    match p.spans.strip_prefix("spans=") {
+                        Some(s) if !s.is_empty() => s,
+                        _ => "-",
+                    },
+                ),
+                None => "prev_total=-".to_string(),
+            };
+            format!(
+                "{word} total={total:.1} ingest={:.1} results={:.1} tick_drain={:.1} navcommit={:.1} prepare={:.1} draw={:.1} capture={:.1} swap={:.1} up={} px={} cards={} off={} iv={iv} {prev} {}",
+                self.span(Phase::Ingest),
+                self.span(Phase::Results),
+                self.span(Phase::TickDrain),
+                self.span(Phase::NavCommit),
+                self.span(Phase::Prepare),
+                self.span(Phase::Draw),
+                self.span(Phase::Capture),
+                self.span(Phase::Swap),
+                c.uploads,
+                c.upload_px,
+                c.cards,
+                c.cards_off,
+                extra(),
+            )
+        });
+        let prev = self.prev.get_or_insert_with(|| PrevFrame {
+            total: 0.0,
+            dip: "",
+            uploads: 0,
+            spans: String::new(),
+        });
+        prev.total = total;
+        prev.dip = frame.dip;
+        prev.uploads = self.counters.uploads;
+        prev.spans.clear();
+        prev.spans.push_str(frame.spans);
+        line
     }
 
     /// The heartbeat's trailing fields, and the per-second reset. The WIRE ORDER is a contract:
@@ -507,7 +583,7 @@ mod tests {
         i.mark(Phase::Prepare);
         i.note_prepare();
         i.skip_present_phases();
-        assert!(i.frame_drop_line(&|| String::new()).is_none());
+        assert!(i.frame_drop_line(FrameMark::NONE, &|| String::new()).is_none());
         // the frame-plan fields are NOT the armed pair: they print on every heartbeat
         assert_eq!(
             i.heartbeat_tail(HeartbeatFields::default(), None),
@@ -526,11 +602,11 @@ mod tests {
             cards: 9,
             cards_off: 1,
         });
-        let line = i.frame_drop_line(&|| "route=home".into()).unwrap();
+        let line = i.frame_drop_line(FrameMark::NONE, &|| "route=home".into()).unwrap();
         assert_eq!(
             line,
             "FRAMEDROP total=36.0 ingest=1.0 results=2.0 tick_drain=4.0 navcommit=3.0 prepare=5.0 \
-             draw=6.0 capture=7.0 swap=8.0 up=2 px=187500 cards=9 off=1 route=home"
+             draw=6.0 capture=7.0 swap=8.0 up=2 px=187500 cards=9 off=1 iv=- prev_total=- route=home"
         );
         assert_eq!(
             i.heartbeat_tail(HeartbeatFields::default(), None),
@@ -550,9 +626,10 @@ mod tests {
         // prepare_window seeds these phases on every iteration, including presented frames.
         i.seed_present_phases();
         i.stamps[Phase::Swap as usize] = swap;
+        let line = i.frame_drop_line(FrameMark::NONE, &String::new);
         assert!(
-            i.frame_drop_line(&String::new).is_none(),
-            "short CPU phases need no FRAMEDROP line"
+            line.as_deref().is_none_or(|l| !l.starts_with("FRAMEDROP")),
+            "short CPU phases need no FRAMEDROP line: {line:?}"
         );
     }
 
@@ -688,7 +765,7 @@ mod tests {
             cards: 40,
             cards_off: 3,
         });
-        assert!(i.frame_drop_line(&|| "route=detail".into()).is_none());
+        assert!(i.frame_drop_line(FrameMark::NONE, &|| "route=detail".into()).is_none());
         // frame 2: nothing uploaded, and slow — the line must not inherit frame 1's nine
         i.stamps = [0, 1, 2, 3, 4, 5, 40, 41, 42];
         i.note_frame_counters(FrameCounters {
@@ -697,8 +774,52 @@ mod tests {
             cards: 12,
             cards_off: 0,
         });
-        let line = i.frame_drop_line(&|| "route=detail".into()).unwrap();
+        let line = i.frame_drop_line(FrameMark::NONE, &|| "route=detail".into()).unwrap();
         assert!(line.contains(" up=0 px=0 cards=12 off=0 "), "{line}");
+    }
+
+    /// A vsync wait (`clear`) is paid for by the GPU work of the frame BEFORE it, and that frame
+    /// was under the threshold, so it printed nothing: every 2026-09-28 `clear:17–42` line was
+    /// unattributable. The line now carries its present interval and the previous presented
+    /// frame's total, dip phase, upload count and spans.
+    #[test]
+    fn a_frame_drop_line_names_its_present_interval_and_the_frame_before_it() {
+        let mut i = Instruments::new(true, 20.0);
+        i.perf_freq = 1000.0;
+        i.stamps = [0, 1, 1, 1, 1, 2, 10, 11, 12];
+        i.note_frame_counters(FrameCounters { uploads: 1, upload_px: 2_073_600, cards: 0, cards_off: 0 });
+        assert!(i.frame_drop_line(FrameMark { dip: "in", spans: "spans=page.cap:9.0,page.image:0.4" },
+            &|| "route=home".into()).is_none(), "a 12 ms frame on a first present prints nothing");
+        i.stamps = [12, 13, 13, 13, 13, 14, 15, 45, 48];
+        i.note_frame_counters(FrameCounters::default());
+        let line = i.frame_drop_line(FrameMark { dip: "held", spans: "spans=clear:30.1" },
+            &|| "route=person dip=held".into()).unwrap();
+        assert!(line.starts_with("FRAMEDROP total=36.0 "), "{line}");
+        assert!(line.contains(" off=0 iv=36.0 prev_total=12.0 prev_dip=in prev_up=1 prev_spans=page.cap:9.0,page.image:0.4 route=person"),
+            "{line}");
+    }
+
+    /// A frame can be short and still MISS a refresh: the wait that made it late ran outside
+    /// Top->Swap. Those intervals are exactly what the benches grade, so they print too — as
+    /// `FRAMEMISS`, which the harness's `^FRAMEDROP` stall grader does not read.
+    #[test]
+    fn a_short_frame_whose_interval_missed_a_refresh_prints_a_framemiss_line() {
+        let mut i = Instruments::new(true, 20.0);
+        i.perf_freq = 1000.0;
+        i.stamps = [0, 1, 1, 1, 1, 2, 3, 4, 5];
+        assert!(i.frame_drop_line(FrameMark { dip: "live", spans: "" }, &|| "route=home".into()).is_none());
+        // 20 ms later: a 1.2-refresh interval rounds to one refresh, nothing missed
+        i.stamps = [21, 21, 21, 21, 21, 22, 23, 24, 25];
+        assert!(i.frame_drop_line(FrameMark { dip: "live", spans: "" }, &|| "route=home".into()).is_none());
+        // 40 ms later with a 6 ms frame: one refresh missed
+        i.stamps = [59, 60, 60, 60, 60, 61, 63, 64, 65];
+        let line = i.frame_drop_line(FrameMark { dip: "out", spans: "spans=clear:1.0" },
+            &|| "route=home dip=out".into()).expect("a missed refresh is reported however short the frame");
+        assert!(line.starts_with("FRAMEMISS total=6.0 "), "{line}");
+        assert!(line.contains(" iv=40.0 prev_total=4.0 prev_dip=live prev_up=0 prev_spans=- route=home"), "{line}");
+        let mut pacing_only = i.heartbeat_tail(HeartbeatFields::default(), None);
+        pacing_only.retain(|c| c != '\n');
+        assert!(pacing_only.contains(" worstframe=6.0ms "), "a FRAMEMISS frame folds into the peak like any other: {pacing_only}");
     }
 
     #[test]

@@ -315,7 +315,66 @@ pub fn shutdown(up: &mut dyn Uploader) {
 pub struct Decoded {
     pub w: u16,
     pub h: u16,
-    pub rgba: Box<[u8]>,
+    pub rgba: Pixels,
+}
+
+/// The RGBA bytes of a [`Decoded`], owned. Either a Rust allocation, or the decode worker's own
+/// `malloc` buffer ADOPTED as it stands ([`Pixels::adopt_malloc`]) so the render thread never
+/// copies it: a 1080p backdrop is 8.3 MB, and copying it on the main thread was the whole of a
+/// 21.7–25.0 ms `prepare` span on the TV (docs/backdrop-blur-profiling.md, 2026-09-29).
+pub struct Pixels(PixelStore);
+
+enum PixelStore {
+    Owned(Box<[u8]>),
+    Malloc { ptr: std::ptr::NonNull<u8>, len: usize },
+}
+
+// SAFETY: `Pixels` is the sole owner of its bytes (a `Box`, or a `malloc` buffer whose ownership
+// the producer handed over), never aliased, so it is a plain byte buffer like `Box<[u8]>`.
+unsafe impl Send for Pixels {}
+unsafe impl Sync for Pixels {}
+
+impl Pixels {
+    /// Take ownership of `len` bytes at `ptr`, allocated by `malloc` (`img::img_decode_rgba`);
+    /// they are released with `img::img_free` when this drops. `None` for a null `ptr`.
+    ///
+    /// # Safety
+    /// `ptr` must point to at least `len` initialised bytes from `malloc`, owned by the caller and
+    /// never used or freed by it again.
+    pub unsafe fn adopt_malloc(ptr: *mut u8, len: usize) -> Option<Self> {
+        std::ptr::NonNull::new(ptr).map(|ptr| Pixels(PixelStore::Malloc { ptr, len }))
+    }
+}
+
+impl From<Box<[u8]>> for Pixels {
+    fn from(b: Box<[u8]>) -> Self {
+        Pixels(PixelStore::Owned(b))
+    }
+}
+
+impl From<Vec<u8>> for Pixels {
+    fn from(v: Vec<u8>) -> Self {
+        v.into_boxed_slice().into()
+    }
+}
+
+impl std::ops::Deref for Pixels {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match &self.0 {
+            PixelStore::Owned(b) => b,
+            // SAFETY: `adopt_malloc`'s contract: `len` initialised bytes, owned by us.
+            PixelStore::Malloc { ptr, len } => unsafe { std::slice::from_raw_parts(ptr.as_ptr(), *len) },
+        }
+    }
+}
+
+impl Drop for Pixels {
+    fn drop(&mut self) {
+        if let PixelStore::Malloc { ptr, .. } = self.0 {
+            crate::img::img_free(ptr.as_ptr());
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -609,7 +668,7 @@ mod tests {
             result: Ok(Decoded {
                 w: 2,
                 h: 2,
-                rgba: vec![0; 16].into_boxed_slice(),
+                rgba: vec![0; 16].into_boxed_slice().into(),
             }),
         }
     }
@@ -620,7 +679,7 @@ mod tests {
         let old_cache = mutate_cache(|c| std::mem::replace(c, TexCache::with_budget(8, 32)));
         let image = |key, bytes| PosterReady {
             key: PosterKey(key),
-            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; bytes].into_boxed_slice() }),
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; bytes].into_boxed_slice().into() }),
         };
         let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
         let mut present = Present::new();
@@ -764,7 +823,7 @@ mod tests {
             result: Ok(Decoded {
                 w: 1,
                 h: 1,
-                rgba: vec![0; bytes].into_boxed_slice(),
+                rgba: vec![0; bytes].into_boxed_slice().into(),
             }),
         };
         const IMG: usize = 1_000_000; // under RESIDENCY_BYTES, so every upload is a Poster take
@@ -861,7 +920,7 @@ mod tests {
             result: Ok(Decoded {
                 w: 2,
                 h: 2,
-                rgba: vec![0; 16].into_boxed_slice(),
+                rgba: vec![0; 16].into_boxed_slice().into(),
             }),
         });
         note_queued(&mut b);
@@ -910,7 +969,7 @@ mod tests {
             result: Ok(Decoded {
                 w: 1280,
                 h: 720,
-                rgba: vec![0; 1280 * 720 * 4].into_boxed_slice(),
+                rgba: vec![0; 1280 * 720 * 4].into_boxed_slice().into(),
             }),
         };
         let mut c: TexCache<u32> = TexCache::new(8);

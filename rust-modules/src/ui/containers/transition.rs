@@ -14,9 +14,9 @@
 //!   Shared chrome remains a separate live layer. Existing snapshot fences pause the ramp while
 //!   the GPU completes a capture (bounded by `gfx::SNAPSHOT_DEFER_MAX`). After In, the image stays
 //!   held while the destination reports page-owned motion or first-frame resource work. At visual
-//!   quiescence the dispatcher takes one full-alpha replacement capture off-screen, presents that
-//!   image, then switches to identical live output on the following frame. No frame draws a live
-//!   page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
+//!   quiescence the dispatcher releases the image and draws the page live on that same frame — a
+//!   cut, with no second off-screen capture (one would present exactly the pixels the live frame
+//!   after it does). No frame draws a live page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
 //!   settles. Screen/input/lifecycle state continues ticking behind the held image.
 //! - [`RoutePush`] — the Settings family's push: commit is immediate, BOTH levels are drawn, and a
 //!   k=200 spring carries the incoming level in from −0.35 and the outgoing one out to +0.22 (in
@@ -321,7 +321,6 @@ impl Transition for RoutePush {
 pub(crate) struct PageImage {
     entry: Option<super::super::machine::EntryId>,
     settle_since: Option<u32>,
-    replacement_ready: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -329,14 +328,13 @@ pub(crate) enum PagePaint {
     Live,
     Capture,
     Held(f32),
-    ReplacementCapture,
 }
 impl PagePaint {
     pub(crate) fn draws_live(self) -> bool {
         matches!(self, Self::Live)
     }
     pub(crate) fn captures_page(self) -> bool {
-        matches!(self, Self::Capture | Self::ReplacementCapture)
+        matches!(self, Self::Capture)
     }
 }
 
@@ -344,11 +342,6 @@ impl PageImage {
     pub(crate) fn captured(&mut self, entry: super::super::machine::EntryId) {
         self.entry = Some(entry);
         self.settle_since = None;
-        self.replacement_ready = false;
-    }
-    pub(crate) fn replacement_captured(&mut self, entry: super::super::machine::EntryId) {
-        self.entry = Some(entry);
-        self.replacement_ready = true;
     }
     pub(crate) fn plan(
         &mut self,
@@ -360,27 +353,21 @@ impl PageImage {
         quiescent: bool,
     ) -> PagePaint {
         if active {
-            // Retarget after a replacement capture: capture the new destination again.
-            if self.replacement_ready {
-                self.entry = None;
-            }
             self.settle_since = None;
-            self.replacement_ready = false;
             if !valid || self.entry != Some(entry) {
                 return PagePaint::Capture;
             }
             return PagePaint::Held(alpha);
         }
         if valid && self.entry == Some(entry) {
-            if self.replacement_ready {
-                *self = Self::default();
-                return PagePaint::Live;
-            }
             let start = *self.settle_since.get_or_insert(ms);
             if !quiescent && ms.wrapping_sub(start) < PAGE_QUIESCENCE_HOLD_MAX_MS {
                 return PagePaint::Held(1.0);
             }
-            return PagePaint::ReplacementCapture;
+            // Settled (or out of patience): cut straight to live output. The held image already
+            // differs from the settled page by exactly what landed behind it, so an intermediate
+            // off-screen capture of the settled page would present the same pixels the live frame
+            // after it does, at the cost of a second page pass, a full-screen quad and a fence.
         }
         *self = Self::default();
         PagePaint::Live
@@ -401,7 +388,6 @@ impl PagePaint {
     pub(crate) fn frozen_alpha(self) -> Option<f32> {
         match self {
             Self::Held(a) => Some(a),
-            Self::ReplacementCapture => Some(1.0),
             _ => None,
         }
     }
@@ -626,17 +612,22 @@ mod page_image_tests {
         image.captured(EntryId(2));
         assert_eq!(
             image.plan(EntryId(2), false, 1.0, 250, true, true),
-            PagePaint::ReplacementCapture
+            PagePaint::Live
         );
-        image.replacement_captured(EntryId(2));
+        assert!(!image.is_held(), "going live forgets the image");
         assert_eq!(
             image.plan(EntryId(2), true, 0.8, 266, true, false),
             PagePaint::Capture
         );
     }
 
+    /// The settled hand-off is a CUT from the held image to live output. It used to render the
+    /// settled page off-screen once more and present that image for a frame first; that image was
+    /// identical to the live frame after it, so the capture was a whole page pass, a full-screen
+    /// quad and a present-deferring fence spent on nothing (docs/backdrop-blur-profiling.md,
+    /// 2026-09-29).
     #[test]
-    fn frozen_settle_handoff_never_draws_live_under_the_image_and_captures_once() {
+    fn frozen_settle_handoff_goes_live_without_a_second_capture() {
         let mut image = PageImage::default();
         let entry = EntryId(2);
         image.captured(entry);
@@ -646,12 +637,25 @@ mod page_image_tests {
         );
         let held = image.plan(entry, false, 1.0, 335, true, false);
         assert!(!held.draws_live(), "a full-screen image may never cover a live page draw");
-        assert_eq!(
-            image.plan(entry, false, 1.0, 350, true, true),
-            PagePaint::ReplacementCapture
-        );
-        image.replacement_captured(entry);
+        let settled = image.plan(entry, false, 1.0, 350, true, true);
+        assert_eq!(settled, PagePaint::Live);
+        assert!(!settled.captures_page(), "the settled page is never captured again");
         assert_eq!(image.plan(entry, false, 1.0, 366, true, true), PagePaint::Live);
-        assert_eq!(image.plan(entry, false, 1.0, 400, true, true), PagePaint::Live);
+    }
+
+    #[test]
+    fn a_page_that_never_settles_goes_live_at_the_hold_bound() {
+        let mut image = PageImage::default();
+        let entry = EntryId(3);
+        image.captured(entry);
+        assert_eq!(image.plan(entry, false, 1.0, 1000, true, false), PagePaint::Held(1.0));
+        assert_eq!(
+            image.plan(entry, false, 1.0, 1000 + PAGE_QUIESCENCE_HOLD_MAX_MS - 1, true, false),
+            PagePaint::Held(1.0)
+        );
+        assert_eq!(
+            image.plan(entry, false, 1.0, 1000 + PAGE_QUIESCENCE_HOLD_MAX_MS, true, false),
+            PagePaint::Live
+        );
     }
 }

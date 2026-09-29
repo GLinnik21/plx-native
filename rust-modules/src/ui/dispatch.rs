@@ -1259,8 +1259,7 @@ where
                 self.page_snapshot.release();
                 self.page_image = Default::default();
             }
-            if matches!(paint, super::containers::transition::PagePaint::Held(_)
-                | super::containers::transition::PagePaint::ReplacementCapture) {
+            if matches!(paint, super::containers::transition::PagePaint::Held(_)) {
                 // The held-image compositor needs another present, but it is not PAGE-owned
                 // motion. Attributing it to Page would make the quiescence predicate observe its
                 // own hold and keep the image forever.
@@ -1286,10 +1285,10 @@ where
         //
         // The same pass runs over the TOP page while an image stands in for it (the IN half and
         // the hold after it). That is where a destination's content lands — a detail page's
-        // metadata arrives after its floor — and nothing else draws the page until the one
-        // replacement capture. Without it that capture rasterised every newly landed string in a
-        // single frame: 47 strings, 48 ms of an 84 ms frame, measured on the television. The
-        // quiescence predicate waits for this queue, so the capture finds the text resident.
+        // metadata arrives after its floor — and nothing else draws the page until it goes live
+        // again at quiescence. Without it that first draw rasterised every newly landed string in
+        // a single frame: 47 strings, 48 ms of an 84 ms frame, measured on the television. The
+        // quiescence predicate waits for this queue, so the live draw finds the text resident.
         //
         // The walk is CPU only (it measures and records), so it runs BEFORE the page pass: the
         // frame's first framebuffer command is where the driver waits out the previous frame's
@@ -1363,7 +1362,16 @@ where
                         if capture { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
                         if !capture { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
-                        backdrop::draw_span("page", || inst.screen.draw(&mut f));
+                        if capture {
+                            // A capture renders the page OFF-SCREEN into the shared FrameCache:
+                            // its own span and GPU phase, so a FRAMEDROP line (`page.cap`) and
+                            // `plxnative-gputime.jsonl` (`page.capture`) tell it from a live draw.
+                            backdrop::draw_span("page.cap", || {
+                                crate::ui::profile::phase("page.capture", || inst.screen.draw(&mut f))
+                            });
+                        } else {
+                            backdrop::draw_span("page", || inst.screen.draw(&mut f));
+                        }
                         report.drawn.push(inst.id);
                         let drawn_stops = f.into_stops();
                         if capture { *page_stops = drawn_stops.clone(); }
@@ -1373,13 +1381,8 @@ where
                     }
                     drop(capture_guard);
                     if capture {
-                        if paint == PagePaint::ReplacementCapture {
-                            page_image.replacement_captured(e.id);
-                        } else {
-                            page_image.captured(e.id);
-                        }
-                        let alpha = if paint == PagePaint::ReplacementCapture { 1.0 }
-                            else { nav.tabs.stack.transition.page_alpha() };
+                        page_image.captured(e.id);
+                        let alpha = nav.tabs.stack.transition.page_alpha();
                         backdrop::draw_span("page.image", || page_snapshot.draw(alpha, true));
                     } else if let Some(alpha) = paint.frozen_alpha() {
                         let _image_layer = backdrop::layer(Z(Z::CHROME.0 - 1), false);
