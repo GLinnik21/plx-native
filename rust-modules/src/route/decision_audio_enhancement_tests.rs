@@ -1782,7 +1782,8 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
 
     cleanup(&mut ps);
     crate::plex::reset_servers_for_test();
-=======
+}
+
 // ---- PR review follow-up: off-main-thread claim PMS I/O, mailbox lifetime, snapshot isolation --
 
 /// Finding: `execute_retranscode_claim`'s `primary_reject` match had collapsed
@@ -2049,7 +2050,6 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
 
     live.finish();
     cleanup(&mut ps);
->>>>>>> 697e86caa (Fix Opus review findings on the claim PMS-I/O-off-main-thread split)
 }
 
 /// Finding 2's narrower race: `try_retranscode`'s own `replace_active_encoder_for` check runs
