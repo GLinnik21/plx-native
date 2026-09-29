@@ -1800,7 +1800,12 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                     bytes,
                 )
                 .expect("source headers");
-                socket.write_all(&vec![0x55; bytes]).expect("source body");
+                let body = socket.write_all(&vec![0x55; bytes]);
+                // The admission (request 0) reads a few KiB and lets go, which may reset the rest
+                // of this write; every later body is read to the end.
+                if index != 0 {
+                    body.expect("source body");
+                }
             }
         }
         all_tx.send(requests).expect("publish direct lifecycle");
