@@ -22,8 +22,11 @@
 //! into a hand-off: it dismisses this panel and presents the Timing capsule overlay
 //! (`OverlayKind::Timing`, `ui::timing_capsule`) in its place. The row is dim and inert while
 //! subtitles are Off (OK there neither opens the capsule nor closes the panel), and the whole
-//! section is omitted during a transcode, which burns captions into the picture where no
-//! client-side offset can reach.
+//! section is omitted during an ordinary transcode, which burns captions into the picture where
+//! no client-side offset can reach. When the live route is instead a Plex Pass audio-enhancement
+//! Burn specifically (M7), Timing and Color stay visible — dim, with a one-line reason
+//! (`Row::note`) — so the viewer who turned Boost dialog / Normalize loudness on sees why the
+//! control is locked rather than finding it simply gone.
 //!
 //! **Color** is a single cycling row: OK steps `SubtitleTone::LADDER` with wrap and keeps the
 //! panel open ([`TrackOk::Commit`]'s `keep_open`), so a run of presses is felt immediately — and
