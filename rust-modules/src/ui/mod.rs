@@ -464,20 +464,29 @@ pub struct Painter {
     text_recorder: bool,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
-/// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
-/// folded card shadow ([`Painter::tex_carded`]) and the standalone one ([`Painter::focus_shadow`],
-/// the profile chip). Every tile carries a shadow; it *grows* with the pop rather than appearing.
-fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
+/// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted), the alpha lerping
+/// up to the caller's own `focus_a` ceiling ([`theme::CARD_SHADOW`]'s for the art-tile card path,
+/// [`theme::CARD_SHADOW_CHIP_A`] for the chip — the two read different depths, see that constant).
+/// Shared by the folded card shadow ([`Painter::tex_carded`]) and the standalone one
+/// ([`Painter::focus_shadow`], the profile chip). Every tile carries a shadow; it *grows* with the
+/// pop rather than appearing.
+///
+/// The fourth return value, `off_l`, is `off`'s own focus-only leg (uncapped by `f`): the chip's real,
+/// always-offset shadow quad uses `off` (a small nonzero shift even at rest), but the folded card
+/// path's shifted-shadow SDF (`fs_img.frag`) needs a value that is exactly 0 at `f == 0` so a resting
+/// tile's shader takes its unchanged, symmetric path — `f.clamp(0,1) * off_l` at the call site.
+fn card_shadow_params(h: f32, f: f32, focus_a: f32) -> (f32, f32, f32, f32) {
     let f = f.clamp(0.0, 1.0);
     let blur_l = (h * 0.13).clamp(6.0, theme::CARD_SHADOW_BLUR);
-    let off_l = (h * 0.04).clamp(3.0, theme::CARD_SHADOW_DY);
+    let off_l = (h * 0.045).clamp(3.0, theme::CARD_SHADOW_DY);
     let blur_r = (h * 0.05).clamp(3.0, theme::CARD_SHADOW_REST_BLUR);
     let off_r = (h * 0.015).clamp(1.5, theme::CARD_SHADOW_REST_DY);
     let lerp = |a: f32, b: f32| a + (b - a) * f;
     (
         lerp(blur_r, blur_l),
         lerp(off_r, off_l),
-        lerp(theme::CARD_SHADOW_REST_A, theme::CARD_SHADOW[3]),
+        lerp(theme::CARD_SHADOW_REST_A, focus_a),
+        off_l,
     )
 }
 
@@ -777,12 +786,12 @@ impl Painter {
     /// with the pop `f` (0 = resting/close to the shelf, 1 = lifted). Card tiles fold this into their
     /// texture pass via [`tex_carded`](Self::tex_carded) instead; this remains for the non-folded chip.
     pub fn focus_shadow(self, r: Rect, radius: f32, f: f32) {
-        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 6, |data| {
+        if self.declare({ let (b,o,_,_)=card_shadow_params(r.h,f,theme::CARD_SHADOW_CHIP_A); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 6, |data| {
             use frame::backdrop::Value;
             radius.record(data);
             f.record(data);
         }) { return; }
-        let (blur, off, a) = card_shadow_params(r.h, f);
+        let (blur, off, a, _) = card_shadow_params(r.h, f, theme::CARD_SHADOW_CHIP_A);
         self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
     }
     /// The tile-fill colour of the focus edge-sheen (the 1px inset perimeter rim), folded into the
@@ -1037,8 +1046,9 @@ impl Painter {
         )
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
-    /// pass — rim only, no shadow. Used for the profile chip avatar. `uv` as [`tex_uv`](Self::tex_uv).
-    pub fn tex_stroked(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4]) {
+    /// pass — rim only, no shadow — plus the focused tile's lit-glass edge, at the pop `f` (0 at
+    /// rest). Used for the profile chip avatar. `uv` as [`tex_uv`](Self::tex_uv).
+    pub fn tex_stroked(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4], f: f32) {
         if self.declare(r, 13, |data| {
             use frame::backdrop::Value;
             tex.record(data);
@@ -1046,6 +1056,7 @@ impl Painter {
             uv.record(data);
             rad.record(data);
             tint.record(data);
+            f.record(data);
         }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
@@ -1060,15 +1071,18 @@ impl Painter {
             t.as_ptr(),
             theme::CARD_SHEEN_W,
             self.sheen_rim().as_ptr(),
+            f,
         );
     }
     /// The full CARD composite in ONE pass — texture + 1px edge-sheen + the soft drop-shadow that
-    /// grows with the pop `f` (folded via [`gfx::draw_tex_carded`](crate::gfx::draw_tex_carded)). `r` is
-    /// the (already-scaled) card rect; the quad is inflated by the penumbra internally. This is how
+    /// grows AND, past `f == 0`, shifts down with the pop `f` (folded via
+    /// [`gfx::draw_tex_carded`](crate::gfx::draw_tex_carded)) — a lifted tile reads as RISEN, its
+    /// shadow falling below it rather than glowing evenly around it. `r` is the (already-scaled) card
+    /// rect; the quad is inflated by the penumbra AND the downward shift internally. This is how
     /// every art tile gets its resting-and-rising shadow without a separate soft-shadow pass.
     /// `uv` is the window of the texture the card shows ([`tex_uv`](Self::tex_uv)).
     pub fn tex_carded(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4], f: f32) {
-        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 14, |data| {
+        if self.declare({ let (b,o,_,_)=card_shadow_params(r.h,f,theme::CARD_SHADOW[3]); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 14, |data| {
             use frame::backdrop::Value;
             tex.record(data);
             crate::gfx::tex_ledger::revision(tex).record(data);
@@ -1079,9 +1093,13 @@ impl Painter {
         }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
-        let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
+        let (blur, _off, sa, off_l) = card_shadow_params(r.h, f, theme::CARD_SHADOW[3]);
+        // The folded shader shifts its OWN shadow SDF by `dy` (see `fs_img.frag`'s FOCUS note) rather
+        // than reusing `_off`'s small resting baseline: `f`-scaled from 0 so a resting tile (`f == 0`)
+        // passes `dy == 0` and the shader takes its unchanged, symmetric path exactly as before.
+        let dy = f.clamp(0.0, 1.0) * off_l;
         let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
-        let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
+        let pad = blur + dy + 1.0; // inflate for the penumbra + the downward shift (+1 AA margin)
         crate::gfx::draw_tex_carded(
             tex,
             uv,
@@ -1096,6 +1114,8 @@ impl Painter {
             pad,
             blur,
             shcol.as_ptr(),
+            f,
+            dy,
         );
     }
     /// The still specialization composes the label ground with the artwork. A fade or unsupported
@@ -1108,7 +1128,7 @@ impl Painter {
         // Missing artwork and cascaded fades keep the component's ordinary card/ground path.
         if tex == 0 || self.c(theme::TINT_WHITE) != [1.0; 4] || band <= 0.0
             || r.w <= 0.0 || r.h <= 0.0 || rad < 0.5 { return false; }
-        if self.declare({ let (b,o,_) = card_shadow_params(r.h,f);
+        if self.declare({ let (b,o,_,_) = card_shadow_params(r.h,f,theme::CARD_SHADOW[3]);
             Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 22, |data| {
             use frame::backdrop::Value;
             tex.record(data);
@@ -1119,11 +1139,12 @@ impl Painter {
             band.record(data);
             scrim.record(data);
         }) { return true; }
-        let (blur, _, sa) = card_shadow_params(r.h, f);
+        let (blur, _, sa, off_l) = card_shadow_params(r.h, f, theme::CARD_SHADOW[3]);
+        let dy = f.clamp(0.0, 1.0) * off_l; // see `tex_carded`'s own note — 0 exactly at rest
         crate::gfx::draw_tex_carded_still(
             tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, self.c(theme::TINT_WHITE),
-            theme::CARD_SHEEN_W, self.sheen_rim(), blur + 1.0, blur,
-            self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim),
+            theme::CARD_SHEEN_W, self.sheen_rim(), blur + dy + 1.0, blur,
+            self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim), f, dy,
         )
     }
     /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,

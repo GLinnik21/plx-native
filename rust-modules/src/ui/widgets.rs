@@ -2496,7 +2496,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expa
             // the same crop the profile picker's `Art::Thumb` avatars take, so one person's
             // picture is framed alike on the chip and on the picker
             let uv = r.cover_uv(tw, th, crate::ui::Crop::Centre);
-            p.tex_stroked(t, uv, r, d * 0.5, theme::TINT_WHITE);
+            p.tex_stroked(t, uv, r, d * 0.5, theme::TINT_WHITE, e);
             drew = true;
         }
     }

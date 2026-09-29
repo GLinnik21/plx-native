@@ -583,8 +583,11 @@ const MIN_HEADING_RUN: f32 = 48.0;
 
 /// Conservative paint bounds for a complete card, including its shadow and focused label.
 /// The label anchors to the unscaled bottom even during a press, just as `draw_focused` does.
+/// `pad` is inflated uniformly by both the shadow's blur AND its downward offset (rather than only
+/// the bottom edge) — the same conservative, symmetric inflation `Painter::tex_carded`'s own quad
+/// uses, so a shared bound can stay one `inset` call.
 fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
-    let pad = theme::CARD_SHADOW_BLUR + 1.0;
+    let pad = theme::CARD_SHADOW_BLUR + theme::CARD_SHADOW_DY + 1.0;
     let mut bounds = rect.inset(-pad);
     if labelled {
         let label_bottom = rect.y + rect.h * 0.5 + rect.h / scale * 0.5 + UNDER_LABEL_H;
@@ -1427,7 +1430,10 @@ mod tests {
         let far_above = super::Rect::new(100.0, -500.0, 400.0, 220.0);
         assert!(!super::paint_visible(p, far_above, 0.94, true));
         assert!(super::paint_visible(p.translate(0.0, 400.0), far_above, 0.94, true));
-        let below = super::Rect::new(100.0, super::SCR_H + 32.0, 400.0, 220.0);
+        // Past `theme::CARD_SHADOW_BLUR + theme::CARD_SHADOW_DY + 1.0`'s pad (the risen shadow's own
+        // worst case), so this stays a genuine off-screen rect rather than one the bigger pad pulls
+        // back into view.
+        let below = super::Rect::new(100.0, super::SCR_H + 200.0, 400.0, 220.0);
         assert!(!super::paint_visible(p, below, 1.0, true));
     }
 

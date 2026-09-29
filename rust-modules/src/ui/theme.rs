@@ -1331,6 +1331,44 @@ pub const CARD_SHEEN: [f32; 4] = with_a(WHITE, 0.22);
 /// Stroke width (px) of the perimeter edge-highlight.
 pub const CARD_SHEEN_W: f32 = 1.0;
 
+// ── THE FOCUSED TILE'S LIT-GLASS EDGE (ArtTile component, Claude Design) ────────────────────────
+// A FOCUSED art tile only — fades in with the focus pop `f` (0 at rest, 1 fully focused), folded
+// into the same `fs_img.frag` pass as the resting sheen above rather than a second draw. Three
+// layers, white light only, never a coloured ring or an outset border. The shader carries the
+// pixel geometry as literals (it cannot read a Rust `const`); the numbers below are that shader's
+// documentation copy, and `gfx.rs`'s `image_focus_geometry_matches_the_shader_literals` test pins
+// the two together so one cannot drift from the other.
+/// RIM inner glow (`--card-glass-rim-focus`), base layer: `inset 0 0 12px 0 white/.08`, carried
+/// inward from the whole perimeter over this many px.
+pub const CARD_GLOW_A: f32 = 0.08;
+pub const CARD_GLOW_BAND_PX: f32 = 12.0;
+/// RIM inner glow, TOP layer: `inset 0 4px 8px -4px white/.12` — a brighter, tighter band hugging
+/// the top edge only (one light, from above — the same direction every card shadow falls in).
+pub const CARD_GLOW_TOP_A: f32 = 0.12;
+pub const CARD_GLOW_TOP_PX: f32 = 6.0;
+/// RIM inner glow, BOTTOM layer: `inset 0 -4px 8px -5px white/.06` — fainter, tighter, on the
+/// bottom edge (the light's own falloff reaching the far side of the tile).
+pub const CARD_GLOW_BOT_A: f32 = 0.06;
+pub const CARD_GLOW_BOT_PX: f32 = 4.0;
+/// GLARE (`--card-glass-glare-focus`): the top tab bar's own glass crown. The resting 1px
+/// perimeter sheen ([`CARD_SHEEN`], .22) is lifted to [`CARD_GLARE_A`] for the top `CARD_GLARE_PX`
+/// of the tile height, easing linearly back to the plain sheen by `CARD_GLARE_EASE` of the height —
+/// `linear-gradient(180deg, card_glare_a 0, card_glare_a 12px, transparent 16%)` masked to the 1px
+/// ring. `CARD_GLARE_EASE` keeps the glare on the crown only, rather than running down the sides.
+pub const CARD_GLARE_PX: f32 = 12.0;
+pub const CARD_GLARE_EASE: f32 = 0.16;
+/// The crown's own target alpha — brighter than [`GLASS_RIM_LIGHT`] (.28) because a 1px hairline
+/// over bright artwork needs more contrast than the same hairline over the dark glass track that
+/// [`GLASS_RIM_LIGHT`] was tuned for.
+pub const CARD_GLARE_A: f32 = 0.45;
+/// GLOSS (`--card-glass-gloss-focus`): `linear-gradient(160deg, white/.14 0%, transparent 34%)`
+/// over the artwork — a soft top-left sheen on the face, composited under the RIM/GLARE above it.
+pub const CARD_GLOSS_A: f32 = 0.14;
+pub const CARD_GLOSS_FADE: f32 = 0.34;
+/// The 160deg CSS gradient direction as a unit vector in card-local (x-right, y-down) space:
+/// `(sin 160°, -cos 160°)` — mostly down, slightly left-to-right. `sin160 = sin20`, `-cos160 = cos20`.
+pub const CARD_GLOSS_DIR: [f32; 2] = [0.342_020_14, 0.939_692_6];
+
 // ── THE CAPSULE OUTLINE ──────────────────────────────────────────────────────
 // The two FREE numbers of the control capsule's shape; everything else about it is solved from
 // them and the box (`ui::pill`, and `tokens/shape.css` for the full construction). A capsule here
@@ -1350,19 +1388,32 @@ pub const PILL_END_R: f32 = 0.492;
 pub const PILL_BLEND_SLACK: f32 = 0.86;
 /// Drop-shadow ink under a raised card — pure black (the design's `rgba(0,0,0,…)`), alpha supplied per
 /// call (× the resting→lifted focus ramp). Only the alpha/rgb matter for the folded card shadow (the
-/// rgb is used by the chip's standalone shadow); its own token (not `scrim_black`) so it can be tuned alone.
-pub const CARD_SHADOW: [f32; 4] = with_a(BLACK, 0.40);
-/// Focused (LIFTED) card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the
-/// tile-scaled values. Kept subtle: on the `SURFACE_APP` gray shelf a tight, close shadow already
-/// reads, so this is a gentle lift, not the design's oversized `0 30px 70px` pool.
-pub const CARD_SHADOW_BLUR: f32 = 30.0;
-pub const CARD_SHADOW_DY: f32 = 12.0;
+/// rgb is used by the chip's standalone shadow); its own token (not `scrim_black`) so it can be tuned
+/// alone. This is the ART TILE's focused ceiling (`0 18px 44px black .50`, [`CARD_SHADOW_BLUR`]/
+/// [`CARD_SHADOW_DY`]/this alpha) — the profile chip's own real, always-offset shadow (never a folded
+/// card composite) keeps a shallower [`CARD_SHADOW_CHIP_A`] instead, since chip-sized art never
+/// approaches the blur/offset ceilings that would otherwise cap its own alpha too.
+pub const CARD_SHADOW: [f32; 4] = with_a(BLACK, 0.50);
+/// The profile chip's own focused-shadow alpha ceiling ([`Painter::focus_shadow`](crate::ui::Painter::focus_shadow)) —
+/// kept at the art tile's PRE-lift depth (.40) because the chip's real, always-offset shadow was
+/// tuned at that depth and the tile's own bump to .50 answers a bigger, further-falling shadow the
+/// chip never draws.
+pub const CARD_SHADOW_CHIP_A: f32 = 0.40;
+/// Focused (RISEN) card drop-shadow penumbra (px) and downward offset (px) — the CAPS on the
+/// tile-scaled values, reached by a large poster. A lifted tile's shadow falls BELOW it, not around
+/// it evenly — `0 18px 44px` — reading as a card actually risen off the shelf rather than glowing in
+/// place.
+pub const CARD_SHADOW_BLUR: f32 = 44.0;
+pub const CARD_SHADOW_DY: f32 = 18.0;
 /// RESTING (unfocused) drop-shadow caps — every tile carries a small, tight shadow so it sits CLOSE
-/// to the shelf; on focus the blur/offset/alpha lerp UP to the lifted values above, so the tile reads
-/// as rising off the background. Caps on the tile-scaled resting values.
+/// to the shelf; on focus the blur/alpha lerp UP to the lifted values above (the folded card
+/// composite's own downward shift is computed separately, see `fs_img.frag`'s shadow SDF, and is
+/// exactly 0 at this resting end so a resting tile's shader takes its unchanged, symmetric path).
+/// Caps on the tile-scaled resting values.
 pub const CARD_SHADOW_REST_BLUR: f32 = 11.0;
 pub const CARD_SHADOW_REST_DY: f32 = 4.0;
-/// Resting shadow ink alpha (unfocused); lerps up to [`CARD_SHADOW`]'s alpha on focus.
+/// Resting shadow ink alpha (unfocused); lerps up to the caller's own focused alpha ceiling
+/// ([`CARD_SHADOW`]'s for the art tile, [`CARD_SHADOW_CHIP_A`] for the chip).
 pub const CARD_SHADOW_REST_A: f32 = 0.34;
 
 // ── The lift under a TRANSLUCENT panel — `widgets::text_block_highlight`'s 7% prose wash, the

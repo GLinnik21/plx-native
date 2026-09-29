@@ -1027,6 +1027,12 @@ mod tests {
                 let focus = if state >= 4 { 0.5 } else { 0.0 };
                 let band = if state >= 5 { 90.0 } else { 80.0 };
                 let scrim = crate::ui::theme::scrim(if state >= 6 { 0.8 } else { 0.7 });
+                // `declare()` returns true here for a reason unrelated to fusion eligibility:
+                // `discover(sources.clone())` keeps this whole block inside a DISCOVERY walk, where
+                // `Painter::declare` always short-circuits true without ever reaching
+                // `gfx::draw_tex_carded_still` (see `declare`'s own `!frame::backdrop::discovering()`
+                // guard) — so this assertion never actually exercises the `f > 0.0` fusion refusal
+                // added alongside `FOCUS_IMAGE`; it is purely a discovery-tracking smoke test.
                 assert!(p.tex_carded_still(tex, uv, rect(0.0), rad, focus, band, scrim));
                 declare_glass(p, rect(0.0));
             }

@@ -136,6 +136,16 @@ const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
 const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
 const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n");
+/// The FOCUSED-tile specialization: the lit-glass edge + risen shadow, in their own program rather
+/// than a branch every plain IPROG draw (resting cards, glyphs, blur reductions, `field_kick`,
+/// `FrameCache`) pays for. A TV A/B measured real backpressure from the bigger program running on
+/// EVERY card even with nothing focused — Midgard's per-thread tiler flattens the extra uniform
+/// branches into selects and the `v_gloss` varying load costs something on every fragment
+/// regardless of `u_focus.x`. [`draw_tex_impl`] only ever reaches for this when a draw is actually
+/// focused or risen (`focus > 0.0 || dy > 0.0` — at most one card on screen), falling back to
+/// [`IPROG`] with the plain look if it fails to link, same as [`STILL_IMAGE`]'s own fallback.
+const VS_FOCUS: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_FOCUS\n");
+const FS_FOCUS: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_FOCUS\n");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 /// The wash with its photograph dissolved into it (`draw_art_wash`): dithered, because the wash it
 /// carries always dithers, over `vs_ambient.vert`'s field mesh so its colour is the wash's own
@@ -615,6 +625,7 @@ static mut IL_RIMW: c_int = 0;
 static mut IL_RIMCOL: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
+static mut IL_FOCUS: c_int = 0;
 /// **The UNDERLAY FIELD program** (`shaders/fs_field.frag` over `vs_src.vert`) and its uniforms;
 /// 0 when the link failed, in which case [`draw_field`] draws nothing and its caller falls back to
 /// the flat rect it would otherwise have drawn.
@@ -642,10 +653,13 @@ static mut FP_DITHER: c_int = 0;
 #[derive(Clone, Copy)]
 struct ImageUniforms {
     rect: c_int, tint: c_int, uvrect: c_int, card: c_int, rimw: c_int,
-    rimcol: c_int, shinv: c_int, shcol: c_int,
+    rimcol: c_int, shinv: c_int, shcol: c_int, focus: c_int,
 }
 // Optional still specialization; the ordinary image shader remains the fallback.
 static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
+/// Optional FOCUSED-card specialization ([`VS_FOCUS`]/[`FS_FOCUS`]) — [`IPROG`] remains the
+/// fallback (the plain look, same as before this program existed) if this fails to link.
+static mut FOCUS_IMAGE: Option<(c_uint, ImageUniforms)> = None;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -1793,6 +1807,7 @@ pub(crate) fn init_image() {
         IL_RIMCOL = glGetUniformLocation(IPROG, c"u_rimcol".as_ptr());
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
+        IL_FOCUS = glGetUniformLocation(IPROG, c"u_focus".as_ptr());
         // Set this program's constant uniforms once (per-program state): the fixed screen size
         // and sampler unit 0. draw_tex_impl no longer re-sends them per quad.
         use_prog(IPROG);
@@ -1804,7 +1819,7 @@ pub(crate) fn init_image() {
             let uniforms = ImageUniforms {
                 rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
                 card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
-                shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"),
+                shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
             };
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
@@ -1813,6 +1828,22 @@ pub(crate) fn init_image() {
         });
         if std::ptr::addr_of!(STILL_IMAGE).read().is_none() {
             log("still image prog unavailable — using separate artwork scrim");
+        }
+
+        FOCUS_IMAGE = link_optional_program(VS_FOCUS.as_ptr(), FS_FOCUS.as_ptr()).map(|program| {
+            let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+            let uniforms = ImageUniforms {
+                rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
+                card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
+                shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
+            };
+            use_prog(program);
+            glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            (program, uniforms)
+        });
+        if std::ptr::addr_of!(FOCUS_IMAGE).read().is_none() {
+            log("focus image prog unavailable — focused cards keep the plain look");
         }
 
         ART_WASH = link_optional_program(VS_ART_WASH.as_ptr(), FS_ART_WASH.as_ptr()).map(|prog| {
@@ -2228,21 +2259,28 @@ pub(crate) fn delete_tex(tex: c_uint) {
     }
 }
 
-/// The card-composite draw. `(x,y,w,h)` is the CARD rect; the quad is inflated by `pad` so the shadow
-/// penumbra fits, and `FS_IMG` remaps the texture back to the card. `rimw`/`rimcol` = the 1px edge
-/// sheen; `pad`/`shblur`/`shcol` = the soft (symmetric) drop-shadow (all zero ⇒ a plain rounded texture).
-/// The UV sub-rect `(offset.xy, scale.zw)` for a quad inflated by `pad` around a `w`×`h` card —
-/// i.e. "map the texture back onto the card, not onto the shadow ring".
+/// The card-composite draw. `(x,y,w,h)` is the CARD rect; the quad is inflated by `pad` (more below
+/// once `dy`>0 — see [`draw_tex_impl`]) so the shadow penumbra fits, and `FS_IMG` remaps the texture
+/// back to the card. `rimw`/`rimcol` = the 1px edge sheen; `pad`/`shblur`/`shcol` = the soft
+/// drop-shadow (all zero ⇒ a plain rounded texture).
+/// The UV sub-rect `(offset.xy, scale.zw)` that maps a quad — inflated by `left`/`top` on those two
+/// edges and sized `qw`×`qh` overall — back onto its `w`×`h` card, i.e. "map the texture onto the
+/// card, not onto the shadow ring around it". `left`/`top` need not be half of `qw - w`/`qh - h`:
+/// that is only the symmetric case (every caller before the risen shadow, and still every side but
+/// the vertical one today).
 ///
 /// Pure, and split out because it is the identity `vs_img.vert` used to hard-code as a scale about
-/// 0.5: `(a_pos - 0.5) * s + 0.5` is `a_pos * s + (0.5 - 0.5 * s)`. Keeping the algebra here (with
-/// a test) is what let the vertex shader take a general offset for [`draw_blur_backdrop`] without
-/// anyone having to re-derive the card path's numbers.
+/// 0.5: `(a_pos - 0.5) * s + 0.5` is `a_pos * s + (0.5 - 0.5 * s)`, the symmetric case's own
+/// `offset = -pad/size`. Keeping the algebra here (with a test) is what let the vertex shader take
+/// a general offset for [`draw_blur_backdrop`] without anyone having to re-derive the card path's
+/// numbers, and what now lets the shadow's asymmetric inflation reuse the exact same derivation.
 #[inline]
-fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
+fn uv_rect_padded(w: f32, h: f32, left: f32, top: f32, qw: f32, qh: f32) -> [f32; 4] {
     let sx = if w > 0.0 { qw / w } else { 1.0 };
     let sy = if h > 0.0 { qh / h } else { 1.0 };
-    [0.5 - 0.5 * sx, 0.5 - 0.5 * sy, sx, sy]
+    let ox = if w > 0.0 { -left / w } else { 0.0 };
+    let oy = if h > 0.0 { -top / h } else { 0.0 };
+    [ox, oy, sx, sy]
 }
 
 /// The whole texture as a UV window `(offset.xy, scale.zw)` — the crop every textured draw took
@@ -2269,6 +2307,28 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
     [half_w - radius, half_h - radius, radius, (radius - 2.0).min(0.0)]
 }
 
+/// `u_focus`, the focused tile's lit-glass edge AND its risen shadow (see `fs_img.frag`'s FOCUS
+/// note): `(f, 1/gloss-gradient-length, shadow y-offset px)`. The gradient length is the card's own
+/// `w×h` box projected onto the 160deg CSS direction ([`crate::ui::theme::CARD_GLOSS_DIR`]) — the
+/// one CPU-folded term the shader cannot derive from its already-packed `u_card`, since that only
+/// carries the HALF-size minus the radius. `dy` is the caller's own downward shadow shift (0 for
+/// every draw but a focused card's — [`crate::ui::Painter::tex_carded`] and its still specialization
+/// are the only nonzero callers),
+/// carried through unconditionally rather than folded into an expression, since the shader gates its
+/// own shifted-SDF branch on it directly (`u_focus.z > 0.0`). `f <= 0.0` (the whole card except at
+/// most one on screen) makes the shader take the identical path it always has; the divide only ever
+/// runs once per draw, never per fragment, and a degenerate `w*h == 0` box (never a real tile) leaves
+/// it at 0 rather than `inf`.
+fn image_focus_geometry(focus: f32, half_w: f32, half_h: f32, dy: f32) -> [f32; 3] {
+    let f = focus.max(0.0);
+    if f <= 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    use crate::ui::theme::CARD_GLOSS_DIR;
+    let grad_len = half_w * 2.0 * CARD_GLOSS_DIR[0] + half_h * 2.0 * CARD_GLOSS_DIR[1];
+    [f, if grad_len > 0.0 { 1.0 / grad_len } else { 0.0 }, dy.max(0.0)]
+}
+
 /// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
 /// inflation included), `uv` the source sub-rect it samples, `ch` the CARD half-size the SDF is
 /// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
@@ -2290,6 +2350,8 @@ fn draw_tex_core(
     chh: f32,
     shinv: f32,
     shcol: *const f32,
+    focus: f32,
+    dy: f32,
     image: Option<(c_uint, ImageUniforms)>,
 ) {
     if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
@@ -2298,7 +2360,7 @@ fn draw_tex_core(
     unsafe {
         let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
             rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
-            rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL,
+            rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL, focus: IL_FOCUS,
         }));
         use_prog(program); // fixed screen size and sampler unit are initialized per program
         if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
@@ -2308,10 +2370,22 @@ fn draw_tex_core(
         glUniform4fv(loc.rimcol, 1, rimcol);
         glUniform1f(loc.shinv, shinv);
         glUniform4fv(loc.shcol, 1, shcol);
+        if loc.focus >= 0 {
+            let uf = image_focus_geometry(focus, chw, chh, dy);
+            glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
+        }
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(loc.rect, qx, qy, qw, qh);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+}
+
+/// Whether a draw is focused or risen enough to need [`FOCUS_IMAGE`] rather than the plain
+/// program — the entire reason that split exists, so it is its own named, tested predicate rather
+/// than an inline `||` at the one call site.
+#[inline]
+fn wants_focus_program(focus: f32, dy: f32) -> bool {
+    focus > 0.0 || dy.max(0.0) > 0.0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2329,16 +2403,33 @@ fn draw_tex_impl(
     pad: f32,
     shblur: f32,
     shcol: *const f32,
+    focus: f32,
+    dy: f32,
     image: Option<(c_uint, ImageUniforms)>,
 ) {
     let class = if pad > 0.0 { Class::Card } else { Class::Image };
-    let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
-                                                                             // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
-                                                                             // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
+    // The risen shadow's inflation is ASYMMETRIC once `dy`>0: `pad` (the caller's `blur+dy+1`, see
+    // `ui::Painter::tex_carded`) is already exactly the BOTTOM figure, so the sides only need
+    // `blur+1` (`pad - dy`) and the top only `blur-dy+1` (`pad - 2*dy`) — proven never negative
+    // because `card_shadow_params` never lets `blur < dy`. `dy == 0` collapses all three back to
+    // plain symmetric `pad`, so a resting card's quad/UV are bit-for-bit what they were before this
+    // shadow shape existed.
+    let dy = dy.max(0.0);
+    let (sides, top, bottom) = (pad - dy, pad - 2.0 * dy, pad);
+    let (qx, qy, qw, qh) = (x - sides, y - top, w + 2.0 * sides, h + top + bottom);
+    // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
+    // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
     // …then the picture's own crop on top: the card maps onto `crop`'s window of the texture,
     // never onto all of it unless that is what `crop` says (a cover crop keeps the aspect).
-    let uv = uv_compose(crop, uv_rect_padded(w, h, qw, qh));
+    let uv = uv_compose(crop, uv_rect_padded(w, h, sides, top, qw, qh));
     let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
+    // An explicit `image` override (the still-fusion program) always wins — it is a whole different
+    // specialization, never the plain/focus choice below. Otherwise, only a draw that is actually
+    // focused or risen reaches for `FOCUS_IMAGE`: every resting card, glyph, blur reduction,
+    // `field_kick` and `FrameCache` quad keeps drawing through the smaller `IPROG` (via `None`,
+    // which `draw_tex_core` already defaults to `IPROG`) exactly as before this program existed —
+    // see `FOCUS_IMAGE`'s own comment for why that split exists.
+    let image = image.or_else(|| if wants_focus_program(focus, dy) { unsafe { FOCUS_IMAGE } } else { None });
     draw_tex_core(
         class,
         tex,
@@ -2355,6 +2446,8 @@ fn draw_tex_impl(
         h * 0.5,
         shinv,
         shcol,
+        focus,
+        dy,
         image,
     );
 }
@@ -2392,6 +2485,8 @@ pub(crate) fn draw_tex_uv(
         0.0,
         0.0,
         NO_RIM.as_ptr(),
+        0.0,
+        0.0,
         None,
     );
 }
@@ -2626,6 +2721,8 @@ impl FrameCache {
             SCR_H * 0.5,
             0.0,
             NO_RIM.as_ptr(),
+            0.0,
+            0.0,
             None,
         );
         set_page_frozen(was);
@@ -2638,8 +2735,9 @@ fn frame_cache_uv() -> [f32; 4] {
     [0.0, 1.0, 1.0, -1.0]
 }
 
-/// [`draw_tex`] plus the focus edge-sheen baked into the same pass (rim only, no shadow). Used for the
-/// profile chip avatar.
+/// [`draw_tex`] plus the focus edge-sheen baked into the same pass (rim only, no shadow), and now
+/// the same lit-glass edge every other tile gets: `f` is the caller's pop factor (0 at rest). Used
+/// for the profile chip avatar.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_stroked(
     tex: c_uint,
@@ -2652,6 +2750,7 @@ pub(crate) fn draw_tex_stroked(
     tint: *const f32,
     rimw: f32,
     rimcol: *const f32,
+    f: f32,
 ) {
     draw_tex_impl(
         tex,
@@ -2667,13 +2766,17 @@ pub(crate) fn draw_tex_stroked(
         0.0,
         0.0,
         NO_RIM.as_ptr(),
+        f,
+        0.0,
         None,
     );
 }
 
-/// The full card composite: texture + edge sheen (`rimw`/`rimcol`) + soft symmetric drop-shadow
-/// (`pad`/`shblur`/`shcol`), one pass. Posters and circles use this entry point; episode stills
-/// can also fold their label ground through [`draw_tex_carded_still`]. Both share the compositor.
+/// The full card composite: texture + edge sheen (`rimw`/`rimcol`) + soft drop-shadow
+/// (`pad`/`shblur`/`shcol`, shifted down by `dy` past `f == 0` — see `fs_img.frag`'s FOCUS note) +
+/// the focused tile's lit-glass edge (`f`, the same pop factor the shadow already grows with), one
+/// pass. Posters and circles use this entry point; episode stills can also fold their label ground
+/// through [`draw_tex_carded_still`]. Both share the compositor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_carded(
     tex: c_uint,
@@ -2689,20 +2792,27 @@ pub(crate) fn draw_tex_carded(
     pad: f32,
     shblur: f32,
     shcol: *const f32,
+    f: f32,
+    dy: f32,
 ) {
-    note_card(x, y, w, h, pad);
-    draw_tex_impl(tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol, None);
+    note_card(x, y, w, h, pad, dy);
+    draw_tex_impl(tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol, f, dy, None);
 }
 
-fn note_card(x: f32, y: f32, w: f32, h: f32, pad: f32) {
+/// `pad`/`dy` mirror [`draw_tex_impl`]'s own asymmetric-inflation formula so this diagnostic checks
+/// the actual drawn edges, not the (bigger, symmetric) `pad` alone — otherwise a risen shadow whose
+/// narrower top/side margins in fact clear the screen would still be counted as a cull-miss.
+fn note_card(x: f32, y: f32, w: f32, h: f32, pad: f32, dy: f32) {
     // Not during a blur source pass: these are read once a frame by the framedrop tool as "cards
     // the panel composited", and a second page draw would report twice the real number.
     if !blur_source_pass() {
         CARD_CT.fetch_add(1, Ordering::Relaxed);
     }
+    let dy = dy.max(0.0);
+    let (sides, top, bottom) = (pad - dy, pad - 2.0 * dy, pad);
     // the inflated (shadow) quad crossing a screen edge ⇒ some shadow fragments are drawn off-screen
     // (viewport-clipped, but still rasterized). Counts partial+full; fully-off-screen ⇒ a cull miss.
-    if x - pad < 0.0 || y - pad < 0.0 || x + w + pad > SCR_W || y + h + pad > SCR_H {
+    if x - sides < 0.0 || y - top < 0.0 || x + w + sides > SCR_W || y + h + bottom > SCR_H {
         if !blur_source_pass() {
             CARD_OFF.fetch_add(1, Ordering::Relaxed);
         }
@@ -2733,10 +2843,17 @@ impl Drop for StillBlend {
 pub(crate) fn draw_tex_carded_still(
     tex: c_uint, crop: [f32; 4], x: f32, y: f32, w: f32, h: f32, radius: f32, tint: [f32; 4],
     rimw: f32, rimcol: [f32; 4], pad: f32, shblur: f32, shcol: [f32; 4],
-    band: f32, scrim: [f32; 4],
+    band: f32, scrim: [f32; 4], f: f32, dy: f32,
 ) -> bool {
     let image = unsafe { STILL_IMAGE };
-    if !still_fusion_eligible(tex, tint, image.is_some()) || band <= 0.0 || w <= 0.0 || h <= 0.0 || radius < 0.5
+    // `STILL_IMAGE` (`VS_STILL`/`FS_STILL`) never carries `PLX_FOCUS` — only `PLX_STILL_GROUND` —
+    // so it has no lit-glass/risen-shadow code at all, on purpose: a THIRD program crossing focus
+    // with still-fusion was rejected in favour of two passes for the (at most one) card that is
+    // both. `f > 0.0` therefore returns false here so the caller keeps its ordinary card path
+    // (which reaches for `FOCUS_IMAGE`) plus a separate still-ground pass, rather than silently
+    // drawing a focused still with no glow/shadow at all.
+    if !still_fusion_eligible(tex, tint, image.is_some()) || band <= 0.0 || w <= 0.0 || h <= 0.0
+        || radius < 0.5 || f > 0.0
         || crate::ui::overdraw::masked(Class::Card) || crate::ui::overdraw::masked(Class::Grad) {
         return false;
     }
@@ -2747,10 +2864,10 @@ pub(crate) fn draw_tex_carded_still(
         glUniform2f(loc_band, 1.0 / band, h * 0.5 - band);
         glUniform4fv(loc_col, 1, scrim.as_ptr());
     }
-    note_card(x, y, w, h, pad);
+    note_card(x, y, w, h, pad, dy);
     let _blend = StillBlend::enter();
     draw_tex_impl(tex, crop, x, y, w, h, radius, tint.as_ptr(), rimw, rimcol.as_ptr(), pad,
-        shblur, shcol.as_ptr(), Some((program, uniforms)));
+        shblur, shcol.as_ptr(), f, dy, Some((program, uniforms)));
     true
 }
 
@@ -4072,6 +4189,8 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                     0.0,
                     0.0,
                     NO_RIM.as_ptr(),
+                    0.0,
+                    0.0,
                     None,
                 );
             });
@@ -6015,6 +6134,8 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
                 0.0,
                 0.0,
                 NO_RIM.as_ptr(),
+                0.0,
+                0.0,
                 None,
             );
             prev = fbo_tex_of(c, fbo);
@@ -6718,6 +6839,185 @@ mod tests {
         assert!((g[0] * g[1]) / (210.0 * 118.0) > 0.80, "shortcut must cover the broad interior");
     }
 
+    /// `fs_img.frag`'s FOCUS literals can't read a Rust `const` (GLSL has no such thing), so this
+    /// pins the shader's own numbers against `theme.rs`'s `CARD_GLOW_*`/`CARD_GLOSS_*` documentation
+    /// copies — the ones the shader keeps as plain distances/fractions rather than folding into an
+    /// algebraic form (unlike `CARD_GLARE_EASE`, which the shader halves into `chh * 0.32` rather
+    /// than `(2*chh) * 0.16`; that transform is checked numerically below instead of by text).
+    #[test]
+    fn image_focus_geometry_matches_the_shader_literals() {
+        use crate::ui::theme::{
+            CARD_GLARE_A, CARD_GLARE_EASE, CARD_GLARE_PX, CARD_GLOSS_A, CARD_GLOSS_DIR,
+            CARD_GLOSS_FADE, CARD_GLOW_A, CARD_GLOW_BAND_PX, CARD_GLOW_BOT_A, CARD_GLOW_BOT_PX,
+            CARD_GLOW_TOP_A, CARD_GLOW_TOP_PX,
+        };
+        // `shader_code` returns the raw, un-preprocessed file text (it strips comment-only lines,
+        // nothing else), so the text inside a `#ifdef PLX_FOCUS` block is present whichever of
+        // `FS_IMG`/`FS_FOCUS` (same file, different prepended `#define`) is read here — reading the
+        // `FS_FOCUS`/`VS_FOCUS` constants just documents which program actually compiles this code.
+        // `an_unfocused_program_carries_none_of_the_focus_code` below is the test that checks what
+        // the plain program's PREPROCESSED output actually contains.
+        let code = shader_code(FS_FOCUS);
+        let vs = shader_code(VS_FOCUS);
+        assert!(code.contains("uniform highp vec3 u_focus;"));
+        assert!(vs.contains("uniform highp vec3 u_focus;"), "the vertex shader shares the uniform");
+        // The risen-shadow shift now lives in the QUAD's own asymmetric inflation (gfx.rs's
+        // `draw_tex_impl`), not a second SDF query point here: the CARD's shape math corrects `v_p`
+        // back up by `u_focus.z`, and the shadow's own `dShadow` reads raw `v_p` directly.
+        assert!(code.contains("vec2(v_p.x, v_p.y + u_focus.z)"));
+        assert!(code.contains("if (u_focus.z > 0.0)"));
+        // GLOSS's linear projection moved to the vertex shader as `v_gloss`; the fragment shader
+        // only ever reads the interpolated varying now.
+        assert!(code.contains("varying highp float v_gloss;"));
+        assert!(vs.contains("varying highp float v_gloss;"));
+        for lit in [
+            format!("/ {CARD_GLOW_BAND_PX:.1}"),
+            format!("* {CARD_GLOW_A}"),
+            format!("* {CARD_GLOW_TOP_A}"),
+            format!("/ {CARD_GLOW_TOP_PX:.1}"),
+            format!("* {CARD_GLOW_BOT_A}"),
+            format!("/ {CARD_GLOW_BOT_PX:.1}"),
+            format!("- {CARD_GLARE_PX:.1}"),
+            format!("{CARD_GLARE_A} - u_rimcol.a"),
+            format!("* {CARD_GLOSS_A}"),
+            format!("/ {CARD_GLOSS_FADE}"),
+        ] {
+            assert!(code.contains(&lit), "fs_img.frag is missing `{lit}` — it has drifted from theme.rs");
+        }
+        // `chh * 0.32` is `(2*chh) * CARD_GLARE_EASE`: the shader folds the *2 into the one constant
+        // it multiplies `chh` (the CPU-supplied half-height) by, rather than materializing the full
+        // height first. `glareZone` is that same product, guarded against a degenerate tiny tile.
+        assert!(code.contains("chh * 0.32"));
+        assert!((2.0 * CARD_GLARE_EASE - 0.32).abs() < 1e-6);
+        // The 160deg CSS gradient direction, baked as the literals `0.34202014`/`0.93969262` — now
+        // in the vertex shader, where the gloss projection `t`/`v_gloss` is computed.
+        let rad = 160.0_f32.to_radians();
+        assert!((CARD_GLOSS_DIR[0] - rad.sin()).abs() < 1e-5);
+        assert!((CARD_GLOSS_DIR[1] - (-rad.cos())).abs() < 1e-5);
+        assert!(vs.contains("0.34202014") && vs.contains("0.93969262"));
+        assert!(!code.contains("0.34202014"), "the projection must not also run per-fragment");
+
+        // f <= 0 folds to the identity uniform — the shader's whole-branch skip for a resting tile.
+        // This holds even with a nonzero `dy` in hand: `card_shadow_params`'s own offset leg is
+        // itself `f`-scaled from 0 (see `ui::mod`'s `tex_carded`), so a caller can never actually
+        // reach this with `f <= 0` and `dy > 0` — but the geometry fn's own contract still drops it.
+        assert_eq!(image_focus_geometry(0.0, 100.0, 60.0, 5.0), [0.0, 0.0, 0.0]);
+        assert_eq!(image_focus_geometry(-1.0, 100.0, 60.0, 5.0), [0.0, 0.0, 0.0]);
+        // A degenerate box must not divide by zero.
+        assert_eq!(image_focus_geometry(1.0, 0.0, 0.0, 0.0), [1.0, 0.0, 0.0]);
+        // Otherwise f passes through, the gradient length is the box's own w,h dotted with the gloss
+        // direction (the one term the shader cannot derive from its packed `u_card`), and `dy` is
+        // carried straight into the third lane (clamped against a negative shift, never legitimate).
+        let uf = image_focus_geometry(0.6, 100.0, 60.0, 9.0);
+        assert!((uf[0] - 0.6).abs() < 1e-6);
+        let grad_len = 200.0 * CARD_GLOSS_DIR[0] + 120.0 * CARD_GLOSS_DIR[1];
+        assert!((uf[1] - 1.0 / grad_len).abs() < 1e-6);
+        assert!((uf[2] - 9.0).abs() < 1e-6);
+        assert_eq!(image_focus_geometry(0.6, 100.0, 60.0, -3.0)[2], 0.0);
+    }
+
+    /// A tiny, single-purpose preprocessor: `#ifdef`/`#ifndef`/`#else`/`#endif` only (no `#elif`,
+    /// no macro-in-body substitution — neither shader here uses either), just enough to answer
+    /// "what does the GPU driver actually compile for this macro set", which `shader_code`
+    /// deliberately does NOT answer (it returns the raw file so a literal-pinning test can find text
+    /// inside either branch, regardless of which of `FS_IMG`/`FS_STILL`/`FS_FOCUS` reads it).
+    fn preprocess(src: &str, defined: &[&str]) -> String {
+        struct Frame { parent_live: bool, if_true: bool, in_else: bool }
+        fn live(stack: &[Frame]) -> bool {
+            stack.last().map_or(true, |f| {
+                f.parent_live && if f.in_else { !f.if_true } else { f.if_true }
+            })
+        }
+        let mut out = String::new();
+        let mut stack: Vec<Frame> = Vec::new();
+        for line in src.lines() {
+            let t = line.trim();
+            // A real GLSL preprocessor leaves comments alone too, but a header comment mentioning
+            // `u_focus` in PROSE (as this very file's own module doc does, outside any `#ifdef`)
+            // is not the thing this test exists to catch — strip full-line `//` comments first, the
+            // same filter `shader_code` applies, so only actual GLSL text is inspected below.
+            if t.starts_with("//") {
+                continue;
+            }
+            if let Some(name) = t.strip_prefix("#ifdef ") {
+                let parent_live = live(&stack);
+                stack.push(Frame { parent_live, if_true: defined.contains(&name.trim()), in_else: false });
+            } else if let Some(name) = t.strip_prefix("#ifndef ") {
+                let parent_live = live(&stack);
+                stack.push(Frame { parent_live, if_true: !defined.contains(&name.trim()), in_else: false });
+            } else if t == "#else" {
+                if let Some(f) = stack.last_mut() { f.in_else = true; }
+            } else if t == "#endif" {
+                stack.pop();
+            } else if live(&stack) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// The whole reason [`FOCUS_IMAGE`] exists: a resting card, a glyph, a blur reduction, a
+    /// `field_kick`, a `FrameCache` quad — every draw through the PLAIN program — must compile and
+    /// run EXACTLY what main shipped before the lit-glass/risen-shadow feature, with no trace of
+    /// `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't close where intended.
+    /// Preprocessing with `PLX_FOCUS` absent (mirroring what the GL driver does for `FS_IMG`/
+    /// `VS_IMG`, `FS_STILL`/`VS_STILL`) and grepping the result is what actually answers that,
+    /// unlike a raw-text search against `shader_code`.
+    #[test]
+    fn an_unfocused_program_carries_none_of_the_focus_code() {
+        let fs = preprocess(FS_IMG.to_str().unwrap(), &[]);
+        let vs = preprocess(VS_IMG.to_str().unwrap(), &[]);
+        for hay in [&fs, &vs] {
+            for needle in ["u_focus", "v_gloss", "PLX_FOCUS"] {
+                assert!(!hay.contains(needle), "plain program must not reference `{needle}`:\n{hay}");
+            }
+        }
+        // Also true with PLX_STILL_GROUND defined alongside (FS_STILL/VS_STILL) — the two macros
+        // are independent, and the still specialization has no focus code of its own either
+        // (`draw_tex_carded_still` refuses `f > 0.0` rather than ever reaching for it).
+        let fs_still = preprocess(FS_IMG.to_str().unwrap(), &["PLX_STILL_GROUND"]);
+        let vs_still = preprocess(VS_IMG.to_str().unwrap(), &["PLX_STILL_GROUND"]);
+        for hay in [&fs_still, &vs_still] {
+            for needle in ["u_focus", "v_gloss", "PLX_FOCUS"] {
+                assert!(!hay.contains(needle), "still program must not reference `{needle}`:\n{hay}");
+            }
+        }
+        // The reconstructed plain fragment body must still carry the exact pre-focus expressions —
+        // a structural pin against main's own `fs_img.frag` (78a823eea) rather than the whole file,
+        // which comments/whitespace reflow would otherwise make brittle.
+        for line in [
+            "highp vec2 q = abs(v_p) - u_card.xy;",
+            "if (straight < u_card.w) {",
+            "float d = straight - u_card.z;",
+            "if (min(q.x, q.y) > 0.0) d = length(q) - u_card.z;",
+            "if (d < -2.0) {",
+            "float rim = max(0.0, 1.0 - abs(d + u_rimw)) * u_rimcol.a;",
+            "float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);",
+        ] {
+            assert!(fs.contains(line), "plain fs_img.frag missing pre-focus line `{line}`");
+        }
+        assert!(vs.contains("v_p = (a_pos - 0.5) * u_trect.zw;"));
+        // And none of the FOCUS-only identifiers/branches leak through under any spelling.
+        for gone in ["wide", "wide2", " vp ", "dShadowBox", "glareTop", "qs", "straightS"] {
+            assert!(!fs.contains(gone), "plain fs_img.frag must not carry focus identifier `{gone}`");
+        }
+    }
+
+    /// `draw_tex_impl` must reach for [`FOCUS_IMAGE`] exactly when a draw is actually focused or
+    /// risen, and never otherwise — that boundary is the entire point of splitting the program in
+    /// two, so it is worth pinning as its own assertion rather than trusting the `||` at the call
+    /// site to keep meaning what it says.
+    #[test]
+    fn only_a_focused_or_risen_draw_reaches_for_the_focus_program() {
+        assert!(!wants_focus_program(0.0, 0.0), "a resting card stays on the plain program");
+        assert!(!wants_focus_program(-1.0, 0.0), "a negative focus is still at rest");
+        assert!(wants_focus_program(0.01, 0.0), "any positive pop factor reaches for it");
+        assert!(wants_focus_program(0.0, 0.5), "a risen shadow alone also reaches for it");
+        assert!(wants_focus_program(0.6, 9.0), "the ordinary focused+risen case");
+        assert!(!wants_focus_program(0.0, -3.0), "a negative dy clamps to 0, still at rest");
+    }
+
     #[test]
     fn still_fusion_matches_two_passes_at_edges_shadows_and_transparent_texels() {
         let code = shader_code(FS_STILL);
@@ -6997,7 +7297,7 @@ mod tests {
         let (w, h) = (250.0f32, 375.0f32); // a poster
         for pad in [0.0f32, 1.0, 24.0] {
             let (qw, qh) = (w + 2.0 * pad, h + 2.0 * pad);
-            let uv = uv_rect_padded(w, h, qw, qh);
+            let uv = uv_rect_padded(w, h, pad, pad, qw, qh);
             let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
             // the card's own edges sit at UV 0 and 1; the shadow ring falls outside, symmetrically
             let (u0, u1) = (at(pad / qw, 0), at((pad + w) / qw, 0));
@@ -7012,11 +7312,32 @@ mod tests {
             );
         }
         // pad == 0 must be the identity, or every flat blit resamples itself
-        assert_eq!(uv_rect_padded(w, h, w, h), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(uv_rect_padded(w, h, 0.0, 0.0, w, h), [0.0, 0.0, 1.0, 1.0]);
         // a degenerate card must not divide by zero into a NaN UV (a black quad on device)
-        assert!(uv_rect_padded(0.0, 0.0, 8.0, 8.0)
+        assert!(uv_rect_padded(0.0, 0.0, 4.0, 4.0, 8.0, 8.0)
             .iter()
             .all(|v| v.is_finite()));
+    }
+
+    /// The risen shadow's own reason for [`uv_rect_padded`] taking separate `left`/`top`: a quad
+    /// inflated MORE below than above (as [`draw_tex_impl`] now builds for a focused card, `dy`>0)
+    /// must still map the card's own true edges to UV 0/1 exactly, even though the padding on each
+    /// side differs — this is what makes the texture land back on the card rather than smearing
+    /// toward whichever edge got the bigger margin.
+    #[test]
+    fn an_asymmetric_padded_uv_rect_still_maps_the_quad_back_onto_the_card() {
+        let (w, h) = (250.0f32, 375.0f32);
+        let (blur, dy) = (44.0f32, 18.0f32);
+        let (sides, top, bottom) = (blur + 1.0, blur - dy + 1.0, blur + dy + 1.0);
+        let (qw, qh) = (w + 2.0 * sides, h + top + bottom);
+        let uv = uv_rect_padded(w, h, sides, top, qw, qh);
+        let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
+        let (u0, u1) = (at(sides / qw, 0), at((sides + w) / qw, 0));
+        let (v0, v1) = (at(top / qh, 1), at((top + h) / qh, 1));
+        assert!((u0).abs() < 1e-5 && (u1 - 1.0).abs() < 1e-5, "x edges: {u0} {u1}");
+        assert!((v0).abs() < 1e-5 && (v1 - 1.0).abs() < 1e-5, "y edges: {v0} {v1}");
+        // top < bottom here (the card rises) — the whole point of the asymmetric split.
+        assert!(top < bottom);
     }
 
     /// A picture's crop rides UNDER the shadow inflation: the card's own edges land exactly on the
@@ -7029,7 +7350,7 @@ mod tests {
         let crop = [0.0f32, 1.0 / 15.0, 1.0, 2.0 / 3.0]; // a 2:3 headshot, top-biased
         for pad in [0.0f32, 12.0] {
             let (qw, qh) = (w + 2.0 * pad, h + 2.0 * pad);
-            let inner = uv_rect_padded(w, h, qw, qh);
+            let inner = uv_rect_padded(w, h, pad, pad, qw, qh);
             assert_eq!(uv_compose(UV_FULL, inner), inner, "the full window must be the identity");
             let uv = uv_compose(crop, inner);
             let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
