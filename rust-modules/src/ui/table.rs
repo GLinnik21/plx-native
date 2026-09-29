@@ -185,10 +185,8 @@ impl Row {
     fn height_in(&self, tall: f32) -> f32 {
         if self.sep && self.label.is_empty() {
             SEP_H // the hairline
-        } else if self.sep {
-            ROW_H // a `note` row: one line of CAPTION text, same box as a plain row
-        } else if self.detail.is_empty() {
-            ROW_H
+        } else if self.sep || self.detail.is_empty() {
+            ROW_H // a `note` row (one line of CAPTION text) or a plain row with no detail line
         } else {
             tall
         }

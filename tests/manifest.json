@@ -1866,13 +1866,14 @@
       "known_gap": "device, TV, live PMS 1.43.4, Guest, 2026-09-29: releasing the enhancement after the enhanced start.mkv has actually played (timelines posted on this session id) meets a 503 on admit_original_part's own Part GET, so the release lands on the plain codec-copy Original remux instead of Direct Play; host probes as Guest could not reproduce the 503 on the same server/identity, and the leading untested hypothesis is that PMS refuses a raw Part on a session that has posted state=playing timelines, which a host cannot exercise because timelines are watch-history writes."
     },
     {
-      "name": "audio_enhancement_withheld_under_subtitle",
+      "name": "audio_enhancement_burns_server_selected_subtitle",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · server-selected subtitle — a shown subtitle withholds the enhancement even with the preference forced ON (issue #266)",
-      "comment": "The device-level proof of the subtitle gate that audio_enhancement_normalize and audio_enhancement_normalize_reset had to move off this item to avoid: Guest's PMS pre-selects an SRT subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2`), and route/plan.rs's cold-start audio branch computes `subtitle_shown` and feeds it into `enhancements_offered` for the SAME candidate the boot-forced preference would otherwise decorate — so with a subtitle on screen the preference is evaluated and refused before the first frame, not merely hidden from the menu. `audio_enhancements_boot: \"loudness\"` forces the PERSISTED preference ON at boot through dev::scenarios::arm_audio_enhancements, exactly like audio_enhancement_normalize_reset — and it is reset back to \"off\" by the SAME per-case `plxnative-audioenh` boot trigger run.py writes for every case (triggers_for_case: `files.append((\"plxnative-audioenh\", case.get(\"audio_enhancements_boot\", \"off\")))`), so this case needs no cleanup op of its own. There is no menu row to pick here — the rows are withheld from the Audio tab entirely (track_menu.rs's enh_rows_absent_subtitle_shown) — so the only operation is `play`, and op_audio_enhancement_withheld grades the boot log directly: the forced-preference line must be present, a server-selected-subtitle line must be present (the precondition this case depends on — its absence fails loudly instead of passing vacuously if a future server or library stops selecting a subtitle here), and no `enhancement:` line of any kind may appear. Because the enhancement is refused, not applied, the candidate direct-plays exactly like any other movie_h264_ac3_1080p case.",
+      "title": "movie · h264/ac3 · 1080p · server-selected subtitle — the enhancement burns it in from the first frame instead of withholding the offer (issue #266 M7)",
+      "comment": "Formerly `audio_enhancement_withheld_under_subtitle`, retargeted by M7's 'do it the Plex way' decision: Guest's PMS pre-selects an EMBEDDED subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2` — render_idx is non-negative, i.e. an in-container demuxer ordinal per `route/plan.rs`'s `subtitle_effect_of`, not an external sidecar), so this is exactly the shape the old I6 gate used to withhold the enhancement over. `route::plan::enhancement_availability` no longer answers Hidden or Disabled for an embedded subtitle — it answers `Offered(EnhancementRoute::Burn)` — so `audio_enhancements_boot: \"loudness\"` forcing the PERSISTED preference ON at boot (`dev::scenarios::arm_audio_enhancements`, reset back to \"off\" by the same per-case `plxnative-audioenh` trigger run.py writes for every case, so this case needs no cleanup op of its own) now produces a Burn before the first frame rather than a refusal: one `enhancement: applied boost=0 loudness=1` line, and a stream carrying `subtitleStreamID=2698&subtitles=burn` instead of the ordinary `start.mkv` remux. There is still no menu row to pick — the route decides this at cold start, same as before — so the only operation is `play`, and `op_audio_enhancement_burn` grades the boot log and the resulting stream directly. **This is the one case in this file that actually exercises the M7 burn path against the public synthetic fixture** (`movie_h264_ac3_1080p` already ships 4 embedded SRT tracks in `tests/fixtures/make_fixtures.py`); the newer `audio_enhancement_burns_embedded_subtitle` case below covers the live-pick reconcile instead, but is not runnable yet for want of a subtitle track on its own item.",
       "covers": [
-        "audio-enhancement-subtitle-gate"
+        "audio-enhancement-subtitle-gate",
+        "audio-enhancement-burn"
       ],
       "run_secs": 60,
       "operations": [
@@ -1880,18 +1881,51 @@
           "op": "play"
         },
         {
-          "op": "audio_enhancement_withheld"
+          "op": "audio_enhancement_burn"
         }
       ],
       "audio_enhancements_boot": "loudness",
       "expect": {
-        "decision": "directplay",
+        "decision": "transcode",
         "codec": "h264",
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
         "require_video_bound": true
       },
       "known_gap": false
+    },
+    {
+      "name": "audio_enhancement_burns_embedded_subtitle",
+      "item": "episode_hevc_4k_hdr10_eac3",
+      "kind": "episode",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · embedded subtitle picked mid-play — the enhancement burns it in instead of dropping it (issue #266 M7)",
+      "comment": "The device-level proof of M7's whole point, the opposite of audio_enhancement_withheld_under_subtitle: boots with Normalize Loudness forced ON (`audio_enhancements_boot: \"loudness\"`) against a candidate with no subtitle yet, so the cold-start route is the ordinary enhanced remux and the FIRST `enhancement: applied boost=0 loudness=1` line is logged before the first frame — proving the preference alone is not blocked. The live `subtitle` op then picks an embedded (in-container) text track, which `route::plan::enhancement_availability` now answers `Offered(EnhancementRoute::Burn)` for (never Hidden, never a silent drop): `route::decision::reconcile_enhancement` asks the server for a forced re-encode carrying subtitleStreamID=<id>&subtitles=burn alongside the SAME DSP params, which op_audio_enhancement_burn grades as a SECOND `enhancement: applied .. loudness=1` line plus a post-pick stream that is the explicit burn shape (subtitleStreamID + subtitles=burn), not the enhancement's ordinary start.mkv remux, and no client-rendered sub cue afterward (the subtitle is baked into the picture, not drawn twice). **Not yet run, and not runnable against the public synthetic fixture as shipped**: `episode_hevc_4k_hdr10_eac3` in `tests/fixtures/make_fixtures.py` carries no embedded subtitle track today, so `row` below is a placeholder until either the fixture gains one or a contributor's private `tests/manifest.local.json` maps this shape to a real library item that has one — per the task this case was written against, that is rating key 72's family on the device used to verify #266.",
+      "covers": [
+        "audio-enhancement-burn",
+        "audio-enhancement-subtitle-reroute"
+      ],
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "subtitle",
+          "tab": 1,
+          "row": 1,
+          "burn": true
+        }
+      ],
+      "audio_enhancements_boot": "loudness",
+      "expect": {
+        "decision": "transcode",
+        "codec": "hevc",
+        "min_video_width": 3000,
+        "min_timeline_climb_s": 10,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "known_gap": "not yet run: episode_hevc_4k_hdr10_eac3's public synthetic fixture has no embedded subtitle track, so `row` is unverified against real content pending a fixture update or a private manifest.local.json mapping to rating key 72's family."
     },
     {
       "name": "subtitle_text_srt",
