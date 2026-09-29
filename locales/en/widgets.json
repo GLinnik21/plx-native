@@ -652,6 +652,10 @@
     "value": "Your Plex server couldn't turn this on for this video.",
     "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."
   },
+  "widgets.tracks.style_locked_note": {
+    "value": "Can't be changed while Boost dialog or Normalize loudness is on.",
+    "description": "Issue #266/M7 follow-up. One-line note under the DIMMED Timing and Color rows on the Subtitles tab while the live route is actually burning the subtitle into the picture (an embedded subtitle plus the audio enhancement): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  },
   "widgets.tracks.timing": {
     "value": "Timing",
     "description": "tracks timing"

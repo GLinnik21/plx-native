@@ -143,6 +143,15 @@ pub(crate) struct TrackMenuState {
     /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
     /// rows are back. `None` once consumed, or when nothing needs remembering.
     sticky_audio_target: Option<AudioRowTarget>,
+    /// M7 follow-up: is the live route actually burning a subtitle into the picture RIGHT NOW
+    /// (`route::live_is_own_burn`)? Set on every (re)build of the Subtitles tab (see
+    /// [`Self::layout`]) and read back by [`Self::on_ok`], which does not receive `ps` and so
+    /// cannot re-derive it at press time — the same "state captured at rebuild, read at commit"
+    /// shape [`Self::offset_ms`]/[`Self::tone`] already use. While true, Timing and Color are drawn
+    /// dim with a one-line reason and OK on either is inert: the text is already in the pixels, and
+    /// nothing this panel does can reach it. Track-selection rows are unaffected — picking another
+    /// subtitle (or Off) still re-routes normally.
+    sub_style_locked: bool,
     table: TableView, // main-thread only
 }
 
@@ -224,6 +233,7 @@ impl TrackMenuState {
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
+            sub_style_locked: false,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -420,6 +430,11 @@ impl TrackMenuState {
         }
 
         match self.targets.get(sel.max(0) as usize).copied() {
+            // M7 follow-up: while the live route is actually burning a subtitle into the picture,
+            // Timing and Color are drawn dim with a reason (`Self::layout`) and OK on either is a
+            // no-op — the same "focusable but inert" shape `RowTarget::Timing`'s "subtitles are
+            // Off" case already uses.
+            Some(RowTarget::Color) if self.sub_style_locked => TrackOk::Inert,
             Some(RowTarget::Color) => {
                 // cycle with wrap: no track changes, so no `TrackCommit::Subtitle` — that one
                 // always republishes, and re-committing the track would re-burn a transcode
@@ -432,8 +447,13 @@ impl TrackMenuState {
                 }
                 TrackOk::Commit { commit: TrackCommit::SubtitleTone(self.tone), keep_open: true }
             }
+            Some(RowTarget::Timing) if self.sub_style_locked => TrackOk::Inert,
             Some(RowTarget::Timing) if self.active_sub >= 0 => TrackOk::OpenTiming,
             Some(RowTarget::Timing) => TrackOk::Inert, // dim and inert while subtitles are Off
+            // The non-selectable footnote row — never actually reachable (`Row::note` rows are
+            // skipped by every selection walk), kept only for defensive symmetry with the Audio
+            // tab's own `AudioRowTarget::Note` arm.
+            Some(RowTarget::Note) => TrackOk::Inert,
             target => {
                 // Off (or a stale/out-of-range selection) → -1; else the row's own subs-list index
                 let new_sub: c_int = match target {
@@ -586,14 +606,26 @@ impl TrackMenuState {
 
     /// Build the Subtitles tab's sections and row map from the CURRENT state — the one place the
     /// model (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree
-    /// with what was drawn.
-    fn layout(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<RowTarget>) {
+    /// with what was drawn. Also writes [`Self::sub_style_locked`] for [`Self::on_ok`] to read back
+    /// (M7 follow-up).
+    fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<RowTarget>) {
         let item = tracks(meta);
         let subs: &[metadata::Stream] = item.map(|t| t.subs.as_slice()).unwrap_or(&[]);
         let offered = visible_subs(ps, meta);
         let names = crate::player::SHARED.track_names.lock().unwrap();
-        let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, !crate::route::is_transcoding(ps));
-        table_sections(&model, self.active_sub, self.offset_ms, self.tone)
+        // M7 follow-up: while the live route is actually burning a subtitle in, Timing stays
+        // drawn (dim, with a reason) instead of being omitted the way an ordinary non-enhancement
+        // transcode omits it — a viewer who turned the enhancement on must still see why the
+        // control they had is gone, not just find it missing.
+        let locked = crate::route::live_is_own_burn(ps);
+        self.sub_style_locked = locked;
+        let show_timing = !crate::route::is_transcoding(ps) || locked;
+        let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing);
+        let (mut sections, mut targets) = table_sections(&model, self.active_sub, self.offset_ms, self.tone);
+        if locked {
+            lock_style_rows(&mut sections, &mut targets);
+        }
+        (sections, targets)
     }
 
     /// The [`AudioRowTarget::Boost`]/[`AudioRowTarget::Loudness`] pair's three inputs, read fresh
@@ -926,7 +958,7 @@ fn sel_for_targets(targets: &[RowTarget], active_sub: c_int) -> c_int {
         .position(|t| match t {
             RowTarget::Off => active_sub < 0,
             RowTarget::Sub(i) => active_sub >= 0 && *i == active_sub as usize,
-            RowTarget::Timing | RowTarget::Color => false,
+            RowTarget::Timing | RowTarget::Color | RowTarget::Note => false,
         })
         .unwrap_or(0) as c_int
 }
@@ -1077,6 +1109,53 @@ fn table_sections(
     (sections, targets)
 }
 
+/// One row, by GLOBAL index, across every section — the plain [`Vec<Section>`] counterpart to
+/// [`TableView::row_mut`], for editing a row before it is ever handed to a `TableView`.
+fn row_mut_at(sections: &mut [Section], gi: usize) -> Option<&mut Row> {
+    sections.iter_mut().flat_map(|s| s.rows.iter_mut()).nth(gi)
+}
+
+/// Insert `row` at GLOBAL index `gi`, into whichever section actually spans that position — the
+/// plain-`Vec<Section>` counterpart of a `TableView` insert, needed because [`lock_style_rows`]
+/// runs before the sections are ever handed to a `TableView`.
+fn insert_row_at(sections: &mut [Section], gi: usize, row: Row) {
+    let mut remaining = gi;
+    for sec in sections.iter_mut() {
+        if remaining <= sec.rows.len() {
+            sec.rows.insert(remaining, row);
+            return;
+        }
+        remaining -= sec.rows.len();
+    }
+}
+
+/// **M7 follow-up**: while the live route is actually burning a subtitle into the picture right
+/// now, Timing and Color do nothing — the text is already in the pixels — so draw them dim and
+/// append one non-selectable [`Row::note`] naming why, the same "visible, dim, plain reason" idiom
+/// the Audio tab's own Boost dialog/Normalize loudness rows use when THEY are disabled
+/// ([`TrackMenuState::build_audio`]). `targets` is kept in lockstep with `sections`' flattened row
+/// order so [`TrackMenuState::on_ok`] can keep reading it back by position.
+fn lock_style_rows(sections: &mut Vec<Section>, targets: &mut Vec<RowTarget>) {
+    let Some(color_idx) = targets.iter().position(|t| *t == RowTarget::Color) else {
+        return; // no Color row was built at all — nothing to lock
+    };
+    if let Some(timing_idx) = targets.iter().position(|t| *t == RowTarget::Timing) {
+        if let Some(row) = row_mut_at(sections, timing_idx) {
+            row.dim = true;
+        }
+    }
+    if let Some(row) = row_mut_at(sections, color_idx) {
+        row.dim = true;
+    }
+    let note_at = color_idx + 1;
+    insert_row_at(
+        sections,
+        note_at,
+        Row::note(crate::i18n::msg::widgets_tracks_style_locked_note()),
+    );
+    targets.insert(note_at, RowTarget::Note);
+}
+
 /// The panel at its WIDEST and TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — both
 /// tab widths and the full `top_min`→`bottom` span, since the measured height comes from a
 /// `TableView` no host test can measure.
@@ -1121,8 +1200,9 @@ mod tests {
         table_sections(&model, active_sub, offset_ms, tone)
     }
 
-    /// A store with `subs` installed as the playing item's subtitle list.
-    fn store_with(subs: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
+    /// A store with `subs` installed as the playing item's subtitle list. `pub(super)`:
+    /// `enhancement_menu_tests` below reuses it for the Subtitles tab under a live Burn (M7).
+    pub(super) fn store_with(subs: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
         let mut store = crate::stores::metadata::MetadataStore::default();
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
             metadata::PlayingItem::with_subs(subs)
@@ -2261,6 +2341,7 @@ mod enhancement_menu_tests {
                 ("enh_reason_dv_subtitle", crate::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
                 ("enh_reason_quality", crate::i18n::msg::widgets_tracks_enh_reason_quality()),
                 ("enh_reason_refused", crate::i18n::msg::widgets_tracks_enh_reason_refused()),
+                ("style_locked_note", crate::i18n::msg::widgets_tracks_style_locked_note()),
             ] {
                 let lower = value.to_lowercase();
                 for word in BANNED {
@@ -2297,6 +2378,176 @@ mod enhancement_menu_tests {
             out.extend(
                 menu.table
                     .elided_rows(AUDIO_PANEL_W, &ShippedMeasure, HEADROOM)
+                    .into_iter()
+                    .map(|e| format!("{}: {e}", language.tag())),
+            );
+            teardown(&ps);
+        }
+        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+    }
+
+    // ---- M7 follow-up: the Subtitles tab under a live Burn ------------------------------------
+
+    /// Build the Subtitles tab against `route`, with one embedded subtitle track whose PMS id
+    /// (999) matches `enhancement_test_session`'s own `cur_sub_sid` for a non-`None`
+    /// `subtitle_effect` — the Subtitles-tab counterpart of [`audio_tab`].
+    fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
+        let (ps, _sid) = enhancement_test_session(route);
+        let store = super::tests::store_with(vec![crate::metadata::Stream {
+            id: 999,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "subrip".into(),
+            ..Default::default()
+        }]);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        (menu, ps)
+    }
+
+    fn flat_rows(menu: &TrackMenuState) -> Vec<&Row> {
+        menu.table.sections.iter().flat_map(|s| &s.rows).collect()
+    }
+
+    /// **The failing case this fix closes**: while the audio enhancement is actually burning the
+    /// on-screen (embedded) subtitle into the picture, the Subtitles tab's Timing and Color rows
+    /// must stay VISIBLE (not omitted the way an ordinary transcode omits Timing), drawn dim, with
+    /// one plain-language note — the text is already in the video, and neither control can reach
+    /// it. The track-selection rows (Off, the embedded track itself) are unaffected.
+    #[test]
+    fn subtitles_tab_dims_timing_and_color_under_live_burn() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..Default::default()
+        });
+        assert!(menu.sub_style_locked, "the live route is burning this subtitle in");
+
+        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).expect("Timing row present");
+        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).expect("Color row present");
+        let rows = flat_rows(&menu);
+        assert!(rows[timing_i].dim, "Timing is dim under a live burn");
+        assert!(rows[color_i].dim, "Color is dim under a live burn");
+
+        let note_i = color_i + 1;
+        assert_eq!(menu.targets[note_i], RowTarget::Note);
+        assert_eq!(rows[note_i].label, crate::i18n::msg::widgets_tracks_style_locked_note());
+        assert!(rows[note_i].sep, "a note row is non-selectable");
+
+        // The track rows themselves stay live: Off, and the embedded subtitle, neither dim.
+        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).expect("Off row present");
+        assert!(!rows[off_i].dim);
+        let sub_i = menu.targets.iter().position(|t| *t == RowTarget::Sub(0)).expect("Sub(0) row present");
+        assert!(!rows[sub_i].dim);
+
+        teardown(&ps);
+    }
+
+    /// Offered-but-not-applied (the enhancement toggle is off, or the offer is merely available)
+    /// must NOT lock the rows — only an actually-applied Burn does.
+    #[test]
+    fn subtitles_tab_timing_and_color_stay_live_when_not_applied() {
+        let _g = crate::testlock::serial();
+        // `remux: None` (Direct family) so this is not itself "a transcode" — isolates the case
+        // from `timing_is_omitted_under_transcode_and_dim_while_subtitles_are_off`'s own coverage
+        // of an ordinary (non-enhancement) transcode omitting Timing outright.
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            remux: None,
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            ..Default::default()
+        });
+        assert!(!menu.sub_style_locked);
+        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).expect("Timing row present");
+        assert!(!flat_rows(&menu)[timing_i].dim);
+        assert!(!menu.targets.contains(&RowTarget::Note));
+        teardown(&ps);
+    }
+
+    /// OK on the dimmed Timing/Color rows is a no-op (`TrackOk::Inert`), the same "focusable but
+    /// inert" contract `RowTarget::Timing` already had while subtitles are Off — it must not open
+    /// the Timing capsule or cycle Color while the server owns the picture.
+    #[test]
+    fn subtitles_ok_on_locked_timing_and_color_is_inert() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..Default::default()
+        });
+        let store = super::tests::store_with(vec![crate::metadata::Stream {
+            id: 999,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "subrip".into(),
+            ..Default::default()
+        }]);
+
+        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).unwrap();
+        menu.focus_row(timing_i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+
+        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).unwrap();
+        menu.focus_row(color_i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+
+        teardown(&ps);
+    }
+
+    /// Turning the subtitle Off while a Burn is live is still a live pick, not inert — the panel
+    /// must keep re-routing normally; only Timing/Color are locked.
+    #[test]
+    fn subtitles_off_stays_live_under_a_burn() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..Default::default()
+        });
+        let store = super::tests::store_with(vec![crate::metadata::Stream {
+            id: 999,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "subrip".into(),
+            ..Default::default()
+        }]);
+        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).unwrap();
+        menu.focus_row(off_i as c_int);
+        match menu.on_ok(store.view()) {
+            TrackOk::Commit { commit: TrackCommit::Subtitle { render_ordinal, stream_id, .. }, keep_open } => {
+                assert_eq!(render_ordinal, -1);
+                assert_eq!(stream_id, 0);
+                assert!(!keep_open);
+            }
+            other => panic!("expected a live Subtitle commit, got {other:?}"),
+        }
+        teardown(&ps);
+    }
+
+    /// The locked note fits the Subtitles panel in every shipped language, same discipline as
+    /// `enh_rows_fit_width_560_es_be` over the Audio panel.
+    #[test]
+    fn subtitles_locked_note_fits_width_620_es_be() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let (menu, ps) = subtitles_tab(EnhTestFixture {
+                subtitle_effect: crate::route::SubtitleEffect::Embedded,
+                applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+                applied_burn: true,
+                ..Default::default()
+            });
+            out.extend(
+                menu.table
+                    .elided_rows(SUB_PANEL_W, &ShippedMeasure, HEADROOM)
                     .into_iter()
                     .map(|e| format!("{}: {e}", language.tag())),
             );
@@ -2358,6 +2609,7 @@ mod focus_tests {
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
+            sub_style_locked: false,
             table,
         }
     }

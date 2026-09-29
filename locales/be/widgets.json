@@ -165,6 +165,7 @@
   "widgets.tracks.enh_reason_dv_subtitle": "Нельга выкарыстоўваць з субтытрамі ў гэтым відэа з Dolby Vision. Адключыце субтытры, каб выкарыстаць гэта.",
   "widgets.tracks.enh_reason_quality": "Даступна толькі пры якасці Original.",
   "widgets.tracks.enh_reason_refused": "Ваш сервер Plex не змог уключыць гэта для гэтага відэа.",
+  "widgets.tracks.style_locked_note": "Нельга змяніць, пакуль уключана Узмацненне дыялогаў ці Нармалізацыя гуку.",
   "widgets.tracks.timing": "Сінхранізацыя",
   "widgets.tracks.external_badge": "ВОНКАВЫЯ",
   "widgets.tracks.tone_white": "Белы",

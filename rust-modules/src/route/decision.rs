@@ -7069,7 +7069,7 @@ pub(crate) fn live_subtitle_effect(ps: &PlaybackSession) -> SubtitleEffect {
 /// reason (a fixed rung, HLS, a relay). The two are told apart by `cur_enhancement`: only the
 /// enhancement's own claim sets it to `Applied` while asking for a video-copying,
 /// no-ceiling, progressive-MKV re-encode with a non-empty `audio`.
-fn live_is_own_burn(ps: &PlaybackSession) -> bool {
+pub(crate) fn live_is_own_burn(ps: &PlaybackSession) -> bool {
     ps.cur_enhancement == EnhancementOutcome::Applied
         && ps.cur_contract.audio.any()
         && !ps.cur_contract.remux
