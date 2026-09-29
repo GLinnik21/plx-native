@@ -766,12 +766,6 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
         if hub.title.is_empty() {
             continue; // a row with no heading has nothing to say about what is in it
         }
-        let library = hub
-            .metadata
-            .iter()
-            .find(|m| !m.library_section_title.is_empty())
-            .map(|m| m.library_section_title.as_str())
-            .unwrap_or("");
         out.push(Shelf {
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
@@ -785,8 +779,6 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
                 crate::plex::hub_title::Scope::Section,
                 &hub.hub_identifier,
                 &hub.title,
-                library,
-                true, // Section scope ignores this argument; see the function's doc
             ),
             items,
         });
