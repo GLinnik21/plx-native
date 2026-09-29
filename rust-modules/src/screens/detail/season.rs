@@ -4,14 +4,17 @@ use std::hash::{Hash, Hasher};
 
 use crate::metadata::Detail;
 use crate::ui::machine::{GroupId, Measure};
-use crate::ui::widgets::{self, SelMark, StripLay, TabGround, TabPill, TabStrip};
-use crate::ui::{on_axis, theme, Env, Painter, Rect, View};
+use crate::ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
+use crate::ui::{theme, Painter, Rect};
 
 pub(crate) const SEASON_ELEM_RANGE_START: u32 = 64;
 pub(crate) const SEASON_ELEM_RANGE_END: u32 = 128;
 pub(crate) const SEASON_GROUP: GroupId = GroupId(1);
 pub(crate) const ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
 pub(crate) const SETTLE_S: f32 = 0.2;
+/// Content-space x of the first season's LABEL — one pill padding in from the content edge, so the
+/// first pill's frame starts exactly on `MARGIN_X` at scroll 0.
+const LEAD_LABEL_X: f32 = crate::ui::consts::MARGIN_X + widgets::STRIP_PAD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RestoreStep {
@@ -116,7 +119,12 @@ impl Metrics {
                     season.title.clone()
                 }
             }),
-            crate::ui::consts::MARGIN_X,
+            // The LABEL origin: the first pill's FRAME then starts on the page's content edge
+            // (`MARGIN_X`), the same leading edge as the hero buttons above it and the season
+            // group's own focus extent — the Library's strip lays out from the same origin.
+            // Passing `MARGIN_X` here put the first pill's plate `STRIP_PAD` outside that edge
+            // (issue 19).
+            LEAD_LABEL_X,
             theme::size::BODY,
             widgets::STRIP_GAP,
             measure,
@@ -154,20 +162,7 @@ pub(crate) fn draw(
     scroll: f32,
     pop: f32,
 ) {
-    let p = p.translate(-scroll, 0.0);
-    tabs.draw(p, 0.0, ROW_H, TabGround::Plated { pop });
-    let env = Env::inert();
-    for lay in metrics.lays() {
-        let pill = widgets::strip_pill_rect(lay, 0.0, ROW_H);
-        if !on_axis(pill.x - scroll, pill.w, crate::ui::consts::SCR_W, 0.0) {
-            continue;
-        }
-        let (fm, sm) = tabs.mixes((pill.x, pill.w));
-        TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
-            .plated()
-            .mix(fm, sm)
-            .draw(&env, p);
-    }
+    widgets::draw_strip(p, &tabs, metrics.lays(), 0.0, ROW_H, scroll, TabGround::Plated { pop });
     let _ = (selected, focused);
 }
 
@@ -259,6 +254,20 @@ mod tests {
             restore_step(Some(&detail()), None, false, false),
             RestoreStep::Ready
         );
+    }
+
+    /// **Issue 19: the season row starts on the page's content edge.** Before any scrolling the
+    /// first pill's PLATE (not its label) stands on `MARGIN_X` — the hero buttons' leading edge
+    /// and the season group's own focus extent. It used to stand `STRIP_PAD` (26px) to the left of
+    /// it, because the layout origin it was handed was the label's and not the frame's.
+    #[test]
+    fn the_first_season_pill_starts_on_the_content_edge_at_scroll_zero() {
+        let mut metrics = Metrics::new();
+        metrics.update(&detail(), &crate::ui::fixture::FixtureMeasure);
+        let first = metrics.rect(0, 0.0, 0.0).expect("a first pill");
+        assert_eq!(first.x, crate::ui::consts::MARGIN_X, "first pill plate x at scroll 0");
+        // and the scroll target for that pill leaves the row where it is
+        assert_eq!(metrics.scroll_target(0.0, 0), 0.0);
     }
 
     #[test]

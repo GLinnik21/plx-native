@@ -671,6 +671,104 @@ impl FailureKind {
     }
 }
 
+/// One control on the failure read-out's row. See [`failure_actions`], the ONE table that decides
+/// which of these a failure offers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FailureAction {
+    /// Set the Direct Play preference back to Auto (the value Settings writes, persisted) and
+    /// resolve the same item again at the same position. The fix for every failure under Force
+    /// Direct Play: Force is what switched the automatic fallback off.
+    PlayAutomatically,
+    /// Resolve the same item again, unchanged — worth offering only where the failure can be
+    /// transient (the stream stopped, the pipeline never answered, no cause was reported).
+    TryAgain,
+    /// The `…` popover opened on the quality ladder — a different rung is a different route, and
+    /// picking one retries at it.
+    ChangeQuality,
+    /// Review the sandbox repair (the confirmation `Player.repair` guards).
+    Repair,
+    /// Leave the player.
+    Back,
+}
+
+/// What the table needs to know besides the kind: the settings and session facts that decide
+/// whether an action could CHANGE the outcome.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FailureContext {
+    /// Force Direct Play was in effect for the failed attempt. It overrides every quality rung
+    /// (Force always requests the original), so no rung can change the outcome.
+    pub forced: bool,
+    /// The failed attempt has a Plex request that can be resolved again. A URL/dev-trigger
+    /// playback has none, so nothing that retries can do anything.
+    pub can_retry: bool,
+    /// The sandbox repair can still be started (nothing is running or finished).
+    pub repair_idle: bool,
+}
+
+/// **The failure read-out's row, as ONE table** — every control the read-out draws, in draw order;
+/// every key and click resolves through the same list, so a control cannot be drawn and dead, or
+/// live and undrawn.
+///
+/// **The rule: offer an action only if it can change the outcome under the current settings.**
+/// `Back` is always last, because leaving always does something. In particular:
+///
+/// * Under Force Direct Play NO quality rung can help — Force requests the original whatever rung
+///   is picked — so [`ChangeQuality`](FailureAction::ChangeQuality) is never offered there, and
+///   [`PlayAutomatically`](FailureAction::PlayAutomatically) is, because it is the one change that
+///   re-enables the fallback.
+/// * A deterministic refusal (the server's `/decision`, the TV refusing the Load declaration) gets
+///   no [`TryAgain`](FailureAction::TryAgain): the same request gets the same answer. A different
+///   rung is a different request, so the ladder stays where a transcode or a direct play could
+///   succeed instead.
+/// * A file with no video track and an unrepairable sandbox get nothing but *Back*.
+pub(crate) fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureAction> {
+    use FailureAction as A;
+    use FailureKind as K;
+    let transient = matches!(kind, K::MediaSource | K::PlaybackInterrupted | K::LoadTimeout
+        | K::OriginalRollback | K::Unspecified);
+    let mut v = Vec::with_capacity(4);
+    match kind {
+        // A device finding: nothing about the request changes it; only the repair can.
+        K::JailMissingRtkmem => {
+            if cx.repair_idle {
+                v.push(A::Repair);
+            }
+        }
+        // The file itself has no picture; no rung and no retry puts one in it.
+        K::NoVideoTrack => {}
+        _ if cx.forced => {
+            if cx.can_retry {
+                v.push(A::PlayAutomatically);
+                if transient {
+                    v.push(A::TryAgain);
+                }
+            }
+        }
+        // Only reachable under Force (`with_forced_playback_context`); without it there is no
+        // policy to relax.
+        K::PlaybackPolicy => {}
+        _ => {
+            if cx.can_retry {
+                if transient {
+                    v.push(A::TryAgain);
+                }
+                v.push(A::ChangeQuality);
+            }
+        }
+    }
+    v.push(A::Back);
+    v
+}
+
+/// The live [`FailureContext`] (main thread).
+pub(crate) fn failure_context(ps: &crate::route::PlaybackSession) -> FailureContext {
+    FailureContext {
+        forced: crate::route::forced_direct_play(ps) || failtest_forced(),
+        can_retry: crate::route::can_retry_current_play(ps),
+        repair_idle: ps.repair_status == crate::webos::jail_repair::State::Idle,
+    }
+}
+
 pub(crate) struct ErrorShape {
     /// **The stable, machine-readable reason** — the one field here meant for a wire rather than
     /// for a person. Every other field is prose that will be re-worded, localised or shortened, and
@@ -990,6 +1088,14 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
         "load_timeout" => error_shape(false, false, sub, None, RuntimeFailure::LoadTimeout),
         "jail" => jail_error_shape(),
         "none" => error_shape(false, false, sub, None, RuntimeFailure::Unknown),
+        // Force Direct Play's own refusal (issue: the owner's photograph) — the route's real
+        // verdict sentence for a video format the engine cannot take, through the real resolver.
+        "policy" => with_forced_playback_context(
+            error_shape(false, false, sub,
+                Some(crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text()),
+                RuntimeFailure::Unknown),
+            true,
+        ),
         _ => error_shape(
             false,
             true,
@@ -999,6 +1105,12 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
         ),
     })
 }
+/// dev: the `policy` arm of `/tmp/plxnative-failtest` stands for a Force Direct Play session, so
+/// the action table sees the Force the arm's shape claims.
+fn failtest_forced() -> bool {
+    crate::dev::read("failtest").is_some_and(|a| a.trim() == "policy")
+}
+
 /// HUD caption for `PlaybackState::Error` (main thread).
 pub(crate) fn error_caption(ps: &crate::route::PlaybackSession) -> &'static std::ffi::CStr {
     error_now(ps).caption
@@ -2168,6 +2280,15 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     }));
 }
 
+/// The shape the `failtest=policy` arm builds, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn failtest_policy_shape_for_test(verdict: &str) -> ErrorShape {
+    with_forced_playback_context(
+        error_shape(false, false, crate::plex::serverinfo::Subscription::Yes, Some(verdict), RuntimeFailure::Unknown),
+        true,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2186,9 +2307,10 @@ mod tests {
             let forced = with_forced_playback_context(error_shape(false, false, Sub::No, None, runtime), true);
             assert_eq!(forced.kind, normal.kind);
             assert_eq!(forced.readout, normal.readout);
-            assert!(forced.detail.contains("Force Direct Play is enabled"));
-            assert!(forced.detail.contains("Automatic fallback is off"));
-            assert!(forced.detail.contains("Return Direct Play to Auto in Settings"));
+            assert!(forced.detail.contains("Force Direct Play is on"));
+            // The remedy is the read-out's own button now (`FailureAction::PlayAutomatically`),
+            // so the sentence says what happened and why, and no longer points into Settings.
+            assert!(!forced.detail.contains("Settings"), "{}", forced.detail);
             assert!(!forced.no_pass);
             let ordinary = with_forced_playback_context(normal, false);
             assert!(ordinary.detail.is_empty(), "Auto/Disabled retain their ordinary error detail");
@@ -2198,7 +2320,7 @@ mod tests {
     #[test]
     fn forced_policy_refusal_does_not_claim_the_server_cannot_convert() {
         use crate::plex::serverinfo::Subscription as Sub;
-        let reason = "Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.";
+        let reason = "Force Direct Play is on, and this audio format can’t play without conversion.";
         let forced = with_forced_playback_context(
             error_shape(false, false, Sub::No, Some(reason), RuntimeFailure::Unknown), true);
         assert_eq!(forced.kind, FailureKind::PlaybackPolicy);
@@ -2212,6 +2334,77 @@ mod tests {
             error_shape(false, true, Sub::No, Some("PMS cannot convert this item"), RuntimeFailure::Unknown), false);
         assert_eq!(server.kind, FailureKind::DecisionRefused);
         assert!(server.readout.contains("server"));
+    }
+
+    /// Every kind × every context the table can see, so a rule is a property, not an example.
+    fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
+        use FailureKind as K;
+        let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
+            K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout, K::OriginalRollback,
+            K::JailMissingRtkmem, K::Unspecified];
+        let mut out = Vec::new();
+        for kind in kinds {
+            for forced in [false, true] {
+                for can_retry in [false, true] {
+                    for repair_idle in [false, true] {
+                        let cx = FailureContext { forced, can_retry, repair_idle };
+                        out.push((kind, cx, failure_actions(kind, cx)));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// **The owner's bug**: under Force Direct Play the read-out offered the Quality ladder, whose
+    /// every rung Force overrides. The fix is the one change that re-enables the fallback.
+    #[test]
+    fn forced_direct_play_offers_the_fix_and_never_the_quality_ladder() {
+        let cx = FailureContext { forced: true, can_retry: true, repair_idle: true };
+        let row = failure_actions(FailureKind::PlaybackPolicy, cx);
+        assert_eq!(row.first(), Some(&FailureAction::PlayAutomatically));
+        assert!(!row.contains(&FailureAction::ChangeQuality), "{row:?}");
+        assert!(!row.contains(&FailureAction::TryAgain), "the same request gets the same refusal: {row:?}");
+        // the owner's chosen read-out: the fix and Back — the support facts are the footer, never
+        // a control of their own
+        assert_eq!(row, [FailureAction::PlayAutomatically, FailureAction::Back]);
+    }
+
+    /// **Offer an action only if it can change the outcome**, over the whole table: no quality
+    /// rung under Force, nothing that retries without a request to retry, no retry of a
+    /// deterministic refusal, no repair unless one can start; Back always, last, once; at most
+    /// four controls (the row's slots).
+    #[test]
+    fn the_failure_table_offers_only_actions_that_can_change_the_outcome() {
+        use FailureAction as A;
+        use FailureKind as K;
+        for (kind, cx, row) in every_failure_row() {
+            let at = format!("{kind:?} {cx:?}: {row:?}");
+            assert_eq!(row.last(), Some(&A::Back), "{at}");
+            assert_eq!(row.iter().filter(|a| **a == A::Back).count(), 1, "{at}");
+            assert!(row.len() <= crate::ui::widgets::STATUS_ROW_MAX, "{at}");
+            if cx.forced {
+                assert!(!row.contains(&A::ChangeQuality), "Force overrides every rung — {at}");
+            } else {
+                assert!(!row.contains(&A::PlayAutomatically), "nothing to switch off — {at}");
+            }
+            if !cx.can_retry {
+                for a in [A::TryAgain, A::ChangeQuality, A::PlayAutomatically] {
+                    assert!(!row.contains(&a), "no request to resolve again — {at}");
+                }
+            }
+            if matches!(kind, K::DecisionRefused | K::PlaybackPolicy | K::TvPipeline | K::NoVideoTranscodeTarget) {
+                assert!(!row.contains(&A::TryAgain), "a deterministic refusal repeats — {at}");
+            }
+            if matches!(kind, K::NoVideoTrack) {
+                assert_eq!(row, [A::Back], "{at}");
+            }
+            assert_eq!(row.contains(&A::Repair), kind == K::JailMissingRtkmem && cx.repair_idle, "{at}");
+        }
+        // and a transient failure without Force keeps both of its recoveries
+        let cx = FailureContext { forced: false, can_retry: true, repair_idle: true };
+        let row = failure_actions(K::PlaybackInterrupted, cx);
+        assert_eq!(&row[..2], &[A::TryAgain, A::ChangeQuality]);
     }
 
     #[test]

@@ -129,6 +129,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
     };
     screen.sync_keys(test_store().view());

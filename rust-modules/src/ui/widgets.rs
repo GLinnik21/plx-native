@@ -1332,15 +1332,8 @@ pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4
 // stated `.34` resolves to roughly a tenth of that on screen. `keyline_chip` measured it (~12
 // levels above ground where the arithmetic says ~87). Opaque ink is what makes a 1.5px ring exist.
 //
-// **`player_hud::draw_hint_with_keycap` is DELIBERATELY NOT migrated onto this, and that is a
-// decision rather than an oversight.** Two of the three lanes did migrate it and one refused; the
-// refusal is what shipped. Going hollow is not a no-op on that screen — it trades a .34 white
-// knockout for opaque `TEXT_SECONDARY`, so the cap gets brighter on the one screen whose whole
-// design brief is "survive a phone photograph in an issue thread". That is a DEVICE look, gradeable
-// only on the television and not on a host simulator, so the failure read-out keeps its own cap
-// until someone can put the two side by side on the panel. The cost is a second cap construction in
-// the tree, which is why it is written down here rather than left to be rediscovered as duplication
-// worth cleaning up.
+// The player's failure read-out no longer draws a key cap at all: its actions are real buttons
+// (`StatusOverlay`'s row, `player::failure_actions`), so this is the one cap construction left.
 /// The cap's outer height — a fixed band, unlike [`keyline_chip`], which hugs its label's cap band.
 /// A key cap stands for a physical button, so every cap in the app is the same size whatever word
 /// is on it; only the WIDTH grows.
@@ -3586,6 +3579,11 @@ pub struct StatusOverlay<'a> {
     /// exists only beside a primary: a read-out whose one thing to press is secondary has no
     /// primary to be secondary to. `None` = absent, not empty. Frame slot 1.
     pub secondary: Option<&'a core::ffi::CStr>,
+    /// Further controls on the same row, after the secondary — frame slots 2 and up. Like the
+    /// secondary they exist only beside a primary. The player's failure read-out is the caller
+    /// that needs them: its row is derived from `player::failure_actions`, which can offer a fix,
+    /// a second recovery, *Details* and *Back* together. `None` = absent.
+    pub extra: [Option<&'a core::ffi::CStr>; STATUS_ROW_MAX - 2],
     /// ONE line of fine print UNDER the control row, centred at `CAPTION` in `TEXT_TERTIARY` — the
     /// sign-in report's quiet status ("Sending report…", "Report sent"). It wraps (at most two
     /// lines, never shrinking) inside [`Self::REASON_W`], is absent when `None`, and cannot move
@@ -3609,13 +3607,16 @@ pub struct StatusOverlay<'a> {
     pub glyph_ceiling: Option<f32>,
     pub kind: StatusKind,
     pub phase: u32,
-    /// which pill of the row holds focus — 0 the primary, 1 the `secondary`; `None` when focus is
-    /// elsewhere. Ignored for a slot with no pill.
+    /// which pill of the row holds focus — 0 the primary, 1 the `secondary`, 2.. the `extra`
+    /// slots; `None` when focus is elsewhere. Ignored for a slot with no pill.
     pub focus: Option<usize>,
     /// the per-pill [FOCUS POP](CTRL_FOCUS_SCALE) the CALLER's `CtlPop` supplies — see the draw
     /// for why a lone action takes none.
-    pub scales: [f32; 2],
+    pub scales: [f32; STATUS_ROW_MAX],
 }
+
+/// The most controls one read-out row carries: a primary, a secondary and two `extra` slots.
+pub const STATUS_ROW_MAX: usize = 4;
 
 /// The stacked read-out's geometry — the ONE place its bands are placed, read by the draw and by
 /// [`StatusOverlay::action_frames_measured`] so a screen's hit test cannot drift from the pills it
@@ -3664,6 +3665,7 @@ impl<'a> StatusOverlay<'a> {
             reason: None,
             action: None,
             secondary: None,
+            extra: [None; STATUS_ROW_MAX - 2],
             note: None,
             note_busy: false,
             page: false,
@@ -3672,7 +3674,7 @@ impl<'a> StatusOverlay<'a> {
             kind,
             phase: 0,
             focus: None,
-            scales: [1.0; 2],
+            scales: [1.0; STATUS_ROW_MAX],
         }
     }
     /// ms clock driving the spinner's rotation (ignored by `Failed`)
@@ -3726,11 +3728,9 @@ impl<'a> StatusOverlay<'a> {
     /// `StatusOverlay` contract in one place: a `Failed` verdict is bold `size::TITLE` in
     /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
     /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
-    /// The one read-out whose verdict is `TEXT_PRIMARY` is the player's full-screen failure, which
-    /// carries its own 96px glyph and is drawn by `player_hud`, not here. A page-placed `Failed`
-    /// read-out (`page`, spec "1A") carries a DIFFERENT glyph — 112px, `TEXT_SECONDARY`, drawn by
-    /// this widget itself — so "the one read-out … carries the glyph" is no longer true of glyphs
-    /// in general, only of this specific `TEXT_PRIMARY`-verdict, `player_hud`-drawn pairing.
+    /// Every `Failed` read-out uses this face, the player's full-screen failure included: it is a
+    /// page-placed read-out (`page`, spec "1A") like Home's and sign-in's, with the same 112px
+    /// `TEXT_SECONDARY` glyph drawn by this widget.
     pub(crate) fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
         match kind {
             StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
@@ -3840,6 +3840,19 @@ impl<'a> StatusOverlay<'a> {
         self.secondary = label;
         self
     }
+    /// **The whole row at once**, in order: the first label is the primary, the second the
+    /// secondary, the rest the [`extra`](Self::extra) slots. Labels past [`STATUS_ROW_MAX`] are a
+    /// caller bug and are dropped (debug builds assert).
+    pub fn row(mut self, labels: &[&'a core::ffi::CStr]) -> Self {
+        debug_assert!(labels.len() <= STATUS_ROW_MAX, "a read-out row holds at most {STATUS_ROW_MAX} controls");
+        let mut it = labels.iter().copied();
+        self.action = it.next();
+        self.secondary = it.next();
+        for slot in self.extra.iter_mut() {
+            *slot = it.next();
+        }
+        self
+    }
     /// The quiet line under the row — see [`StatusOverlay::note`].
     pub fn note(mut self, line: Option<&'a core::ffi::CStr>) -> Self {
         self.note = line;
@@ -3860,9 +3873,10 @@ impl<'a> StatusOverlay<'a> {
         self.focus = i;
         self
     }
-    /// Each control's focus pop, normally `[pop.scale(0), pop.scale(1)]`.
+    /// The first two controls' focus pop, normally `[pop.scale(0), pop.scale(1)]`; any `extra`
+    /// control keeps 1.0.
     pub fn scales(mut self, s: [f32; 2]) -> Self {
-        self.scales = s;
+        self.scales[..2].copy_from_slice(&s);
         self
     }
     /// How far the read-out's ink reaches ABOVE the frame centre: the spinner ring plus its dots
@@ -3920,22 +3934,26 @@ impl<'a> StatusOverlay<'a> {
         StatusBands { cap, reason, action_y }
     }
 
-    /// The ROW's labels in draw order — the primary, then the secondary — each with the slot
-    /// index focus and the scales address it by. Empty without a primary.
+    /// The ROW's labels in draw order — the primary, then the secondary, then the `extra` slots —
+    /// each with the slot index focus and the scales address it by. Empty without a primary.
     fn row_labels(&self) -> impl Iterator<Item = (usize, &'a core::ffi::CStr)> + '_ {
-        self.action.into_iter().map(|l| (0, l)).chain(
-            self.secondary.map(|l| (1, l)).filter(move |_| self.action.is_some()))
+        let rest = core::iter::once(self.secondary)
+            .chain(self.extra.iter().copied())
+            .enumerate()
+            .filter_map(|(i, l)| l.map(|l| (i + 1, l)))
+            .filter(move |_| self.action.is_some());
+        self.action.into_iter().map(|l| (0, l)).chain(rest)
     }
 
     /// Lay the row out from its pill widths: one centred run, `CONTROL_GAP` apart — the
     /// control-group distance a pair of answers uses everywhere else. A lone primary is exactly
     /// the centred pill it always was.
-    fn row_rects(&self, widths: [Option<f32>; 2], bands: &StatusBands) -> [Option<Rect>; 2] {
+    fn row_rects(&self, widths: [Option<f32>; STATUS_ROW_MAX], bands: &StatusBands) -> [Option<Rect>; STATUS_ROW_MAX] {
         let present = widths.iter().flatten().count();
         let total = widths.iter().flatten().sum::<f32>()
             + CONTROL_GAP * present.saturating_sub(1) as f32;
         let mut x = self.frame.cx() - total * 0.5;
-        let mut out = [None; 2];
+        let mut out = [None; STATUS_ROW_MAX];
         for (i, w) in widths.iter().enumerate() {
             if let Some(w) = w {
                 out[i] = Some(Rect::new(x, bands.action_y, *w, Self::CTRL_H));
@@ -3970,8 +3988,8 @@ impl<'a> StatusOverlay<'a> {
     }
 
     /// The row through the live font — the legacy `View` path's twin of `action_frames_measured`.
-    fn frames_live(&self, bands: &StatusBands) -> [Option<Rect>; 2] {
-        let mut widths = [None; 2];
+    fn frames_live(&self, bands: &StatusBands) -> [Option<Rect>; STATUS_ROW_MAX] {
+        let mut widths = [None; STATUS_ROW_MAX];
         for (i, l) in self.row_labels() {
             widths[i] = Some(Button::pill_w(l.as_ptr(), STATUS_CAP_SZ, false));
         }
@@ -3985,10 +4003,17 @@ impl<'a> StatusOverlay<'a> {
 
     /// Every control, by slot (0 the primary, 1 the secondary), through the geometry the draw uses.
     pub(crate) fn action_frames_measured(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; 2] {
+        let row = self.row_frames_measured(measure);
+        [row[0], row[1]]
+    }
+
+    /// Every control of the row, by slot (0 the primary, 1 the secondary, 2.. the `extra`
+    /// slots), through the geometry the draw uses.
+    pub(crate) fn row_frames_measured(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; STATUS_ROW_MAX] {
         if self.action.is_none() {
-            return [None; 2];
+            return [None; STATUS_ROW_MAX];
         }
-        let mut widths = [None; 2];
+        let mut widths = [None; STATUS_ROW_MAX];
         for (i, l) in self.row_labels() {
             widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, false, measure));
         }
@@ -4004,14 +4029,14 @@ impl<'a> StatusOverlay<'a> {
 
     #[cfg(test)]
     fn action_rect(&self, width: f32, bands: &StatusBands) -> Rect {
-        self.row_rects([Some(width), None], bands)[0].expect("one pill")
+        self.row_rects([Some(width), None, None, None], bands)[0].expect("one pill")
     }
 
     /// Render through the very geometry used by `action_frames_measured`, without live font
     /// measurements deciding the hit target behind the host's measurement capability.
     pub(crate) fn draw_measured(&self, e: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
         let bands = self.bands_measured(measure);
-        let frames = self.action_frames_measured(measure);
+        let frames = self.row_frames_measured(measure);
         self.draw_geometry(e, p, bands, frames, measure);
     }
 
@@ -4029,7 +4054,7 @@ impl<'a> StatusOverlay<'a> {
         e: &Env,
         p: Painter,
         b: StatusBands,
-        frames: [Option<Rect>; 2],
+        frames: [Option<Rect>; STATUS_ROW_MAX],
         measure: &dyn crate::ui::machine::Measure,
     ) {
         // spinner above, caption below, the pair centred on the frame
@@ -4978,6 +5003,44 @@ pub(crate) fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f3
         let r = strip_pill_rect(l, 0.0, h);
         (r.x, r.w)
     })
+}
+
+/// **Draw a whole strip — both capsules, then every on-screen pill — through ONE scroll offset.**
+///
+/// This is the one draw path every [`TabStrip`] consumer uses (the detail page's season tabs, the
+/// Filmography department filter and the Library's library row), because the capsules and the pills
+/// are two halves of one picture and must never be placed by two offsets. The Filmography route
+/// drew them with two: its pills were laid out already scrolled while its capsules were drawn in
+/// content space through an UN-translated painter, so the moment the row scrolled the focus plate
+/// slid off its own label by exactly the scroll (issue 14). Here the translate is applied once and
+/// both halves are drawn through it.
+///
+/// Pills wholly outside the screen are CULLED against the painter's own screen x (the scroll and
+/// any page slide already folded in), so a long strip costs its visible pills, not its length.
+/// `top` is the row's y in the painter's space; `scroll` is the strip's horizontal scroll.
+pub(crate) fn draw_strip(
+    p: Painter,
+    strip: &TabStrip,
+    lays: &[StripLay],
+    top: f32,
+    h: f32,
+    scroll: f32,
+    ground: TabGround,
+) {
+    let p = p.translate(-scroll, 0.0);
+    strip.draw(p, top, h, ground);
+    let env = Env::inert();
+    for lay in lays {
+        let pill = strip_pill_rect(lay, top, h);
+        if !crate::ui::on_axis(pill.x + p.dx(), pill.w, crate::ui::consts::SCR_W, 0.0) {
+            continue;
+        }
+        let (fm, sm) = strip.mixes((pill.x, pill.w));
+        TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
+            .plated()
+            .mix(fm, sm)
+            .draw(&env, p);
+    }
 }
 
 /// The same strip geometry using an owned screen's measurement capability.

@@ -60,8 +60,11 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 ## Localization and shared reading layout
 
 App-owned text comes from typed `i18n::msg` accessors. Keep protocol identifiers and server-returned
-metadata untouched. Measure translated labels with the injected `Measure`; focused captions and
-complete questions must remain inside their safe frames at the shared theme sizes.
+metadata untouched. Measure translated labels with the injected `Measure`; complete questions must
+remain inside their safe frames at the shared theme sizes. Tile labels are the exception: they
+belong to their card, never to the safe area. `card_row::place_label` centres a focused tile's
+block on its card, or starts every line at the card's leading edge where the centred block would
+leave the panel; cast names scroll off-screen with their headshots at full width.
 
 Alert titles, eyebrows and reading text use `theme::alert::TEXT_ALIGN`: the common left padding
 edge. Decision dialogs follow the same rule as the About, biography and track-information panels.
@@ -215,13 +218,12 @@ presentation in a design pass.
    fourth entry in the HUD control row (`player_hud.rs`'s `BTN_N`, currently 3).
 
 4. **Failure read-outs are never red — the app does not scold.** A failed verdict is inked bold at
-   `size::TITLE` in `theme::TEXT_SECONDARY` (`TEXT_PRIMARY` only for the player's own 96 px glyph,
-   drawn by `player_hud`), per the design system's `StatusOverlay` contract. Home, Library and
-   sign-in read-outs share ONE placement: the verdict hangs from `FULL_ANCHOR_TOP` with the reason
-   and action row stacked directly under it — and, since the read-out glyph work, their own 112 px
-   `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument), a
-   second, unrelated glyph family, not the player's. A read-out centred in its own container
-   instead lands ~250 px low and reads as a different component.
+   `size::TITLE` in `theme::TEXT_SECONDARY`, per the design system's `StatusOverlay` contract.
+   Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
+   from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
+   `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument). A
+   read-out centred in its own container instead lands ~250 px low and reads as a different
+   component.
 
 5. **Read the DS contract before inventing a control state.** Focus, hover and selected treatments
    come from the component's `.d.ts` in the design system, not from a lane's judgement. The Search

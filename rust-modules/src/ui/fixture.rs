@@ -352,6 +352,16 @@ impl Machine<FixtureHost> for FixtureScreen {
         fx: &mut Effects<'_, FixtureHost>,
     ) -> Handled {
         self.state.events.push(ev.name());
+        // `by` is not part of `ev.name()`, and the tab-switch focus-jump regression is exactly a
+        // `By::Restore`-vs-`By::Dir` distinction the event NAME cannot see.
+        if let ScreenEvent::FocusMoved { by, .. } = ev {
+            self.state.events.push(match by {
+                super::screen::By::Dir => "by_dir",
+                super::screen::By::Pointer => "by_pointer",
+                super::screen::By::Restore => "by_restore",
+                super::screen::By::Reconcile => "by_reconcile",
+            });
+        }
         // Page 801 observes the context of each delivered input, without consuming directions.
         if self.arg == FixtureArg::Page(801) && matches!(ev, ScreenEvent::Input(_)) {
             self.state.events.push(match cx.owner {
@@ -1697,6 +1707,27 @@ fn the_tick_is_delivered_after_every_result_and_before_nav_commit() {
     assert!(t < wl, "the tick precedes the commit's lifecycle: {home_ev}");
     let page_ev = events_of(&d, 1);
     assert!(page_ev.contains("\"mount\", \"enter\""), "{page_ev}");
+}
+
+/// Owner report (Library All grid, 2026-09-28): a poster LOSING focus snapped back to rest and
+/// the rows under it jumped instead of moving together, while the one GAINING focus animated.
+/// The engine moves focus while the frame's ingested key is drained, but its `FocusMoved` went to
+/// the FIFO tail — BEHIND the frame's `Tick`, which `head` had already queued. That Tick then read
+/// the NEW focus with no announcement, so a screen whose motion distinguishes a deliberate move
+/// from a restore adopted the unannounced cell as a restore (settled, no motion) and the late
+/// `FocusMoved` re-popped it from rest, discarding the outgoing tile's shrink. The notification
+/// must reach the owner before any other delivery that can read the focus it describes.
+#[test]
+fn a_key_moves_focus_and_announces_it_before_the_frames_tick() {
+    let (mut d, mut rig, _) = booted();
+    let before = d.focus();
+    d.frame(&mut rig, tick(16), vec![key(Key::Right, tick(16))], vec![], &mut NoTap);
+    assert_ne!(d.focus(), before, "the fixture row moved: the test needs a real move");
+    let ev = events_of(&d, 0);
+    let frame = &ev[ev.rfind("\"input\"").unwrap()..];
+    let moved = frame.find("\"focus_moved\"").expect(&ev);
+    let tick = frame.find("\"tick\"").expect(&ev);
+    assert!(moved < tick, "FocusMoved must precede the Tick that reads the moved focus: {ev}");
 }
 
 #[test]

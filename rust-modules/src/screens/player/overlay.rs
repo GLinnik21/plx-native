@@ -286,6 +286,11 @@ impl PlayerOverlayScreen {
             OverlayKind::More { quality: false } => {
                 Panel::More(crate::ui::more_menu::MoreMenuState::new(ps))
             }
+            // Force Direct Play offers no Quality section, so there is no rung to land on: a
+            // quality entry is the ordinary menu then (`more_menu::rows_for`).
+            OverlayKind::More { quality: true } if crate::route::forced_direct_play(ps) => {
+                Panel::More(crate::ui::more_menu::MoreMenuState::new(ps))
+            }
             OverlayKind::More { quality: true } => {
                 Panel::More(crate::ui::more_menu::MoreMenuState::new_quality(ps))
             }

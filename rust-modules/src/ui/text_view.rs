@@ -94,6 +94,9 @@ pub struct TextView<'a> {
     /// is the lead run drawn BOLD (`lead`) or at the block's own weight (`lead_quiet`)
     lead_bold: bool,
     fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
+    /// the mark `fade_last` reserves room for is drawn whether or not the text truncates — see
+    /// [`mark_always`](Self::mark_always)
+    mark_always: bool,
     /// Vertical edge-dissolve bands, in the SAME absolute coordinate space `draw`'s `frame.y` is
     /// drawn in — see [`edge_fade`](Self::edge_fade). `None` on each axis by default.
     vfade_top: Option<(f32, f32)>,
@@ -131,6 +134,7 @@ impl<'a> TextView<'a> {
             lead: None,
             lead_bold: true,
             fade_last: 0.0,
+            mark_always: false,
             vfade_top: None,
             vfade_bot: None,
         }
@@ -232,7 +236,8 @@ impl<'a> TextView<'a> {
     /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
     /// line (the About card's right-pinned MORE): when the text was truncated by `max_lines` AND the
     /// last line reaches into that zone, the line paints with a shader fade to transparency ending at
-    /// `width − px` instead of colliding. A no-op on non-truncated text. Left-aligned blocks only.
+    /// `width − px` instead of colliding. A no-op on non-truncated text unless the mark is
+    /// [`mark_always`](Self::mark_always) drawn. Left-aligned blocks only.
     ///
     /// **Setting this CLEARS [`trailing`](Self::trailing), and vice versa — the two are one choice,
     /// not two flags.** They are mutually exclusive in `draw` by construction: the fade branch ends
@@ -488,6 +493,16 @@ impl<'a> TextView<'a> {
         self.fade_last(mark + gap)
     }
 
+    /// Declare that the mark [`fade_last`](Self::fade_last) reserves room for is pinned on the last
+    /// line UNCONDITIONALLY (the About card's MORE opens the card whatever the synopsis' length), so
+    /// an untruncated last line that reaches into the reserved zone dissolves too instead of
+    /// running under the mark. A truncated line keeps the wider rule; see
+    /// [`last_line_fades`](Self::last_line_fades).
+    pub(crate) fn mark_always(mut self) -> Self {
+        self.mark_always = true;
+        self
+    }
+
     /// Draw the [`more_mark`] pinned right on the last line of this block, drawn at `x`/`top` in a
     /// `w`-wide column to `drawn_h`: `TEXT_SECONDARY` while `marked` (the block holds a pressed
     /// focus), `TEXT_TERTIARY` otherwise. The pair to [`fade_for_more`](Self::fade_for_more).
@@ -497,11 +512,32 @@ impl<'a> TextView<'a> {
             .draw(p, Rect::new(x, self.last_line_cap_y(top, drawn_h), w, 0.0));
     }
 
+    /// Does [`draw`](Self::draw) dissolve the LAST line at wrap width `width` into the
+    /// [`fade_last`](Self::fade_last) zone? The one decision `draw` paints through, pulled out so
+    /// a screen pinning a mark can assert it without a GL context.
+    ///
+    /// A truncated line fades once it reaches the fade band ahead of the zone: the dissolve itself
+    /// says "there is more". An untruncated line under a [`mark_always`](Self::mark_always) mark
+    /// fades only when its laid-out run actually overlaps the reserved zone — the mark and its air.
+    pub fn last_line_fades(&self, width: f32) -> bool {
+        if self.fade_last <= 0.0 {
+            return false;
+        }
+        let wrapped = self.wrap(width);
+        let Some(&last) = wrapped.widths.last() else { return false };
+        if wrapped.truncated {
+            last > width - self.fade_last - self.fade_band()
+        } else {
+            self.mark_always && last > width - self.fade_last
+        }
+    }
+
     /// The drawn width of the block's LAST wrapped line at `width` — what a caller pinning an
     /// out-of-flow mark (a right-aligned MORE) on that line has to check before doing so. A line
-    /// that reaches into the mark's zone and is NOT truncated has no fade to dissolve into, so the
-    /// mark must go somewhere else; `fade_last` only ever acts on a truncated last line. Shares the
-    /// memoised wrap. Zero for an empty block.
+    /// that reaches into the mark's zone and is NOT truncated fades only when the view declares
+    /// [`mark_always`](Self::mark_always); otherwise `fade_last` acts on a truncated last line
+    /// alone and the mark must go somewhere else. Shares the memoised wrap. Zero for an empty
+    /// block.
     pub fn last_line_w(&self, width: f32) -> f32 {
         self.wrap(width)
             .widths
@@ -573,10 +609,9 @@ impl<'a> TextView<'a> {
             let row = Rect::new(frame.x + dx, frame.y + i as f32 * lh, frame.w - dx, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
-            let last_line_dissolves = is_last
-                && wrapped.truncated
-                && self.fade_last > 0.0
-                && text_w > fade_from;
+            // `fade_last` and `trailing` are exclusive, so a fading last line is never `clipped`
+            // and its drawn width is the wrap's own — the width `last_line_fades` grades.
+            let last_line_dissolves = is_last && self.last_line_fades(frame.w);
             // Does THIS line's own box cross a vertical edge band at all? Most lines of a
             // viewport's prose answer no on both counts and stay on the cheap plain path below —
             // see `edge_fade`'s doc for why that matters, and [`line_overlaps_band`] for the test.

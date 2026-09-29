@@ -509,6 +509,42 @@ mod tests {
         assert!((right - SIDE_PAD * s).abs() < 0.01, "air after the chevron {right}");
     }
 
+    /// `(leading, trailing)` air of a face around its inked content — the text's left edge to the
+    /// chevron's ink right edge — at a focus amount, measured from what `draw` paints.
+    fn air(h: LinkedHeading<'_>, focus_t: f32) -> (f32, f32) {
+        let m = h.measure(&FixtureMeasure);
+        let face = h.face_rect(super::super::consts::MARGIN_X, 300.0, focus_t, &m);
+        let lead = h.content_x(face, &m) - face.x;
+        let chevron_ink_right = h.content_x(face, &m) + m.run_w + CHEVRON_GAP - CHEVRON_BEARING_L
+            + CHEVRON_SIZE
+            - CHEVRON_BEARING_R;
+        (lead, face.x + face.w - chevron_ink_right)
+    }
+
+    /// **Issue 16: a focused linked heading's pill is even on its content**, like the Filmography
+    /// pill: the same air before the title as after the chevron, at every point of the pop, for
+    /// both presentations (the owner saw `SIDE_PAD + 7%` of the face after the chevron against
+    /// `SIDE_PAD` before the title).
+    #[test]
+    fn a_focused_heading_pill_has_equal_air_either_side_like_the_filmography_pill() {
+        let heading = LinkedHeading::heading("Collections", "");
+        let entry = LinkedHeading::entry("Filmography", "23");
+        for h in [heading, entry] {
+            let (lead, trail) = air(h, 0.0);
+            assert!((lead - SIDE_PAD).abs() < 0.01, "{:?} resting lead {lead}", h.presentation);
+            assert!((trail - SIDE_PAD).abs() < 0.01, "{:?} resting trail {trail}", h.presentation);
+            for step in 1..=10 {
+                let t = step as f32 / 10.0;
+                let (lead, trail) = air(h, t);
+                assert!(
+                    (lead - trail).abs() < 0.01,
+                    "{:?} at focus {t}: {lead} before the text, {trail} after the chevron",
+                    h.presentation
+                );
+            }
+        }
+    }
+
     /// D1/E1: "Starfall Saga Collection · 12 ›" — the count rides after the title, ahead of any
     /// source annotation, and a zero count draws none.
     #[test]

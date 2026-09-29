@@ -657,3 +657,53 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
     }
     crate::route::restore_direct_play_mode(previous);
 }
+
+/// Owner report: entering Audio & Subtitles from the Settings root landed focus on the LAST row
+/// of the loaded table. The page mounts empty (its rows arrive with the account receipt), so the
+/// push's `FirstInGroup` found no group to seat — and the engine kept the ROOT page's key. Every
+/// page in this family shares the surface's `EntryId`, so that stale key (the Audio & Subtitles
+/// row, the root's last) read as a row of the new page once rows landed and was clamped onto
+/// the new table's last row. Drive the real push from the real root row.
+#[test]
+fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
+    use crate::plex::account::{AudioPreferences, PreferenceRequest};
+    use registry::{AccountPreferenceReply, PreferenceCmd};
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-audio-push-first-row");
+    let previous = crate::plex::session::current_snapshot();
+    struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
+    impl Drop for RestoreProfile {
+        fn drop(&mut self) {
+            crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+        }
+    }
+    let _restore = RestoreProfile(previous);
+    let user = crate::plex::session::UserRef { id: 7, uuid: "audio-push-fixture".into(),
+        ..Default::default() };
+    crate::plex::session::publish_profile_for_test(Some(user.clone()), 72);
+    let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 72, AudioPreferences::default());
+    let (mut d, mut rig, id) = opened();
+    // Audio & Subtitles is the root's last row: walk DOWN until focus stops moving.
+    let mut ms = 32;
+    let mut last = d.focus();
+    loop {
+        frame(&mut d, &mut rig, ms, vec![key(Key::Down, tick(ms))]);
+        ms += 16;
+        if d.focus() == last { break; }
+        last = d.focus();
+        assert!(ms < 1000, "the root must end");
+    }
+    let audio_row = last.expect("a root row is focused").elem;
+    assert!(audio_row > 3, "the premise: the root row sits below the loaded table's extent");
+    frame(&mut d, &mut rig, ms, vec![key(Key::Ok, tick(ms))]);
+    assert!(path(&d, id).contains("/audio-subtitles:"), "OK pushed Audio & Subtitles: {}", path(&d, id));
+    frame(&mut d, &mut rig, ms + 16, vec![]);
+    let Some(PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
+        panic!("the pushed page must ask its host for the initial load");
+    };
+    reply.send(AccountPreferenceReply { request: Some(request), outcome: Ok(snapshot) }).unwrap();
+    frame(&mut d, &mut rig, ms + 32, vec![]);
+    frame(&mut d, &mut rig, ms + 48, vec![]);
+    assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
+        "the first landed rows seat the top row, not the root's stale row {audio_row} clamped to the last");
+}

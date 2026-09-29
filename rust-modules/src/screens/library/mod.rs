@@ -132,6 +132,14 @@ fn readout(table: SecFetch, sections: usize, fetch: SecFetch, total: i64) -> Rea
     }
 }
 
+/// Is the shelf run above the grid final? `Fetching` (the first answer is still inside its
+/// bounded first-paint window) and `Staged` (an answer held until the page may move — which a
+/// hidden page always may, so it commits on the next frame) both mean the grid's offset is about
+/// to change. A publication with no identity has no section behind it and nothing to wait for.
+fn shelves_settled(hubs: crate::stores::browse::HubsView<'_>) -> bool {
+    hubs.id().is_none() || hubs.publication() == crate::browse::section_hubs::Publication::Committed
+}
+
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub(crate) struct LibraryScreen {
     entry: EntryId,
@@ -425,6 +433,14 @@ impl LibraryScreen {
         let targets: Vec<_> = self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))).collect();
         let rows = self.pair.detail.elems.len().div_ceil(self.layout.cols());
+        // A grid transaction's commit empties the store (`browse::requery`) while the grid is
+        // dark and its answer is in flight. The shelves, heading and TYPE chip around it are
+        // NOT dark: sizing the document from the empty interim would shrink `max_scroll` and
+        // slide the whole page to the clamp and back when the answer lands. Until the answer
+        // says otherwise, the dark grid keeps reserving the extent it had.
+        let rows = if rows == 0 && self.grid_fade.is_swapping() && self.readout == Readout::Loading {
+            self.layout.rows
+        } else { rows };
         let grid_head = rows > 0 || self.grid_fade.is_swapping()
             // An empty answer keeps the heading row: its TYPE chip is how the reader leaves an
             // empty listing (no collections, no episodes) for one that has something in it.
@@ -919,7 +935,13 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     directory.preferred(kind).is_some() || directory.kind_fetch(kind) == SecFetch::Loading
                 });
                 let ready = self.readout != Readout::Loading && !waiting_for_kind;
-                let page_commit = self.page_fade.tick(tick.dt(), ready);
+                // A section's reveal also waits for the document ABOVE its grid. Its shelves are
+                // a separate fetch that sets the grid's absolute offset, so revealing on the
+                // listing alone drew the grid at the top and then dropped it by the shelves'
+                // height when they landed (owner report item 9, the section half). A grid-only
+                // swap keeps its own `ready`: its shelves are already the document it fades inside.
+                let shelves = shelves_settled(H::section_hubs(cx));
+                let page_commit = self.page_fade.tick(tick.dt(), ready && shelves);
                 let grid_commit = self.grid_fade.tick(tick.dt(), ready);
                 if page_commit || (grid_commit && self.pending.section().is_none()) { self.flush(fx); }
                 if self.live {
@@ -947,7 +969,13 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         .and_then(|key| self.pair.detail.index_of(key.elem));
                     self.pair.detail.tick(grid_focus, dt);
                     self.relayout(focused);
-                    if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
+                    // A first seat that applies a bookmarked scroll clamps it to the document, so
+                    // behind a section reveal it waits for the same shelves the reveal does:
+                    // seated on the shelfless interim, a bookmark deep in the grid landed short of
+                    // where the reader left. A head seat needs no wait — `provisional` follows the
+                    // head when the shelves land — and a page already on screen seats as it did.
+                    let settled = shelves || !self.page_fade.is_swapping() || self.restore_scroll.is_none();
+                    if self.initial && settled && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
                         self.initial = false;
                         let group = match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
                             Some(Block::Grid(_)) => self.pair.groups_config().detail,

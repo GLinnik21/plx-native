@@ -210,11 +210,28 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
             // question here ("ignore what's remembered") is the container's, not the group's
             // policy, and only the container knows a page has never been seen (`FocusTarget`'s
             // doc on `screen.rs`).
-            (None, FocusTarget::FirstInGroup(g)) => {
+            //
+            // `FirstInGroupAnimated` is the same seat reported as `By::Dir` instead of
+            // `By::Restore`: a strip pill's cover-and-mint always arrives FROM the visible strip,
+            // so it is exactly as deliberate as a directional move into the same group — see the
+            // variant's doc on `screen.rs` for why `By::Restore` there was the tab-switch
+            // focus-jump bug. Both are "never seen", so both take the empty-page arm below.
+            (None, FocusTarget::FirstInGroup(g) | FocusTarget::FirstInGroupAnimated(g)) => {
                 let Some(spec) = resolve_group(&groups, g) else {
+                    // A never-seen page with nothing to seat yet (its rows land async). The
+                    // scope's current key is the OUTGOING page's, and a family whose pages share
+                    // one `EntryId` (the Settings surface) would read it as a row of this page
+                    // once rows land — clamped onto its last row. Nothing of this page is
+                    // focused, so the scope says so and the page seats its own first landing.
+                    self.clear(owner);
                     return Outcome::Nothing;
                 };
-                (f.seat(spec.id, head_of(spec.extent), cx), By::Restore)
+                let by = if matches!(target, FocusTarget::FirstInGroupAnimated(_)) {
+                    By::Dir
+                } else {
+                    By::Restore
+                };
+                (f.seat(spec.id, head_of(spec.extent), cx), by)
             }
         };
         let group = f.group_of(&key.elem, cx);
@@ -1278,5 +1295,22 @@ mod tests {
             restored_to, want,
             "an explicit restored key outranks both the remembered cursor and the group's Seat policy"
         );
+    }
+
+    /// A never-seen page that mounts EMPTY (its rows land async) must not keep the outgoing
+    /// page's key as its scope's current focus: in the Settings family every page shares one
+    /// `EntryId`, so that stale key read as a row of the new page once rows landed and was
+    /// clamped onto its LAST row (Audio & Subtitles, owner issue 3). Both "never seen" targets —
+    /// the push's `FirstInGroup` and the tab mint's `FirstInGroupAnimated` — clear the scope.
+    #[test]
+    fn a_fresh_first_in_group_enter_with_no_group_clears_the_stale_scope() {
+        rig!(m, v, cx);
+        let empty = Tree::new(E);
+        for target in [FocusTarget::FirstInGroup(GroupId(0)), FocusTarget::FirstInGroupAnimated(GroupId(0))] {
+            let mut e = FocusEngine::new();
+            e.set(OWNER, key(E, 0, 3), Some(GroupId(0)), By::Dir);
+            assert!(matches!(e.enter(OWNER, &empty, target, None, &cx), Outcome::Nothing));
+            assert_eq!(e.current(OWNER), None, "{target:?}: the outgoing page's key must not survive");
+        }
     }
 }

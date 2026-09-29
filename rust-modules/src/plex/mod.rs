@@ -30,6 +30,10 @@ mod servers;
 mod hubs;
 mod library;
 pub(crate) mod collections;
+/// The one client-side hub-title override rule (issue #12): shared by Home's whole-catalog merge
+/// (`crate::pms`) and a library's own `/hubs/sections/{id}` shelves (`crate::browse::section_hubs`)
+/// so neither reimplements or drifts from the other's id table.
+pub(crate) mod hub_title;
 /// Whole-file text subtitles are bounded before transport allocation and parsing.
 pub(crate) const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;

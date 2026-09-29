@@ -138,6 +138,21 @@
       "_fps_floor_note": "The scene's oscillator drives motion every frame, so presents should track the panel. This — not `loop_floor` — is what a fill-rate regression now shows up in: `loop_floor` grades loop=, which counts loop iterations and reads ~60 even with every present skipped."
     },
     {
+      "name": "show-detail",
+      "tier": "ui",
+      "route": "detail",
+      "loop_floor": 45,
+      "run_secs": 22,
+      "warmup_s": 6,
+      "item": "show_detail",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailosc": true
+      },
+      "fps_floor": 45,
+      "comment": "detail-transition on a SHOW: the same oscillator over a page that also carries the season strip and the episode shelf, which a movie has neither of. Issue 18: every show detail held 27 fps where a movie held 60, with identical GPU work — the page's walk re-hashed every episode's text once per registered stop (O(episodes^2) per walk, and the frame walks the page for backdrop discovery as well as the visible pass). Named without 'detail-transition' because --only is a substring match."
+    },
+    {
       "name": "item-menu",
       "tier": "ui",
       "route": "home",

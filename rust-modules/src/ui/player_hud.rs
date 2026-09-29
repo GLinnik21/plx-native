@@ -889,19 +889,18 @@ pub(crate) fn draw_readout(
     ps: &crate::route::PlaybackSession,
     busy: Busy,
     now: u32,
+    failure_focus: usize,
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let Busy::Readout(kind, caption) = busy else {
         return;
     };
     if kind == StatusKind::Failed {
-        // The failure read-out has its own composed layout (`Player Screen.dc.html`, which
-        // superseded the retired `Plex Pass Awareness.dc.html` as the spec for this screen)
-        // — glyph, fixed verdict, a reason slot, a hint — rather than the shared
-        // spinner overlay. The caption is not drawn here: the verdict line is constant by design
-        // ("lands at the same y in all three variants, so a user who has seen it once recognises
-        // it before reading") and the caption's suffix is re-derived as the reason.
-        draw_failed_readout(ps, Painter::root(), measure);
+        // The failure is a page read-out (`FailureReadout`): the shared page placement, a
+        // constant verdict, one reason, a row of controls. The caption is not drawn here: the
+        // verdict line is constant by design, so a viewer who has seen it once recognises it
+        // before reading, and the caption's suffix is re-derived as the reason.
+        draw_failed_readout(ps, Painter::root(), failure_focus, measure);
         return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
@@ -909,57 +908,191 @@ pub(crate) fn draw_readout(
         .draw(&hud_env(), Painter::root());
 }
 
-// ---- the failure read-out (`Player Screen.dc.html`) -----------------------------------------
+// ---- the failure read-out -------------------------------------------------------------------
 //
-// One layout with one optional line. Anchored from the TOP, not centred: the glyph and the
-// verdict never move, and the reason sits in a slot that reserves two BODY lines, so a
-// zero-, one- or two-element reason leaves the hint at the same y. All on the video ground —
-// pure black by the time an error is up — so there is no card chrome.
-const FR_GLYPH_S: f32 = 96.0;
-/// The full-screen read-out's shared top anchor — the same line a full-frame `Failed`
-/// [`StatusOverlay`] hangs its verdict from.
-const FR_GLYPH_TOP: f32 = StatusOverlay::FULL_ANCHOR_TOP;
-const FR_VERDICT_TOP: f32 = FR_GLYPH_TOP + FR_GLYPH_S + 44.0;
-const FR_REASON_TOP: f32 = FR_VERDICT_TOP + 48.0 + 24.0;
-/// two BODY lines' worth of slot, reserved whether or not anything is in it
-const FR_REASON_SLOT: f32 = 84.0;
-/// The slot's SECOND line — and there is only one of it, because its two possible occupants are
-/// mutually exclusive by construction: the server's quoted verdict belongs to the one arm that
-/// never sets `no_pass`, and the Pass line belongs to an arm that carries no verdict. They share
-/// the y so a user cannot tell which arm they are looking at by where the line sits.
-const FR_SLOT_LINE2: f32 = FR_REASON_TOP + 42.0;
-/// The quoted verdict's measure — the mock's `left:340px; right:340px` on a 1920 frame. It exists
-/// because the server's sentence is not ours to shorten: given the whole frame a long one runs
-/// margin to margin and reads as a paragraph, so it is wrapped to a column instead.
-const FR_DETAIL_W: f32 = 1240.0;
-const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
-const FR_HINT_GAP: f32 = 56.0;
-/// The support line's cap top: a MAJOR gap below the second hint, because it is a different kind
-/// of content from the hints (a fact strip for a photograph, not an instruction), and a region
-/// break is what `space::XL` is for. Lands at y≈844 on the 1080 frame — well inside the safe
-/// bottom band and below the BACK line's pointer exclusion (the test pins both).
-const FR_SUPPORT_TOP: f32 = FR_HINT_TOP + FR_HINT_GAP + theme::space::XL;
+// **The shared page read-out, not a layout of its own.** A failed playback is a page that failed,
+// exactly as Home's, a Library section's and the sign-in read-out are, so it is the same
+// component at the same placement: `StatusOverlay::page` hangs the verdict from
+// `FULL_ANCHOR_TOP` (372) with its 112 px glyph 44 px above it, the reason in the reserved
+// two-line slot, and a row of real controls stacked directly under it. Until 2026-09-28 this was
+// a bespoke composition (a 96 px glyph, a primary-ink verdict, three centred prose lines and key
+// caps drawn into the sentences, a support line at the same weight as the reason); the owner's
+// photograph of it is why it is not any more.
+//
+// What each block says is decided in ONE place per question:
+//  * the controls — `player::failure_actions`, the table that offers an action only if it can
+//    change the outcome;
+//  * the words — `player::error_now`'s `ErrorShape`, resolved to one reason sentence and at most
+//    one quiet note here (`FailureReadout::of`);
+//  * the support facts (version · firmware · set · failure code) — one dim footer line at the
+//    foot of the screen, always; there is no *Details* control.
 
-/// Pointer target for the only forward action on a failed playback.
-///
-/// The visible line is a key-cap hint rather than a large button, but Magic Remote users still
-/// need the same escape as D-pad users.  The broad centred band includes the whole “choose quality
-/// or retry” sentence and deliberately excludes the BACK line beneath it.
-const FR_QUALITY_HIT: Rect = Rect::new(570.0, FR_HINT_TOP - 12.0, 780.0, 54.0);
+/// The subscription's name in the one note that states it ("This server has no Plex Pass"). A
+/// product name, so it is not translated.
+const PLEX_PASS: &str = "Plex Pass";
 
-pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
-    FR_QUALITY_HIT.contains(x, y)
+/// The support line's cap top this far above the canvas bottom — inside the safe area's
+/// bottom margin band's upper edge, clear of the row by construction (the row ends near y 670).
+const FOOTER_TOP: f32 = SCR_H - crate::ui::consts::MARGIN_Y - theme::space::XL;
+
+/// Everything the failure read-out draws, resolved once from the live failure. The draw, the
+/// pointer stops and the key ladder all build it the same way, so the row a click lands on is the
+/// row that was drawn.
+pub(crate) struct FailureReadout {
+    glyph: crate::ui::icons::Icon,
+    reason: CString,
+    note: Option<CString>,
+    actions: Vec<crate::player::FailureAction>,
+    footer: CString,
+}
+
+/// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try
+/// again*): these are capsule buttons, not the ALL-CAPS clickable TEXT marks.
+pub(crate) fn failure_action_label(a: crate::player::FailureAction) -> &'static std::ffi::CStr {
+    use crate::i18n::msg;
+    use crate::player::FailureAction as A;
+    match a {
+        A::PlayAutomatically => msg::widgets_failure_play_auto_c(),
+        A::TryAgain => msg::browse_action_retry_c(),
+        A::ChangeQuality => msg::widgets_failure_change_quality_c(),
+        A::Repair => msg::widgets_repair_action_c(),
+        A::Back => msg::settings_back_c(),
+    }
+}
+
+/// The glyph above the verdict, by cause — read off the same `FailureKind` the words come from, so
+/// the two cannot disagree (the rule `StatusOverlay::page` states for its callers).
+fn failure_glyph(kind: crate::player::FailureKind) -> crate::ui::icons::Icon {
+    use crate::player::FailureKind as K;
+    use crate::ui::icons::Icon;
+    match kind {
+        K::DecisionRefused | K::NoVideoTranscodeTarget => Icon::ServerBadgeXmark,
+        K::JailMissingRtkmem => Icon::LockBadgeAlert,
+        K::LoadTimeout => Icon::ClockBadgeAlert,
+        _ => Icon::Alert,
+    }
+}
+
+impl FailureReadout {
+    /// The read-out for the failure on screen now (main thread).
+    pub(crate) fn now(ps: &crate::route::PlaybackSession) -> Self {
+        let mut e = crate::player::error_now(ps);
+        if e.kind == crate::player::FailureKind::JailMissingRtkmem {
+            use crate::webos::jail_repair::State;
+            match ps.repair_status {
+                State::Idle => {}
+                State::Running => {
+                    e.readout = crate::i18n::msg::widgets_repair_running();
+                    e.detail = crate::i18n::msg::widgets_repair_wait().into();
+                }
+                State::Repaired => {
+                    e.readout = crate::i18n::msg::widgets_repair_completed();
+                    e.detail = crate::i18n::msg::widgets_repair_reopen().into();
+                }
+                State::Failed(reason) => {
+                    e.readout = crate::i18n::msg::widgets_repair_failed();
+                    e.detail = repair_failure_message(reason).into();
+                }
+            }
+        }
+        let actions = crate::player::failure_actions(e.kind, crate::player::failure_context(ps));
+        Self::of(&e, actions, crate::player::support_line(e.kind))
+    }
+
+    /// PURE: the read-out for one failure shape.
+    ///
+    /// **Say it once.** The reason is ONE sentence: what happened and why. Under Force Direct
+    /// Play that is the route's own verdict ("Force Direct Play is on, and this video format can't
+    /// play without conversion"), which already names both — the old generic "Force Direct Play
+    /// could not play this stream" above it said the same thing a second time. The shape's
+    /// `detail` then goes to exactly one place, the note under the row (the server's own sentence,
+    /// the sandbox's remedy, a repair's progress) — unless it is the Force verdict already said as
+    /// the reason. The support facts are always the footer.
+    pub(crate) fn of(
+        e: &crate::player::ErrorShape,
+        actions: Vec<crate::player::FailureAction>,
+        support: String,
+    ) -> Self {
+        use crate::player::FailureKind;
+        let policy = e.kind == FailureKind::PlaybackPolicy && !e.detail.is_empty();
+        let reason: &str = if policy { &e.detail } else { e.readout };
+        let note: Option<String> = if e.no_pass {
+            Some(crate::i18n::msg::widgets_failure_no_pass(PLEX_PASS))
+        } else if policy || e.detail.is_empty() {
+            None
+        } else {
+            Some(e.detail.to_string())
+        };
+        Self {
+            glyph: failure_glyph(e.kind),
+            reason: CString::new(reason).unwrap_or_default(),
+            note: note.and_then(|n| CString::new(n).ok()),
+            actions,
+            footer: CString::new(support).unwrap_or_default(),
+        }
+    }
+
+    /// The row, in draw order.
+    pub(crate) fn actions(&self) -> &[crate::player::FailureAction] {
+        &self.actions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reason(&self) -> &str {
+        self.reason.to_str().unwrap_or("")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note(&self) -> Option<&str> {
+        self.note.as_deref().and_then(|n| n.to_str().ok())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn footer(&self) -> &str {
+        self.footer.to_str().unwrap_or("")
+    }
+
+    fn overlay(&self, labels: &[&'static std::ffi::CStr], focus: Option<usize>) -> StatusOverlay<'_> {
+        StatusOverlay::new(Rect::FULL, crate::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
+            .page(self.glyph)
+            .reason(&self.reason)
+            .row(labels)
+            .note(self.note.as_deref())
+            .focus(focus)
+    }
+
+    fn labels(&self) -> Vec<&'static std::ffi::CStr> {
+        self.actions.iter().map(|a| failure_action_label(*a)).collect()
+    }
+
+    /// Each control's rect, by row index — the geometry the draw uses.
+    pub(crate) fn frames(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; crate::ui::widgets::STATUS_ROW_MAX] {
+        let labels = self.labels();
+        self.overlay(&labels, None).row_frames_measured(measure)
+    }
+
+    fn draw(&self, p: Painter, focus: usize, measure: &dyn crate::ui::machine::Measure) {
+        let labels = self.labels();
+        self.overlay(&labels, Some(focus.min(labels.len().saturating_sub(1))))
+            .draw_measured(&hud_env(), p, measure);
+        crate::ui::text_view::TextView::new(self.footer.to_str().unwrap_or(""), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .h(crate::ui::label::HAlign::Center)
+            .max_lines(1)
+            // the full safe width, not the reason's: the failure code is the line's LAST field
+            // and the one support needs, so it must not be the part an ellipsis eats
+            .draw(p, Rect::new(crate::ui::consts::MARGIN_X, FOOTER_TOP, SCR_W - 2.0 * crate::ui::consts::MARGIN_X, 0.0));
+    }
 }
 
 // ---- element addresses for the Engine's hit map / `Focusable` groups (restructure phase 12) --
 //
 // `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per element of its
 // `Focusable` groups (`record_stops`, in z-order, at `place`'s rect), keyed on these addresses, instead of the
-// old `app/run.rs` ladder calling `icon_hit`/`scrub_hit`/`failure_quality_hit` on the raw pointer
-// position by hand. The GEOMETRY those functions describe is unchanged — only how a caller LEARNS
-// it: a registered `Stop` (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than
-// a bare function the frame loop had to know to call. `scrub_hit` is GONE for that reason
-// (phase 12); `icon_hit` and `failure_quality_hit` survive as the geometry their own tests grade. Kept as plain `u32` constants,
+// old `app/run.rs` ladder calling `icon_hit`/`scrub_hit` on the raw pointer position by hand. The
+// GEOMETRY those functions describe is unchanged — only how a caller LEARNS it: a registered `Stop`
+// (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than a bare function the
+// frame loop had to know to call. `scrub_hit` is GONE for that reason (phase 12); `icon_hit`
+// survives as the geometry its own tests grade. Kept as plain `u32` constants,
 // not an enum, so `PlayerScreen` can address a control-row/tab-row ITEM by `BASE + index` exactly
 // as `icon_hit`'s `0..BTN_N` scan already did.
 pub(crate) const ELEM_SCRUB: u32 = 0;
@@ -968,9 +1101,12 @@ pub(crate) const ELEM_SCRUB: u32 = 0;
 pub(crate) const ELEM_ROW_BASE: u32 = 10;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub(crate) const ELEM_TAB_BASE: u32 = 20;
-/// The failure read-out's retry-options hint — the only focusable/clickable region a
-/// FAILED playback draws (`OverlayKind::More { quality: true }`'s own opener).
-pub(crate) const ELEM_FAILURE_OK: u32 = 30;
+/// `+ 0..actions().len()` — the failure read-out's row, one element per
+/// [`crate::player::FailureAction`] in [`FailureReadout::actions`] order: the only controls a
+/// FAILED playback draws.
+pub(crate) const ELEM_FAILURE_BASE: u32 = 30;
+/// One past the failure row's last possible element.
+pub(crate) const ELEM_FAILURE_END: u32 = ELEM_FAILURE_BASE + crate::ui::widgets::STATUS_ROW_MAX as u32;
 
 /// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
 /// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
@@ -1014,40 +1150,10 @@ pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn crate::ui
     None
 }
 
-/// Is the failure read-out's escape ON SCREEN — a failure owns the frame, and it is not the
-/// sandbox failure whose repair is already under way (that read-out offers nothing to press).
-pub(crate) fn failure_ok_drawn(ps: &crate::route::PlaybackSession, busy: Busy) -> bool {
+/// Is the failure read-out's row ON SCREEN — a failure owns the frame. The row always holds at
+/// least *Back*, so a failure always has something to press.
+pub(crate) fn failure_row_drawn(busy: Busy) -> bool {
     readout_owns_frame(busy)
-        && (crate::player::error_now(ps).kind != crate::player::FailureKind::JailMissingRtkmem
-            || ps.repair_status == crate::webos::jail_repair::State::Idle)
-}
-
-/// The failure read-out's own escape, as a `Rect` — see [`FR_QUALITY_HIT`].
-pub(crate) fn failure_ok_hit_rect() -> Rect {
-    FR_QUALITY_HIT
-}
-
-/// One line of centred text with its cap TOP at `top`; returns nothing — the layout is fixed.
-fn fr_line(
-    p: Painter,
-    text: &std::ffi::CStr,
-    top: f32,
-    sz: i32,
-    bold: i32,
-    col: [f32; 4],
-    measure: &dyn crate::ui::machine::Measure,
-) {
-    let (cap_top, _) = crate::text::text_cap_band(sz, bold);
-    let w = measure.width(text, sz, bold != 0);
-    p.text(
-        text.as_ptr(),
-        (SCR_W - w) * 0.5,
-        top - cap_top,
-        sz,
-        col,
-        0,
-        bold,
-    );
 }
 
 /// Product copy is resolved here; the worker's technical error identity stays unchanged.
@@ -1067,193 +1173,17 @@ fn repair_failure_message(reason: crate::webos::jail_repair::Failure) -> &'stati
 fn draw_failed_readout(
     ps: &crate::route::PlaybackSession,
     p: Painter,
+    focus: usize,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    let mut e = crate::player::error_now(ps);
-    let jail = e.kind == crate::player::FailureKind::JailMissingRtkmem;
-    if jail {
-        use crate::webos::jail_repair::State;
-        match ps.repair_status {
-            State::Idle => {},
-            State::Running => { e.readout = crate::i18n::msg::widgets_repair_running(); e.detail = crate::i18n::msg::widgets_repair_wait().into(); },
-            State::Repaired => { e.readout = crate::i18n::msg::widgets_repair_completed(); e.detail = crate::i18n::msg::widgets_repair_reopen().into(); },
-            State::Failed(reason) => { e.readout = crate::i18n::msg::widgets_repair_failed(); e.detail = repair_failure_message(reason).into(); },
-        }
-    }
-    // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
-    // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
-    // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
-    // route, and the transport (whose bottom scrim used to back the lower half of this read-out) is
-    // no longer drawn at all under a failure. "The plane is black by the time an error is up" is
-    // usually true and not always — `busy_surface` resolves Error to Failed for BOTH values of
-    // `seen_frame`, i.e. a mid-playback failure over a held frame is a state the code contemplates.
+    // The GROUND, first: a full-bleed opaque black, one quad. Without it the read-out stood on
+    // whatever the video plane happened to be holding: `app.rs` clears the graphics plane to alpha
+    // 0 on the player route, and the transport is not drawn at all under a failure. "The plane is
+    // black by the time an error is up" is usually true and not always — `busy_surface` resolves
+    // Error to Failed for BOTH values of `seen_frame`, i.e. a mid-playback failure over a held
+    // frame is a state the code contemplates.
     p.rrect(Rect::FULL, 0.0, 0.0, theme::scrim_black(1.0));
-    // glyph: the same triangle as the facts row at 96, secondary ink — outline, because a solid
-    // triangle at this size reads as an error state we do not have (the verdict is the words)
-    let gx = (SCR_W - FR_GLYPH_S) * 0.5;
-    crate::ui::icons::draw(
-        p,
-        crate::ui::icons::Icon::Alert,
-        Rect::new(gx, FR_GLYPH_TOP, FR_GLYPH_S, FR_GLYPH_S),
-        theme::TEXT_SECONDARY,
-    );
-    fr_line(
-        p,
-        crate::i18n::msg::widgets_status_failed_c(),
-        FR_VERDICT_TOP,
-        theme::size::TITLE,
-        1,
-        theme::TEXT_PRIMARY,
-        measure,
-    );
-    // the reason slot: line one is the reason; line two is EITHER the server's own sentence (a
-    // `/decision` refusal) or — only ever on a known-free server — the subscription FACT. Never
-    // both: see `FR_SLOT_LINE2`.
-    if !e.readout.is_empty() {
-        if let Ok(c) = std::ffi::CString::new(e.readout) {
-            fr_line(
-                p,
-                &c,
-                FR_REASON_TOP,
-                theme::size::BODY,
-                0,
-                theme::TEXT_SECONDARY,
-                measure,
-            );
-        }
-    }
-    if !e.detail.is_empty() {
-        // The SERVER's sentence, quoted verbatim at CAPTION/tertiary: quieter than the reason above
-        // it because it is supporting evidence, and a size below it because it is the only line here
-        // whose length we do not control. `max_lines(2)` is the honest clamp — one wrap keeps the
-        // whole of a real verdict (the cause is at its END: "…encoder 'vp9' not found"), where a
-        // one-line elide would cut exactly the words worth reading. A second line paints past the
-        // reserved slot into the gap above the hint, which is paint, not layout: the hint's y is a
-        // constant and does not move.
-        crate::ui::text_view::TextView::new(&e.detail, theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .h(crate::ui::label::HAlign::Center)
-            .max_lines(2)
-            .draw(
-                p,
-                Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SLOT_LINE2, FR_DETAIL_W, 0.0),
-            );
-    }
-    if e.no_pass {
-        let sentence = crate::i18n::msg::widgets_failure_no_pass("\u{fffc}");
-        let (words, after) = crate::ui::widgets::key_hint_parts(&sentence);
-        let ww = measure.width(&words, theme::size::BODY, false);
-        let cw = crate::ui::widgets::pass_capsule_w(measure);
-        let after_w = measure.width(&after, theme::size::BODY, false);
-        let x = (SCR_W - (ww + cw + after_w)) * 0.5;
-        let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
-        let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
-        p.text(
-            words.as_ptr(),
-            x,
-            line_top - cap_top,
-            theme::size::BODY,
-            theme::TEXT_SECONDARY,
-            0,
-            0,
-        );
-        let cy = line_top + (baseline - cap_top) * 0.5;
-        crate::ui::widgets::pass_capsule(p, x + ww, cy, true, measure);
-        p.text(after.as_ptr(), x + ww + cw,
-            line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
-    }
-    // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
-    // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
-    if !jail || ps.repair_status == crate::webos::jail_repair::State::Idle {
-        let message = if jail {
-            crate::i18n::msg::widgets_hint_repair("\u{fffc}")
-        } else if crate::route::forced_direct_play(ps) {
-            crate::i18n::msg::widgets_hint_retry_options("\u{fffc}")
-        } else {
-            crate::i18n::msg::widgets_hint_retry("\u{fffc}")
-        };
-        draw_hint_with_keycap(p, message, c"OK", FR_HINT_TOP, measure);
-    }
-    draw_hint_with_keycap(
-        p,
-        crate::i18n::msg::widgets_hint_return("\u{fffc}"),
-        c"BACK",
-        FR_HINT_TOP + FR_HINT_GAP,
-        measure,
-    );
-    // The support line — version · firmware · set · failure code — at CAPTION/tertiary, the couch
-    // floor rather than MICRO because a photograph has to survive a phone camera and a chat
-    // thread. Bounded to the detail column and clamped to ONE line with elision, since three of
-    // its five parts are strings a firmware wrote and this layout controls none of their lengths.
-    let support = crate::player::support_line(e.kind);
-    crate::ui::text_view::TextView::new(&support, theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .h(crate::ui::label::HAlign::Center)
-        .max_lines(1)
-        .draw(
-            p,
-            Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SUPPORT_TOP, FR_DETAIL_W, 0.0),
-        );
-}
-
-/// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
-/// (min-w 74, h 36, r 8), the cap's label MICRO bold. The keyline is a knockout on the video
-/// ground, which is black here by construction.
-fn draw_hint_with_keycap(
-    p: Painter,
-    message: String,
-    key: &std::ffi::CStr,
-    top: f32,
-    measure: &dyn crate::ui::machine::Measure,
-) {
-    const CAP_H: f32 = 36.0;
-    const CAP_MIN_W: f32 = 74.0;
-    const CAP_PAD: f32 = 12.0;
-    let (pre, post) = crate::ui::widgets::key_hint_parts(&message);
-    let sz = theme::size::CAPTION;
-    let pw = measure.width(&pre, sz, false);
-    let ow = measure.width(&post, sz, false);
-    let kw = (measure.width(key, theme::size::MICRO, true) + 2.0 * CAP_PAD).max(CAP_MIN_W);
-    // Catalog runs retain their spaces and punctuation; a keycap replaces only the marker.
-    let total = pw + kw + ow;
-    let x = (SCR_W - total) * 0.5;
-    let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
-    let ty = top - cap_top;
-    let cy = top + (baseline - cap_top) * 0.5;
-    p.text(pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-    let kx = x + pw;
-    let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
-    const STROKE: f32 = 1.5;
-    p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
-    p.rrect(
-        Rect::new(
-            kr.x + STROKE,
-            kr.y + STROKE,
-            kr.w - 2.0 * STROKE,
-            kr.h - 2.0 * STROKE,
-        ),
-        8.0 - STROKE,
-        8.0 - STROKE,
-        [0.0, 0.0, 0.0, 1.0],
-    );
-    let kty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
-    let ktw = measure.width(key, theme::size::MICRO, true);
-    p.text(
-        key.as_ptr(),
-        kx + (kw - ktw) * 0.5,
-        kty,
-        theme::size::MICRO,
-        theme::TEXT_SECONDARY,
-        0,
-        1,
-    );
-    p.text(
-        post.as_ptr(),
-        kx + kw,
-        ty,
-        sz,
-        theme::TEXT_TERTIARY,
-        0,
-        0,
-    );
+    FailureReadout::now(ps).draw(p, focus, measure);
 }
 
 /// x of control button `idx`, left to right: 0 = Subtitles, 1 = Audio, 2 = More.
@@ -2367,17 +2297,99 @@ mod tests {
         }
     }
 
+    fn readout_of(e: &crate::player::ErrorShape) -> FailureReadout {
+        let cx = crate::player::FailureContext { forced: true, can_retry: true, repair_idle: true };
+        FailureReadout::of(e, crate::player::failure_actions(e.kind, cx), "0.7.0 · webOS 4.5 · code".into())
+    }
+
+    /// **Say it once.** Under Force the reason IS the route's verdict (what happened and why), no
+    /// note repeats it, the row is *Switch to Auto and play* · *Back* (no *Details*), and the
+    /// support facts are the dim footer — which the draw really paints, below the row.
     #[test]
-    fn the_failed_readout_exposes_only_its_quality_recovery_line_to_pointer() {
-        assert!(failure_quality_hit(
-            FR_QUALITY_HIT.cx(),
-            FR_QUALITY_HIT.cy()
-        ));
-        assert!(!failure_quality_hit(
-            FR_QUALITY_HIT.cx(),
-            FR_HINT_TOP + FR_HINT_GAP + 18.0,
-        ));
-        assert!(!failure_quality_hit(0.0, 0.0));
+    fn the_forced_readout_says_what_and_why_once_and_draws_the_diagnostics_as_the_footer() {
+        use crate::player::FailureAction as A;
+        let verdict = crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text().to_owned();
+        let e = crate::player::failtest_policy_shape_for_test(&verdict);
+        let r = readout_of(&e);
+        assert_eq!(r.reason(), verdict.as_str());
+        assert_eq!(r.note(), None, "the verdict already names the cause");
+        assert_eq!(r.actions(), &[A::PlayAutomatically, A::Back]);
+        assert_eq!(r.footer(), "0.7.0 · webOS 4.5 · code");
+        let log = crate::ui::draw_census::capture(|| {
+            r.draw(crate::ui::Painter::recording(), 0, &crate::ui::fixture::FixtureMeasure);
+        });
+        let texts: Vec<Rect> = log.iter().filter(|(tag, _)| *tag == 100).map(|(_, r)| *r).collect();
+        assert!(texts.iter().any(|t| (t.y - FOOTER_TOP).abs() < theme::size::CAPTION as f32 * 2.0),
+            "the footer line is drawn at the foot of the screen: {texts:?}");
+    }
+
+    /// The read-out's row, note and footer stack top to bottom inside the safe band, and the
+    /// footer never meets the row.
+    #[test]
+    fn the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band() {
+        use crate::fontcov::advances::ShippedMeasure;
+        let verdict = crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text().to_owned();
+        let e = crate::player::failtest_policy_shape_for_test(&verdict);
+        let r = readout_of(&e);
+        let row_bottom = r.frames(&ShippedMeasure).iter().flatten().map(|f| f.y + f.h).fold(0.0, f32::max);
+        assert!(row_bottom > 0.0, "the row was laid out");
+        // a two-line CAPTION note sits between them, with room to spare
+        let note_box = theme::size::CAPTION as f32 * 1.5 * 2.0;
+        assert!(FOOTER_TOP > row_bottom + note_box + theme::space::MD,
+            "footer top {FOOTER_TOP} must clear the row ({row_bottom}) and its note");
+        let line_box = theme::size::CAPTION as f32 * 1.5;
+        assert!(FOOTER_TOP + line_box < SCR_H - theme::space::XL + 1.0);
+    }
+
+    /// **Every row fits the screen, in every shipped language**: the longest row each kind can
+    /// draw, measured with the device's advances, stays inside the read-out's width.
+    #[test]
+    fn every_failure_row_fits_the_screen_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::player::FailureAction as A;
+        let rows: [&[A]; 3] = [
+            &[A::PlayAutomatically, A::TryAgain, A::Back],
+            &[A::TryAgain, A::ChangeQuality, A::Back],
+            &[A::Repair, A::Back],
+        ];
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            for row in rows {
+                let labels: Vec<&'static std::ffi::CStr> = row.iter().map(|a| failure_action_label(*a)).collect();
+                let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed).page(crate::ui::icons::Icon::Alert).reason(c"x").row(&labels);
+                let frames = o.row_frames_measured(&ShippedMeasure);
+                let lo = frames.iter().flatten().map(|f| f.x).fold(f32::MAX, f32::min);
+                let hi = frames.iter().flatten().map(|f| f.x + f.w).fold(0.0, f32::max);
+                let limit = SCR_W - 2.0 * crate::ui::consts::MARGIN_X;
+                if (hi - lo) > limit * HEADROOM || lo < crate::ui::consts::MARGIN_X {
+                    out.push(format!("{}: {row:?} spans {:.0}px of {limit:.0}", language.tag(), hi - lo));
+                }
+            }
+        }
+        assert!(out.is_empty(), "rows wider than the screen:\n  {}", out.join("\n  "));
+    }
+
+    /// Every Force verdict fits the read-out's two-line reason slot, in every shipped language.
+    #[test]
+    fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            for s in [msg::widgets_verdict_forced_no_original(), msg::widgets_verdict_forced_container(),
+                msg::widgets_verdict_forced_video(), msg::widgets_verdict_forced_audio(),
+                msg::widgets_verdict_forced_unauthorized(), msg::widgets_verdict_forced_open(),
+                msg::widgets_verdict_forced_audio_conversion(), msg::widgets_reason_forced_playback_help()] {
+                let c = std::ffi::CString::new(s).unwrap();
+                if StatusOverlay::failed_reason_truncates(&c, &ShippedMeasure, HEADROOM) {
+                    out.push(format!("{}: {s}", language.tag()));
+                }
+            }
+        }
+        assert!(out.is_empty(), "verdicts cut short:\n  {}", out.join("\n  "));
     }
 
     /// …and when it does, it owns the WHOLE frame: `draw_hud` draws nothing — no scrim, no
@@ -2389,30 +2401,6 @@ mod tests {
     /// up": every WORKING read-out must leave the transport alone, or the HUD blanks through every
     /// cold start, every reconnect and every pre-roll seek — states where the position is real and
     /// the transport is what the user reads the instant the first frame lands.
-    /// The support line sits below the BACK hint's pointer exclusion and inside the safe bottom
-    /// band, whatever its content — the rect is what bounds it, not the string.
-    #[test]
-    fn the_support_line_sits_below_the_back_hint_and_inside_the_safe_bottom_band() {
-        let back_line_exclusion = FR_HINT_TOP + FR_HINT_GAP + 18.0;
-        assert!(
-            FR_SUPPORT_TOP > back_line_exclusion + theme::space::MD,
-            "support top {FR_SUPPORT_TOP} must clear the BACK line at {back_line_exclusion}"
-        );
-        // A generous line box (1.5× the point size) rather than a rasterizer measurement: this
-        // pass runs without SDL_ttf, and the bound only has to be safe, not exact.
-        let line_box = theme::size::CAPTION as f32 * 1.5;
-        let safe_bottom = SCR_H - theme::space::XL;
-        assert!(
-            FR_SUPPORT_TOP + line_box < safe_bottom,
-            "support line bottom {} must stay inside the safe band {safe_bottom}",
-            FR_SUPPORT_TOP + line_box
-        );
-        assert!(
-            !failure_quality_hit(SCR_W * 0.5, FR_SUPPORT_TOP + 8.0),
-            "the support line is not a pointer target"
-        );
-    }
-
     #[test]
     fn only_a_failure_takes_the_frame_away_from_the_transport() {
         let ps = crate::route::PlaybackSession::IDLE;

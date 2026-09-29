@@ -264,6 +264,63 @@ Verified Continue Watching item (movie, trimmed):
  "duration":6543120,"viewOffset":131703,"audienceRating":7.2}
 ```
 
+**Hub `title` is PMS-owned text, localized server-side by `X-Plex-Language` — and PMS's own
+per-string translation coverage for a tag is partial, which this app now papers over for every
+STANDARD hub rather than forwarding it as-is** (issue #12, investigated 2026-09-28: a Belarusian
+UI showed some hub titles in Belarusian and others in Russian/English on one Home screen).
+`plex::client::headers`/`pms_headers` still send the literal selected UI tag (`en`/`es`/`be` —
+`identity::language()` → `i18n::current().language().tag()`) on **every** PMS operation, hubs
+included (`rust-modules/src/plex/client.rs`'s
+`pms_headers_carry_the_literal_selected_ui_language_be_included` test pins that for all three
+shipped tags) — that part of the earlier record stands. What changed is that neither
+`screens/home/mod.rs` nor a library's own browse grid renders `hub.title` unconditionally:
+`plex::hub_title::localized_hub_title` sits between a PMS `Hub` and the row the screen draws, at
+BOTH call sites — Home's whole-catalog merge (`pms.rs::project`, one row per source, `/hubs`) and
+a library's own shelves (`browse::section_hubs::parse_hubs`, `/hubs/sections/{id}`) — one shared
+table so the two cannot drift apart. It overrides the title, **unconditionally** (not gated on
+whether the selected tag happens to be one PMS translates), for a hubIdentifier this catalog
+recognizes, and the override differs by **scope** because PMS itself titles the "Recently Added"
+family differently at the two endpoints (§3 vs §3a):
+
+| scope | hubIdentifier | client-side override | locale key |
+|---|---|---|---|
+| Home | `home.ondeck` / `home.onDeck` | "On Deck" | `browse.home.hub.on_deck` |
+| Home | `home.playlists` | "Recent Playlists" | `browse.home.hub.recent_playlists` |
+| Home | `home.movies.recent` / `.television.recent` / `.music.recent` / `.videos.recent` / `.photos.recent`, when the identifier names the household's ONLY hub of that type in the response | "Recently Added Movies" / "…TV" / "…Music" / "…Videos" / "…Photos" | `browse.home.hub.recently_added_movies` / `_tv` / `_music` / `_videos` / `_photos` |
+| Home | the same 5 `home.*.recent` identifiers when PMS mints MORE THAN ONE hub under the same identifier (two same-type libraries), and any `movie.recentlyadded.<id>` / `show.recentlyadded.<id>` / `tv.recentlyadded.<id>` | "Recently Added in {library}" (library = the hub's own `librarySectionTitle`) | `browse.home.hub.recently_added_in` |
+| Section (`/hubs/sections/{id}`) | `movie.recentlyadded.<id>` / `show.recentlyadded.<id>` / `tv.recentlyadded.<id>` | "Recently Added" (no library name — the section page already is that library, and PMS itself drops the qualifier here) | `browse.library.hub.recently_added` |
+
+The per-type Home wording ("Recently Added Movies") is right only when nothing needs
+disambiguating: `home_keeps_recently_added_rows_for_two_same_type_libraries`
+(`pms_multi_source_merge_tests.rs`) measured PMS minting one `home.television.recent` hub PER TV
+library when a household owns more than one, each with the library folded into `title`
+("Recently Added in TV" vs "…in TV HDR") — so `pms.rs::project` counts occurrences of each
+`hubIdentifier` in the response BEFORE choosing a wording (`hub_identifier_counts`,
+`identifier_is_unique`), and only a hub that is the sole one under its identifier gets the
+per-type form (`one_movie_and_one_tv_library_get_the_natural_per_type_recently_added_titles`). A
+household with exactly one library of a type gets a `home.movies.recent` hub that is really that
+ONE library's shelf wearing the whole-server identifier — the per-type form, not "Recently Added
+in Movies", which reads oddly when there is nothing to disambiguate. `home.continue` never reaches
+this table at all: Continue Watching's `HubRow.title` has never come from PMS — it is set from
+`i18n::msg::browse_home_continue_watching()` where the dedicated `/hubs/continueWatching` deck is
+merged into `HubRow`s (`pms.rs::merge_with_scope`) — and the standard-hub override above is the
+SAME rule (an unconditional client-side string, not one gated on PMS's per-tag coverage) applied
+to the shelves Continue Watching's own fix never touched. A per-section deck
+(`movie.inprogress.<id>` / `tv.inprogress.<id>`, §3a) and every other section-hub family this
+catalog has not specifically enumerated — a rotating genre/actor rail, a collection
+(`custom.collection.*`) — keep drawing `hub.title` verbatim at BOTH scopes, exactly as before:
+there is still no substitute catalog for arbitrary server-owned text, and no live evidence (this
+file, `docs/plex-openapi.json`, or the repo's own fixtures) that those families need one. Tests:
+`pms_multi_source_merge_tests.rs`'s `a_recently_added_library_hub_renders_the_be_catalog_string_under_a_be_ui`,
+`one_movie_and_one_tv_library_get_the_natural_per_type_recently_added_titles`,
+`a_lone_movie_library_renders_the_be_per_type_catalog_string_under_a_be_ui`, and
+`an_unrecognized_hub_identifier_keeps_the_pms_title_verbatim` (Home scope); `section_hubs.rs`'s
+`a_be_ui_localizes_the_section_recently_added_hub_and_leaves_an_unknown_one_alone` (Section scope).
+This cannot be verified further against a live PMS from here (the mock server under
+`tests/mock_pms.py` does not model per-string translation coverage, by design — see its own header
+comment); do not infer a different PMS-side fallback chain (e.g. "falls back to the account's
+region") from the one field report that started this.
+
 Hub items **do include full `Media[].Part[]`**, so Continue Watching can direct-play
 without a second metadata fetch. Resume position = `viewOffset` ms.
 `home.ondeck` items are episodes with `grandparentTitle`, `parentIndex`, `index`,
@@ -310,6 +367,11 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
 * **A collection is a hub like any other** (`custom.collection.N.<id>.<id>`,
   `key=/library/collections/{id}/children`), which is why the owner's table lists
   "Toy Story Collection" in the same column as "Recently Added".
+* **PMS titles a `*.recentlyadded.<id>` hub plain "Recently Added" here — no library name**,
+  unlike the same hubIdentifier on the whole-server `/hubs` (§3's "Recently Added in Movies").
+  This route is already scoped to one library, so there is nothing to disambiguate. This app's own
+  client-side override (§3's table, Section row) reproduces that: `browse.library.hub.recently_added`,
+  not `browse.home.hub.recently_added_in`.
 
 **The trap worth carrying: two of these hubs CHANGE IDENTITY BETWEEN REQUESTS.** The genre and
 the actor/director shelves rotate their subject on every call — six consecutive requests
@@ -980,7 +1042,11 @@ against a PMS, which nobody has run.
 nine fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
 `-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The central PMS request choke
 point sends **`X-Plex-Language` as a header** on every operation, using the UI language resolved
-at boot from the app preference and TV locale (English fallback). `X-Plex-Device-Vendor` is sent to
+at boot from the app preference and TV locale (English fallback). This is THIS app's own
+System-preference resolution (webOS locale → shipped catalog, `i18n::mod.rs`); once resolved, the
+literal tag is what goes on the wire, unchanged by whether PMS happens to have a full translation
+for it — see §3's hub-title note for the issue #12 case (`be`) this distinction settles.
+`X-Plex-Device-Vendor` is sent to
 plex.tv's authorized-device surface but not PMS;
 `X-Plex-Device-Screen-Resolution` and `X-Plex-Features` remain absent from both. The table is the
 target; this paragraph is the state.

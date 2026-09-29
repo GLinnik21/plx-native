@@ -106,7 +106,10 @@ pub(crate) struct MoreMenuState {
 
 impl MoreMenuState {
     fn open_focused(ps: &crate::route::PlaybackSession, quality: Option<crate::route::Quality>) -> Self {
-        let rows = rows_for();
+        let forced = crate::route::forced_direct_play(ps);
+        let rows = rows_for(forced);
+        // Under Force Direct Play there is no ladder to focus (see `rows_for`), so a quality
+        // entry lands on the first Options row like an ordinary open.
         let initial = initial_selection(&rows, quality);
         // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
         // both, so the split here is presentational and the ORDER is the contract.
@@ -120,7 +123,10 @@ impl MoreMenuState {
         }
         let mut table = TableView::new();
         table.compact = true; // a short action list — BODY labels, like the profile menu
-        table.set_sections(vec![quality_sec, options], initial, false);
+        // An empty Quality section is not drawn at all — a heading over nothing would read as a
+        // menu that failed to load.
+        let sections = if forced { vec![options] } else { vec![quality_sec, options] };
+        table.set_sections(sections, initial, false);
         // `rows` *is* the index→action map, so it must stay one-to-one with what was built above.
         debug_assert_eq!(rows.len() as i32, table.n_rows());
         MoreMenuState { table, rows }
@@ -138,6 +144,9 @@ impl MoreMenuState {
     /// row 0 is the first rung), but "head" and "active" agree only when the active rung happens to
     /// be first; this entry point cannot assume that. It is still the SAME TableView and action map
     /// as the ordinary `…` menu; only the initial cursor differs.
+    ///
+    /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
+    /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
     pub(crate) fn new_quality(ps: &crate::route::PlaybackSession) -> Self {
         Self::open_focused(ps, Some(crate::route::quality()))
     }
@@ -333,11 +342,20 @@ where
 /// [`MoreMenuState::open_focused`] pushes rows, or a press commits its neighbour. A separator would
 /// be a row here too — there is none, and the debug assert in [`MoreMenuState::open_focused`] is
 /// what would catch one being added on one side only.
-fn rows_for() -> Vec<Action> {
-    let mut v: Vec<Action> = crate::route::available_quality_ladder()
-        .iter()
-        .map(|q| Action::SetQuality(*q))
-        .collect();
+///
+/// **`forced` (Force Direct Play) drops the Quality section entirely.** Every rung is a request for
+/// the server to convert, and Force forbids conversion, so under it no rung can change what plays:
+/// a row that cannot change the outcome is not offered (the same rule as the failure read-out's
+/// `player::failure_actions`). Pure over the flag so both shapes are testable without a session.
+fn rows_for(forced: bool) -> Vec<Action> {
+    let mut v: Vec<Action> = if forced {
+        Vec::new()
+    } else {
+        crate::route::available_quality_ladder()
+            .iter()
+            .map(|q| Action::SetQuality(*q))
+            .collect()
+    };
     v.push(Action::ToggleStats);
     if crate::lab::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
@@ -406,8 +424,7 @@ fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
     match a {
         Action::SetQuality(q) => Row::new(label(a))
             .checked(crate::route::quality() == q)
-            .detail(if crate::route::forced_direct_play(ps) { crate::i18n::msg::widgets_menu_forced_quality() }
-                else { quality_detail(q, crate::route::source_decodable(ps)) }),
+            .detail(quality_detail(q, crate::route::source_decodable(ps))),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
@@ -500,7 +517,7 @@ mod tests {
 
     #[test]
     fn every_row_has_a_label() {
-        for a in rows_for() {
+        for a in rows_for(false) {
             assert!(!label(a).is_empty(), "{a:?} would draw a blank row");
         }
         // The full persisted ladder must keep finished UI copy even if the readiness gate is
@@ -515,7 +532,7 @@ mod tests {
 
     #[test]
     fn a_selection_maps_to_its_row() {
-        let rows = rows_for();
+        let rows = rows_for(false);
         // Quality leads Options — see this module's doc — so row 0 is the ladder's head, not the
         // Stats toggle. `sel` is ONE flat index over both sections, so this is the join that a
         // section split could quietly break: get either side's push order wrong and a press
@@ -529,7 +546,7 @@ mod tests {
 
     #[test]
     fn failure_entry_can_focus_the_active_quality_in_the_shared_menu() {
-        let rows = rows_for();
+        let rows = rows_for(false);
         for q in crate::route::available_quality_ladder() {
             let i = rows
                 .iter()
@@ -553,7 +570,7 @@ mod tests {
     /// loudly; `on_ok` just returns the wrong `Action` for the row a viewer pressed.
     #[test]
     fn every_quality_rung_sits_ahead_of_the_stats_toggle() {
-        let rows = rows_for();
+        let rows = rows_for(false);
         let stats_i = rows
             .iter()
             .position(|a| *a == Action::ToggleStats)
@@ -568,11 +585,40 @@ mod tests {
         }
     }
 
+    /// **Force Direct Play leaves no Quality section**: no rung can change what plays under it,
+    /// so none is offered, and a quality entry (`new_quality`) lands on the first Options row.
+    #[test]
+    fn forced_direct_play_offers_no_quality_rung_and_lands_on_the_first_option() {
+        let forced = rows_for(true);
+        assert!(
+            !forced.iter().any(|a| matches!(a, Action::SetQuality(_))),
+            "forced direct play must not offer a quality rung: {forced:?}"
+        );
+        assert_eq!(forced.first(), Some(&Action::ToggleStats));
+        for q in crate::route::QUALITY_LADDER {
+            assert_eq!(initial_selection(&forced, Some(q)), 0);
+            assert_eq!(action_at(&forced, initial_selection(&forced, Some(q))), Action::ToggleStats);
+        }
+        // not forced: the ladder is unchanged, in order, ahead of Options
+        let open = rows_for(false);
+        let ladder: Vec<Action> = open
+            .iter()
+            .copied()
+            .filter(|a| matches!(a, Action::SetQuality(_)))
+            .collect();
+        let expected: Vec<Action> = crate::route::available_quality_ladder()
+            .iter()
+            .map(|q| Action::SetQuality(*q))
+            .collect();
+        assert_eq!(ladder, expected);
+        assert_eq!(&open[ladder.len()..], &forced[..]);
+    }
+
     /// Out-of-range must be `None`, never a neighbouring action: `sel` survives a rebuild, so a
     /// shorter row set can be asked for an index the previous one had.
     #[test]
     fn an_out_of_range_selection_is_none_not_a_neighbour() {
-        let rows = rows_for();
+        let rows = rows_for(false);
         assert_eq!(action_at(&rows, rows.len() as i32), Action::None);
         assert_eq!(action_at(&rows, -1), Action::None);
         assert_eq!(action_at(&[], 0), Action::None);

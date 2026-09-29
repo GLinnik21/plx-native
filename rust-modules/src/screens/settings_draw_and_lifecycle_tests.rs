@@ -75,7 +75,8 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let mut surface = RouteSurface {
             entry: EntryId(0), id: InstanceId(0), kind: Family::Settings,
             inner, ids: Minter::default(),
-            push: Push { pos, vel: 0.0, target, leaving: popping.then(|| instance(3)) },
+            push: Push { route: crate::ui::route_screen::RoutePush::at(pos), open: target == 1.0,
+                leaving: popping.then(|| instance(3)) },
             ground: RouteGround::new(), ground_ready: false, remembered: Vec::new(),
         };
         let outer = cx(None);

@@ -1053,6 +1053,29 @@ mod tests {
         .is_set());
     }
 
+    /// **Issue #12 (Belarusian Home mixed-localization report): the client sends the LITERAL
+    /// selected UI language on every PMS operation, whatever it is** — this is the half of the
+    /// question this repo can answer without a live server. Hub `title` strings arrive already
+    /// localized IN the `/hubs`/`/hubs/promoted` response body (`docs/pms-api.md` §"Verified hub
+    /// list", `plex::hubs`, `Hub::title` in `models.rs`); the app has no hub-title catalog and
+    /// performs no client-side translation or substitution on it (`screens/home/mod.rs`'s
+    /// `LinkedHeading::heading(hub.title, ..)` at the render site). So a mix of Belarusian and
+    /// Russian/English hub titles on one Home screen is PMS's own answer to the `X-Plex-Language:
+    /// be` this client already sends — PMS's translation coverage for a given tag, not this
+    /// repo's language selection — and the deliberate, documented choice (`plex/CLAUDE.md`,
+    /// `docs/pms-api.md`) is to forward the selected tag as-is and accept whatever PMS returns,
+    /// rather than inventing a client-side substitute catalog for server-owned strings.
+    #[test]
+    fn pms_headers_carry_the_literal_selected_ui_language_be_included() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        for (pref, tag) in [(Preference::En, "en"), (Preference::Es, "es"), (Preference::Be, "be")] {
+            let _guard = language_on_this_thread_for_test(pref);
+            let headers = pms_headers(&[ACCEPT_JSON]);
+            let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
+            assert_eq!(sent, Some(tag), "PMS must see the exact tag the UI is set to, not a substitute");
+        }
+    }
+
     /// A fresh client knows nothing about how it is reached, and says so rather than guessing a
     /// tier. That default is load-bearing: `transcoder::link_policy` reads `None` as "no
     /// restriction", so every client built before an activation path exists plays exactly as it

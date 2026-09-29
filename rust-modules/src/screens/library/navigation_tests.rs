@@ -51,9 +51,9 @@ impl Fixture {
             .map(|i| format!("Synthetic shelf {i}"))
             .collect();
         let titles: Vec<_> = titles.iter().map(String::as_str).collect();
-        if shelves > 0 {
-            stores.browse.borrow_mut().seed_shelves_for_test(0, &titles, 4);
-        }
+        // Zero shelves is the first-paint window having closed with no answer (the set is
+        // settled and empty) — a section reveal waits for its shelves to settle.
+        stores.browse.borrow_mut().seed_shelves_for_test(0, &titles, 4);
         let epoch = stores.browse.borrow().table_epoch_for_test();
         let sid = crate::plex::ServerId::UNSET;
         let sections = (0..libraries)

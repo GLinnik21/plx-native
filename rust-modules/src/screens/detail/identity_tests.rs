@@ -83,6 +83,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         ground: AmbientWash::flat(theme::SURFACE_APP), selected: None, spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
     }
 }
@@ -447,3 +448,50 @@ fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
         "EAC3", "SRT", "R", "Dolby Digital Plus", "Dolby"]);
     assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
 }
+
+/// A show with `n` seasons and otherwise the fixture page.
+fn show(n: i64) -> Detail {
+    let mut d = item("a", false);
+    d.seasons = (1..=n).map(|i| crate::metadata::Season { rk: format!("s{i}"), index: i,
+        title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 }).collect();
+    d
+}
+
+/// The whole page's per-frame draw census — every primitive the page hands the painter in one
+/// frame, by `(command tag, whether it lands off-screen)` — through the recording painter, which
+/// walks exactly the tree a real frame walks with no GL behind it.
+fn census(detail: Detail) -> std::collections::BTreeMap<(u64, bool), usize> {
+    use crate::ui::screen::DrawFrame;
+    let (mut d, _rig) = boot_with(detail);
+    let log = crate::ui::draw_census::capture(|| {
+        let entry = d.nav.tabs.stack.top_mut().expect("detail page");
+        let owner = InputOwner::Entry(entry.id);
+        let inst = entry.inst.as_mut().expect("mounted detail");
+        let measure = FixtureMeasure;
+        let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
+            press: Default::default(), focus: Default::default(), owner };
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
+        crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+    });
+    let mut out = std::collections::BTreeMap::new();
+    for (tag, r) in log {
+        let off = r.x >= crate::ui::consts::SCR_W || r.x + r.w.max(1.0) <= 0.0
+            || r.y >= crate::ui::consts::SCR_H || r.y + r.h.max(1.0) <= 0.0;
+        *out.entry((tag, off)).or_insert(0) += 1;
+    }
+    out
+}
+
+/// **Issue 18: a show page's frame costs its VISIBLE season pills, never its season count.** Once
+/// the season row overflows the screen every further season is off the row, and the page must
+/// draw exactly the same primitives — text runs, plates, capsules — whether the show has 16
+/// seasons or the 64 the page addresses. Measured 2026-09-28 on this fixture page: 5 seasons = 32
+/// primitives per frame, 40 = 44 (the row filling up), the same page as a film = 16.
+#[test]
+fn a_show_pages_draw_does_not_grow_with_seasons_off_the_row() {
+    let _guard = crate::testlock::serial();
+    let full = census(show(16));
+    assert_eq!(census(show(64)), full, "draw census grew with off-screen seasons");
+    assert!(full.get(&(100, false)).copied().unwrap_or(0) > 0, "the page drew text: {full:?}");
+}
+

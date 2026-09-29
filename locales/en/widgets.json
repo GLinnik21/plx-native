@@ -296,13 +296,6 @@
       "key": "str"
     }
   },
-  "widgets.hint.retry": {
-    "value": "Press {key} to choose quality or retry",
-    "description": "Complete sentence. {key} is a remote button rendered as a keycap; keep exactly one occurrence.",
-    "args": {
-      "key": "str"
-    }
-  },
   "widgets.hint.scroll": {
     "value": "Scroll",
     "description": "widgets hint scroll"
@@ -552,12 +545,8 @@
     "description": "reason forced_playback"
   },
   "widgets.reason.forced_playback_help": {
-    "value": "Force Direct Play is enabled. Automatic fallback is off. Return Direct Play to Auto in Settings. Restart the app if it stops responding.",
+    "value": "Force Direct Play is on, so the server couldn’t step in with a converted stream.",
     "description": "reason forced_playback_help"
-  },
-  "widgets.menu.forced_quality": {
-    "value": "Saved preference; Force Direct Play uses Original.",
-    "description": "menu forced_quality"
   },
   "widgets.repair.question": {
     "value": "Repair PlxNative’s sandbox?",
@@ -663,20 +652,6 @@
     "value": "Charcoal",
     "description": "tracks tone_charcoal"
   },
-  "widgets.hint.repair": {
-    "value": "Press {key} to review sandbox repair",
-    "description": "Whole sentence around physical OK keycap before explicit repair confirmation",
-    "args": {
-      "key": "str"
-    }
-  },
-  "widgets.hint.retry_options": {
-    "value": "Press {key} to open retry options",
-    "description": "Whole sentence around physical OK keycap under Force Direct Play failure",
-    "args": {
-      "key": "str"
-    }
-  },
   "widgets.runtime.main_thread": {
     "value": "MAIN THREAD {kind} {milliseconds}ms · {label}",
     "description": "Developer warning; kind and label are technical diagnostic identifiers",
@@ -691,31 +666,31 @@
     "description": "Playback failure detail when the Direct Play setting is Disabled but the stream can only play as the original file."
   },
   "widgets.verdict.forced_no_original": {
-    "value": "Force Direct Play is enabled. No original media is available. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and this item has no original file to play.",
     "description": "Playback failure detail while Force Direct Play is on: the item has no original file."
   },
   "widgets.verdict.forced_container": {
-    "value": "Force Direct Play is enabled. This original container is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and this file’s container can’t play without conversion.",
     "description": "Playback failure detail while Force Direct Play is on: the file's container format cannot be played directly."
   },
   "widgets.verdict.forced_video": {
-    "value": "Force Direct Play is enabled. This video format is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and this video format can’t play without conversion.",
     "description": "Playback failure detail while Force Direct Play is on: the video format cannot be played directly."
   },
   "widgets.verdict.forced_audio": {
-    "value": "Force Direct Play is enabled. This audio format is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and this audio format can’t play without conversion.",
     "description": "Playback failure detail while Force Direct Play is on: the audio format cannot be played directly."
   },
   "widgets.verdict.forced_unauthorized": {
-    "value": "Force Direct Play is enabled. The server did not authorize original playback. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and the server didn’t allow the original file to play.",
     "description": "Playback failure detail while Force Direct Play is on: the Plex server did not allow playing the original file."
   },
   "widgets.verdict.forced_open": {
-    "value": "Force Direct Play could not open the original. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and the original file couldn’t be opened.",
     "description": "Playback failure detail while Force Direct Play is on: the original file could not be opened."
   },
   "widgets.verdict.forced_audio_conversion": {
-    "value": "Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.",
+    "value": "Force Direct Play is on, and this audio track needs conversion.",
     "description": "Playback failure detail while Force Direct Play is on: the selected audio track would need server conversion."
   },
   "widgets.quality.original": {
@@ -960,5 +935,13 @@
   "widgets.region.latin_america": {
     "value": "Latin America",
     "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.failure.play_auto": {
+    "value": "Switch to Auto and play",
+    "description": "Failed-playback button: sets Direct Play back to Auto (the Settings value, saved) and plays the item again."
+  },
+  "widgets.failure.change_quality": {
+    "value": "Change quality",
+    "description": "Failed-playback button: opens the quality ladder; picking a rung retries at it."
   }
 }

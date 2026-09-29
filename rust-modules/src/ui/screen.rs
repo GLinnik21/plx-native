@@ -108,6 +108,19 @@ pub enum FocusTarget<K> {
     /// page being shown for the first time in this visit, where a remembered cursor cannot be
     /// ITS memory however the `(EntryId, GroupId)` key happens to compare.
     FirstInGroup(GroupId),
+    /// The same seat as `FirstInGroup`, reported to `ScreenEvent::FocusMoved` as `By::Dir`
+    /// instead of `By::Restore` — a strip PILL's cover-and-mint (`NavStack`'s `SelectTab`
+    /// arm), never a `Push`/`Root` mint. A tab press always originates FROM the visible strip,
+    /// so the arrival is exactly as deliberate as a directional move into the same group would
+    /// be; reporting `By::Restore` for it read as "the page is being restored to where it was",
+    /// which is false the first time a tab is ever visited, and it silently disabled every
+    /// screen's own "deliberate move" arrival animation (`library::LibraryScreen`'s
+    /// `pop_from_rest`, gated on `By::Dir | By::Pointer`) for that one path only — the reason a
+    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
+    /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
+    /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
+    /// the one constructor; nothing else may produce this variant.
+    FirstInGroupAnimated(GroupId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -1643,6 +1643,12 @@ where
                 // at the FIFO tail loses same-frame releases (remote_synth_key emits both).
                 Fx::Press(_) | Fx::Deliver(_, Delivery::Keyboard { .. }) => immediate_input.push(s),
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Activate(_))) if s.from == MachineId::Input => immediate_input.push(s),
+                // The engine has ALREADY moved focus; every later delivery reads the new key. At
+                // the FIFO tail this announcement queued behind the frame's Tick, so the owner
+                // ticked an unannounced focus as a settled restore and then re-popped it when the
+                // notification arrived — the All grid's outgoing tile snapped to rest and its rows
+                // jumped (`a_key_moves_focus_and_announces_it_before_the_frames_tick`).
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::FocusMoved { .. })) if s.from == MachineId::Input => immediate_input.push(s),
                 Fx::App(ref app_fx) => {
                     if H::app_fx_needs_return(app_fx) {
                         self.app_returns.push_back((s.from, self.return_state()));

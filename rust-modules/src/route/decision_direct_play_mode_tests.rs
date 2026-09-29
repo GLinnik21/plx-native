@@ -69,7 +69,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
         let requests = rx.recv_timeout(Duration::from_secs(15)).unwrap();
         server.join().unwrap();
         assert!(plan.url.is_empty() && plan.tsession.is_empty());
-        assert!(plan.verdict.as_ref().unwrap().text().contains("Return Direct Play to Auto"));
+        assert!(plan.verdict.as_ref().unwrap().text().contains("Force Direct Play is on"));
         assert_eq!(requests.iter().filter(|r| r.contains("/decision?")).count(), 1);
         assert!(!requests.iter().any(|r| r.starts_with("PUT ") || r.contains("start.")));
         crate::plex::reset_servers_for_test();
@@ -117,7 +117,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(transcode_seek(&mut ps, 0).is_none());
     assert!(recover_auto_to_original(&mut ps, 0).is_none());
     commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false });
-    assert!(play_verdict(&ps).unwrap().contains("Return Direct Play to Auto"));
+    assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
     assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);
 }
@@ -131,4 +131,18 @@ fn disabled_mode_refuses_an_original_only_url_without_a_pms_item() {
     let plan = build_stream("", "/movie.mkv", "h264", "aac", &env);
     assert!(plan.url.is_empty());
     assert_eq!(plan.verdict, Some(PlayVerdict::DirectPlayDisabled));
+}
+
+/// **Switch to Auto and play** (the failure read-out's fix for Force): a plain retry repeats the
+/// failed attempt under Force — the same request, the same refusal — so the fix must resolve the
+/// retry under the override, whatever the failed attempt's own snapshot says.
+#[test]
+fn the_play_automatically_retry_resolves_under_auto_not_the_failed_force() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    ps.direct_play_mode = DirectPlayMode::Forced;
+    assert_eq!(retry_context_with(&ps, 123, None).direct_play_mode, DirectPlayMode::Forced,
+        "an ordinary retry is the SAME request");
+    assert_eq!(retry_context_with(&ps, 123, Some(DirectPlayMode::Auto)).direct_play_mode, DirectPlayMode::Auto);
+    assert_eq!(retry_context_with(&ps, 123, Some(DirectPlayMode::Auto)).resume_ns, 123);
 }

@@ -3,7 +3,7 @@ use super::*;
 use crate::ui::card_row;
 use crate::ui::screen::{Activate, Hover, Stop};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, TabPill};
+use crate::ui::widgets::Art;
 use crate::ui::value_chip::ValueChip;
 use crate::ui::{Env, View, on_axis};
 
@@ -180,18 +180,11 @@ impl LibraryScreen {
         let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.motion.lift());
         if self.libraries.is_empty()
             || !document_band_visible(p, y, crate::ui::widgets::StatusOverlay::CTRL_H, pop) { return; }
-        let env = Env::inert();
         // Singleton selectors are hidden for every profile in `sync`; the remaining controls
-        // are always the library pill strip.
-        self.library_capsules.draw(p, y, crate::ui::widgets::StatusOverlay::CTRL_H,
+        // are always the library pill strip — drawn through the one shared strip path.
+        crate::ui::widgets::draw_strip(p, &self.library_capsules, &self.library_lays(f.cx), y,
+            crate::ui::widgets::StatusOverlay::CTRL_H, 0.0,
             crate::ui::widgets::TabGround::Plated { pop });
-        for (index, (_, section)) in self.libraries.iter().enumerate() {
-            let label = self.library_label(*section, f.cx);
-            let rect = self.library_rect(index, f.cx);
-            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
-            TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
-                .mix(focused, selected).draw(&env, p);
-        }
     }
 
     fn draw_grid_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {

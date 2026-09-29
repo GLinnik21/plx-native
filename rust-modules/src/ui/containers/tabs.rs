@@ -9,6 +9,23 @@
 //!
 //! The application publishes strip members by stable control identity, with drawn and target
 //! geometry from the shared renderer. Removing a destination never renumbers another control.
+//!
+//! **A cover-and-mint's focus arrival always animates, whichever pill sent it** (issue #17,
+//! fixed 2026-09-28). `NavStack::apply`'s `SelectTab` "cover-and-mint" arm — a peer pill pressed
+//! while a DIFFERENT root is up, e.g. Home or Search → TV Shows — used `Self::fresh`
+//! (`FocusTarget::FirstInGroup`, `By::Restore`) exactly like a `Push`/`Root` mint, which several
+//! screens (`library::LibraryScreen`'s `pop_from_rest`) treat as "restored to where it was" and
+//! do not animate. A tab press always arrives FROM the visible strip, so that read was never
+//! right the first time a tab is visited this session, and it produced a hard snap onto the
+//! first content tile with no transition. `Self::fresh_tab` (`FocusTarget::
+//! FirstInGroupAnimated`, `By::Dir`) is the fix: same seat, reported as a deliberate move, so the
+//! arrival animates the same as it already did for a Movies → TV Shows peer switch — which never
+//! reaches `NavStack` at all (`app::bridge::nav_peer`'s early return: both are `AppArg::Library`,
+//! `same_instance` by `id()` alone regardless of section — see `registry.rs`), so its own
+//! directional DOWN press into the grid was always `By::Dir` already. The fix is in the shared
+//! `SelectTab` mint path, not a TV Shows special case: it applies to every peer pill equally.
+//! See `screen.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the regression test
+//! `containers::tests::a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore`.
 
 use super::super::machine::{EntryId, GroupId, Host};
 use super::super::screen::{AxisMask, EdgeRule, ElemKind, GroupKind, GroupSpec, Seat};

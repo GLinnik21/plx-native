@@ -830,6 +830,18 @@ fn project(
         }
     }
 
+    // Counted up front (not while looping) because `localized_hub_title`'s per-type "Recently
+    // Added Movies" wording is only right for a `home.<type>.recent` hub that names exactly ONE
+    // library — the moment PMS mints a second hub under the SAME identifier (one household with
+    // two TV libraries: `home_keeps_recently_added_rows_for_two_same_type_libraries`), both need
+    // the per-library "Recently Added in {library}" form to stay distinguishable, and neither
+    // hub can tell that from itself alone.
+    let mut hub_identifier_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for hub in &mc.hub {
+        *hub_identifier_counts.entry(hub.hub_identifier.as_str()).or_insert(0) += 1;
+    }
+
     for hub in &mc.hub {
         if hub.kind != "mixed" && !listable(&hub.kind) {
             continue;
@@ -841,8 +853,22 @@ fn project(
         if items.is_empty() {
             continue;
         }
+        let library = hub
+            .metadata
+            .iter()
+            .find(|m| !m.library_section_title.is_empty())
+            .map(|m| m.library_section_title.as_str())
+            .unwrap_or("");
+        let identifier_is_unique =
+            hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
         out.shelves.push(Shelf {
-            title: hub.title.clone(),
+            title: crate::plex::hub_title::localized_hub_title(
+                crate::plex::hub_title::Scope::Home,
+                &hub.hub_identifier,
+                &hub.title,
+                library,
+                identifier_is_unique,
+            ),
             hub_id: hub.hub_identifier.clone(),
             key: hub.key.clone(),
             items,

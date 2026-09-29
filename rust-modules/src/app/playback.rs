@@ -120,7 +120,7 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
             let failed = matches!(crate::player::state(ps), crate::player::PlaybackState::Error);
             if failed {
                 crate::route::set_quality_for_retry(q);
-                retry_failed_playback(ps, pa, bridge.metadata_mut());
+                retry_failed_playback(ps, pa, bridge.metadata_mut(), None);
             } else {
                 crate::route::set_quality(ps, q);
             }
@@ -138,7 +138,15 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// refusal which never created an Engine, retires a failed server transcode when there was one,
 /// and gives telemetry two honest attempts.  The descriptor lives in `route`; the app owns only
 /// the current playhead and the Engine lifecycle.
-pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, meta: &mut crate::stores::metadata::MetadataStore) -> bool {
+///
+/// `direct_play` overrides the Direct Play mode the retry resolves under; `None` keeps the failed
+/// attempt's own (a retry is the SAME request).
+pub(crate) fn retry_failed_playback(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    meta: &mut crate::stores::metadata::MetadataStore,
+    direct_play: Option<crate::plex::session::DirectPlayMode>,
+) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
     // read-out with an idle black frame.
@@ -154,13 +162,37 @@ pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: 
         .max(crate::route::unpresented_resume_ns(ps))
         .max(0);
     crate::player::stop_bufferfeed(ps, pa);
-    if crate::route::retry_current_play(ps, meta, resume_ns) {
+    if crate::route::retry_current_play(ps, meta, resume_ns, direct_play) {
         crate::ui::idle::invalidate();
         true
     } else {
         log("playback retry: current source cannot be resolved again");
         false
     }
+}
+
+/// **The failure read-out's fix for Force Direct Play** — `FailureAction::PlayAutomatically`.
+///
+/// A PERSISTENT switch, deliberately, not a one-shot: Force is what made this play fail, and it
+/// would make the next unsupported file fail the same way. The preference moves to Auto now (the
+/// in-memory value every later resolve reads) and is saved on the storage worker exactly as the
+/// Settings row saves it (`app::preferences`' `DirectPlay` arm), since the frame may not block on
+/// storage. The retry resolves under Auto explicitly rather than inheriting the failed attempt's
+/// Force, which a plain retry keeps on purpose.
+pub(crate) fn play_automatically(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    meta: &mut crate::stores::metadata::MetadataStore,
+) -> bool {
+    use crate::plex::session::DirectPlayMode;
+    crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
+    let _ = crate::storage_worker::submit_retained(|| {
+        if !crate::route::set_direct_play_mode(DirectPlayMode::Auto) {
+            log("play automatically: the Direct Play preference was not saved");
+        }
+        crate::ui::idle::invalidate();
+    });
+    retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto))
 }
 
 /// **Where a session that is STARTING returns to** — the whole of what `app::nav::Origin` was,
@@ -498,6 +530,12 @@ pub(crate) fn player_requests(
     use crate::screens::registry::PlayerReq;
     for req in reqs {
         match req {
+            PlayerReq::RetryPlayback => {
+                retry_failed_playback(ps, pa, bridge.metadata_mut(), None);
+            }
+            PlayerReq::PlayAutomatically => {
+                play_automatically(ps, pa, bridge.metadata_mut());
+            }
             PlayerReq::RepairSandbox => {
                 if ps.jail_load_blocked {
                     pa.repair_sandbox(repair, crate::webos::jail_blocks_native_video());

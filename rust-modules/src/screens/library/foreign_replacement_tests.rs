@@ -53,6 +53,8 @@ impl Publication {
         stores.browse_run(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
         stores.browse_run(BrowseCmd::SetCur(current));
         stores.browse.borrow_mut().seed_items_for_test(120);
+        // The incoming section's shelves have settled (none): a section reveal waits on them.
+        stores.browse.borrow_mut().seed_shelves_for_test(current, &[], 4);
         let publication = stores.capture_browse(&mut directory);
         let listing = publication.listing;
         let hubs = publication.section_hubs;
