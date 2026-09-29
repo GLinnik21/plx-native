@@ -110,6 +110,17 @@ pub(crate) struct TrackMenuState {
     /// what THIS panel last drew, and [`Self::rebuild`] is the only writer, on every (re)build of
     /// the Audio tab (`new`/`focus_tab`).
     enhance_shown: Option<crate::plex::AudioEnhancements>,
+    /// The Audio tab's focused row identity, banked across a live rows-VANISH: the enhancement
+    /// offer can drop for a poll or two on a route change this menu never asked for (a subtitle
+    /// switched on mid-play, a momentary refusal) and return before the viewer presses anything.
+    /// [`Self::rebuild_audio`] stashes the focused [`AudioRowTarget::Boost`]/[`AudioRowTarget::Loudness`]
+    /// here the moment those rows are about to disappear, and restores it — in preference to
+    /// reading `table.sel` back — the moment they reappear. Reading `table.sel` at that point
+    /// instead would be wrong: while the rows are gone `table.sel` sits on whatever the fallback
+    /// (or the ENGINE's own raw index clamp while the row count was smaller — see
+    /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
+    /// rows are back. `None` once consumed, or when nothing needs remembering.
+    sticky_audio_target: Option<AudioRowTarget>,
     table: TableView, // main-thread only
 }
 
@@ -187,6 +198,7 @@ impl TrackMenuState {
             tone: crate::player::subtitle_tone(),
             yours,
             enhance_shown: None,
+            sticky_audio_target: None,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -512,12 +524,46 @@ impl TrackMenuState {
     /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
     /// recomputing it — `update`'s per-frame poll already has it fresh, and handing it here keeps
     /// `route::menu_enhancements(ps)` to exactly one call per rebuild instead of two.
+    ///
+    /// **Preserves the focused row by its [`AudioRowTarget`] identity** rather than always
+    /// snapping to the checked track — the fix for a reported focus desync: `update`'s live poll
+    /// calls this every time the route's enhancement answer changes (the server settling an
+    /// optimistic Boost/Loudness flip, or a mid-play route change), and that used to re-home
+    /// `self.table.sel` (and the drawn pill) onto the active-audio row unconditionally. The
+    /// ENGINE's own cursor only ever moves in response to a `FocusMoved`
+    /// (`screens::player::overlay::PlayerOverlayScreen::step`'s write via [`Self::set_sel`]), and
+    /// a poll-driven rebuild fires no such event — so the highlight jumped to the checked language
+    /// row while the engine's focus stayed on the toggle row the viewer was actually on, and the
+    /// next UP/DOWN/OK acted on a row nothing showed as selected. Looking the previous row up by
+    /// its [`AudioRowTarget`] and reusing its NEW position keeps `table.sel` exactly where the
+    /// engine still thinks it is whenever that target still exists (the common case: toggling a
+    /// bit does not remove or reorder rows). A tab switch/open always reaches here too, but
+    /// `self.audio_targets` is empty then ([`Self::rebuild`]'s Subtitles arm clears it, and the
+    /// constructor never populates it first), so the lookup misses and the fallback below —
+    /// landing on the checked track — is exactly the existing open/switch behaviour.
     fn rebuild_audio(&mut self, enhance_shown: Option<crate::plex::AudioEnhancements>, meta: metadata::MetadataView<'_>, slide: bool) {
+        let prev_target = self.audio_targets.get(self.table.sel.max(0) as usize).copied();
+        // The offer is about to VANISH (Some -> None): bank the toggle row identity before
+        // `self.audio_targets` drops it, so a later return restores it instead of reading
+        // `table.sel` back — see `Self::sticky_audio_target`'s own doc for why that would be wrong.
+        if self.enhance_shown.is_some() && enhance_shown.is_none() {
+            if let Some(t @ (AudioRowTarget::Boost | AudioRowTarget::Loudness)) = prev_target {
+                self.sticky_audio_target = Some(t);
+            }
+        }
         self.targets = Vec::new();
         self.enhance_shown = enhance_shown;
         let (sections, targets) = self.build_audio(meta);
+        // The offer is back: prefer the banked identity over `prev_target` (which names whatever
+        // row `table.sel` happened to sit on while the rows were gone) whenever it still exists.
+        let restored = if enhance_shown.is_some() { self.sticky_audio_target.take() } else { None };
+        let sel = restored
+            .or(prev_target)
+            .and_then(|t| targets.iter().position(|x| *x == t))
+            .map(|i| i as c_int)
+            .unwrap_or_else(|| self.active_audio().max(0));
         self.audio_targets = targets;
-        self.table.set_sections(sections, self.active_audio().max(0), slide);
+        self.table.set_sections(sections, sel, slide);
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -641,10 +687,19 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let i = want.elem.index().unwrap_or(0) as i32;
+        // Trust the panel's OWN cursor (`table.sel`), not `want`'s raw index. `table.sel` is
+        // where `rebuild`/`rebuild_audio` already decided focus belongs — including a live poll
+        // rebuild that drops and later restores the enhancement rows (issue #266's follow-up,
+        // `Self::sticky_audio_target`) — so it is the identity-aware answer; clamping `want`
+        // instead would settle onto whatever the ENGINE's stale remembered index happens to land
+        // on once the row count changes, with no notion of which row that index used to name. This
+        // mirrors the documented Slot->Item reconcile shape for a bare `TableView`'s positional
+        // keys (spec §7.3: "a reorder... reconcile returns Item(k) at its new position, so focus
+        // follows the item") — here the panel's `sel` stands in for that recomputed position.
+        let _ = want;
         FocusKey {
             entry: self.entry,
-            elem: H::Elem::of_index(self.state.table.settle(i).max(0) as u32),
+            elem: H::Elem::of_index(self.state.table.settle(self.state.table.sel).max(0) as u32),
         }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -1842,6 +1897,119 @@ mod enhancement_menu_tests {
         teardown(&ps_ok);
     }
 
+    /// **The reported bug.** A viewer holds the Audio tab open with the Boost dialog row FOCUSED
+    /// (not necessarily checked — a toggle row is never the checked track) and presses OK; the
+    /// server settles the request asynchronously, and the next frame's live poll
+    /// (`TrackMenuState::update`) sees the answer change and rebuilds. Before the fix,
+    /// `rebuild_audio` always re-homed `table.sel` onto the checked audio track, so the drawn
+    /// highlight jumped there while the ENGINE's own focus — which only moves on an actual
+    /// `FocusMoved`, never fired by this poll — stayed on the toggle row: the visual cursor and the
+    /// row the next OK/UP/DOWN actually acts on disagreed. `set_sel` here stands in for the
+    /// engine's write-back exactly as `screens::player::overlay::PlayerOverlayScreen::step` performs
+    /// it on a real `FocusMoved`, so `menu.sel()` staying put after `update` is the proof the
+    /// engine's remembered element and the drawn cursor still name the same row.
+    #[test]
+    fn live_update_preserves_focus_on_the_toggled_row_not_the_checked_track() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps_before) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: false },
+            ..Default::default()
+        });
+        // Row 0 is the one audio track (checked/active); row 1 is Boost dialog. Move the ENGINE's
+        // focus there the way a real UP press's `FocusMoved` write-back does.
+        menu.set_sel(1);
+        assert_eq!(menu.audio_targets[1], AudioRowTarget::Boost, "fixture shape: row 1 is Boost");
+
+        // The SAME playback settles Boost dialog ON — a LIVE change this menu did not itself
+        // request (mirrors the server's async `EnhancementOutcome` landing), delivered the way
+        // `update` is fed every frame: a fresh `&PlaybackSession`, not a rebuild the panel triggers.
+        let (ps_after, _sid2) = enhancement_test_session(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            ..Default::default()
+        });
+        let store = one_track_store();
+        menu.update(0.0, &ps_after, store.view());
+
+        assert_eq!(
+            menu.sel(),
+            1,
+            "the toggle row stays focused across a live poll rebuild, not snapped to the checked track"
+        );
+        assert_eq!(
+            menu.audio_targets.get(menu.sel() as usize).copied(),
+            Some(AudioRowTarget::Boost),
+            "and the row at that position is still, logically, the same Boost row"
+        );
+
+        teardown(&ps_before);
+    }
+
+    /// **The follow-up gap the previous fix left open.** The offer can VANISH entirely for a poll
+    /// or two — a subtitle switched on mid-play withdraws it (I6) — and return before the viewer
+    /// acts, e.g. the subtitle switched off again. While the rows are gone, `table.sel` falls back
+    /// to the checked track (there is no Boost/Loudness row left to preserve identity against), and
+    /// the ENGINE's own reconcile can independently clamp its stale remembered index into the
+    /// smaller row count and write a DIFFERENT row back via `set_sel` — exactly the way
+    /// `PlayerOverlayScreen::step`'s `FocusMoved` arm does on a real device. Simulating that clamp
+    /// here (rather than the checked-track fallback) proves the fix reads back the identity that
+    /// was banked before the vanish, not whatever `table.sel` happens to hold once the rows return.
+    #[test]
+    fn a_rows_vanish_and_return_restores_focus_on_the_toggle_row_not_wherever_the_clamp_landed() {
+        let _g = crate::testlock::serial();
+        let two_tracks = || {
+            store_with_audio(vec![
+                crate::metadata::Stream {
+                    id: 501,
+                    index: 0,
+                    codec: "ac3".into(),
+                    channels: 2,
+                    default: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
+            ])
+        };
+        let (ps_before, _sid_before) = enhancement_test_session(EnhTestFixture::default());
+        let store = two_tracks();
+        let mut menu = TrackMenuState::new(&ps_before, store.view(), 0, Vec::new());
+        assert_eq!(
+            menu.audio_targets,
+            vec![AudioRowTarget::Track(0), AudioRowTarget::Track(1), AudioRowTarget::Boost, AudioRowTarget::Loudness],
+            "fixture shape: two tracks, then Boost, then Loudness"
+        );
+        // The engine's focus lands on Boost, the way a real UP/DOWN's `FocusMoved` write-back does.
+        menu.set_sel(2);
+
+        // A live route change withdraws the offer for a frame (I6: a subtitle switched on).
+        let (ps_hidden, _sid_hidden) = enhancement_test_session(EnhTestFixture { subtitle_shown: true, ..Default::default() });
+        let store_hidden = two_tracks();
+        menu.update(0.0, &ps_hidden, store_hidden.view());
+        assert_eq!(menu.enhance_shown, None, "fixture shape: a subtitle on screen withdraws the offer (I6)");
+
+        // The ENGINE's own reconcile runs the same frame right after this poll (§7.3 step 6): its
+        // stale remembered index (2, Boost) is now out of range for the 2-row table and clamps to
+        // the last row — Track(1), not the checked Track(0) the fallback above chose. Simulate that
+        // write-back exactly as `live_update_preserves_focus_on_the_toggled_row_not_the_checked_track`
+        // simulates a real `FocusMoved` via `set_sel`.
+        menu.set_sel(1);
+
+        // The offer returns (the subtitle switched off again) — the same live poll this menu never
+        // triggered itself.
+        let (ps_shown, _sid_shown) = enhancement_test_session(EnhTestFixture::default());
+        let store_shown = two_tracks();
+        menu.update(0.0, &ps_shown, store_shown.view());
+
+        assert!(menu.enhance_shown.is_some(), "fixture shape: the offer is back");
+        assert_eq!(
+            menu.audio_targets.get(menu.sel() as usize).copied(),
+            Some(AudioRowTarget::Boost),
+            "a rows-vanish-and-return round trip must restore focus to the row the viewer was \
+             actually on, not wherever the vanished frame's engine-side clamp happened to land"
+        );
+
+        teardown(&ps_before);
+    }
+
     // ---- locale + width gates ------------------------------------------------------------------
 
     /// **No row label ever leaks a "Plex Pass" mention**, in any shipped locale — the rows are
@@ -1943,6 +2111,7 @@ mod focus_tests {
             tone: SubtitleTone::White,
             yours: Vec::new(),
             enhance_shown: None,
+            sticky_audio_target: None,
             table,
         }
     }
@@ -2013,6 +2182,36 @@ mod focus_tests {
             assert_eq!(
                 placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)),
                 want.map(|r| (r.x, r.y, r.w, r.h))
+            );
+        });
+    }
+
+    /// **The follow-up gap.** A row count that shrinks and grows back (the Audio tab's enhancement
+    /// rows vanishing under a live poll rebuild, then returning) can leave the ENGINE's own
+    /// remembered focus index stale relative to `table.sel`: `TrackMenuState::rebuild_audio`
+    /// restores `table.sel` onto the toggle row's new position (`sticky_audio_target`), but the
+    /// engine has no way to learn that unless `reconcile` actually reports it. Before the fix,
+    /// `reconcile` answered `settle(want)` — clamping the ENGINE's own possibly-stale index — which
+    /// only differs from `want` when that raw index is now literally out of range, so a mere
+    /// position change the panel already resolved (not a shrink past it) went unreported and the
+    /// engine's remembered element stayed wrong. `reconcile` must instead always answer the panel's
+    /// own `table.sel`, so the engine adopts it whenever it disagrees.
+    #[test]
+    fn reconcile_reports_the_panels_own_cursor_not_a_clamp_of_the_engines_stale_index() {
+        let e = EntryId(5);
+        let mut st = three_row_menu();
+        // The panel's own rebuild has already moved `table.sel` to row 2 (e.g. `sticky_audio_target`
+        // restoring focus onto the toggle row once the enhancement rows came back).
+        st.table.sel = 2;
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            // The engine still remembers row 0 — a perfectly in-range index for this 3-row table,
+            // so the old clamp-`want` implementation would answer it back UNCHANGED.
+            let want = FocusKey { entry: e, elem: 0u32 };
+            let got = <TrackMenuPart as Focusable<HostFixture>>::reconcile(&part, want, cx);
+            assert_eq!(
+                got.elem, 2,
+                "reconcile must follow the panel's own table.sel, not echo back an in-range `want`"
             );
         });
     }
