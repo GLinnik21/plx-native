@@ -27,9 +27,9 @@ use crate::ui::screen::{
     GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
 use crate::ui::table::{Row as TRow, Section, TableView};
-use crate::ui::widgets::{self, SelMark, TabGround, TabPill, TabStrip};
+use crate::ui::widgets::{self, SelMark, TabGround, TabStrip};
 use crate::ui::xfade::Xfade;
-use crate::ui::{theme, Env, Rect, Spring, View};
+use crate::ui::{theme, Rect, Spring};
 
 use super::registry::{
     AppFx, ContentArg, ContentLike, ContentReq, FilmographyKey, FilmographyMemory, PageMemory,
@@ -44,7 +44,6 @@ const STRIP_BAND: f32 = 128.0;
 const PV: Rect = Rect::new(MARGIN_X, 330.0 + theme::space::SM, 420.0, 630.0);
 const PV_SETTLE: f32 = 0.180;
 const STRIP_INSET: f32 = 20.0;
-const TAB_PAD: f32 = 26.0;
 const TAB_GAP: f32 = widgets::STRIP_GAP_WIDE;
 
 const TAB_GROUP: GroupId = GroupId(0);
@@ -433,16 +432,44 @@ impl FilmographyScreen {
         }
     }
 
-    fn pill_rects(&self, measure: &dyn Measure) -> Vec<Rect> {
+    /// The department strip in CONTENT space, through the shared strip layout (`widgets::
+    /// strip_layout_measured`): the same padding and span function the capsules are placed from,
+    /// so a capsule can only ever come to rest on a pill. The first pill's frame stands
+    /// `STRIP_INSET` inside the content column.
+    fn tab_lays(&self, measure: &dyn Measure) -> Vec<widgets::StripLay> {
         let l = route_layout(measure);
-        let mut x = l.content.x + STRIP_INSET;
-        self.tab_c
+        widgets::strip_layout_measured(
+            self.tab_c.iter().map(|c| c.to_string_lossy().into_owned()),
+            l.content.x + STRIP_INSET + widgets::STRIP_PAD,
+            theme::size::BODY,
+            TAB_GAP,
+            measure,
+        )
+    }
+
+    /// The department strip — capsules and pills — inside the caller's clip.
+    fn draw_tabs(&self, p: crate::ui::Painter, measure: &dyn Measure) {
+        widgets::draw_strip(
+            p,
+            &self.tabs,
+            &self.tab_lays(measure),
+            route_layout(measure).content.y,
+            PILL_H,
+            self.tab_hscroll.pos,
+            TabGround::Plated {
+                pop: self.pop.scale(0),
+            },
+        );
+    }
+
+    /// Each pill's SCREEN rect (the strip's scroll applied) — the hit-test and focus geometry.
+    fn pill_rects(&self, measure: &dyn Measure) -> Vec<Rect> {
+        let top = route_layout(measure).content.y;
+        self.tab_lays(measure)
             .iter()
-            .map(|c| {
-                let w = measure.width(c.as_c_str(), theme::size::BODY, true) + 2.0 * TAB_PAD;
-                let rect = Rect::new(x - self.tab_hscroll.pos, l.content.y, w, PILL_H);
-                x += w + TAB_GAP;
-                rect
+            .map(|lay| {
+                let r = widgets::strip_pill_rect(lay, top, PILL_H);
+                Rect::new(r.x - self.tab_hscroll.pos, r.y, r.w, r.h)
             })
             .collect()
     }
@@ -595,15 +622,11 @@ impl FilmographyScreen {
 
         let tab = self.current_tab(cx.focus.current);
         self.pop.step(tab.map(|_| 0), dt);
-        let spans: Vec<(f32, f32)> = self
-            .pill_rects(cx.measure)
-            .into_iter()
-            .map(|r| (r.x + self.tab_hscroll.pos, r.w))
-            .collect();
+        let lays = self.tab_lays(cx.measure);
         self.tabs.update(
             self.selected_tab() as i32,
             tab.map_or(-1, |i| i as i32),
-            |i| spans.get(i).copied(),
+            |i| widgets::strip_span(&lays, i, PILL_H),
             SelMark::Travels,
             dt,
         );
@@ -656,7 +679,6 @@ impl FilmographyScreen {
             f.measure,
         );
 
-        let rects = self.pill_rects(f.measure);
         if !self.tab_c.is_empty() {
             let clip_top = layout.content.y - CLIP_VPAD;
             let clip_h = PILL_H + 2.0 * CLIP_VPAD;
@@ -666,23 +688,10 @@ impl FilmographyScreen {
                 SCR_W - layout.content.x,
                 clip_h,
             ));
-            self.tabs.draw(
-                p,
-                layout.content.y,
-                PILL_H,
-                TabGround::Plated {
-                    pop: self.pop.scale(0),
-                },
-            );
-            let env = Env::inert();
-            for (label, rect) in self.tab_c.iter().zip(rects.iter().copied()) {
-                let content_x = rect.x + self.tab_hscroll.pos;
-                let (focus_mix, selected_mix) = self.tabs.mixes((content_x, rect.w));
-                TabPill::new(label.as_ptr(), theme::size::BODY, rect)
-                    .plated()
-                    .mix(focus_mix, selected_mix)
-                    .draw(&env, p);
-            }
+            // Capsules and pills through ONE scroll offset (issue 14): the capsules used to be
+            // drawn here in content space through this un-scrolled painter while the pills were
+            // laid out already scrolled, so a scrolled row showed the focus plate off its label.
+            self.draw_tabs(p, f.measure);
             p.clip_clear();
 
             if self.tab_hscroll.pos > 0.5 {
@@ -742,7 +751,7 @@ impl FilmographyScreen {
         );
 
         let clip = Rect::new(layout.content.x, 0.0, SCR_W - layout.content.x, SCR_H);
-        for (i, rect) in rects.into_iter().enumerate() {
+        for (i, rect) in self.pill_rects(f.measure).into_iter().enumerate() {
             f.stop(
                 p,
                 Stop {
@@ -1261,6 +1270,79 @@ mod tests {
         let h = frame.h - crate::ui::table::TOP_PAD - crate::ui::table::BOT_PAD;
         assert_eq!(h, 784.0);
         assert_eq!(h / crate::ui::table::ROW_H_ART, 8.0);
+    }
+
+    /// **Issue 14: the focus plate stays on its label while the department row scrolls.** A person
+    /// with enough roles to scroll the row: focus walks to the last department and back, one tab
+    /// per 40 frames, and after every frame the strip is drawn through the recording painter. On
+    /// every frame the focus capsule has come to rest (its popped plate is the only strip
+    /// primitive taller than a pill), that plate is centred on the focused pill's own screen rect —
+    /// the rect its label is drawn in. It used to be drawn in content space through an
+    /// un-scrolled painter, so once the row scrolled the plate sat `scroll` px right of its label
+    /// and slid independently while the row scrolled back.
+    #[test]
+    fn the_focus_plate_stays_on_its_label_while_the_department_row_scrolls_and_back() {
+        let _serial = crate::testlock::serial();
+        let mut s = screen(5, &_serial);
+        s.model = [
+            "Actor", "Producer", "Executive Producer", "Director", "Writer", "Appearances",
+            "Self", "Thanks", "Soundtrack", "Archive Footage",
+        ]
+        .iter()
+        .map(|t| dept(t, vec![credit(&format!("{t} film"), t, 2000, None)]))
+        .collect();
+        s.department = "Actor".into();
+        s.dirty = true;
+        let measure = FixtureMeasure;
+        let n = s.model.len();
+        let path: Vec<usize> = (0..n).chain((0..n).rev()).collect();
+        let mut present = crate::ui::present::Present::new();
+        let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
+        let (mut ms, mut scrolled, mut graded) = (0u32, 0.0f32, 0);
+        for &i in &path {
+            for frame in 0..40 {
+                ms += 16;
+                let key = focus(&s, Located::Tab(i));
+                let mut c = cx(&measure, Some(key));
+                c.tick = Tick { ms, dt_us: 16_667 };
+                {
+                    let mut fx = Effects::new(
+                        &mut out,
+                        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                        &mut present,
+                    );
+                    s.tick(c.tick, &c, &mut fx);
+                }
+                scrolled = scrolled.max(s.tab_hscroll.pos);
+                let log = crate::ui::draw_census::capture(|| {
+                    s.draw_tabs(crate::ui::Painter::recording(), &measure);
+                });
+                if frame < 39 {
+                    continue;
+                }
+                let pill = s.pill_rects(&measure)[i];
+                let plates: Vec<Rect> = log
+                    .iter()
+                    .filter(|(tag, r)| {
+                        *tag != 100 && r.h > PILL_H + 1.0 && r.y < pill.y + PILL_H && r.y + r.h > pill.y
+                    })
+                    .map(|(_, r)| *r)
+                    .collect();
+                assert!(!plates.is_empty(), "tab {i}: no focus plate drawn");
+                for r in plates {
+                    assert!(
+                        (r.cx() - pill.cx()).abs() < 0.5,
+                        "tab {i} at scroll {:.1}: plate centre {:.1} vs label pill centre {:.1}",
+                        s.tab_hscroll.pos,
+                        r.cx(),
+                        pill.cx()
+                    );
+                }
+                graded += 1;
+            }
+        }
+        assert!(scrolled > 100.0, "the row must really scroll: max {scrolled}");
+        assert_eq!(graded, path.len());
     }
 
     /// Replaces the legacy left-cut pointer test through the engine's placed clip.

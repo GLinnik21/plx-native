@@ -1,6 +1,9 @@
 //! Playback defaults and Plex account preferences on the shared Settings table.
 //! The confirmed account snapshot stays with this screen; workers return receipts and never
 //! mutate the UI. A picker edits one field, and a failed save leaves the confirmed value intact.
+//! A picker is this page's own submenu over the confirmed snapshot it edits, so it is a second
+//! table rather than a page of the surface's stack — but it moves on the family's one push spring
+//! (`route_screen::RoutePush`, the surface's own), sliding in and out exactly like a pushed page.
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 use crate::plex::account::{PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
@@ -13,8 +16,8 @@ use crate::ui::screen::{At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Foc
     HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Step};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::table_screen::{Header, TableScreen};
-use crate::ui::route_screen::RouteLayout;
-use crate::ui::{theme, Rect};
+use crate::ui::route_screen::{RouteLayout, RoutePush};
+use crate::ui::{theme, Painter, Rect};
 use super::family::{table_focus, InnerHost, ALERT_GROUP};
 use super::registry::{AccountPreferenceReply, AppFx, PreferenceCmd, ALERT};
 
@@ -61,7 +64,14 @@ enum Pending {
 
 pub(crate) struct PreferencesPage {
     entry: EntryId,
+    /// The page's own list of fields — the parent level of every picker.
     table: TableView,
+    /// The open (or leaving) picker's options.
+    picker_table: TableView,
+    /// The submenu push: open while a picker is, run back on close.
+    submenu: RoutePush,
+    /// The picker sliding back out, still drawn in the child role until `submenu` rests closed.
+    leaving: Option<Field>,
     actions: Vec<Action>,
     state: State,
     parent_row: i32,
@@ -74,7 +84,8 @@ pub(crate) struct PreferencesPage {
 }
 impl PreferencesPage {
     pub(crate) fn new(entry: EntryId, kind: Kind) -> Self {
-        let mut s = Self { entry, table: TableView::new(), actions: Vec::new(),
+        let mut s = Self { entry, table: TableView::new(), picker_table: TableView::new(),
+            submenu: RoutePush::new(), leaving: None, actions: Vec::new(),
             state: State { kind, picker: None, selected: 0, busy: false, status: String::new(),
                 quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(),
                 values: Vec::new(), confirming: false, affirmative: false, alert_scroll: 0 },
@@ -83,10 +94,17 @@ impl PreferencesPage {
         s.rebuild(0);
         s
     }
-    fn title(&self) -> &'static str {
-        self.state.picker.map_or(match self.state.kind {
+    fn kind_title(&self) -> &'static str {
+        match self.state.kind {
             Kind::Playback => crate::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => crate::i18n::msg::settings_audio_title(),
-        }, Field::title)
+        }
+    }
+    /// The table focus and activation act on: the open picker's, else the field list.
+    fn active(&self) -> &TableView {
+        if self.state.picker.is_some() { &self.picker_table } else { &self.table }
+    }
+    fn active_mut(&mut self) -> &mut TableView {
+        if self.state.picker.is_some() { &mut self.picker_table } else { &mut self.table }
     }
     fn copy_text(&self) -> Cow<'_, str> {
         if !self.state.status.is_empty() {
@@ -101,16 +119,28 @@ impl PreferencesPage {
         }
     }
     fn view(&self) -> TableScreen<'_> {
-        let crumb = if self.state.picker.is_some() { match self.state.kind {
-            Kind::Playback => crate::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => crate::i18n::msg::settings_audio_title(),
-        }} else { crate::i18n::msg::settings_title() };
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(crumb), self.title(), &self.copy),
-            &self.table, GroupId(0), self.entry)
+        self.view_at(self.state.picker)
+    }
+    /// One level of the page: the field list (`None`) or a picker, each with its own crumb/title.
+    fn view_at(&self, level: Option<Field>) -> TableScreen<'_> {
+        let (crumb, title, table) = match level {
+            Some(field) => (self.kind_title(), field.title(), &self.picker_table),
+            None => (crate::i18n::msg::settings_title(), self.kind_title(), &self.table),
+        };
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(crumb), title, &self.copy),
+            table, GroupId(0), self.entry)
+    }
+    /// Draw one level through `p` and hand back the focus stops it registered.
+    fn draw_level(&self, f: &DrawFrame<'_, '_, InnerHost>, level: Option<Field>, p: Painter) -> Vec<crate::ui::screen::Stop<u32>> {
+        let mut inner = DrawFrame::with_navigation(f.cx, p, f.navigation());
+        let mut v = self.view_at(level);
+        crate::ui::screen::Part::<InnerHost>::draw(&mut v, &mut inner, Rect::FULL);
+        inner.into_stops()
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
         fx.push(Fx::Deliver(MachineId::Instance(InstanceId(0)),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: if group == GroupId(0) {
-                FocusTarget::Elem(FocusKey { entry: self.entry, elem: self.table.sel.max(0) as u32 })
+                FocusTarget::Elem(FocusKey { entry: self.entry, elem: self.active().sel.max(0) as u32 })
             } else { FocusTarget::ContainerGroup(group) } }))));
     }
     fn load(&mut self, fx: &mut Effects<'_, InnerHost>) {
@@ -194,47 +224,56 @@ impl PreferencesPage {
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         self.state.values.clear(); self.actions.clear();
+        // The field list is rebuilt at every level: it is the parent a picker slides over.
         let mut section = Section::new("");
+        let fields: &[Field] = match self.state.kind {
+            Kind::Playback => &[Field::Quality, Field::DirectPlay],
+            Kind::AudioSubtitles if self.snapshot.is_some() => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
+            _ => &[],
+        };
+        let mut list_values = Vec::new(); let mut list_actions = Vec::new();
+        for &field in fields {
+            let value = self.value_label(field);
+            let mut row = Row::new(field.title()).value(&value).chevron(true).dim(self.state.busy);
+            if field == Field::Quality && self.state.direct_play == DirectPlayMode::Forced {
+                row = row.detail(crate::i18n::msg::settings_playback_overridden());
+            }
+            if field == Field::AudioLanguage && self.snapshot.as_ref().is_some_and(|s| s.preferences.auto_select_audio == Some(false)) {
+                row = row.detail(crate::i18n::msg::settings_audio_selection_off());
+            }
+            section = section.row(row); list_values.push(value); list_actions.push(Action::Open(field));
+        }
+        if self.state.kind == Kind::AudioSubtitles && !self.state.busy && !self.state.status.is_empty() {
+            section = section.row(Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail())); list_actions.push(Action::Retry);
+        }
+        let list_sel = if self.state.picker.is_some() { self.parent_row } else { selected };
+        for table in [&mut self.table, &mut self.picker_table] {
+            table.compact = false; table.header_ink = theme::TEXT_READING; table.list_focused = true;
+        }
+        self.table.set_sections(vec![section], list_sel, false);
         if let Some(field) = self.state.picker {
             let current = self.current_value(field);
+            let mut section = Section::new("");
             for (label, value) in self.options(field) {
                 section = section.row(Row::new(&label).checked(value == current).dim(self.state.busy));
                 self.state.values.push(label); self.actions.push(Action::Pick(value));
             }
+            self.picker_table.set_sections(vec![section], selected, false);
         } else {
-            let fields: &[Field] = match self.state.kind {
-                Kind::Playback => &[Field::Quality, Field::DirectPlay],
-                Kind::AudioSubtitles if self.snapshot.is_some() => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
-                _ => &[],
-            };
-            for &field in fields {
-                let value = self.value_label(field);
-                let mut row = Row::new(field.title()).value(&value).chevron(true).dim(self.state.busy);
-                if field == Field::Quality && self.state.direct_play == DirectPlayMode::Forced {
-                    row = row.detail(crate::i18n::msg::settings_playback_overridden());
-                }
-                if field == Field::AudioLanguage && self.snapshot.as_ref().is_some_and(|s| s.preferences.auto_select_audio == Some(false)) {
-                    row = row.detail(crate::i18n::msg::settings_audio_selection_off());
-                }
-                section = section.row(row); self.state.values.push(value); self.actions.push(Action::Open(field));
-            }
-            if self.state.kind == Kind::AudioSubtitles && !self.state.busy && !self.state.status.is_empty() {
-                section = section.row(Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail())); self.actions.push(Action::Retry);
-            }
+            self.state.values = list_values; self.actions = list_actions;
         }
-        self.table.compact = false; self.table.header_ink = theme::TEXT_READING;
-        self.table.set_sections(vec![section], selected, false); self.table.list_focused = true;
-        self.state.selected = self.table.sel;
+        self.state.selected = self.active().sel;
     }
     fn close_picker(&mut self, fx: &mut Effects<'_, InnerHost>) {
-        self.state.picker = None; self.rebuild(self.parent_row); self.focus(fx, GroupId(0));
+        self.leaving = self.state.picker.take().or(self.leaving);
+        self.rebuild(self.parent_row); self.focus(fx, GroupId(0));
     }
     fn activate(&mut self, row: usize, fx: &mut Effects<'_, InnerHost>) {
         if self.state.busy { return; }
         let Some(action) = self.actions.get(row).cloned() else { return; };
         match action {
             Action::Open(field) => {
-                self.parent_row = row as i32; self.state.picker = Some(field);
+                self.parent_row = row as i32; self.state.picker = Some(field); self.leaving = None;
                 let current = self.current_value(field);
                 let selected = self.options(field).iter().position(|(_, v)| *v == current).unwrap_or(0);
                 self.rebuild(selected as i32); self.focus(fx, GroupId(0));
@@ -251,7 +290,7 @@ impl PreferencesPage {
             Action::Retry => {
                 if let Some(update) = self.retry.clone() { self.start_account(Some(update), fx); }
                 else { self.load(fx); }
-                self.rebuild(self.table.sel);
+                self.rebuild(self.active().sel);
             }
         }
         fx.invalidate(crate::ui::present::Provenance::Input);
@@ -339,7 +378,7 @@ impl Machine<InnerHost> for PreferencesPage {
         match ev {
             ScreenEvent::Enter(_) => {
                 if self.start_initial_load(fx) {
-                    self.rebuild(self.table.sel); fx.invalidate(crate::ui::present::Provenance::Input);
+                    self.rebuild(self.active().sel); fx.invalidate(crate::ui::present::Provenance::Input);
                 }
                 Handled::No
             }
@@ -351,22 +390,27 @@ impl Machine<InnerHost> for PreferencesPage {
                     self.snapshot = None; self.pending = None; self.state.busy = false;
                     self.state.picker = None; self.load(fx);
                 }
-                let had_rows = self.table.n_rows() > 0;
+                let had_rows = self.active().n_rows() > 0;
                 if self.poll(fx) || stale || started || self.state.quality != crate::route::quality()
                     || self.state.direct_play != crate::route::direct_play_mode() {
-                    self.rebuild(self.table.sel);
+                    self.rebuild(self.active().sel);
                     // An empty loading table had no engine seat. Give its first landing (or
                     // Retry row) one so OK works immediately, without moving an existing
                     // cursor when an ordinary save completes or another page owns focus.
-                    if !had_rows && self.table.n_rows() > 0 && cx.focus.current.is_none() {
+                    if !had_rows && self.active().n_rows() > 0 && cx.focus.current.is_none() {
                         self.focus(fx, GroupId(0));
                     }
                     fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
                 }
-                self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h); Handled::Yes
+                let h = RouteLayout::screen().sectioned_table().h;
+                self.table.update(t.dt(), h); self.picker_table.update(t.dt(), h);
+                let open = self.state.picker.is_some();
+                self.submenu.tick(open, *t, &mut fx.present());
+                if !open && self.submenu.resting(false) { self.leaving = None; }
+                Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                table_focus(&mut self.table, to.elem); self.state.selected = self.table.sel; Handled::Yes
+                table_focus(self.active_mut(), to.elem); self.state.selected = self.active().sel; Handled::Yes
             }
             ScreenEvent::Activate(elem) => { self.activate(*elem as usize, fx); Handled::Yes }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) if self.state.picker.is_some() => {
@@ -409,7 +453,7 @@ impl Focusable<InnerHost> for PreferencesPage {
             return key;
         }
         if self.alert.owns(want.elem) {
-            return FocusKey { entry: self.entry, elem: self.table.sel.max(0) as u32 };
+            return FocusKey { entry: self.entry, elem: self.active().sel.max(0) as u32 };
         }
         Focusable::<InnerHost>::reconcile(&self.view(), want, cx)
     }
@@ -433,8 +477,19 @@ impl Screen<InnerHost> for PreferencesPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        let mut v = self.view();
-        crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
+        let open = self.state.picker.is_some();
+        if self.submenu.resting(open) {
+            let mut v = self.view();
+            crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
+        } else {
+            // Mid-push: the field list in the parent role, the picker (or the one leaving) in
+            // the child role; only the level focus acts on contributes stops.
+            let (parent_p, child_p) = (self.submenu.parent(f.painter), self.submenu.child(f.painter));
+            let parent = self.draw_level(f, None, parent_p);
+            let child = self.state.picker.or(self.leaving)
+                .map(|field| self.draw_level(f, Some(field), child_p)).unwrap_or_default();
+            for s in if open { child } else { parent } { f.stop(Painter::root(), s); }
+        }
         self.alert.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy {
@@ -535,6 +590,31 @@ mod tests {
             assert_eq!(options[0].1, Value::Language(String::new()));
             assert!(options.len() > 100);
         }
+    }
+    /// Owner report: Direct Play / Default Quality (and every Audio & Subtitles picker) switched
+    /// to the next screen instantly. A picker is this page's own submenu, so it must run the
+    /// family's push spring — in on open, back out on close with the picker still drawn.
+    #[test]
+    fn a_picker_slides_in_and_out_on_the_family_push_spring() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("picker-push-spring");
+        let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
+        assert!(page.submenu.resting(false), "no picker: the list is at rest");
+        with_fx(|fx| page.activate(0, fx));
+        assert_eq!(page.state.picker, Some(Field::Quality));
+        assert!(page.submenu.amount() < 0.01 && !page.submenu.resting(true),
+            "opening a picker starts the push rather than cutting to it");
+        let t = Tick { ms: 16, dt_us: 16_000 };
+        for _ in 0..120 { with_fx(|fx| { page.step(&ScreenEvent::Tick(t), &context(0), fx); }); }
+        assert!(page.submenu.resting(true), "the push settles open");
+        with_fx(|fx| page.close_picker(fx));
+        assert_eq!(page.state.picker, None);
+        assert!(page.submenu.amount() > 0.99 && !page.submenu.resting(false),
+            "closing runs the same spring back");
+        assert_eq!(page.leaving, Some(Field::Quality), "the picker keeps drawing while it leaves");
+        for _ in 0..120 { with_fx(|fx| { page.step(&ScreenEvent::Tick(t), &context(0), fx); }); }
+        assert!(page.submenu.resting(false));
+        assert_eq!(page.leaving, None, "…and is released once the spring settles");
     }
     #[test]
     fn picker_back_restores_parent_row_without_saving() {

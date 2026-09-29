@@ -226,6 +226,51 @@ a dead source is **absent** from Home and states itself in its own library secti
 
 ## Gotchas that bite (all verified in code)
 
+- **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
+  now overrides client-side at BOTH scopes it draws hubs on.** `hubs.rs`/`models.rs`'s
+  `Hub::title` still carries whatever PMS sent, but neither `screens/home/mod.rs` nor a library's
+  own browse grid renders it verbatim: `plex::hub_title::localized_hub_title` is the ONE shared
+  table both `pms.rs::project` (Home's `/hubs` merge) and `browse::section_hubs::parse_hubs` (a
+  library's own `/hubs/sections/{id}`) call, so the two cannot drift apart, parameterized by a
+  `hub_title::Scope` (`Home` / `Section`) because PMS itself titles the "Recently Added" family
+  differently at the two endpoints. For a hubIdentifier the catalog recognizes it substitutes a
+  client-side string, **unconditionally**, the same way `home.continue`'s title never came from
+  PMS at all (`i18n::msg::browse_home_continue_watching()`, set where the dedicated
+  `/hubs/continueWatching` deck becomes a `HubRow`):
+  - Home: `home.ondeck`/`home.onDeck` → "On Deck", `home.playlists` → "Recent Playlists"; the 5
+    whole-server `home.*.recent` ids → a per-type string ("Recently Added Movies") when the id
+    names the household's ONLY hub of that type in the response (`pms.rs::project` counts
+    `hubIdentifier` occurrences before choosing — `hub_identifier_counts`), else (PMS minted more
+    than one, or the id is a numbered `movie.recentlyadded.<id>`/`show.recentlyadded.<id>`/
+    `tv.recentlyadded.<id>`) → "Recently Added in {library}" using the hub's own
+    `librarySectionTitle`.
+  - Section: the same `*.recentlyadded.<id>` family → plain "Recently Added", no library name —
+    the section page already is that library, and PMS itself drops the qualifier at this scope
+    (§3a). A per-section deck (`*.inprogress.<id>`) and every id this catalog has not specifically
+    enumerated keep PMS's title verbatim at this scope too.
+
+  `client.rs::headers`/`pms_headers` still send the literal selected UI tag
+  (`identity::language()`) as `X-Plex-Language` on every PMS operation, hubs included, which the
+  `pms_headers_carry_the_literal_selected_ui_language_be_included` test pins for `en`/`es`/`be` —
+  that header behavior is unchanged, only what each screen does with the *response* changed. A
+  Home screen with SOME hub titles translated into the selected language and others not (issue
+  #12, a Belarusian UI mixing `be` and ru/en titles) was PMS's own per-string translation coverage
+  for that tag answering back on every shelf; it now answers back only on a hubIdentifier this
+  catalog has never enumerated — a custom collection shelf (`custom.collection.*`), a rotating
+  genre/actor rail, or a promoted rail under an id nothing here recognizes, which still renders
+  `hub.title` verbatim because there is no substitute catalog for arbitrary server-owned text (and
+  no live evidence any of those families need one). `metadata.rs`'s `CollectionShelf` is the one
+  Hub-title consumer that deliberately does NOT go through this table: a collection's own name is
+  server-owned exactly the way a movie's title is, not a standard shelf heading, so it keeps
+  `h.title.clone()` verbatim by design. See `docs/pms-api.md` §3/§3a for the full table and the
+  tests (`pms_multi_source_merge_tests.rs`:
+  `a_recently_added_library_hub_renders_the_be_catalog_string_under_a_be_ui`,
+  `one_movie_and_one_tv_library_get_the_natural_per_type_recently_added_titles`,
+  `a_lone_movie_library_renders_the_be_per_type_catalog_string_under_a_be_ui`,
+  `an_unrecognized_hub_identifier_keeps_the_pms_title_verbatim`; `section_hubs.rs`:
+  `a_be_ui_localizes_the_section_recently_added_hub_and_leaves_an_unknown_one_alone`); don't infer
+  a different PMS-side fallback chain from one field report without a live server to verify it
+  against.
 - **`Connection.local` does not mean what it looks like, and the cost is a probe deadline.** It means
   "this address is RFC1918", NOT "you are on that LAN" — a share advertises the *owner's*
   `172.20.x.x`. `publicAddressMatches` is the field that means the latter. For an unmatched

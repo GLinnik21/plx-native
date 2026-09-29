@@ -54,6 +54,41 @@ fn every_settings_row_fits_its_column_in_every_language() {
     assert!(out.is_empty(), "rows the television would end in an ellipsis:\n  {}", out.join("\n  "));
 }
 
+/// Owner report (Belarusian UI): a long VALUE squeezed the primary label of the Video Playback
+/// page's Direct Play row — the label column was whatever the unelided value left over. The row's
+/// label is the primary read and keeps its natural width; the value gives way first, ending in
+/// an ellipsis. Built exactly as `preferences::PreferencesPage::rebuild` builds its field rows,
+/// with every Direct Play value the picker can set.
+#[test]
+fn a_long_value_elides_before_the_settings_label_it_trails() {
+    use crate::fontcov::advances::ShippedMeasure as M;
+    use crate::ui::machine::Measure;
+    let frame_w = RouteLayout::screen().sectioned_table().w;
+    let mut out = Vec::new();
+    let mut squeezed_values = 0;
+    for language in LANGUAGES {
+        let _guard = language_on_this_thread_for_test(language);
+        for value in [msg::settings_playback_auto(), msg::settings_playback_forced(), msg::settings_playback_disabled()] {
+            let mut table = TableView::new();
+            table.compact = false;
+            let rows = [
+                Row::new(msg::settings_playback_quality()).value(msg::settings_audio_not_set()).chevron(true),
+                Row::new(msg::settings_playback_direct_play()).value(value).chevron(true),
+            ];
+            table.set_sections(vec![rows.into_iter().fold(Section::new(""), Section::row)], 0, false);
+            overflowing(&format!("{} playback ({value})", language.tag()), &table, &mut out);
+            for (i, row) in table.sections[0].rows.iter().enumerate() {
+                let cols = table.row_columns(row, frame_w, &M);
+                let natural = M.width_str(value, theme::size::LABEL, true);
+                if i == 1 && cols.value_w < natural { squeezed_values += 1; }
+                assert!(cols.value_w > 0.0, "{}: a value keeps a visible slot", language.tag());
+            }
+        }
+    }
+    assert!(out.is_empty(), "labels a long value squeezed into an ellipsis:\n  {}", out.join("\n  "));
+    assert!(squeezed_values > 0, "the premise: Belarusian's Force value does not fit beside its label");
+}
+
 /// The measure itself: whole pixels per glyph from each shipped face's own metrics, and a longer
 /// string never measures narrower.
 #[test]

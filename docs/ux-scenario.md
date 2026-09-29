@@ -408,19 +408,19 @@ app; BACK no longer does, anywhere.
 
 When playback cannot start, the app does not fail silently and does not show a spinner forever. It
 draws a full-screen read-out: a warning mark, a headline, **the reason in plain language**, the
-server's own verdict beneath it where there is one, and BOTH ways out, each with its key cap so it
-survives a phone photograph — *"Press **OK** to choose quality or retry"* above *"Press **BACK** to
-return"*. The first is the recovery path: it opens the same quality ladder the `…` menu does, on the
-rung this playback is already using, so picking that rung is a plain retry and picking another
-starts the same item under a different policy. With Force Direct Play enabled, the hint instead
-says *"Press **OK** to open retry options"*: Force overrides the quality choice, so changing the
-saved quality still retries the original stream. Return Direct Play to Auto in Settings to allow
-conversion. A failure is therefore terminal for the pipeline, not a trap for the viewer.
+server's own verdict beneath it where there is one, a row of the actions that can actually change
+the outcome, and a dim diagnostics footer. The row always ends in **Back**. For an ordinary failure
+it offers **Change quality**, which opens the same quality ladder the `…` menu does on the rung
+this playback is already using, preceded by **Try again** when the failure may be transient. With
+Force Direct Play enabled no rung can help, so the row offers **Switch to Auto and play** instead:
+OK turns Force off and retries in place, with no trip to Settings. A file with no video track gets
+Back alone, because nothing the viewer picks puts a picture in it. A failure is therefore terminal
+for the pipeline, not a trap for the viewer.
 
 The verdict in the figure (*"Cannot convert this item. Implementation for video encoder 'hevc' not
 found."*) is the one a real server returned when it had no HEVC encoder; the figure replays it
-through the `failtest` dev trigger, and its footer reads "webOS unknown · unknown set" because it
-was taken on the simulator. The screen is shaped to survive being photographed off a panel and pasted into
+through the `failtest` dev trigger, and its footer reads "webOS unknown — os_info.json unreadable · unknown
+set" because it was taken on the simulator. The screen is shaped to survive being photographed off a panel and pasted into
 a bug report, which is the state it is usually seen in.
 
 ### 5.11 Diagnostics read-out

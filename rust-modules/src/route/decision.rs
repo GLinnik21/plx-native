@@ -6248,7 +6248,14 @@ fn apply_retry_enhancement(env: &mut ResolveEnv, retry: RetryContext) {
     }
 }
 
-pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, resume_ns: i64) -> bool {
+/// `direct_play` replaces the failed attempt's Direct Play mode for this resolve (the failure
+/// read-out's *Switch to Auto and play*); `None` keeps it.
+pub(crate) fn retry_current_play(
+    ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
+    resume_ns: i64,
+    direct_play: Option<DirectPlayMode>,
+) -> bool {
     let Some(request) = ps.request.clone() else {
         crate::player::log("playback retry: no Plex request descriptor");
         return false;
@@ -6257,7 +6264,18 @@ pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::sto
         "playback retry: resolving item again at quality {:?}",
         quality(),
     ));
-    request_play_inner(ps, meta, request, Some(rescue_retry_context(ps, resume_ns)), None, true)
+    let retry = retry_context_with(ps, resume_ns, direct_play);
+    request_play_inner(ps, meta, request, Some(retry), None, true)
+}
+
+/// [`rescue_retry_context`] with the failed attempt's Direct Play mode optionally replaced — the
+/// one place a retry can resolve under a different mode than the attempt it repeats.
+fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<DirectPlayMode>) -> RetryContext {
+    let mut retry = rescue_retry_context(ps, resume_ns);
+    if let Some(mode) = direct_play {
+        retry.direct_play_mode = mode;
+    }
+    retry
 }
 
 /// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs. On `true`, the

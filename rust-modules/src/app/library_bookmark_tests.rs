@@ -139,6 +139,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     rig.refresh_browse_directory();
     rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
+    rig.stores.browse.borrow_mut().seed_shelves_for_test(0, &[], 4);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
@@ -215,6 +216,9 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     );
     d.request(MachineId::Nav, NavOp::Dismiss(menu_entry));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
+    // B's shelves answer too (none): a section reveal, and a bookmark's re-entry seat, wait on
+    // them rather than on the listing alone.
+    rig.stores.browse.borrow_mut().seed_shelves_for_test(2, &[], 4);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     Bridge::library_command(
         &mut d,

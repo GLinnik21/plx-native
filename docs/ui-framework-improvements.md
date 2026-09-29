@@ -593,7 +593,7 @@ Tier A items A5-A9 are independent and can land in any gap.
 # Part 4 — Deliberately not doing
 
 - **Multi-pass traversal / demand-driven re-entry.** The guard sits at the primitive, but the cost is
-  upstream: `widgets::resolve_tex` hashes a 352-byte key per tile per call, `card_row::under_label`
+  upstream: `widgets::resolve_tex` hashes a 352-byte key per tile per call, `card_row::draw_label_block`
   heap-allocates twice per label per call. A skipped pass still pays all of it. Every screen also
   opens with a raw `gfx::frame_clear`, so pass 2 wipes pass 1. And `Painter::text` returning 0.0 on a
   skipped pass breaks the cursor-advance idiom (`library.rs:770-776`). Failure mode: silent 3× CPU.

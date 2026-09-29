@@ -1450,6 +1450,36 @@ fn select_tab_covers_the_root_rather_than_replacing_it_and_back_returns_to_it() 
     assert!(!d.nav.tabs.stack.entries.iter().any(|e| e.id == covering), "the covering page is gone");
 }
 
+/// **A tab press's arrival animates the same regardless of which strip pill sent it** (owner
+/// report #17): a `SelectTab` cover-and-mint always originates FROM the visible strip, so its
+/// first `FocusMoved` must read as a deliberate move (`By::Dir`, the same as a directional press
+/// — the thing that already makes `library::LibraryScreen`'s tile grow from rest instead of
+/// snapping, `pop_from_rest`, gated on `By::Dir | By::Pointer`), not as `By::Restore` ("this page
+/// is back where it was", which was never true the first time a tab is visited this session and
+/// silently disabled every screen's own arrival animation for this one path). Before the fix,
+/// `FocusTarget::FirstInGroup`'s `By::Restore` made a fresh Home → Page(9) mint SNAP its first
+/// `FocusMoved` to the destination with no transition — the tab jump this test pins.
+#[test]
+fn a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore() {
+    let (mut d, mut rig, _home) = booted();
+    d.request(MachineId::Nav, NavOp::SelectTab(FixtureArg::Page(9)));
+    let report = d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    d.prune(&report.unmounted);
+    let new_top = d.nav.top_page().unwrap().id;
+    let idx = d.nav.tabs.stack.entries.iter().position(|e| e.id == new_top).unwrap();
+    let events = events_of(&d, idx);
+    assert!(events.contains("focus_moved"), "the fresh mint must move focus: {events}");
+    assert!(
+        events.contains("by_dir"),
+        "a strip pill's cover-and-mint always arrives from the strip, so it must animate like a \
+         deliberate move, not snap like a restore: {events}"
+    );
+    assert!(
+        !events.contains("by_restore"),
+        "By::Restore is what produced the reported tab-switch focus jump: {events}"
+    );
+}
+
 /// **`reset_for_profile` also clears the stack's own pending op and due flag.** Without this, a
 /// `Push` parked before the reset (mid fade-out, on the STACK rather than merely the dispatcher's
 /// own queue) would still apply at its own floor — some frames later — over the tree the reset

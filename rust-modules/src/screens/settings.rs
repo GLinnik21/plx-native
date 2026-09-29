@@ -38,9 +38,8 @@ use crate::ui::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, Key,
     LogicalState, Machine, MachineId, NavOp, PresentHandle, Stamped, Tick,
 };
-use crate::ui::motion;
 use crate::ui::present::Provenance;
-use crate::ui::route_screen::RouteLayout;
+use crate::ui::route_screen::{RouteLayout, RoutePush};
 use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
@@ -63,11 +62,6 @@ pub(crate) enum Family {
     FirstRunConsent,
 }
 
-/// The family's shared push constants (`route_screen::RoutePush`'s, unchanged).
-const PUSH_K: f32 = 200.0;
-const PARENT_TRAVEL: f32 = 0.35;
-const CHILD_LEAD: f32 = 0.22;
-
 /// The `Family::Settings` scrim's ink alpha: the surface's own appear (`local_alpha`, the
 /// `RouteSurface`'s `page_alpha` after its container's overwrite) composed with the ROUTE-level
 /// nav dip beneath it (`nav_page_alpha`, `DrawFrame::nav_page_alpha` — spec §14 phase 8), so the
@@ -84,11 +78,12 @@ fn settings_entrance_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
     local_alpha * nav_page_alpha
 }
 
-/// The push spring, with the page it is carrying OUT on a pop.
+/// The push spring — the family's one `RoutePush`, shared with the pages' in-place submenus —
+/// with the page it is carrying OUT on a pop.
 struct Push {
-    pos: f32,
-    vel: f32,
-    target: f32,
+    route: RoutePush,
+    /// Which endpoint the spring is driving to: a push runs to open, a pop back to closed.
+    open: bool,
     /// A popped body, drawn in the child role until the spring settles at 0.
     leaving: Option<Instance<InnerHost>>,
 }
@@ -96,27 +91,22 @@ struct Push {
 impl Push {
     const fn new() -> Self {
         Self {
-            pos: 0.0,
-            vel: 0.0,
-            target: 0.0,
+            route: RoutePush::new(),
+            open: false,
             leaving: None,
         }
     }
     fn amount(&self) -> f32 {
-        self.pos.clamp(0.0, 1.0)
+        self.route.amount()
     }
     fn settled(&self) -> bool {
-        (self.pos - self.target).abs() < 0.001 && self.vel.abs() < 0.02
+        self.route.resting(self.open)
     }
     fn parent(&self, p: Painter) -> Painter {
-        let t = self.amount();
-        p.alpha(1.0 - t)
-            .translate(-PARENT_TRAVEL * Rect::FULL.w * t, 0.0)
+        self.route.parent(p)
     }
     fn child(&self, p: Painter) -> Painter {
-        let t = self.amount();
-        p.alpha(t)
-            .translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
+        self.route.child(p)
     }
 }
 
@@ -393,14 +383,13 @@ impl RouteSurface {
         // the spring: a push runs 0 → 1 with the new page in the child role; a pop runs 1 → 0
         // with the retired page in the child role
         if popping {
-            self.push.pos = 1.0;
-            self.push.target = 0.0;
+            self.push.route.jump(true);
+            self.push.open = false;
         } else {
             self.push.leaving = None;
-            self.push.pos = 0.0;
-            self.push.target = 1.0;
+            self.push.route.jump(false);
+            self.push.open = true;
         }
-        self.push.vel = 0.0;
         // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
         // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `screen.rs`).
         // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
@@ -736,20 +725,9 @@ impl RouteSurface {
     fn tick<H: DirectoryLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if !self.push.settled() {
             let mut ph: PresentHandle<'_> = fx.present();
-            motion::spring(
-                &mut self.push.pos,
-                &mut self.push.vel,
-                self.push.target,
-                PUSH_K,
-                t,
-                &mut ph,
-            );
-            if self.push.settled() {
-                self.push.pos = self.push.target;
-                self.push.vel = 0.0;
-                if self.push.target == 0.0 {
-                    self.push.leaving = None;
-                }
+            self.push.route.tick(self.push.open, t, &mut ph);
+            if self.push.settled() && !self.push.open {
+                self.push.leaving = None;
             }
         }
         // every body ticks (both levels stay warm through a push, as the legacy pair did)

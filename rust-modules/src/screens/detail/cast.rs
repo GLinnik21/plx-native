@@ -161,17 +161,17 @@ fn pop_drop(scale: f32) -> f32 {
     (RowStyle::CAST.h * (scale - 1.0) * 0.5).max(0.0)
 }
 
-/// Intersect each person's own text slot with the shared safe bounds. Narrow an edge slot
-/// rather than shifting it into its neighbour; offscreen artwork may still extend past the frame.
-fn label_frames(p: Painter, cx: f32, row_y: f32, drop: f32, measure: &dyn Measure) -> (Rect, Rect) {
+/// Each person's own text slot, centred under the headshot. The label is PART of its tile: it
+/// scrolls past either panel edge with it, at the slot's full width, and is never narrowed or
+/// re-elided against the safe frame — which is what printed early ellipses on the names of tiles
+/// sliding in or out at both edges.
+fn label_frames(cx: f32, row_y: f32, drop: f32, measure: &dyn Measure) -> (Rect, Rect) {
     let budget = SLOT - theme::space::SM;
-    let (safe_left, safe_right) = card_row::label_safe_bounds(p, &RowStyle::CAST);
-    let left = (cx - budget * 0.5).clamp(safe_left, safe_right);
-    let right = (cx + budget * 0.5).clamp(left, safe_right);
+    let left = cx - budget * 0.5;
     let top = row_y + RowStyle::CAST.h + NAME_GAP + drop;
-    let name = Rect::new(left, top, right - left, theme::size::LABEL as f32 + theme::space::XS);
+    let name = Rect::new(left, top, budget, theme::size::LABEL as f32 + theme::space::XS);
     let role = Rect::new(left, top + measure.cap_h(theme::size::LABEL) + theme::space::XS,
-        right - left, ROLE_LEADING * ROLE_LINES as f32);
+        budget, ROLE_LEADING * ROLE_LINES as f32);
     (name, role)
 }
 
@@ -195,7 +195,7 @@ fn label(
     drop: f32,
     measure: &dyn Measure,
 ) {
-    let (name_frame, role_frame) = label_frames(p, cx, row_y, drop, measure);
+    let (name_frame, role_frame) = label_frames(cx, row_y, drop, measure);
     if name_frame.w <= 0.0 { return; }
     if let Ok(name) = CString::new(name_caption(name, name_frame.w, focused, measure)) {
         let mut label = Label::new(name.as_ptr(), theme::size::LABEL,
@@ -226,31 +226,33 @@ mod tests {
     fn cast_name_elision_uses_the_remaining_width_for_a_partial_surname() {
         let measure = LabelMeasure;
         let center = crate::ui::consts::MARGIN_X + RowStyle::CAST.w * 0.5;
-        let (frame, _) = label_frames(Painter::root(), center, 100.0, 0.0, &measure);
+        let (frame, _) = label_frames(center, 100.0, 0.0, &measure);
         let text = name_caption("Алена Сяргеева 6", frame.w, true, &measure);
         assert!(text.starts_with("Алена С"), "single-line elision must not discard the whole surname: {text}");
         assert!(text.ends_with('…'));
         assert!(measure.width_str(&text, theme::size::LABEL, true) <= frame.w);
     }
 
+    /// Issue 13: a cast label is part of its tile. A headshot scrolling out past either panel edge
+    /// carries its name and role with it at the slot's full width — no clamp to the safe frame,
+    /// which narrowed and re-elided the names of tiles near both edges. `label_frames` takes no
+    /// painter: nothing about a label's frame depends on where the shelf has scrolled to.
     #[test]
-    fn first_and_last_cast_labels_share_safe_bounds_even_when_the_shelf_is_scrolled() {
-        let safe = crate::ui::consts::SAFE;
+    fn a_cast_label_moves_off_screen_with_its_tile_and_keeps_its_own_width() {
         let measure = LabelMeasure;
-        for dx in [0.0, -2300.0] {
-            let p = Painter::root().translate(dx, 0.0);
-            for center in [safe.x + RowStyle::CAST.w * 0.5,
-                safe.x + safe.w - RowStyle::CAST.w * 0.5] {
-                let (name, role) = label_frames(p, center - dx, 100.0,
-                    pop_drop(RowStyle::CAST.focus_scale), &measure);
-                for frame in [name, role] {
-                    assert!(frame.x + dx >= safe.x);
-                    assert!(frame.x + dx + frame.w <= safe.x + safe.w);
-                    assert!(frame.w > 0.0);
-                }
-                assert!(role.y + role.h <= 100.0 + RowStyle::CAST.h + UNDER_H,
-                    "both caption lines fit in the space the next shelf reserves");
+        let budget = SLOT - theme::space::SM;
+        let scr_w = crate::ui::consts::SCR_W;
+        for cx in [-40.0, 60.0, scr_w - 60.0, scr_w + 40.0, 2300.0 + scr_w - 60.0] {
+            let (name, role) = label_frames(cx, 100.0, pop_drop(RowStyle::CAST.focus_scale), &measure);
+            for frame in [name, role] {
+                assert_eq!(frame.x, cx - budget * 0.5, "the label rides its tile at {cx}");
+                assert_eq!(frame.w, budget, "the label is never re-truncated at {cx}");
             }
+            assert!(role.y + role.h <= 100.0 + RowStyle::CAST.h + UNDER_H,
+                "both caption lines fit in the space the next shelf reserves");
+            let long = "Alexandra Wolkowicz-Harrington";
+            assert_eq!(name_caption(long, name.w, false, &measure),
+                name_caption(long, budget, false, &measure));
         }
     }
 
@@ -263,7 +265,7 @@ mod tests {
             let caption = crate::i18n::msg::browse_crew_director_writer_in(&locale);
             for center in [safe.x + RowStyle::CAST.w * 0.5,
                 safe.x + safe.w - RowStyle::CAST.w * 0.5] {
-                let (_, frame) = label_frames(Painter::root(), center, 100.0, 0.0, &measure);
+                let (_, frame) = label_frames(center, 100.0, 0.0, &measure);
                 let view = role_view(caption, &measure);
                 assert!(!view.truncates(frame.w), "combined {preference:?} job must remain complete");
                 assert!(view.measure_h(frame.w) <= frame.h);

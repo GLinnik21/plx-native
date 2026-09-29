@@ -70,6 +70,15 @@ impl ListingSnapshot {
         self
     }
 
+    /// A requery's publication: the same section under a new query generation.
+    #[cfg(test)]
+    pub(crate) fn with_query(mut self, query: u32) -> Self {
+        if let Some(data) = &mut self.data {
+            data.id.query = query;
+        }
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_total(mut self, total: usize) -> Self {
         if let Some(data) = &mut self.data {

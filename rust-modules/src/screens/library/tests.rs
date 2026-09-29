@@ -1292,3 +1292,5 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
 mod type_tests { include!("type_tests.rs"); }
 
 mod art_admission_tests { include!("art_admission_tests.rs"); }
+
+mod grid_motion_tests { include!("grid_motion_tests.rs"); }

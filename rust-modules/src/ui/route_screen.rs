@@ -295,7 +295,9 @@ const SURFACE_APP_RGB: [f32; 3] = [
     theme::SURFACE_APP[2],
 ];
 
-/// The one nested-route transition used by Settings documents.
+/// The one nested-route transition of the Settings family: the surface's page push
+/// (`screens::settings::RouteSurface`) and a page's own in-place submenu (the preference
+/// pickers, `screens::preferences`) both drive this, so every Settings submenu slides the same.
 ///
 /// Only content moves: the host ground is drawn outside these painters and therefore remains
 /// fixed. The parent exits left while fading; the child leads from the right while appearing.
@@ -311,6 +313,14 @@ impl RoutePush {
         }
     }
 
+    /// A push parked mid-flight at `t` — for tests that grade one frame of the slide.
+    #[cfg(test)]
+    pub(crate) const fn at(t: f32) -> Self {
+        Self {
+            progress: Spring::at(t),
+        }
+    }
+
     pub(crate) fn jump(&mut self, open: bool) {
         self.progress.jump(if open { 1.0 } else { 0.0 });
     }
@@ -321,6 +331,39 @@ impl RoutePush {
 
     pub(crate) fn amount(&self) -> f32 {
         self.progress.pos.clamp(0.0, 1.0)
+    }
+
+    /// **At rest at `open`'s endpoint** — position AND velocity, the integrator's own stop rule.
+    /// Stricter than [`settled`](Self::settled), which is the pointer's positional guard.
+    pub(crate) fn resting(&self, open: bool) -> bool {
+        let target = if open { 1.0 } else { 0.0 };
+        (self.progress.pos - target).abs() < 0.001 && self.progress.vel.abs() < 0.02
+    }
+
+    /// Advance toward `open` on the frame clock, reporting motion to the present gate, and snap
+    /// exactly onto the endpoint once [`resting`](Self::resting) there. A no-op at rest.
+    pub(crate) fn tick(
+        &mut self,
+        open: bool,
+        t: crate::ui::machine::Tick,
+        present: &mut crate::ui::machine::PresentHandle<'_>,
+    ) {
+        if self.resting(open) {
+            return;
+        }
+        let target = if open { 1.0 } else { 0.0 };
+        crate::ui::motion::spring(
+            &mut self.progress.pos,
+            &mut self.progress.vel,
+            target,
+            PUSH_K,
+            t,
+            present,
+        );
+        if self.resting(open) {
+            self.progress.pos = target;
+            self.progress.vel = 0.0;
+        }
     }
 
     /// Seed this push's spring — position AND velocity, not just [`amount`](Self::amount)'s

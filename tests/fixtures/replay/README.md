@@ -202,3 +202,14 @@ against `12097267434420408384` were observed being refused (`replay: REFUSED —
 incompatible recording`, all three, both modes), then all three were re-recorded with
 `tools/plxnative-rec rerecord` against shape `10638452537178981056` and passed Targets and Resolve
 with zero difference counters.
+
+The UI fixes batch changed recorded behaviour without moving the shape, so neither verb applied:
+an input `FocusMoved` now rides the immediate lane ahead of the frame's Tick (all three anchors:
+the same effects reordered, and Home's state from its first key press on), and the About card
+now measures its MORE mark at caption size to fade the synopsis under it (Flow 12 refused with
+`replay measurement table miss`). Each divergence was attributed by replaying with that change
+alone switched off (SAME, every counter zero). The owner approved re-anchoring on 2026-09-29: all
+three were recorded afresh on shape `10638452537178981056`, imported with `tools/plxnative-rec
+import`, marked anchor again, and passed Targets and Resolve with zero difference counters. The
+alphabet gains the mock's audio-enhancement codecs (`aac`, `hevc`) and the client-localized hub
+titles (`Recently Added Movies`, `Recently Added TV`).

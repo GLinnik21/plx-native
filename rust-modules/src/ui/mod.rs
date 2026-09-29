@@ -404,6 +404,34 @@ fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     widgets::LegacyMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
 }
 
+/// **The per-frame draw census** — every primitive a RECORDING painter ([`Painter::recording`]) is
+/// handed while [`draw_census::capture`] runs on this thread, as `(command tag, screen rect)`. The
+/// tag is the one [`Painter::declare`] already carries (`2` a rounded rect, `100` a text run, …).
+///
+/// A host draw has no GL and so no draw-call counter; this is the no-GL stand-in, and it is what a
+/// test asserts "per-frame work does not scale with off-screen content" against: the recording
+/// painter walks exactly the draw tree the real frame walks, minus the pixels.
+#[cfg(test)]
+pub(crate) mod draw_census {
+    use super::Rect;
+    use std::cell::RefCell;
+    thread_local! {
+        static LOG: RefCell<Option<Vec<(u64, Rect)>>> = const { RefCell::new(None) };
+    }
+    pub(crate) fn note(tag: u64, r: Rect) {
+        LOG.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((tag, r));
+            }
+        });
+    }
+    pub(crate) fn capture(f: impl FnOnce()) -> Vec<(u64, Rect)> {
+        LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        LOG.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+}
+
 fn declared_text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
     // A discovery walk above the surface band, or inside a completely covered layer, records
     // nothing. Do not populate/measure the glyph cache merely to discover that exclusion later in
@@ -455,7 +483,11 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
-        if self.text_recorder { return true; }
+        if self.text_recorder {
+            #[cfg(test)]
+            draw_census::note(tag, Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h));
+            return true;
+        }
         if !frame::backdrop::discovering() { return false; }
         if frame::backdrop::recording_excluded() {
             // `paint` would discard this unconditionally (see its comment); skip building
@@ -1390,7 +1422,10 @@ impl Painter {
         }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return recorded_text_width(s, sz, bold);
+            let w = recorded_text_width(s, sz, bold);
+            #[cfg(test)]
+            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            return w;
         }
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
@@ -1424,7 +1459,10 @@ impl Painter {
         }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return recorded_text_width(s, sz, bold);
+            let w = recorded_text_width(s, sz, bold);
+            #[cfg(test)]
+            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            return w;
         }
         let c = self.c(col);
         crate::text::draw_text_fade(
@@ -1478,7 +1516,10 @@ impl Painter {
         }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return recorded_text_width(s, sz, bold);
+            let w = recorded_text_width(s, sz, bold);
+            #[cfg(test)]
+            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            return w;
         }
         let c = self.c(col);
         // The bands are given in this painter's LOCAL space (the same space `y` is), so the

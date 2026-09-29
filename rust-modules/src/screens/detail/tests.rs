@@ -137,6 +137,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
     };
     screen.sync_keys(test_store().view());
@@ -3325,5 +3326,50 @@ fn member_keys_follow_the_member_and_the_heading_spot_restores_the_heading() {
     let restored = Focusable::<TestHost>::reconcile(&screen,
         FocusKey { entry: EntryId(7), elem: hero::ELEM_PLAY }, &cx(&measure, None));
     assert_eq!(restored.elem, collection::HEADING_ELEM, "Back from the collection page lands on the heading");
+    clear();
+}
+
+/// **Issue 18: a show's walk must cost O(episodes), not O(episodes^2).** Every show detail page
+/// held the television at 27 fps where a movie held 60, with the GPU's work per frame identical:
+/// the cost was CPU, paid inside every walk of the page, and the frame walks it up to three times
+/// (backdrop discovery, each blur source, the visible pass). `record_stops` places two stops per
+/// episode, each placement asks for the section flow, and each ask re-derived [`LayoutStamp`] —
+/// which hashes EVERY episode's title, synopsis and air date. One walk of this 60-episode season
+/// hashed thousands of episodes. A walk validates the flow once and reads it from then on; the
+/// whole draw (a recording painter, so no GL) and a bare `record_stops` are both held to one pass.
+#[test]
+fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
+    const EPISODES: usize = 60;
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=EPISODES as i64)
+        .map(|i| crate::metadata::Episode {
+            summary: "A synopsis long enough to wrap onto every line the strip allows. ".repeat(4),
+            aired: "2024-03-14".into(),
+            ..episode(&format!("e{i}"), i)
+        })
+        .collect();
+    let _guard = install(show);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let stamped = |walk: &mut dyn FnMut()| {
+        STAMPED_EPISODES.with(|n| n.set(0));
+        walk();
+        STAMPED_EPISODES.with(|n| n.get())
+    };
+
+    let bare_walk = stamped(&mut || {
+        let mut f = DrawFrame::new(&context, crate::ui::Painter::root());
+        screen.record_stops(&mut f);
+        assert!(f.stops().len() >= 2 * EPISODES, "the fixture must register a stop per episode row");
+    });
+    assert!(bare_walk <= EPISODES, "record_stops hashed {bare_walk} episodes for a {EPISODES}-episode season");
+
+    let full_walk = stamped(&mut || {
+        let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
+        crate::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
+    });
+    assert!(full_walk <= EPISODES, "one draw hashed {full_walk} episodes for a {EPISODES}-episode season");
     clear();
 }

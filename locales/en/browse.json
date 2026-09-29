@@ -1974,6 +1974,45 @@
     },
     "description": "Upper-case mark drawn on a season poster inside a collection"
   },
+  "browse.home.hub.on_deck": {
+    "value": "On Deck",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.ondeck"
+  },
+  "browse.home.hub.recent_playlists": {
+    "value": "Recent Playlists",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.playlists"
+  },
+  "browse.home.hub.recently_added_in": {
+    "value": "Recently Added in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "Home shelf heading for a per-library Recently Added hub (hubIdentifier movie.recentlyadded.<id>/show.recentlyadded.<id>/tv.recentlyadded.<id>), or a whole-server home.<type>.recent hub when PMS minted more than one for that type; library is the PMS librarySectionTitle of the hub's items"
+  },
+  "browse.home.hub.recently_added_movies": {
+    "value": "Recently Added Movies",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.movies.recent when it is the household's only movie library (so no library name is needed to disambiguate)"
+  },
+  "browse.home.hub.recently_added_tv": {
+    "value": "Recently Added TV",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.television.recent when it is the household's only TV library"
+  },
+  "browse.home.hub.recently_added_music": {
+    "value": "Recently Added Music",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.music.recent when it is the household's only music library"
+  },
+  "browse.home.hub.recently_added_videos": {
+    "value": "Recently Added Videos",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.videos.recent when it is the household's only home-videos library"
+  },
+  "browse.home.hub.recently_added_photos": {
+    "value": "Recently Added Photos",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.photos.recent when it is the household's only photos library"
+  },
+  "browse.library.hub.recently_added": {
+    "value": "Recently Added",
+    "description": "A library's own shelf heading (Route::Library, /hubs/sections/{id}), client-localized override for the same Recently Added hubIdentifier family as browse.home.hub.recently_added_in (movie.recentlyadded.<id>/show.recentlyadded.<id>/tv.recentlyadded.<id>) — PMS itself titles this hub plain \"Recently Added\" at this scope, with no library qualifier, because the section page is already that library"
+  },
   "browse.collection.items": {
     "value": "Items",
     "description": "Heading over the collection page's member grid"

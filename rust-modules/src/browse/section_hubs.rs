@@ -766,6 +766,12 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
         if hub.title.is_empty() {
             continue; // a row with no heading has nothing to say about what is in it
         }
+        let library = hub
+            .metadata
+            .iter()
+            .find(|m| !m.library_section_title.is_empty())
+            .map(|m| m.library_section_title.as_str())
+            .unwrap_or("");
         out.push(Shelf {
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
@@ -775,7 +781,13 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
                 sid, &hub.hub_identifier, &hub.key, &hub.title, section,
             ),
             total: hub.total(),
-            title: hub.title.clone(),
+            title: crate::plex::hub_title::localized_hub_title(
+                crate::plex::hub_title::Scope::Section,
+                &hub.hub_identifier,
+                &hub.title,
+                library,
+                true, // Section scope ignores this argument; see the function's doc
+            ),
             items,
         });
     }
@@ -1062,6 +1074,37 @@ mod tests {
         // and the point is that each item kept ITS OWN — a hub typed `mixed` cannot supply one
         assert_eq!(mixed.items[0].kind, 1, "a show");
         assert_eq!(mixed.items[1].kind, 3, "an episode");
+    }
+
+    /// The section-scope half of issue #12's fix (`crate::plex::hub_title`): a library's own
+    /// `/hubs/sections/{id}` Recently Added hub (`tv.recentlyadded.1`/`movie.recentlyadded.1`,
+    /// PMS's own title is a plain "Recently Added" here — §3a) renders THIS client's `be` catalog
+    /// string under a `be` UI, the same unconditional override Home already gets, while a hub
+    /// this catalog does not recognize (a custom collection shelf) keeps drawing PMS's own title
+    /// verbatim in any language — exactly `an_unrecognized_hub_identifier_keeps_the_pms_title_verbatim`'s
+    /// rule in `pms_multi_source_merge_tests.rs`, proven here at the OTHER scope. Watched RED
+    /// against a plain `hub.title.clone()` before the override was wired in.
+    #[test]
+    fn a_be_ui_localizes_the_section_recently_added_hub_and_leaves_an_unknown_one_alone() {
+        let _thread_locale = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::Be);
+        let json = r#"{"MediaContainer":{"Hub":[
+          {"hubIdentifier":"tv.recentlyadded.1","title":"Recently Added","type":"mixed",
+           "Metadata":[{"ratingKey":"2001","type":"show","title":"Beta","thumb":"/t/2001"}]},
+          {"hubIdentifier":"custom.collection.1.14.14","title":"Toy Story Collection","type":"movie",
+           "key":"/library/collections/14/children","Metadata":[
+             {"ratingKey":"3001","type":"movie","title":"Delta","thumb":"/t/3001"}]}
+        ]}}"#;
+        let sh = parse_hubs(&container(json), ServerId::from_raw(0), 1);
+        assert_eq!(sh.len(), 2);
+        assert_eq!(
+            sh[0].title, "Нядаўна дададзенае",
+            "a be UI renders THIS client's be string for the section's own Recently Added hub, \
+             not PMS's own title — and with no library name, unlike Home's form"
+        );
+        assert_eq!(
+            sh[1].title, "Toy Story Collection",
+            "an id this catalog does not enumerate keeps drawing PMS's own text verbatim"
+        );
     }
 
     #[test]

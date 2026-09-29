@@ -225,6 +225,13 @@ pub(crate) struct DetailScreen {
     /// [`LayoutStamp`] no longer matches the live item (in-place season landings rewrite
     /// `CURRENT` at a stable address). Never hashed.
     layout: Cell<Option<LayoutCache>>,
+    /// Set while ONE walk of this page ([`LayoutPin`]) holds the metadata borrow: the item cannot
+    /// change under it, so [`ensure_layout`](Self::ensure_layout) serves the cache without
+    /// re-deriving [`LayoutStamp`]. That derivation hashes every episode's text, and a walk asks
+    /// for the layout once per registered stop — two per episode — so without the pin a show's
+    /// walk cost O(episodes²) (issue 18: a one-season show held the TV at 27 fps, and the frame
+    /// walks the page up to three times: backdrop discovery, blur sources, visible). Never hashed.
+    layout_pinned: Cell<bool>,
     /// Cached answer to every metadata read `spot()` needs, refreshed only where a real
     /// [`crate::metadata::MetadataView`] is in hand (`tick`, `draw`, end of `sync_keys`). See
     /// Opus decision D7: `memory_at` runs with no store in reach at all, so this is the only way
@@ -266,6 +273,13 @@ struct LayoutCache {
     block: [f32; section::SLOTS],
     seen: u8,
     end: f32,
+}
+
+// How many episodes [`LayoutStamp::of`] has hashed on this thread: the per-walk cost a test
+// can read without a clock.
+#[cfg(test)]
+thread_local! {
+    pub(super) static STAMPED_EPISODES: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Cheap identity of the values [`LayoutCache`] was measured from. `current()` (via
@@ -310,6 +324,8 @@ impl LayoutStamp {
             e.summary.hash(&mut hasher);
         }
         let content_hash = hasher.finish();
+        #[cfg(test)]
+        STAMPED_EPISODES.with(|n| n.set(n.get() + d.episodes.len()));
         let mut flags = 0u8;
         if d.is_show {
             flags |= 1;
@@ -330,6 +346,21 @@ impl LayoutStamp {
             n_sea: d.seasons.len() as u32,
             flags,
         }
+    }
+}
+
+/// One walk's hold on [`DetailScreen::layout`] (see [`DetailScreen::layout_pinned`]): the cache is
+/// validated against the live item ONCE, on entry, and every read inside the walk is then served
+/// without re-deriving the stamp. Pins nest — `record_stops` pins inside `draw`'s pin, and a test
+/// may call it alone — and each restores what it found on drop, panics included.
+struct LayoutPin<'a> {
+    screen: &'a DetailScreen,
+    was: bool,
+}
+
+impl Drop for LayoutPin<'_> {
+    fn drop(&mut self) {
+        self.screen.layout_pinned.set(self.was);
     }
 }
 
@@ -388,6 +419,7 @@ impl DetailScreen {
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
             layout: Cell::new(None),
+            layout_pinned: Cell::new(false),
             spot_facts: SpotFacts::default(),
         }
     }
@@ -689,7 +721,25 @@ impl DetailScreen {
         )
     }
 
+    /// Pin [`layout`](Self::layout) for one walk ([`LayoutPin`]). Validates first, so a pinned
+    /// read can never serve geometry measured from an item the walk is not drawing.
+    fn pin_layout(&self, meta: crate::metadata::MetadataView<'_>, measure: &dyn crate::ui::machine::Measure) -> LayoutPin<'_> {
+        let was = self.layout_pinned.get();
+        if !was {
+            if let Some(d) = self.detail(meta) {
+                self.ensure_layout(d, measure);
+            }
+        }
+        self.layout_pinned.set(true);
+        LayoutPin { screen: self, was }
+    }
+
     fn ensure_layout(&self, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> LayoutCache {
+        if self.layout_pinned.get() {
+            if let Some(c) = self.layout.get() {
+                return c;
+            }
+        }
         let stamp = LayoutStamp::of(d);
         if let Some(c) = self.layout.get() {
             if c.stamp == stamp {
@@ -1960,6 +2010,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
         let meta = H::metadata(f.cx);
         self.spot_facts = SpotFacts::of(self, meta);
         let measure = f.cx.measure;
+        let _layout = self.pin_layout(meta, measure);
         let preview = crate::player::preview::view();
         if preview_punch_through(preview.picture) {
             crate::gfx::frame_clear_through();
@@ -2589,6 +2640,8 @@ impl DetailScreen {
 
     fn record_stops<H: ContentLike + crate::screens::registry::MetadataLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let meta = H::metadata(f.cx);
+        // Two placements per episode, each reading the section flow: one validation for all.
+        let _layout = self.pin_layout(meta, f.cx.measure);
         let mut elems = Vec::new();
         let set = self.hero_set(meta);
         // Full-trailer mode draws none of the row, Play included (`draw_buttons` fades it to

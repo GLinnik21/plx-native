@@ -752,7 +752,7 @@ pub(crate) fn draw_focused(
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
     // the label into the next shelf's title.
-    let mut ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + UNDER_DROP;
+    let ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + UNDER_DROP;
     // …and the block itself rides the band's reveal. The card, its ring and its resume bar do NOT:
     // they are the tile, which is on screen either way; this alpha is only about whether the room
     // under it has opened yet ([`CardRow::band_reveal`]).
@@ -760,27 +760,7 @@ pub(crate) fn draw_focused(
         return;
     }
     let p = p.alpha(label.reveal);
-    if let Some(t) = &label.title {
-        // ONE title path for every focused tile in the app: a single line, elided/centred when it
-        // fits and looping under a marquee when it does not — Continue-Watching's amber play glyph
-        // is a parameter of the same function, not a fourth path, so a glyph-led title marquees
-        // exactly like a plain one.
-        title_marquee(p, rect, sty, t.as_ptr(), ty, label.glyph, measure);
-        ty += UNDER_LINE_H + UNDER_LINE_GAP;
-    }
-    if let Some(c) = &label.caption {
-        under_label(
-            p,
-            rect,
-            sty,
-            c.as_ptr(),
-            ty,
-            theme::size::CAPTION,
-            0,
-            theme::TEXT_SECONDARY,
-            measure,
-        );
-    }
+    draw_label_block(p, rect, sty, label, ty, measure);
 }
 
 /// THE one-row strip loop: draw a whole horizontal shelf, non-focused tiles first (off-axis
@@ -1167,7 +1147,7 @@ fn marquee_clock(text: &str) -> f64 {
 const PLAY_ICON_GAP: f32 = 10.0;
 
 /// The Continue-Watching glyph's pixel size at `sz` — 72% of the title's own size, rounded (Home
-/// Screen.dc's play-triangle proportion). Pure so [`title_marquee`] and [`play_label_fit`] read the
+/// Screen.dc's play-triangle proportion). Pure so both branches of [`title_marquee`] read the
 /// same number rather than each rounding it themselves.
 #[inline]
 fn play_icon_size(sz: std::os::raw::c_int) -> f32 {
@@ -1176,7 +1156,7 @@ fn play_icon_size(sz: std::os::raw::c_int) -> f32 {
 
 /// How much of the marquee's window a glyph-led title gives up to the icon + its gap — `0.0` for a
 /// plain title. Pulled out to its own pure function so a host test can pin the arithmetic
-/// [`title_marquee`]'s overflow branch and [`play_label_fit`]'s fitting branch both depend on,
+/// [`title_marquee`]'s overflow and fitting branches both depend on,
 /// without a `Painter` to draw through.
 #[inline]
 fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
@@ -1187,10 +1167,66 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
     }
 }
 
-/// The focused tile's single-line title: the plain elided [`under_label`] whenever the run fits the
-/// widened [`under_budget`], else a looping [`marquee_x`] — see the section doc above for why.
-/// Reports to [`crate::ui::idle`] only on a frame the marquee is actually gliding, so a screen full
-/// of short (or resting) titles costs the present gate nothing.
+/// Where a focused tile's label block lands and how it aligns — the ONE placement every line
+/// under the tile (title, Continue-Watching glyph + name, caption) is drawn through, so the lines
+/// always read as one unit: all centred on the card, or all sharing the card's leading edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LabelPlace {
+    /// The block's left edge, in the painter's own space.
+    pub x: f32,
+    /// The width the block may use; runs are elided or marqueed to it.
+    pub w: f32,
+    /// `true`: every line is centred on the card (`x + w / 2`). `false`: every line starts at `x`,
+    /// which is the card's own leading edge.
+    pub centred: bool,
+}
+
+impl LabelPlace {
+    /// The left edge of a `run`-wide line inside the block.
+    fn run_x(&self, run: f32) -> f32 {
+        if self.centred {
+            self.x + (self.w - run) * 0.5
+        } else {
+            self.x
+        }
+    }
+}
+
+/// Air kept between a label block and the PANEL's edge (or a band the screen reserves there).
+/// A label belongs to its card, not to the safe area: it is never moved toward the safe frame.
+const EDGE_PAD: f32 = 16.0;
+
+/// **Place a `w`-wide label block under the tile `rect`.** Centred on the card whenever the
+/// centred block sits on the panel (the design's normal case); otherwise the block starts at the
+/// card's own leading edge — the same edge for every line — and keeps whatever room the panel
+/// allows beyond the card, up to `w`. It is never shifted toward a screen edge: that pulled the
+/// label of a right-hand card under its neighbour, away from the card it names.
+///
+/// **The panel test is a screen fact and `rect` usually is not.** [`strip`] draws a shelf through
+/// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; `p.dx()` converts,
+/// so the comparison happens in screen space and the answer comes back in the painter's. An
+/// untranslated caller (`home`, `library`, `profiles`) has `dx == 0`.
+///
+/// The right bound is the panel's edge less whatever the SCREEN has reserved there
+/// (`RowStyle::right_reserve` — the Library's A–Z rail). The leading edge is the UNSCALED card's,
+/// so a focus pop never moves the block or re-keys the width-keyed wrap/elide caches.
+pub(crate) fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32) -> LabelPlace {
+    let lo = EDGE_PAD - p.dx();
+    let hi = SCR_W - sty.right_reserve - EDGE_PAD - p.dx();
+    let x = rect.cx() - w * 0.5;
+    if x >= lo && x + w <= hi {
+        return LabelPlace { x, w, centred: true };
+    }
+    let lead = rect.cx() - sty.w * 0.5;
+    // Whole pixels: the room left before the panel edge is what the runs are elided to, and a
+    // gliding shelf must not re-key the elide cache with every sub-pixel of travel.
+    LabelPlace { x: lead, w: (hi - lead).min(w).max(0.0).floor(), centred: false }
+}
+
+/// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
+/// block, else a looping [`marquee_x`] inside it — see the section doc above for why. Reports to
+/// [`crate::ui::idle`] only on a frame the marquee is actually gliding, so a screen full of short
+/// (or resting) titles costs the present gate nothing.
 ///
 /// `glyph` leads the line with Continue-Watching's amber play triangle — the SAME clock and the
 /// SAME budget arithmetic as the plain title, just with the icon's width plus its gap subtracted
@@ -1201,8 +1237,7 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
 /// shelf's focused label.
 fn title_marquee(
     p: Painter,
-    rect: Rect,
-    sty: &RowStyle,
+    at: LabelPlace,
     text: *const c_char,
     y: f32,
     glyph: bool,
@@ -1211,22 +1246,28 @@ fn title_marquee(
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = play_icon_size(sz);
     let lead = glyph_lead(sz, glyph);
-    let full = under_budget(sty);
-    let budget = full - lead;
-    let w = if text.is_null() {
-        0.0
-    } else {
-        measure.width(unsafe { std::ffi::CStr::from_ptr(text) }, sz, bold != 0)
+    let budget = (at.w - lead).max(0.0);
+    let w = title_w(text, measure);
+    let draw_glyph = |gx: f32| {
+        let (ct, cb) = crate::text::text_cap_band(sz, bold);
+        let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
+        crate::ui::icons::draw(
+            p,
+            crate::ui::icons::Icon::Play,
+            Rect::new(gx, icy - isz * 0.5, isz, isz),
+            theme::RESUME_FILL,
+        );
     };
     if w <= budget {
         // a fitting title RELEASES the clock, so an overflowing one focused again later starts
         // from its rest beat rather than resuming mid-glide
         MARQUEE_KEY.with(|k| k.borrow_mut().clear());
+        // The [glyph? + gap + name] group is ONE run, placed like every other line of the block.
+        let gx = at.run_x(lead + w);
         if glyph {
-            play_label_fit(p, rect, sty, text, y, isz, sz, bold, measure);
-        } else {
-            under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY, measure);
+            draw_glyph(gx);
         }
+        p.text(text, gx + lead, y, sz, theme::TEXT_PRIMARY, 0, bold);
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
@@ -1247,25 +1288,25 @@ fn title_marquee(
     }
     let off = marquee_x(t_ms, w, budget);
     let travel = w + MARQUEE_GAP;
-    // The [glyph? + text-window] group is centred as ONE block, the same screen-space clamp the
-    // other blocks use — see [`edge_clamp`]. The glyph, when present, sits fixed at the group's left
-    // edge; only the text window inside it scrolls.
-    let (x0, _) = label_band(p, rect, sty);
-    let text_x0 = x0 + lead;
+    // An overflowing run fills the whole block, so the window IS the block; the glyph, when
+    // present, sits fixed at its left edge and only the text window after it scrolls.
     if glyph {
-        let (ct, cb) = crate::text::text_cap_band(sz, bold);
-        let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
-        crate::ui::icons::draw(
-            p,
-            crate::ui::icons::Icon::Play,
-            Rect::new(x0, icy - isz * 0.5, isz, isz),
-            theme::RESUME_FILL,
-        );
+        draw_glyph(at.x);
     }
+    let text_x0 = at.x + lead;
     p.clip(Rect::new(text_x0, y - 6.0, budget, UNDER_LINE_H + 12.0));
     p.text(text, text_x0 - off, y, sz, theme::TEXT_PRIMARY, 0, bold);
     p.text(text, text_x0 - off + travel, y, sz, theme::TEXT_PRIMARY, 0, bold);
     p.clip_clear();
+}
+
+/// The drawn width of a focused title run (LABEL, bold); `0` for a null pointer.
+fn title_w(text: *const c_char, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    if text.is_null() {
+        0.0
+    } else {
+        measure.width(unsafe { std::ffi::CStr::from_ptr(text) }, theme::size::LABEL, true)
+    }
 }
 
 /// The under-tile text budget: the tile, a gap either side, PLUS half of each neighbouring tile's
@@ -1273,9 +1314,9 @@ fn title_marquee(
 /// tile without visually colliding with it, which is what makes a real Plex title ("Wallace &
 /// Gromit: The Curse of the Were-Rabbit") legible instead of "Wallace & Gr…". Two neighbours
 /// contributing half their width each is one extra tile-width overall, hence `+ sty.w` once more
-/// on top of the plain tile-plus-gaps budget. Still edge-clamped by [`edge_clamp`] — widening the
-/// budget never lets a block run off the panel, it only lets it reach further into open space
-/// before [`title_marquee`] takes over for whatever still does not fit.
+/// on top of the plain tile-plus-gaps budget. [`place_label`] only ever narrows it where the panel
+/// ends — widening the budget never lets a block run off the panel, it only lets it reach further
+/// into open space before [`title_marquee`] takes over for whatever still does not fit.
 ///
 /// **Unscaled is load-bearing, not tidiness.** `rect` is the focus-popped tile, so a budget taken
 /// from it sweeps ~310→332px across a pop — which re-keys `TextView`'s and `elide`'s width-keyed
@@ -1284,122 +1325,49 @@ fn title_marquee(
 /// breaks mid-pop. The block's y anchor is already unscaled two lines up, for the same reason.
 #[inline]
 fn under_budget(sty: &RowStyle) -> f32 {
-    (2.0 * sty.w + 2.0 * sty.gap).min((label_safe_right(sty) - MARGIN_X).max(0.0))
-}
-
-fn label_safe_right(sty: &RowStyle) -> f32 {
-    // A reserved region is measured from the physical edge and may already include overscan.
-    // Intersect the two bounds instead of subtracting the safe inset a second time.
-    (SCR_W - MARGIN_X).min(SCR_W - sty.right_reserve)
+    2.0 * sty.w + 2.0 * sty.gap
 }
 
 /// **Where a focused tile's label block actually lands on the panel** — its left edge and its
-/// width, in `p`'s own space. The ONE expression for that extent, so a screen with a constraint on
-/// it can grade the block that is DRAWN rather than re-deriving the centring and the clamp.
-///
-/// It is the WIDEST case on purpose: [`under_budget`], which is what [`title_marquee`] reserves
-/// before it knows whether the name fits. An elided caption occupies a sub-rect of this, so a bound
-/// this block satisfies is one every line under the tile satisfies.
+/// width, in `p`'s own space. The WIDEST case on purpose — the block an overflowing title fills —
+/// so a screen with a constraint on it can grade the block that is DRAWN; every line under the
+/// tile occupies a sub-rect of this.
 pub(crate) fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
+    let at = place_label(p, rect, sty, under_budget(sty));
+    (at.x, at.w)
+}
+
+/// The focused tile's whole label block — title (with its optional Continue-Watching glyph) and
+/// caption — placed ONCE by [`place_label`] from the wider of its two runs, so both lines share one
+/// alignment: centred on the card together, or starting together at the card's leading edge.
+fn draw_label_block(
+    p: Painter,
+    rect: Rect,
+    sty: &RowStyle,
+    label: &TileLabel,
+    mut y: f32,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let full = under_budget(sty);
-    (edge_clamp(p, rect.cx() - full * 0.5, full, sty), full)
-}
-/// Focused identifying text stays inside the shared TV safe frame; decorative tiles may overflow.
-const EDGE_PAD: f32 = MARGIN_X;
-
-/// Shared safe text limits in the painter's coordinates, including any index-rail reservation.
-pub(crate) fn label_safe_bounds(p: Painter, sty: &RowStyle) -> (f32, f32) {
-    (EDGE_PAD - p.dx(), label_safe_right(sty) - p.dx())
-}
-
-/// Keep a `w`-wide text block inside the safe frame, and answer in `p`'s own space.
-///
-/// **The clamp is a screen fact and `x` usually is not.** [`strip`] draws a shelf through
-/// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; comparing one against
-/// `SCR_W` is comparing two different spaces, and the moment a row had scrolled about a panel's
-/// width the clamp bound bit on every column at once — the focused tile's title and caption froze
-/// at a fixed screen x (each pinned at its own bound, since the bound depends on the run's width)
-/// while the words inside them still changed with focus. Device-observed on Search's episode shelf
-/// 2026-08-15, and latent in every scrolling shelf in the app: `detail`'s Related and Cast rows and
-/// `person`'s two shelves all run `strip` and all pass through here.
-///
-/// `p.dx()` converts, so the comparison happens in screen space and the result comes back in the
-/// painter's. An untranslated caller (`home`, `library`, `profiles` draw their focused tile
-/// directly) has `dx == 0` and uses the same safe text bounds.
-fn edge_clamp(p: Painter, x: f32, w: f32, sty: &RowStyle) -> f32 {
-    let (lo, right) = label_safe_bounds(p, sty);
-    // The right bound is the panel's edge less whatever the SCREEN has reserved there
-    // (`RowStyle::right_reserve` — the Library's A–Z rail, and nothing else today). The left has no
-    // twin: no screen reserves a left band, and inventing a symmetric knob nobody sets would be a
-    // second way to be wrong about a rule that has exactly one exception.
-    //
-    // `under_budget` caps every title/caption at the available safe width before placement.
-    // Keep a degenerate reserve deterministic even when it leaves no text space.
-    let hi = right - w;
-    (x).clamp(lo, hi.max(lo))
-}
-
-/// One centered metadata line under a focused tile: elided to the tile-plus-gaps budget and kept
-/// inside the screen edges — a long episode title under an edge tile used to run off the panel.
-fn under_label(
-    p: Painter,
-    rect: Rect,
-    sty: &RowStyle,
-    text: *const c_char,
-    y: f32,
-    sz: std::os::raw::c_int,
-    bold: std::os::raw::c_int,
-    col: [f32; 4],
-    measure: &dyn crate::ui::machine::Measure,
-) {
-    let budget = under_budget(sty);
-    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let short = crate::text::elide_by(&s, budget, false, |t| measure.width_str(t, sz, bold != 0));
-    if let Ok(tc) = std::ffi::CString::new(short) {
-        let w = measure.width(&tc, sz, bold != 0);
-        // Same screen-space clamp as the wrapped title's — see [`edge_clamp`]. Expressed on the
-        // run's LEFT edge and converted back, so one function owns the rule for both blocks.
-        let cx = edge_clamp(p, rect.cx() - w * 0.5, w, sty) + w * 0.5;
-        p.text(tc.as_ptr(), cx, y, sz, col, 1, bold);
+    let csz = theme::size::CAPTION;
+    let elide_caption = |s: &str, w: f32| crate::text::elide_by(s, w, false, |t| measure.width_str(t, csz, false));
+    let title_run = label.title.as_ref().map_or(0.0, |t| {
+        (glyph_lead(theme::size::LABEL, label.glyph) + title_w(t.as_ptr(), measure)).min(full)
+    });
+    let caption_run = label.caption.as_ref().map_or(0.0, |c| {
+        measure.width_str(&elide_caption(&c.to_string_lossy(), full), csz, false)
+    });
+    let at = place_label(p, rect, sty, title_run.max(caption_run));
+    if let Some(t) = &label.title {
+        title_marquee(p, at, t.as_ptr(), y, label.glyph, measure);
+        y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
-}
-
-/// The focused Continue-Watching card's primary line when the name FITS without a marquee: an amber
-/// play triangle followed by the episode/movie name, the [icon + gap + name] group centred under the
-/// tile (Home Screen.dc — the play affordance lives here, not as a disc on the poster). `budget` is
-/// already the text-only window [`title_marquee`] measured against (the icon and its gap already
-/// subtracted), so this only re-elides defensively — the caller already knows the run fits.
-fn play_label_fit(
-    p: Painter,
-    rect: Rect,
-    sty: &RowStyle,
-    text: *const c_char,
-    y: f32,
-    isz: f32,
-    sz: std::os::raw::c_int,
-    bold: std::os::raw::c_int,
-    measure: &dyn crate::ui::machine::Measure,
-) {
-    // The run already fits its window (the caller checked), so it is drawn verbatim — no elide,
-    // no copy.
-    let tw = if text.is_null() {
-        0.0
-    } else {
-        measure.width(unsafe { std::ffi::CStr::from_ptr(text) }, sz, bold != 0)
-    };
-    let gw = isz + PLAY_ICON_GAP + tw;
-    // The [glyph + gap + name] group as ONE block, clamped in screen space like the other two —
-    // see [`edge_clamp`].
-    let gl = edge_clamp(p, rect.cx() - gw * 0.5, gw, sty);
-    let (ct, cb) = crate::text::text_cap_band(sz, bold);
-    let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
-    crate::ui::icons::draw(
-        p,
-        crate::ui::icons::Icon::Play,
-        Rect::new(gl, icy - isz * 0.5, isz, isz),
-        theme::RESUME_FILL,
-    );
-    p.text(text, gl + isz + PLAY_ICON_GAP, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    if let Some(c) = &label.caption {
+        if let Ok(tc) = std::ffi::CString::new(elide_caption(&c.to_string_lossy(), at.w)) {
+            let w = measure.width(&tc, csz, false);
+            p.text(tc.as_ptr(), at.run_x(w), y, csz, theme::TEXT_SECONDARY, 0, 0);
+        }
+    }
 }
 
 /// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
@@ -1477,32 +1445,74 @@ mod tests {
         assert_eq!(row.scroll_x(), 0.0);
     }
 
+    /// Every placement is card-anchored: a block is either centred on its card or starts at the
+    /// card's own leading edge, whatever the scroll, the rail reserve or the block's width — and
+    /// a leading-edge block never runs past the panel (or the rail) on the right.
     #[test]
-    fn focused_label_bands_stay_inside_safe_bounds_through_scroll_and_rail_reservations() {
+    fn focused_label_blocks_are_centred_on_or_lead_from_their_card() {
         for dx in [0.0, -290.0, -2900.0, 240.0] {
             let p = Painter::root().translate(dx, 0.0);
             for reserve in [0.0, 112.0] {
                 let sty = RowStyle::HOME.with_right_reserve(reserve);
-                for screen_x in [-120.0, MARGIN_X, SCR_W - CARD_W, SCR_W + 120.0] {
+                for screen_x in [-120.0, MARGIN_X, 700.0, SCR_W - MARGIN_X - CARD_W, SCR_W - CARD_W] {
                     let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
-                    let (x, width) = label_band(p, rect, &sty);
-                    assert!(x + dx >= MARGIN_X, "left edge escaped: {}", x + dx);
-                    assert!(x + dx + width <= (SCR_W - MARGIN_X).min(SCR_W - reserve));
-                    // Short captions use the same clamp as the full marquee window.
-                    let caption = edge_clamp(p, rect.cx() - 140.0, 280.0, &sty);
-                    assert!(caption + dx >= MARGIN_X);
-                    assert!(caption + dx + 280.0 <= (SCR_W - MARGIN_X).min(SCR_W - reserve));
+                    for w in [120.0, 280.0, under_budget(&sty)] {
+                        let at = place_label(p, rect, &sty, w);
+                        if at.centred {
+                            assert_eq!(at.x + at.w * 0.5, rect.cx(), "a centred block shares the card's centre");
+                            assert_eq!(at.w, w);
+                        } else {
+                            assert_eq!(at.x, rect.x, "a constrained block starts at the card's leading edge");
+                            assert!(at.w <= w);
+                            assert!(at.x + dx + at.w <= SCR_W - reserve - EDGE_PAD);
+                        }
+                        // Both lines of a block share its edge (left) or its centre.
+                        assert_eq!(at.run_x(at.w), at.x);
+                    }
                 }
             }
         }
     }
 
+    /// Title and caption are one unit: at the right edge, a short caption under a long title
+    /// starts where the title does instead of being pushed against the panel edge on its own.
     #[test]
-    fn an_oversized_label_budget_is_capped_before_safe_placement() {
+    fn title_and_caption_share_the_leading_edge_when_constrained() {
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(SCR_W - MARGIN_X - sty.w, 300.0, sty.w, sty.h);
+        let at = place_label(Painter::root(), rect, &sty, under_budget(&sty));
+        assert!(!at.centred);
+        assert_eq!(at.run_x(60.0), rect.x);
+        assert_eq!(at.run_x(at.w), rect.x);
+        let mid = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let centred = place_label(Painter::root(), mid, &sty, 200.0);
+        assert!(centred.centred, "a block with room stays centred on its card");
+        assert_eq!(centred.run_x(60.0) + 30.0, mid.cx());
+    }
+
+    /// Issue 6: a focused label that would overflow near the right edge stays with its card — it
+    /// starts at the card's own leading edge and keeps the room beyond the card — instead of being
+    /// pulled left toward the safe-area boundary, under the neighbouring tile.
+    #[test]
+    fn a_right_edge_card_label_starts_at_the_card_instead_of_the_safe_area() {
+        let sty = RowStyle::HOME;
+        for dx in [0.0, -2900.0] {
+            let p = Painter::root().translate(dx, 0.0);
+            let screen_x = SCR_W - MARGIN_X - sty.w;
+            let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
+            let (x, width) = label_band(p, rect, &sty);
+            assert_eq!(x, rect.x, "the label leads from its card, not from the safe area");
+            assert!(width > sty.w, "the label keeps the usable room beyond the card");
+            assert!(x + dx + width <= SCR_W, "the label still ends on the panel");
+        }
+    }
+
+    #[test]
+    fn an_oversized_label_block_leads_from_its_card_and_stops_at_the_rail() {
         let sty = RowStyle { w: SCR_W, ..RowStyle::HOME.with_right_reserve(112.0) };
         let (x, width) = label_band(Painter::root(), Rect::new(0.0, 0.0, sty.w, sty.h), &sty);
-        assert_eq!(x, MARGIN_X);
-        assert_eq!(width, SCR_W - sty.right_reserve - MARGIN_X);
+        assert_eq!(x, 0.0);
+        assert_eq!(width, SCR_W - sty.right_reserve - EDGE_PAD);
     }
 
     const DT: f32 = 1.0 / 60.0;
@@ -1826,7 +1836,7 @@ mod tests {
     }
 
     /// A glyph-led title's window is narrower by exactly the icon's size plus its gap — the same
-    /// number [`play_label_fit`]'s fitting branch and [`title_marquee`]'s overflow branch both
+    /// number [`title_marquee`]'s fitting and overflow branches both
     /// read, pinned once here instead of through a draw.
     #[test]
     fn a_glyph_led_title_gives_up_the_icon_plus_its_gap() {

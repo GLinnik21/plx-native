@@ -313,6 +313,13 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                                 // not tell them apart from the recording would silently grade the
                                 // wrong seat — `FocusTarget`'s doc on `screen.rs` has the incident.
                                 crate::ui::screen::FocusTarget::FirstInGroup(group) => json!({"first_in_group":group.0}),
+                                // A strip pill's cover-and-mint (`stack.rs`'s `SelectTab` arm) —
+                                // same seat as `FirstInGroup`, distinct only in the `By` it
+                                // reports (`screen.rs`'s doc on the variant), so it gets its own
+                                // tag for the same reason `FirstInGroup` does: a replay that
+                                // could not tell the two apart from the recording would grade the
+                                // wrong arrival animation.
+                                crate::ui::screen::FocusTarget::FirstInGroupAnimated(group) => json!({"first_in_group_animated":group.0}),
                             }}),
                         },
                         ScreenEvent::WillLeave(leave) => json!(match leave {

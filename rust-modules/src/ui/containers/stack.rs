@@ -360,6 +360,19 @@ impl<H: Host> NavStack<H> {
         }
     }
 
+    /// Same as [`Self::fresh`], for the ONE mint that always arrives FROM the visible strip: a
+    /// `SelectTab` cover-and-mint (a tab press with an existing root already up). Unlike a
+    /// `Push`/`Root` mint — which may land under a page-level slide that hides an instant focus
+    /// placement, or after a boot with no prior focus to glide from — this mint's origin is
+    /// always the strip's own currently-focused pill, so `FocusTarget::FirstInGroupAnimated`
+    /// reports the same seat as a deliberate directional move (`By::Dir`) rather than a restore
+    /// snap. See the variant's doc on `screen.rs` for the bug this replaced.
+    fn fresh_tab(focus_group: GroupId) -> Enter<H::Elem> {
+        Enter::Fresh {
+            focus: FocusTarget::FirstInGroupAnimated(focus_group),
+        }
+    }
+
     fn adopt_or_mint(
         &mut self,
         ids: &mut Minter,
@@ -507,7 +520,7 @@ impl<H: Host> NavStack<H> {
                         out.push(Life::Ev(r, ScreenEvent::WillLeave(Leave::Deeper)));
                         let new = self.adopt_or_mint(ids, arg, &mut staged);
                         out.push(Life::Mount(new));
-                        out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
+                        out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh_tab(GroupId(0)))));
                         out.push(Life::Ev(r, ScreenEvent::Cover));
                     }
                 }

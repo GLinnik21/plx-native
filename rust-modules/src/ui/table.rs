@@ -298,6 +298,32 @@ const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade
 /// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
 const BADGE_GAP: f32 = 10.0;
 const ACCESSORY_GAP: f32 = 14.0;
+/// The empty band under a row's lowest ink, which every row kind leaves: a plain row's label is
+/// centred in `ROW_H` with 13px under it, and a two-line row's centred pair leaves ~12.
+const ROW_INK_PAD: f32 = 12.0;
+/// A section header's ink ends at its CAPTION caps below `HEADER_CAP_INSET`.
+const HDR_INK_PAD: f32 = HDR_H - HEADER_CAP_INSET - theme::size::CAPTION as f32;
+
+/// The bottom-edge fade shared by rows and headers ([`TableView::bottom_edge_alpha`]): opaque
+/// while `ink_bot` has `pad + BOT_PAD` of viewport below it, transparent once the edge reaches it.
+fn edge_alpha(ink_bot: f32, vis_bot: f32, pad: f32) -> f32 {
+    ((vis_bot - ink_bot) / (pad + BOT_PAD)).clamp(0.0, 1.0)
+}
+
+/// A row's two text columns as [`TableView::row_columns`] resolves them: the primary label's (and
+/// its sub-line's) width, and the trailing value's, which the value is elided to.
+/// The share of a row's text span the primary label is guaranteed (up to its natural width)
+/// when a trailing value does not fit beside it — see [`TableView::row_columns`].
+const LABEL_SHARE: f32 = 0.6;
+/// The label's measured width is hugged with this factor (the text-fit tests' own 2% headroom,
+/// `fontcov::advances::HEADROOM`, plus a hair) so the label it keeps is truly whole on the set.
+const LABEL_HUG_MARGIN: f32 = 1.025;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RowColumns {
+    pub label_w: f32,
+    pub value_w: f32,
+}
 const ACCESSORY_ICON_W: f32 = 26.0;
 /// The trailing read-out's WEIGHT: `size::LABEL` **bold**, which is what the `PlxNative Design
 /// System`'s `TableView` authors it as (`var(--font-weight-bold) var(--size-label)`) and what its
@@ -606,7 +632,52 @@ impl TableView {
 
     /// The same label budget used by rendering and intrinsic-width checks.
     pub(crate) fn label_width(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - Self::trailing_width(row, measure)).max(0.0)
+        self.row_columns(row, frame_w, measure).label_w
+    }
+
+    /// A row's label and trailing-value columns, resolved by priority — content hugging and
+    /// compression resistance, measured rather than assumed from English lengths.
+    ///
+    /// When both runs fit, the value takes its natural width and the label (with its sub-line)
+    /// every pixel left, as it always did. When they do not, the LABEL is the primary read: it
+    /// keeps its natural width up to [`LABEL_SHARE`] of the row's text span, and the value gives
+    /// way first, elided to what is left. The label only yields below its natural width once it
+    /// alone would take more than that share — and then the value still keeps the rest.
+    pub(crate) fn row_columns(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> RowColumns {
+        let fixed = Self::trailing_width(row, measure) - Self::value_slot(row, measure);
+        let span = (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - fixed).max(0.0);
+        let Some(value) = row.readout() else {
+            return RowColumns { label_w: span, value_w: 0.0 };
+        };
+        let value_nat = measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0);
+        let (size, bold) = self.label_style();
+        // hugged with a margin: a measure models whole-pixel advances but not the device's
+        // kerning/hinting, so a label kept at exactly its measured width can still elide on the set
+        let label_nat = (measure.width_str(&row.label, size, bold) * LABEL_HUG_MARGIN).ceil();
+        let slot = value_nat + ACCESSORY_GAP;
+        if label_nat + slot <= span {
+            return RowColumns { label_w: span - slot, value_w: value_nat };
+        }
+        let label_w = (span - slot).max(label_nat.min(span * LABEL_SHARE));
+        RowColumns { label_w, value_w: (span - label_w - ACCESSORY_GAP).max(0.0) }
+    }
+
+    /// The trailing value's natural slot (run + its gap), `0` for a row without one.
+    fn value_slot(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        row.readout().map_or(0.0, |v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP)
+    }
+
+    /// How opaque a row spanning `y..y + h` is drawn at the viewport's bottom edge `vis_bot`.
+    ///
+    /// The draw hard-clips to its frame, and at the TOP that is right (a row scrolling away under
+    /// the crumb band). At the BOTTOM it cut the next row mid-glyph wherever the frame happened to
+    /// end — the Settings column at the safe area, a popover at its height cap. So a row fades as
+    /// the edge climbs from the list's own bottom air ([`BOT_PAD`]) up through its empty lower
+    /// band ([`ROW_INK_PAD`]), and is fully transparent by the time the edge reaches its ink: the
+    /// scissor only ever cuts padding or nothing visible. A row resting with the list's bottom
+    /// air below it — where the last row settles — is whole.
+    pub(crate) fn bottom_edge_alpha(&self, y: f32, h: f32, vis_bot: f32) -> f32 {
+        edge_alpha(y + h - ROW_INK_PAD, vis_bot, ROW_INK_PAD)
     }
 
     /// The nearest **selectable** row to `i`: `i` itself when it is one, else the first non-separator
@@ -810,6 +881,8 @@ impl TableView {
             if gi == -1 {
                 // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
                 if sy + HDR_H > vis_top && sy < vis_bot {
+                    // fades out at the bottom edge before its caps are cut (`bottom_edge_alpha`)
+                    let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
                     let sec = &self.sections[si];
                     if si > 0 {
                         p.rect(
@@ -874,6 +947,12 @@ impl TableView {
             if sy + h < vis_top || sy > vis_bot {
                 return; // fully scrolled out; a partial edge row is drawn and scissor-clipped to `frame`
             }
+            // …and at the BOTTOM edge it is faded out before the scissor can reach its ink
+            let edge = self.bottom_edge_alpha(sy, h, vis_bot);
+            if edge <= 0.0 {
+                return;
+            }
+            let p = p.alpha(edge);
             if row.sep {
                 // grouping hairline, on the row's centre line and inset to the label column so it
                 // reads as a divider between groups rather than a full-bleed panel rule
@@ -971,8 +1050,13 @@ impl TableView {
             // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
                 let ink = row_value_ink(row, focused);
+                // the value gives way before the label (`row_columns`): elided to its column
+                let vsz = theme::size::LABEL;
+                let value_w = self.row_columns(row, frame.w, measure).value_w;
+                let v = crate::text::elide_by(v, value_w, false, |t| {
+                    measure.width_str(t, vsz, VALUE_BOLD != 0)
+                });
                 if let Ok(vc) = std::ffi::CString::new(v) {
-                    let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
                     p.text(
                         vc.as_ptr(),
@@ -1355,5 +1439,45 @@ mod tests {
              (frame_h={frame_h}, content_h={content_h}, scroll={})",
             t.scroll_pos()
         );
+    }
+
+    /// Owner reports: the Settings table (issue 10) and the player's Quality popover (its last
+    /// rung) ended in a row cut mid-glyph by the viewport's bottom edge. A row crossing that edge
+    /// must be transparent before the edge reaches its ink, and a row resting with the list's own
+    /// bottom air below it must be whole. Swept over every scroll a DOWN walk passes through, in
+    /// both a Settings-sized frame and a popover-sized one, with plain and two-line rows.
+    #[test]
+    fn no_row_is_drawn_cut_mid_glyph_at_the_bottom_edge() {
+        let _serial = crate::testlock::serial();
+        for (frame_h, detail_every) in [(300.0f32, 2usize), (520.0, 3), (455.0, 0)] {
+            let mut t = TableView::new();
+            let mut sec = Section::new("S");
+            for i in 0..18 {
+                let mut row = Row::new(format!("row {i}")).value("value");
+                if detail_every > 0 && i % detail_every == 0 { row = row.detail("detail"); }
+                sec = sec.row(row);
+            }
+            t.set_sections(vec![sec, Section::new("T").row(Row::new("tail"))], 0, false);
+            let frame = Rect::new(0.0, 100.0, 700.0, frame_h);
+            let bottom = frame.y + frame.h;
+            let mut crossed = 0;
+            for step in 0..t.n_rows() {
+                if step > 0 { t.move_sel(1); }
+                for _ in 0..12 { t.update(1.0 / 60.0, frame_h); }
+                for i in 0..t.n_rows() {
+                    let Some(r) = t.row_frame(frame, i) else { continue };
+                    let a = t.bottom_edge_alpha(r.y, r.h, bottom);
+                    if r.y < bottom && r.y + r.h > bottom {
+                        crossed += 1;
+                        assert!(a == 0.0 || r.y + r.h - ROW_INK_PAD <= bottom,
+                            "row {i} at {}..{} is drawn at {a} while the edge {bottom} cuts its ink", r.y, r.y + r.h);
+                    }
+                    if r.y + r.h + BOT_PAD <= bottom {
+                        assert_eq!(a, 1.0, "row {i} resting above the bottom air is whole");
+                    }
+                }
+            }
+            assert!(crossed > 0, "the premise: rows do cross the bottom edge at {frame_h}");
+        }
     }
 }
