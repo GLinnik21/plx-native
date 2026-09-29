@@ -621,9 +621,25 @@ fn start_original_trial_reload(
     }
 }
 
-/// Physical half of a claimed user action whose PMS half `route` already ran (`ClaimTail`). Every
-/// arm but `Rejected` replaces the Engine, so the caller returns straight after; `Rejected` is
-/// matched by the caller itself because the pump keeps using the live Engine after it.
+/// Re-borrow the live Engine + main-thread token from `pa` after a claim's `Rejected` tail, which
+/// leaves the Engine exactly where it was. `run_claim_tail` itself takes `pa` back (the only way to
+/// call a function that MAY replace the Engine), which ends the pump's own `eng`/`mt` borrows for
+/// the call's duration; this restores them so the rest of `pump` can keep reading/mutating `eng`.
+fn reacquire_engine(pa: &mut super::adapter::PlayerAdapter) -> (&mut Engine, &MainThread) {
+    let (eng, mt) = pa.split();
+    (
+        eng.expect("a rejected route claim never tears down the live Engine"),
+        mt,
+    )
+}
+
+/// Physical half of a claimed user action whose PMS half `route` already ran (`ClaimTail`).
+/// Returns whether it replaced the Engine: every arm but `Rejected` does, and the caller must
+/// return immediately in that case (`eng` dangles); `Rejected` restores the previous projection
+/// and lets the pump keep using the live Engine, so callers read
+/// `if run_claim_tail(..) { return; } eng = ...; mt = ...;` via [`reacquire_engine`] — passing `pa`
+/// into this function ends the pump's own borrow of it for the call, same as every other function
+/// here that might replace the Engine.
 fn run_claim_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -631,16 +647,24 @@ fn run_claim_tail(
     tail: crate::route::ClaimTail,
     pending_seek: i64,
     user_target: i64,
-) {
+) -> bool {
     match tail {
         crate::route::ClaimTail::Retranscode => {
-            retranscode_tail(ps, pa, action, user_target / 1_000_000_000, pending_seek, user_target);
+            retranscode_tail(ps, pa, action, pending_seek, user_target);
+            true
         }
         crate::route::ClaimTail::NativeAudio => {
             native_audio_tail(ps, pa, action, pending_seek, user_target);
+            true
         }
-        crate::route::ClaimTail::Original(reload) => original_tail(ps, pa, reload, user_target),
-        crate::route::ClaimTail::Rejected(msg) => rejected_tail(ps, action, msg),
+        crate::route::ClaimTail::Original(reload) => {
+            original_tail(ps, pa, reload, user_target);
+            true
+        }
+        crate::route::ClaimTail::Rejected(msg) => {
+            rejected_tail(ps, action, msg);
+            false
+        }
     }
 }
 
@@ -649,10 +673,10 @@ fn retranscode_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     action: &crate::route::ClaimedRouteAction,
-    secs: i64,
     pending_seek: i64,
     user_target: i64,
 ) {
+    let secs = user_target / 1_000_000_000;
     crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared);
     if pending_seek >= 0 {
         crate::route::commit_user_seek();
@@ -719,8 +743,8 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
     // where neither half is read afterwards — the "`eng` dangles after it, return immediately"
     // rule this function used to state in three comments and enforce by hand.
-    let (eng, mt) = pa.split();
-    let eng = match eng {
+    let (eng, mut mt) = pa.split();
+    let mut eng = match eng {
         Some(e) => e,
         None => {
             set_state(PlaybackState::Idle);
@@ -854,12 +878,10 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                         // half decides between the enhancement and today's rebuild.
                         let secs = user_target / 1_000_000_000;
                         let tail = crate::route::execute_retranscode_claim(ps, &action, secs);
-                        if let crate::route::ClaimTail::Rejected(msg) = tail {
-                            rejected_tail(ps, &action, msg);
-                        } else {
-                            run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+                        if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
                             return;
                         }
+                        (eng, mt) = reacquire_engine(pa);
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
                         crate::route::honour_displaced_pick(ps, action.displaced_pick, "NativeAudioReload");
@@ -889,9 +911,11 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                                 );
                                 return;
                             }
-                            if action.displaced_pick {
-                                super::log("enhancement: displaced pick on AdaptiveReload");
-                            }
+                            // `is_transcoding(ps)` still holds here (this whole arm is inside that
+                            // branch), so `honour_displaced_pick` logs the same sentence and returns
+                            // right after without staging native audio — byte-identical to the
+                            // hand-written `if action.displaced_pick { log(...) }` this replaces.
+                            crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
                             rejected_tail(ps, &action, "route transition: adaptive transcode reload was rejected");
                         } else {
                             crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
@@ -918,12 +942,10 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                     crate::route::UserRouteIntent::RecoverOriginal(cause) => {
                         let secs = user_target / 1_000_000_000;
                         let tail = crate::route::execute_recover_original_claim(ps, &action, secs, cause);
-                        if let crate::route::ClaimTail::Rejected(msg) = tail {
-                            rejected_tail(ps, &action, msg);
-                        } else {
-                            run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+                        if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
                             return;
                         }
+                        (eng, mt) = reacquire_engine(pa);
                     }
                 },
                 crate::route::RouteIntent::Automatic(intent) => {
