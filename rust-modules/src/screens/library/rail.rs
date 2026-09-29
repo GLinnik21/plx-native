@@ -116,6 +116,7 @@ impl RailPart {
     }
 
     pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+        if !f.records_stops() { return; }
         if !self.in_region(f.cx) { return; }
         for (index, &elem) in self.elems.iter().enumerate() {
             if self.letter_alpha(index) <= 0.5 { continue; }

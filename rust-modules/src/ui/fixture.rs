@@ -561,6 +561,15 @@ pub struct FixtureModal {
     pub render: RenderReport,
 }
 
+thread_local! {
+    static MODAL_TEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make every [`FixtureModal`] drawn on this thread paint one line of text ("modal surface text").
+pub(crate) fn modal_draws_text(on: bool) {
+    MODAL_TEXT.with(|t| t.set(on));
+}
+
 /// A monotonic tick the fixture screens stamp their draw-order observations with.
 ///
 /// Process-wide and never reset: a test compares two stamps it took itself, so only their ORDER
@@ -771,6 +780,14 @@ impl Screen<FixtureHost> for FixtureModal {
             view_tab: f.view_tab, blur_amount: f.blur_amount,
         };
         let p = f.painter;
+        // One string, so a test can see whether this surface's text reached the glyph cache or
+        // the text recorder (`dispatch`'s held-surface prewarm). Painted off the surface's OWN
+        // `Painter::root()`, as Settings' entrance cascade and every panel's slide are: the
+        // recording walk has to reach a painter the frame never handed out. Opt-in, because cold
+        // text lengthens a surface's hold and the other tests time their opens without it.
+        if MODAL_TEXT.with(|t| t.get()) {
+            super::Painter::root().alpha(f.page_alpha).text(c"modal surface text".as_ptr(), 640.0, 260.0, 24, [1.0; 4], 0, 0);
+        }
         let r = Rect::new(600.0, 200.0, 720.0, 600.0);
         f.stop(p, Stop {
             key: FocusKey {
