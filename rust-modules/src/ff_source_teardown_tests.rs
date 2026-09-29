@@ -700,3 +700,36 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
         crate::aq::aq_destroy(&mut *aq);
     });
 }
+
+/// Issue #266 PR 4's normalize run: a direct-play Part sat inside `avformat_open_input` (the
+/// server was slow to serve it), the viewer turned Normalize Loudness on, and `reload_transcode`
+/// tore that demuxer down. Teardown aborts the lanes, `read_cb` answers the abort with EOF, and
+/// libavformat reports the truncated probe as `AVERROR_INVALIDDATA` — which the progressive tail
+/// logged as `ff: open_input failed r=-1094995529` and then "produced no access units — treating
+/// as a failure", raising `demux_failed` for a demuxer that was merely told to stop. The log read
+/// as the ENHANCED start.mkv failing to open when that Load had opened first time. The HLS tail
+/// has always excused an aborted lane; both exits now read the same rule.
+#[test]
+fn a_demux_aborted_by_teardown_before_its_first_unit_is_not_a_failure() {
+    assert!(
+        !unproductive_exit_failed(false, true),
+        "teardown aborting a demuxer that had not produced a unit yet is a stop, not a failure",
+    );
+    assert!(
+        unproductive_exit_failed(false, false),
+        "a demuxer that ended on its own with nothing to show is still a failure",
+    );
+    assert!(!unproductive_exit_failed(true, false));
+    assert!(!unproductive_exit_failed(true, true));
+
+    let aborted = open_input_failure_note(-1_094_995_529, true);
+    assert!(
+        !aborted.contains("open_input failed"),
+        "an open_input cut short by teardown must not read as the source failing: {aborted}",
+    );
+    assert!(aborted.contains("aborted"), "{aborted}");
+    assert_eq!(
+        open_input_failure_note(-1_094_995_529, false),
+        "ff: open_input failed r=-1094995529",
+    );
+}
