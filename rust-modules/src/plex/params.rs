@@ -139,6 +139,21 @@ pub struct EncodeContract {
     pub audio: AudioEnhancements,
 }
 
+impl EncodeContract {
+    /// The plain-progressive-remux shape with no re-encode and no ceiling: session idle, or a
+    /// return to an ordinary (un-enhanced unless `audio` says otherwise) Original after a
+    /// recovery. `const fn` so it can seed a `const` value (`PlaybackSession::IDLE`).
+    pub const fn original(remux: bool, audio: AudioEnhancements) -> Self {
+        EncodeContract {
+            remux,
+            delivery: TranscodeDelivery::ProgressiveMkv,
+            no_video_copy: false,
+            ceiling: None,
+            audio,
+        }
+    }
+}
+
 /// One universal-transcoder request (decision registration + the delivery's start endpoint). Mirrors
 /// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
 /// item. `session` is the PMS playback/timeline wire id; `encoder_session` owns the physical

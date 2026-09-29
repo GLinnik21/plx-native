@@ -384,13 +384,7 @@ impl PlaybackSession {
         tsession: String::new(),
         play_verdict: None,
         resolve_failed: false,
-        cur_contract: crate::plex::EncodeContract {
-            remux: false,
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            no_video_copy: false,
-            ceiling: None,
-            audio: crate::plex::AudioEnhancements::NONE,
-        },
+        cur_contract: crate::plex::EncodeContract::original(false, crate::plex::AudioEnhancements::NONE),
         cur_enhancement: EnhancementOutcome::Off,
         cur_src: (0, 0, 0),
         cur_transport_kbps: 0,
@@ -3689,11 +3683,7 @@ fn recover_original_direct(
     { let s = &mut *ps; {
         s.url = source_url;
         s.tsession.clear();
-        s.cur_contract.remux = false;
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
-        s.cur_contract.no_video_copy = false;
-        s.cur_contract.ceiling = None;
-        s.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
+        s.cur_contract = crate::plex::EncodeContract::original(false, crate::plex::AudioEnhancements::NONE);
         s.cur_enhancement = if enhancement_refused {
             EnhancementOutcome::Refused
         } else {
@@ -5468,13 +5458,7 @@ pub(super) fn measure_remote_remux(
             crate::plex::TranscodeOffset::Fresh,
             audio_stream_id,
             subtitle_stream_id,
-            crate::plex::EncodeContract {
-                remux: true,
-                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-                no_video_copy: false,
-                ceiling: None,
-                audio,
-            },
+            enhanced_remux_contract(audio),
         )
     };
     let mut spec = spec_for(audio);
@@ -6734,11 +6718,7 @@ fn prepare_original_remux(
     { let s = &mut *ps; {
         s.url = url;
         s.tsession = replacement.clone();
-        s.cur_contract.remux = true;
-        s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
-        s.cur_contract.no_video_copy = false;
-        s.cur_contract.ceiling = None;
-        s.cur_contract.audio = audio;
+        s.cur_contract = enhanced_remux_contract(audio);
         s.cur_enhancement = enhancement;
         s.cur_auto_original_watched = watched;
         s.cur_audio = candidate.audio.clone();

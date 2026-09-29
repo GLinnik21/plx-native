@@ -43,16 +43,6 @@ fn candidate(direct: bool, audio: CarriedAudio, subtitle_ordinal: Option<i32>) -
     }
 }
 
-fn enhanced_contract(audio: crate::plex::AudioEnhancements) -> crate::plex::EncodeContract {
-    crate::plex::EncodeContract {
-        remux: true,
-        delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-        no_video_copy: false,
-        ceiling: None,
-        audio,
-    }
-}
-
 /// A registered loopback Plex Pass server for one test.
 struct Live {
     sid: ServerId,
@@ -112,7 +102,7 @@ fn install(
         Delivery::Remux(a) => (
             format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=enh-remux-1"),
             "enh-remux-1".to_owned(),
-            enhanced_contract(a),
+            enhanced_remux_contract(a),
             if a.any() { EnhancementOutcome::Applied } else { EnhancementOutcome::Off },
         ),
         Delivery::Hls => (
@@ -214,7 +204,7 @@ fn step_decides_from_session_without_metadata() {
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "pref off");
     crate::player::restore_audio_enhancements(PREF);
     // No metadata store exists anywhere in this test: the facts are the session's own.
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_contract(PREF)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF)));
     live.finish();
     cleanup(&mut ps);
 }
@@ -227,7 +217,7 @@ fn step_table_each_row() {
     crate::player::restore_audio_enhancements(PREF);
     // Row 1: wanted and different from applied.
     install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_contract(PREF)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF)));
     // Wanted and already applied: nothing to do.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
@@ -236,7 +226,7 @@ fn step_table_each_row() {
     assert_eq!(enhancement_step(&ps), EnhancementStep::ReleaseToDirect);
     // Row 3: same, remux candidate.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(false, a1(), None)), 0);
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_contract(NONE)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(NONE)));
     // Row 4: no candidate at all.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), None, 0);
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
@@ -250,7 +240,7 @@ fn step_table_each_row() {
 
 #[test]
 fn claim_dispatch_table_each_cell() {
-    let c = enhanced_contract(PREF);
+    let c = enhanced_remux_contract(PREF);
     use ClaimFallback::{Legacy, Reject};
     let cells = [
         (EnhancementStep::ReleaseToDirect, false, ClaimPrimary::ReleaseToDirect, Reject),
@@ -301,7 +291,7 @@ fn recovery_hls_bootstrap_pref_on_is_enhanced_remux() {
         Some(AutoOriginalReload::Remux),
     );
     assert_eq!(query_param(&ps.url, "normalizeLoudness"), Some("1"), "{}", ps.url);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     assert_eq!(ps.stream_acodec, "ac3", "I4: the decision's output codec");
     let requests = live.finish();
@@ -366,7 +356,7 @@ fn toggle_on_from_direct_queues_retranscode_then_remux_params() {
     assert!(!action.displaced_pick, "a bare toggle displaces no pick");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     assert_eq!(ps.stream_acodec, "ac3");
     assert!(ps.tsession.starts_with("enh-logical-"), "same logical session: {}", ps.tsession);
@@ -513,7 +503,7 @@ fn toggle_off_with_remux_candidate_is_plain_remux() {
     let (action, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(NONE));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
     let requests = live.finish();
     assert!(!requests.iter().any(|r| r.contains("normalizeLoudness")), "{requests:?}");
@@ -546,7 +536,7 @@ fn toggle_during_pending_original_sets_deferred_reconcile() {
     let (action, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     live.finish();
     cleanup(&mut ps);
 }
@@ -606,7 +596,7 @@ fn capable_pick_while_enhanced_keeps_the_enhanced_remux() {
     assert!(!action.displaced_pick);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     assert_eq!(ps.cur_audio, Some(a3()));
     let requests = live.finish();
     let d = decisions(&requests);
@@ -679,7 +669,7 @@ fn native_capable_pick_with_pref_on_goes_remux_not_native() {
     assert!(action.displaced_pick);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     assert_eq!(ps.cur_audio, Some(a1()));
     let requests = live.finish();
     assert_eq!(query_param(decisions(&requests)[0], "audioStreamID"), Some("11"));
@@ -724,7 +714,7 @@ fn subtitle_off_on_direct_with_pref_converges_to_remux() {
     assert!(!action.displaced_pick, "a direct subtitle never reloads");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     let requests = live.finish();
     let put = requests
         .iter()
@@ -1024,7 +1014,7 @@ fn remux_release_open_failure_rolls_back_with_audio_intact() {
     assert!(rollback_original_recovery(&mut ps).is_some());
     assert_eq!(ps.tsession, "enh-remux-1");
     assert_eq!(active_encoder(), "enh-remux-1");
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF), "audio intact");
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF), "audio intact");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     // The pump rebases the restored route through `transcode_seek`; it carries the params.
     assert!(transcode_seek(&mut ps, 60).is_some());
@@ -1066,7 +1056,7 @@ fn transcode_seek_preserves_enhancement_params() {
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     assert!(transcode_seek(&mut ps, 120).is_some());
     assert_eq!(query_param(&ps.url, "normalizeLoudness"), Some("1"), "{}", ps.url);
-    assert_eq!(ps.cur_contract, enhanced_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
     let requests = live.finish();
     assert_eq!(query_param(decisions(&requests)[0], "normalizeLoudness"), Some("1"));
     cleanup(&mut ps);
