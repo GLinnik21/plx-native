@@ -881,6 +881,21 @@ for the raw captures behind this table.
 | M5 | Part GET (`Range: bytes=0-1023`) on a transcode session, after MDE, after MDE followed by an enhanced-remux decision on the same session, and after only an enhanced decision | 206 Partial Content in every case from a host, including with the remux encoder still live, stopped physically, stopped with `closeResourceSession=1`, or abandoned. PR 4's device run nonetheless met a **503** on the Part right after releasing an enhanced remux; what PMS keyed it on did not reproduce off the television, so a release asks for the Part before it trials it and falls to the plain remux on a refusal (`route::decision::admit_original_part`). |
 | M6 | MDE `/decision` on a session whose transcoder is live | The MDE ENDS that transcoder: an HLS session's later segments answer 404 (200 without the MDE) and its stop 404; a progressive session's `start.mkv` at an offset on the same id answers 400 until it is re-decided. Re-issuing MDE is harmless only when nothing is live — never before a Part GET whose rollback needs the encoder still running. |
 
+**Known device-only gap on M5 (`audio_enhancement_normalize_reset`, `tests/manifest.json`, 2026-09-29).**
+Admitting the Part before the trial (`admit_original_part`) does not close the 503 in every case:
+with the enhanced `start.mkv` actually **playing** first — timelines posted on that same session id,
+not just decided — the admission's own Part GET still meets HTTP 503 on the television, and the
+release honestly lands on the plain codec-copy Original remux (`enhancement: server refused the
+Original Part (HTTP 503); restoring Original as a remux`) instead of Direct Play. Host probes as
+Guest against the same server and Part identity could not reproduce this: every Part GET came back
+200/206, with the remux encoder live, stopped, or abandoned, same session id, identical header keys.
+The one variable a host cannot create is the posted timelines, so the leading untested hypothesis is
+that PMS refuses a raw Part on a session it has already seen post `state=playing` timelines (a
+"session lacking permission to direct play" style refusal) — untestable from a host because a
+timeline post is a real watch-history write. The harness case is `known_gap` (XFAIL) until this is
+understood or worked around; a release from a session that has posted playing timelines returns to
+Direct Play only when PMS admits the Part, otherwise it returns to the plain Original remux.
+
 **Client-side reading.** `route::plan::enhancements_offered` (I1-I7) gates the ASK; the wire params
 are never sent outside a Direct/Remux target even when the viewer's preference is on (M3, I5).
 `route::EnhancementOutcome` grades the ANSWER from the params' own observability in the table above:
