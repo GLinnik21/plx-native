@@ -8,6 +8,7 @@ use std::ffi::CString;
 
 use crate::metadata::{Detail, Episode};
 use crate::ui::machine::GroupId;
+use crate::ui::text_lift::{TextLift, TOP_CENTRE};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{self, PosterMark};
 use crate::ui::{on_axis, theme, Painter, Rect};
@@ -30,6 +31,12 @@ const META_BOTTOM_PAD: f32 = 24.0;
 const TEXT_PAD_X: f32 = theme::space::XS;
 const TEXT_PAD_Y: f32 = theme::space::SM;
 pub(crate) const STALE_ALPHA: f32 = 0.35;
+/// The still's corner radius, shared by its scrim, progress bar and the label block's platter.
+const CARD_RADIUS: f32 = 12.0;
+/// The platter's padding around the label block on every edge.
+const PLATTER_PAD: f32 = theme::space::MD;
+/// The label block's wrap width: the column inset by [`PLATTER_PAD`], focused or not.
+const TEXT_W: f32 = W - 2.0 * PLATTER_PAD;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Row {
@@ -91,7 +98,7 @@ pub(crate) fn meta_layout(ep: &Episode, measure: &dyn crate::ui::machine::Measur
         .with_measure(measure)
         .leading(TITLE_LEAD)
         .max_lines(2)
-        .measure_h(W)
+        .measure_h(TEXT_W)
         .max(TITLE_LEAD);
     let summary_y = TITLE_DY + title_h + theme::space::MD;
     let summary_h = if ep.summary.is_empty() {
@@ -101,7 +108,7 @@ pub(crate) fn meta_layout(ep: &Episode, measure: &dyn crate::ui::machine::Measur
             .with_measure(measure)
             .leading(SUMMARY_LEAD)
             .max_lines(SUMMARY_MAX_LINES)
-            .measure_h(W)
+            .measure_h(TEXT_W)
     };
     let date_y = summary_y
         + summary_h
@@ -185,6 +192,12 @@ pub(crate) fn watch_state(ep: &Episode) -> PosterMark {
     }
 }
 
+/// The kicker's cap-top offset from its texture origin — fixed by the font, so callers compute it
+/// once per draw rather than once per cell.
+fn kicker_cap_top() -> f32 {
+    crate::text::text_cap_band(theme::size::CAPTION, 0).0
+}
+
 pub(crate) fn draw(
     p: Painter,
     d: &Detail,
@@ -192,6 +205,7 @@ pub(crate) fn draw(
     scroll: f32,
     focused: Option<(usize, Row)>,
     scale: impl Fn(usize) -> f32,
+    lift: impl Fn(usize) -> TextLift,
     measure: &dyn crate::ui::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
@@ -201,15 +215,17 @@ pub(crate) fn draw(
         1.0
     };
     let p = p.alpha(stale).translate(-scroll, top);
+    let cap_top = kicker_cap_top();
     for (i, ep) in d.episodes.iter().take(MAX_ITEMS).enumerate() {
         let x = strip_x(i);
         if !on_axis(x - scroll, W, crate::ui::consts::SCR_W, 0.0) {
             continue;
         }
-        draw_cell(p, d, i, ep, focused, scale(i), measure);
+        draw_cell(p, d, i, ep, focused, scale(i), &lift(i), cap_top, measure);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_focused(
     p: Painter,
     d: &Detail,
@@ -218,6 +234,7 @@ pub(crate) fn draw_focused(
     top: f32,
     scroll: f32,
     scale: f32,
+    lift: &TextLift,
     measure: &dyn crate::ui::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
@@ -236,10 +253,16 @@ pub(crate) fn draw_focused(
         episode,
         Some((index, row)),
         scale,
+        lift,
+        kicker_cap_top(),
         measure,
     );
 }
 
+/// One filmstrip cell. `scale` is the still's pop spring; `lift` is the label block's own focus
+/// state (earned by the TEXT stop alone). The block's plate shows for either stop, at whichever of
+/// the two is further along.
+#[allow(clippy::too_many_arguments)]
 fn draw_cell(
     p: Painter,
     d: &Detail,
@@ -247,23 +270,27 @@ fn draw_cell(
     ep: &Episode,
     focused: Option<(usize, Row)>,
     scale: f32,
+    lift: &TextLift,
+    kicker_cap_top: f32,
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let x = strip_x(i);
-    let row = focused.filter(|(at, _)| *at == i).map(|(_, row)| row);
-    let still_focused = row == Some(Row::Still);
-    let card = Rect::new(x, 0.0, W, H);
-    widgets::draw_card(
+    let still_focused = focused == Some((i, Row::Still));
+    let focused_here = still_focused || scale > 1.001;
+    let pop = widgets::pop_factor(scale, theme::EP_CARD_FOCUS_SCALE);
+    let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
+    widgets::draw_card_peaked(
         p,
         card,
         d.sid,
         &ep.thumb,
         (640, 360),
-        12.0,
-        still_focused || scale > 1.001,
+        CARD_RADIUS,
+        focused_here,
         scale,
+        theme::EP_CARD_FOCUS_SCALE,
     );
-    let drawn = if still_focused || scale > 1.001 {
+    let drawn = if focused_here {
         card.scaled(scale)
     } else {
         card
@@ -272,7 +299,7 @@ fn draw_cell(
     widgets::art_scrim(
         p,
         drawn,
-        12.0,
+        CARD_RADIUS,
         widgets::STILL_SCRIM_H_1,
         widgets::STILL_SCRIM_A,
     );
@@ -287,78 +314,74 @@ fn draw_cell(
         measure,
     );
     if let Some(frac) = st.progress {
-        widgets::progress_bar(p, drawn, 12.0, 5.0, frac);
+        widgets::progress_bar(p, drawn, CARD_RADIUS, 5.0, frac);
     }
 
+    // Every episode's label block draws in the same ink; focus is marked by the shared
+    // `ui::text_lift` treatment. The plate shows while the still pops or the text is lifted; the
+    // scale and shadow belong to the text stop alone, and the still above does not follow them.
     let text_top = H + META_TOP;
-    let dim = theme::TEXT_TERTIARY;
-    let (date_y, summary_y, _) = meta_layout(ep, measure);
-    if row == Some(Row::Text) {
-        widgets::text_block_highlight(p, meta_rect(ep, i, 0.0, 0.0, measure));
-    }
-    if let Ok(kicker) = CString::new(crate::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
-        p.text(
-            kicker.as_ptr(),
-            x,
-            text_top,
-            theme::size::CAPTION,
-            dim,
-            0,
-            1,
-        );
-    }
-    TextView::new(
-        &ep.title,
-        theme::size::BODY,
-        if row.is_some() {
-            theme::TEXT_PRIMARY
-        } else {
-            theme::TEXT_SECONDARY
-        },
-    )
-    .bold()
-    .with_measure(measure)
-    .leading(TITLE_LEAD)
-    .max_lines(2)
-    .draw(p, Rect::new(x, text_top + TITLE_DY, W, 0.0));
-    if !ep.summary.is_empty() {
-        TextView::new(
-            &ep.summary,
-            theme::size::CAPTION,
-            if row.is_some() {
-                theme::TEXT_SECONDARY
-            } else {
-                dim
-            },
-        )
-        .with_measure(measure)
-        .leading(SUMMARY_LEAD)
-        .max_lines(SUMMARY_MAX_LINES)
-        .draw(p, Rect::new(x, text_top + summary_y, W, 0.0));
-    }
-    let date = crate::ui::fmt::pretty_date(&ep.aired, 0);
-    if let Ok(date) = CString::new(date) {
-        let width = p.text(
-            date.as_ptr(),
-            x,
-            text_top + date_y,
-            theme::size::MICRO,
-            dim,
-            0,
-            0,
-        );
-        if !ep.rating.is_empty() {
-            let (top, baseline) = crate::text::text_cap_band(theme::size::MICRO, 0);
-            crate::ui::widgets::keyline_chip(
-                p,
-                x + width + theme::space::SM,
-                text_top + date_y + (top + baseline) * 0.5,
-                &ep.rating,
-                dim,
-                measure,
+    let (date_y, summary_y, content_h_with_pad) = meta_layout(ep, measure);
+    let text_x = x + PLATTER_PAD;
+    let labels = |p: Painter| {
+        if let Ok(kicker) = CString::new(crate::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
+            p.text(
+                kicker.as_ptr(),
+                text_x,
+                text_top,
+                theme::size::CAPTION,
+                theme::EP_META_INK,
+                0,
+                1,
             );
         }
+        TextView::new(&ep.title, theme::size::BODY, theme::EP_TITLE_INK)
+        .bold()
+        .with_measure(measure)
+        .leading(TITLE_LEAD)
+        .max_lines(2)
+        .draw(p, Rect::new(text_x, text_top + TITLE_DY, TEXT_W, 0.0));
+        if !ep.summary.is_empty() {
+            TextView::new(&ep.summary, theme::size::CAPTION, theme::EP_SUMMARY_INK)
+            .with_measure(measure)
+            .leading(SUMMARY_LEAD)
+            .max_lines(SUMMARY_MAX_LINES)
+            .draw(p, Rect::new(text_x, text_top + summary_y, TEXT_W, 0.0));
+        }
+        let date = crate::ui::fmt::pretty_date(&ep.aired, 0);
+        if let Ok(date) = CString::new(date) {
+            let width = p.text(
+                date.as_ptr(),
+                text_x,
+                text_top + date_y,
+                theme::size::MICRO,
+                theme::EP_META_INK,
+                0,
+                0,
+            );
+            if !ep.rating.is_empty() {
+                let (top, baseline) = crate::text::text_cap_band(theme::size::MICRO, 0);
+                crate::ui::widgets::keyline_chip(
+                    p,
+                    text_x + width + theme::space::SM,
+                    text_top + date_y + (top + baseline) * 0.5,
+                    &ep.rating,
+                    theme::EP_META_INK,
+                    measure,
+                );
+            }
+        }
+    };
+    let plate_factor = pop.max(lift.factor());
+    if plate_factor <= 0.0 {
+        return labels(p);
     }
+    // Hug the content: the top sits `PLATTER_PAD` above the kicker's cap-top, the bottom
+    // `PLATTER_PAD` below the date/rating row `meta_layout` measured to.
+    let platter_top = text_top + kicker_cap_top - PLATTER_PAD;
+    let content_h = content_h_with_pad - META_BOTTOM_PAD - kicker_cap_top;
+    let platter = Rect::new(x, platter_top, W, content_h + 2.0 * PLATTER_PAD);
+    crate::ui::text_lift::draw(p, platter, CARD_RADIUS, lift, plate_factor, TOP_CENTRE, labels);
 }
 
 #[cfg(test)]
@@ -466,13 +489,52 @@ mod tests {
                 > crate::ui::widgets::STILL_LINE_BOT + crate::ui::widgets::STILL_GLYPH_D
         );
         let card = Rect::new(0.0, 0.0, W, H);
-        for scale in [1.0, 1.045, crate::ui::widgets::CARD_FOCUS_SCALE] {
+        for scale in [1.0, 1.045, theme::EP_CARD_FOCUS_SCALE, crate::ui::widgets::CARD_FOCUS_SCALE] {
             let drawn = card.scaled(scale);
             let bar = Rect::new(drawn.x, drawn.y + drawn.h - BAR_H, drawn.w, BAR_H);
             assert_eq!((bar.x, bar.w), (drawn.x, drawn.w), "the bar is full bleed");
             assert!((bar.y + bar.h - (drawn.y + drawn.h)).abs() < 0.01);
             assert!(crate::ui::widgets::STILL_SCRIM_H_1 < drawn.h);
         }
+    }
+
+    fn cell_census(scale: f32, lift: &TextLift) -> Vec<(u64, Rect)> {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let d = Detail::default();
+        let ep = Episode { dur_ms: 100, ..Default::default() };
+        crate::ui::draw_census::capture(|| {
+            draw_cell(Painter::recording(), &d, 0, &ep, None, scale, lift, kicker_cap_top(), &measure)
+        })
+    }
+
+    fn settled_lift(focused: bool) -> TextLift {
+        let mut lift = TextLift::new();
+        for _ in 0..240 {
+            lift.step(focused, 1.0 / 60.0);
+        }
+        lift
+    }
+
+    /// The label block's plate shows while either stop of the cell holds focus, and nothing of it
+    /// survives once focus has left and the spring has settled.
+    #[test]
+    fn the_label_plate_shows_for_either_stop_and_leaves_nothing_at_rest() {
+        let _g = crate::testlock::serial();
+        let rest = cell_census(1.0, &TextLift::new());
+        assert!(
+            cell_census(theme::EP_CARD_FOCUS_SCALE, &TextLift::new()).len() > rest.len(),
+            "the still's pop shows the plate"
+        );
+        assert!(
+            cell_census(1.0, &settled_lift(true)).len() > rest.len(),
+            "the text stop's lift shows the plate"
+        );
+
+        let mut lift = settled_lift(true);
+        for _ in 0..240 {
+            lift.step(false, 1.0 / 60.0);
+        }
+        assert_eq!(cell_census(1.0, &lift), rest);
     }
 
     #[test]

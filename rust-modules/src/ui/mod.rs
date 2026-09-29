@@ -92,6 +92,7 @@ pub(crate) mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with n
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
 pub(crate) mod text_buffer;
+pub(crate) mod text_lift; // the animated focus treatment (lift + plate + shadow) for a block of prose that is a focus stop but not a card
 pub mod theme;
 pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)
 pub mod track_menu;
@@ -187,7 +188,7 @@ impl Crop {
     }
 }
 
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -432,6 +433,47 @@ pub(crate) mod draw_census {
     }
 }
 
+/// A uniform scale `s` about the fixed point `(ox, oy)` — the [`Painter`]'s visual zoom, and the
+/// ONE implementation of "grow a rect about a point" ([`Painter::place`] for every primitive,
+/// `text::draw_text` for a glyph quad, [`text_lift::lifted`] for focus geometry). `s == 1.0` is the
+/// identity and every method returns its input untouched.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Zoom {
+    pub s: f32,
+    pub ox: f32,
+    pub oy: f32,
+}
+
+impl Zoom {
+    pub(crate) const NONE: Zoom = Zoom { s: 1.0, ox: 0.0, oy: 0.0 };
+
+    /// `s` about the point at fraction `origin` of `r` (`(0.5, 0.5)` centre, `(0.5, 0.0)` top edge).
+    pub(crate) fn about(r: Rect, origin: (f32, f32), s: f32) -> Self {
+        Self { s, ox: r.x + r.w * origin.0, oy: r.y + r.h * origin.1 }
+    }
+    #[inline]
+    pub(crate) fn is_none(self) -> bool {
+        self.s == 1.0
+    }
+    #[inline]
+    pub(crate) fn map(self, r: Rect) -> Rect {
+        if self.is_none() {
+            return r;
+        }
+        Rect::new(
+            self.ox + (r.x - self.ox) * self.s,
+            self.oy + (r.y - self.oy) * self.s,
+            r.w * self.s,
+            r.h * self.s,
+        )
+    }
+    /// The vertical half of [`map`](Self::map), for an absolute screen y (a fade band).
+    #[inline]
+    pub(crate) fn map_y(self, y: f32) -> f32 {
+        if self.is_none() { y } else { self.oy + (y - self.oy) * self.s }
+    }
+}
+
 fn declared_text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
     // A discovery walk above the surface band, or inside a completely covered layer, records
     // nothing. Do not populate/measure the glyph cache merely to discover that exclusion later in
@@ -462,6 +504,11 @@ pub struct Painter {
     /// An off-screen layout pass: every visual primitive is inert and text calls only enqueue
     /// cache misses. Kept on the value so the ordinary screen draw path needs no alternate tree.
     text_recorder: bool,
+    /// A uniform visual zoom every primitive maps its rect through ([`place`](Self::place)), with
+    /// radii, strokes and blur scaled to match. The origin is in this painter's own space, so a
+    /// later `translate` moves it with the content. Set only through the scoped
+    /// [`text_lift::draw`]; `Zoom::NONE` for every ordinary painter.
+    zoom: Zoom,
 }
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -497,7 +544,13 @@ pub(crate) fn record_walk<R>(f: impl FnOnce() -> R) -> R {
 /// always-offset shadow quad uses `off` (a small nonzero shift even at rest), but the folded card
 /// path's shifted-shadow SDF (`fs_img.frag`) needs a value that is exactly 0 at `f == 0` so a resting
 /// tile's shader takes its unchanged, symmetric path — `f.clamp(0,1) * off_l` at the call site.
-fn card_shadow_params(h: f32, f: f32, focus_a: f32) -> (f32, f32, f32, f32) {
+pub(crate) fn card_shadow_params(h: f32, f: f32, focus_a: f32) -> (f32, f32, f32, f32) {
+    shadow_ramp(h, f, theme::CARD_SHADOW_REST_A, focus_a)
+}
+
+/// [`card_shadow_params`] with the resting alpha named: a tile always casts `CARD_SHADOW_REST_A`,
+/// but a block of prose casts nothing at rest, so its ramp starts at 0.
+fn shadow_ramp(h: f32, f: f32, rest_a: f32, focus_a: f32) -> (f32, f32, f32, f32) {
     let f = f.clamp(0.0, 1.0);
     let blur_l = (h * 0.13).clamp(6.0, theme::CARD_SHADOW_BLUR);
     let off_l = (h * 0.045).clamp(3.0, theme::CARD_SHADOW_DY);
@@ -507,16 +560,23 @@ fn card_shadow_params(h: f32, f: f32, focus_a: f32) -> (f32, f32, f32, f32) {
     (
         lerp(blur_r, blur_l),
         lerp(off_r, off_l),
-        lerp(theme::CARD_SHADOW_REST_A, focus_a),
+        lerp(rest_a, focus_a),
         off_l,
     )
+}
+
+/// `(blur, offset, alpha)` of a prose block's focus shadow at focus `f` — [`shadow_ramp`] from a
+/// resting alpha of 0. The one source for [`Painter::focus_shadow_outside`] and its tests.
+pub(crate) fn text_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
+    let (blur, off, a, _) = shadow_ramp(h, f, 0.0, theme::CARD_SHADOW_CHIP_A);
+    (blur, off, a)
 }
 
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
         if self.records() {
             #[cfg(test)]
-            draw_census::note(tag, Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h));
+            draw_census::note(tag, self.place(r));
             return true;
         }
         if !frame::backdrop::discovering() { return false; }
@@ -538,10 +598,11 @@ impl Painter {
         use frame::backdrop::Value;
         let mut data=vec![tag];
         [self.a,self.rgb].record(&mut data);
-        [r.x+self.dx,r.y+self.dy,r.w,r.h].record(&mut data);
+        let m = self.place(r);
+        [m.x,m.y,m.w,m.h].record(&mut data);
         values(&mut data);
         // The primitive AA/rim can paint just outside its nominal rectangle.
-        let bounds=Rect::new(r.x+self.dx-4.0,r.y+self.dy-4.0,r.w+8.0,r.h+8.0);
+        let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
         frame::backdrop::paint(bounds,data);
         true
     }
@@ -555,6 +616,7 @@ impl Painter {
             scale: 1.0,
             clip: Rect::FULL,
             text_recorder: false,
+            zoom: Zoom::NONE,
         }
     }
     pub(crate) const fn recording() -> Self {
@@ -585,9 +647,8 @@ impl Painter {
     /// the result intersected with the clip already carried). A VALUE: it sets no scissor —
     /// `DrawFrame::clip` opens the GL scope for it.
     pub fn clipped(self, r: Rect) -> Self {
-        let screen = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
         Self {
-            clip: self.clip.intersect(screen),
+            clip: self.clip.intersect(self.place(r)),
             ..self
         }
     }
@@ -599,7 +660,7 @@ impl Painter {
     /// translate and pop folded in (the pop about the rect's centre, as `Rect::scaled` does) and
     /// clipped to the cascade's clip — the one conversion the hit map records (spec §7.6).
     pub fn to_screen(self, r: Rect) -> (Rect, Rect, Rect) {
-        let moved = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        let moved = self.place(r);
         let popped = if self.scale == 1.0 { moved } else { moved.scaled(self.scale) };
         (popped, moved, self.clip)
     }
@@ -621,6 +682,13 @@ impl Painter {
             dy: self.dy + dy,
             ..self
         }
+    }
+    /// A painter whose primitives all grow by `zoom` (origin in this painter's own space). Crate
+    /// private on purpose: [`text_lift::draw`] hands it to its content closure and nowhere else, so
+    /// a sibling drawn after the lifted block can never inherit the scale.
+    pub(in crate::ui) fn zoomed(self, zoom: Zoom) -> Self {
+        debug_assert!(self.zoom.is_none(), "zoom does not nest");
+        Self { zoom, ..self }
     }
     /// Multiply the RGB written by every descendant primitive. With the frame clear multiplied by
     /// the same value, this is algebraically the same result as a final full-screen black scrim,
@@ -660,6 +728,28 @@ impl Painter {
             c[3] * self.a,
         ]
     }
+    /// THE choke point: `r` (this painter's space) as the screen rect it lands on — the cascade
+    /// translate, then the zoom. Every primitive maps its rect through here; at zoom 1.0 that is
+    /// the plain translate and nothing more.
+    #[inline]
+    fn place(self, r: Rect) -> Rect {
+        let m = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        if self.zoom.is_none() { m } else { self.screen_zoom().map(m) }
+    }
+    /// A length (radius, stroke width, blur, offset) under the zoom.
+    #[inline]
+    fn px(self, v: f32) -> f32 {
+        if self.zoom.is_none() { v } else { v * self.zoom.s }
+    }
+    /// The zoom with its origin moved into screen space; `Zoom::NONE` when there is none.
+    #[inline]
+    fn screen_zoom(self) -> Zoom {
+        if self.zoom.is_none() {
+            Zoom::NONE
+        } else {
+            Zoom { ox: self.zoom.ox + self.dx, oy: self.zoom.oy + self.dy, ..self.zoom }
+        }
+    }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
         if self.declare(r, 1, |data| {
             use frame::backdrop::Value;
@@ -670,13 +760,11 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
+        let m = self.place(r);
         crate::gfx::draw_rect(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
+            m.x, m.y, m.w, m.h,
             0.0,
-            rad,
+            self.px(rad),
             t.as_ptr(),
             b.as_ptr(),
             focus,
@@ -692,7 +780,8 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let c = self.c(col);
-        crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
+        let m = self.place(r);
+        crate::gfx::draw_rrect(m.x, m.y, m.w, m.h, self.px(rl), self.px(rr), c.as_ptr());
     }
     /// Bottom artwork gradient; false asks the widget to use its shader-failure fallback.
     pub(crate) fn art_scrim(self, r: Rect, rad: f32, h: f32, col: [f32; 4]) -> bool {
@@ -702,7 +791,8 @@ impl Painter {
             h.record(data);
             col.record(data);
         }) { return true; }
-        crate::gfx::draw_art_scrim(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, h, self.c(col))
+        let m = self.place(r);
+        crate::gfx::draw_art_scrim(m.x, m.y, m.w, m.h, self.px(rad), self.px(h), self.c(col))
     }
     /// A rounded-rect **OUTLINE with nothing inside it** — a `w`-px inset ring in `col`, and the
     /// background composites straight through the middle.
@@ -738,15 +828,13 @@ impl Painter {
         if self.records() { return; }
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        let m = self.place(r);
         crate::gfx::draw_rrect_sheened(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
+            self.px(rad),
             HOLLOW.as_ptr(),
-            w,
+            self.px(w),
             c.as_ptr(),
             0.0,
         );
@@ -767,15 +855,16 @@ impl Painter {
             col.record(data);
         }) { return; }
         if self.records() { return; }
+        let m = self.place(r);
         let c = self.c(col);
         crate::gfx::draw_shadow(
-            r.x + self.dx,
-            r.y + self.dy + off_y,
-            r.w,
-            r.h,
-            radius,
-            blur,
-            off_y,
+            m.x,
+            m.y + self.px(off_y),
+            m.w,
+            m.h,
+            self.px(radius),
+            self.px(blur),
+            self.px(off_y),
             -1.0,
             c.as_ptr(),
         );
@@ -784,10 +873,9 @@ impl Painter {
     /// rounded outline (corner `radius`), so nothing is drawn under the panel to show through it.
     /// Everything outside is unchanged — the same analytic penumbra falling off over `blur`.
     ///
-    /// The only user today is [`widgets::text_block_highlight`](crate::ui::widgets::text_block_highlight),
-    /// whose 7% wash was showing `shadow`'s under-the-rim band as a frame; the cut is worth its own
-    /// entry point rather than a flag on the tile path, because a tile pays a rounded-rect SDF for
-    /// a region it covers anyway.
+    /// The user is [`text_lift::draw`](crate::ui::text_lift::draw)'s translucent focus plate, where
+    /// `shadow`'s under-the-rim band would show as a frame; a separate entry point rather than a flag
+    /// on the tile path, because a tile pays a rounded-rect SDF for a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
             use frame::backdrop::Value;
@@ -797,16 +885,17 @@ impl Painter {
             col.record(data);
         }) { return; }
         if self.records() { return; }
+        let m = self.place(r);
         let c = self.c(col);
         crate::gfx::draw_shadow(
-            r.x + self.dx,
-            r.y + self.dy + off_y,
-            r.w,
-            r.h,
-            radius,
-            blur,
-            off_y,
-            radius,
+            m.x,
+            m.y + self.px(off_y),
+            m.w,
+            m.h,
+            self.px(radius),
+            self.px(blur),
+            self.px(off_y),
+            self.px(radius),
             c.as_ptr(),
         );
     }
@@ -822,6 +911,14 @@ impl Painter {
         }) { return; }
         let (blur, off, a, _) = card_shadow_params(r.h, f, theme::CARD_SHADOW_CHIP_A);
         self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
+    }
+    /// [`focus_shadow`](Self::focus_shadow) for a TRANSLUCENT block that casts no shadow at rest
+    /// (`ui::text_lift`'s plate): the same blur/offset ramp, but the alpha runs 0 → the chip's
+    /// ceiling with `f`, so it is exactly 0 at `f == 0`, and the ink stops at the block's own outline
+    /// ([`shadow_outside`](Self::shadow_outside)).
+    pub fn focus_shadow_outside(self, r: Rect, radius: f32, f: f32) {
+        let (blur, off, a) = text_shadow_params(r.h, f);
+        self.shadow_outside(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
     }
     /// The tile-fill colour of the focus edge-sheen (the 1px inset perimeter rim), folded into the
     /// caller's alpha cascade — shared by the sheened fill primitives below.
@@ -841,15 +938,13 @@ impl Painter {
         if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
+        let m = self.place(r);
         crate::gfx::draw_rect_sheened(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             t.as_ptr(),
             b.as_ptr(),
-            theme::CARD_SHEEN_W,
+            self.px(theme::CARD_SHEEN_W),
             rim.as_ptr(),
             0.0,
         );
@@ -903,15 +998,13 @@ impl Painter {
         if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
+        let m = self.place(r);
         crate::gfx::draw_rect_sheened(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             t.as_ptr(),
             b.as_ptr(),
-            rim_w,
+            self.px(rim_w),
             rim.as_ptr(),
             rim_top * self.a,
         );
@@ -956,15 +1049,13 @@ impl Painter {
         let args = pill.map(|p| p.args());
         // the glow is light on the FACE, so it fades with the painter's own cascade like the fill
         let glow = glow.map(|g| [g[0], g[1] * self.a, g[2], g[3] * self.a]);
+        let m = self.place(r);
         crate::gfx::draw_rect_shaped(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             t.as_ptr(),
             b.as_ptr(),
-            rim_w,
+            self.px(rim_w),
             rim.as_ptr(),
             rim_top * self.a,
             args.as_ref(),
@@ -981,15 +1072,13 @@ impl Painter {
         if self.records() { return; }
         let c = self.c(col);
         let rim = self.sheen_rim();
+        let m = self.place(r);
         crate::gfx::draw_rrect_sheened(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
+            self.px(rad),
             c.as_ptr(),
-            theme::CARD_SHEEN_W,
+            self.px(theme::CARD_SHEEN_W),
             rim.as_ptr(),
             0.0,
         );
@@ -1010,7 +1099,8 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let t = self.c(tint);
-        crate::gfx::draw_tex_uv(tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
+        let m = self.place(r);
+        crate::gfx::draw_tex_uv(tex, uv, m.x, m.y, m.w, m.h, self.px(rad), t.as_ptr());
     }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
     ///
@@ -1048,7 +1138,7 @@ impl Painter {
     ) -> bool {
         if self.records() { return false; }
         if frame::backdrop::discovering() {
-            frame::backdrop::surface(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h));
+            frame::backdrop::surface(self.place(r));
             self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
                 use frame::backdrop::Value;
                 (rim as u32).record(data);
@@ -1060,14 +1150,14 @@ impl Painter {
             return true;
         }
         let t = self.c(tint);
-        let (x, y) = (r.x + self.dx, r.y + self.dy);
+        let m = self.place(r);
         crate::gfx::draw_blur_backdrop(
-            x,
-            y,
-            r.w,
-            r.h,
-            [x, y - rest_dy, r.w, r.h],
-            rad,
+            m.x,
+            m.y,
+            m.w,
+            m.h,
+            [m.x, m.y - self.px(rest_dy), m.w, m.h],
+            self.px(rad),
             t.as_ptr(),
             rim,
             face,
@@ -1089,16 +1179,14 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let t = self.c(tint);
+        let m = self.place(r);
         crate::gfx::draw_tex_stroked(
             tex,
             uv,
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             t.as_ptr(),
-            theme::CARD_SHEEN_W,
+            self.px(theme::CARD_SHEEN_W),
             self.sheen_rim().as_ptr(),
             f,
         );
@@ -1126,19 +1214,18 @@ impl Painter {
         // The folded shader shifts its OWN shadow SDF by `dy` (see `fs_img.frag`'s FOCUS note) rather
         // than reusing `_off`'s small resting baseline: `f`-scaled from 0 so a resting tile (`f == 0`)
         // passes `dy == 0` and the shader takes its unchanged, symmetric path exactly as before.
-        let dy = f.clamp(0.0, 1.0) * off_l;
+        let dy = self.px(f.clamp(0.0, 1.0) * off_l);
+        let blur = self.px(blur);
         let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
         let pad = blur + dy + 1.0; // inflate for the penumbra + the downward shift (+1 AA margin)
+        let m = self.place(r);
         crate::gfx::draw_tex_carded(
             tex,
             uv,
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             t.as_ptr(),
-            theme::CARD_SHEEN_W,
+            self.px(theme::CARD_SHEEN_W),
             self.sheen_rim().as_ptr(),
             pad,
             blur,
@@ -1169,10 +1256,12 @@ impl Painter {
             scrim.record(data);
         }) { return true; }
         let (blur, _, sa, off_l) = card_shadow_params(r.h, f, theme::CARD_SHADOW[3]);
-        let dy = f.clamp(0.0, 1.0) * off_l; // see `tex_carded`'s own note — 0 exactly at rest
+        let dy = self.px(f.clamp(0.0, 1.0) * off_l); // see `tex_carded`'s own note — 0 exactly at rest
+        let m = self.place(r);
+        let blur = self.px(blur);
         crate::gfx::draw_tex_carded_still(
-            tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, self.c(theme::TINT_WHITE),
-            theme::CARD_SHEEN_W, self.sheen_rim(), blur + dy + 1.0, blur,
+            tex, uv, m.x, m.y, m.w, m.h, self.px(rad), self.c(theme::TINT_WHITE),
+            self.px(theme::CARD_SHEEN_W), self.sheen_rim(), blur + dy + 1.0, blur,
             self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim), f, dy,
         )
     }
@@ -1197,12 +1286,10 @@ impl Painter {
         if self.records() { return; }
         let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
         let ink = self.c(theme::scrim(1.0));
+        let m = self.place(r);
         crate::gfx::draw_hero_ground(
             tex,
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
+            m.x, m.y, m.w, m.h,
             tint.as_ptr(),
             ink.as_ptr(),
             [ramp[0], ramp[1], ramp[2] * self.a, ramp[3] * self.a],
@@ -1233,11 +1320,9 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let k = self.wash_corners(k);
+        let m = self.place(r);
         crate::gfx::draw_ambient(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
+            m.x, m.y, m.w, m.h,
             dim,
             k[0].as_ptr(),
             k[1].as_ptr(),
@@ -1271,7 +1356,8 @@ impl Painter {
             k.record(data);
             tex.record(data);
             crate::gfx::tex_ledger::revision(tex).record(data);
-            [art.x + self.dx, art.y + self.dy, art.w, art.h].record(data);
+            let am = self.place(art);
+            [am.x, am.y, am.w, am.h].record(data);
             uv.record(data);
             tint.record(data);
             ink.0.record(data);
@@ -1280,11 +1366,12 @@ impl Painter {
         if self.records() { return; }
         let t = self.c(tint);
         let (ink, inka) = self.ink(ink);
+        let (m, am) = (self.place(r), self.place(art));
         crate::gfx::draw_art_wash(
-            (r.x + self.dx, r.y + self.dy, r.w, r.h),
+            (m.x, m.y, m.w, m.h),
             self.wash_corners(k),
             tex,
-            (art.x + self.dx, art.y + self.dy, art.w, art.h),
+            (am.x, am.y, am.w, am.h),
             uv,
             t.as_ptr(),
             ink,
@@ -1307,11 +1394,9 @@ impl Painter {
         if self.records() { return; }
         let k = self.wash_corners(k);
         let (ink, inka) = self.ink(ink);
+        let m = self.place(r);
         crate::gfx::draw_ambient_inked(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
+            m.x, m.y, m.w, m.h,
             1.0,
             [k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr()],
             ink,
@@ -1355,11 +1440,9 @@ impl Painter {
         if self.records() { return; }
         // bind the mapped array to a `let` first — pointers into a temporary would dangle
         let c = k.map(|q| self.c(q));
+        let m = self.place(r);
         crate::gfx::draw_grad4(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
+            m.x, m.y, m.w, m.h,
             c[0].as_ptr(),
             c[1].as_ptr(),
             c[2].as_ptr(),
@@ -1388,7 +1471,8 @@ impl Painter {
         }) { return; }
         if self.records() { return; }
         let t = self.c(tint);
-        crate::gfx::draw_field(r.x + self.dx, r.y + self.dy, r.w, r.h, tex, t.as_ptr());
+        let m = self.place(r);
+        crate::gfx::draw_field(m.x, m.y, m.w, m.h, tex, t.as_ptr());
     }
     /// [`field`](Self::field) as an OPAQUE GROUND — the field counterpart of
     /// [`ambient`](Self::ambient), and it reads a fade the same way that one does: an alpha below 1
@@ -1436,12 +1520,10 @@ impl Painter {
         }) { return tex != 0; }
         if self.records() { return false; }
         let t = self.c(tint);
+        let m = self.place(r);
         crate::gfx::draw_field_panel(
-            r.x + self.dx,
-            r.y + self.dy,
-            r.w,
-            r.h,
-            rad,
+            m.x, m.y, m.w, m.h,
+            self.px(rad),
             uv,
             tex,
             t.as_ptr(),
@@ -1474,11 +1556,11 @@ impl Painter {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
-            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
             return w;
         }
         let c = self.c(col);
-        crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
+        crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
     /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
     /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
@@ -1511,7 +1593,7 @@ impl Painter {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
-            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
             return w;
         }
         let c = self.c(col);
@@ -1526,6 +1608,7 @@ impl Painter {
             Some((fade_from, fade_to)),
             None,
             None,
+            self.screen_zoom(),
         )
     }
     /// [`text`](Self::text) with a VERTICAL edge fade instead of [`text_fade`](Self::text_fade)'s
@@ -1568,7 +1651,7 @@ impl Painter {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
-            draw_census::note(100, Rect::new(x + self.dx, y + self.dy, w, 0.0));
+            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
             return w;
         }
         let c = self.c(col);
@@ -1587,6 +1670,7 @@ impl Painter {
             None,
             shift(top),
             shift(bot),
+            self.screen_zoom(),
         )
     }
     /// Hard-clip subsequent draws to `r` (in this painter's space — the cascade translate is folded
@@ -1594,9 +1678,10 @@ impl Painter {
     /// cut cleanly at its frame edge instead of poking over the video / control buttons. ALWAYS pair
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
-        if frame::backdrop::discovering() { frame::backdrop::clip(Some(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h))); return; }
+        if frame::backdrop::discovering() { frame::backdrop::clip(Some(self.place(r))); return; }
         if self.records() { return; }
-        crate::gfx::clip_set(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        let m = self.place(r);
+        crate::gfx::clip_set(m.x, m.y, m.w, m.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
@@ -1972,6 +2057,43 @@ mod tests {
         assert!(p.tex_carded_still(71, [0.1, 0.0, 0.8, 1.0], r, 14.0, 0.0, 80.0, theme::scrim(0.7)));
         assert!(!p.tex_carded_still(0, crate::gfx::UV_FULL, r, 14.0, 0.0, 80.0, theme::scrim(0.7)),
             "missing artwork must still traverse the placeholder path");
+    }
+
+    /// The zoom is ONE transform: a plain rect and every flavour of text land exactly where
+    /// `Zoom::map` puts them, and an identity zoom is the plain translate.
+    #[test]
+    fn a_zoomed_painter_maps_every_primitive_through_one_transform() {
+        let s = std::ffi::CString::new("a line").unwrap();
+        let (sz, col) = (theme::size::CAPTION, theme::TEXT_TERTIARY);
+        let zoom = Zoom { s: 1.05, ox: 500.0, oy: 300.0 };
+        let one = |v: Vec<(u64, Rect)>| {
+            assert_eq!(v.len(), 1, "one call logs exactly one census entry, got {v:?}");
+            v[0].1
+        };
+        let run = |p: Painter, kind: u8| {
+            draw_census::capture(|| match kind {
+                0 => { p.text(s.as_ptr(), 100.0, 200.0, sz, col, 0, 0); }
+                1 => { p.text_fade(s.as_ptr(), 100.0, 200.0, sz, col, 0, 10.0, 50.0); }
+                _ => { p.text_fade_v(s.as_ptr(), 100.0, 200.0, sz, col, 0, Some((150.0, 250.0)), None); }
+            })
+        };
+
+        for kind in 0..3 {
+            let flat = one(run(Painter::recording(), kind));
+            let grown = one(run(Painter::recording().zoomed(zoom), kind));
+            assert_eq!(grown, zoom.map(flat), "text kind {kind} must map through the zoom");
+            assert_ne!(grown, flat, "and the zoom must actually move it");
+        }
+
+        let r = Rect::new(400.0, 250.0, 80.0, 40.0);
+        let rect = |p: Painter| one(draw_census::capture(|| p.rrect(r, 8.0, 8.0, theme::TEXT_PRIMARY)));
+        assert_eq!(rect(Painter::recording()), r);
+        assert_eq!(rect(Painter::recording().zoomed(zoom)), zoom.map(r));
+        assert_eq!(
+            rect(Painter::recording().translate(3.0, 4.0).zoomed(Zoom { ox: 497.0, oy: 296.0, ..zoom })),
+            zoom.map(Rect::new(r.x + 3.0, r.y + 4.0, r.w, r.h)),
+            "the origin is in the painter's own space, so a translate moves it with the content"
+        );
     }
 
     /// A glass declared UNDER a frozen host boundary — the tab bar's backdrop on Home while the

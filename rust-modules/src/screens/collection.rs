@@ -165,6 +165,8 @@ pub(crate) struct CollectionScreen {
     /// motion (`ui::poster_grid::GridBands`), so a focused member's caption opens room under its
     /// row rather than drawing over the posters below. Presentation, not logical state.
     bands: crate::ui::poster_grid::GridBands,
+    /// The header summary's focus lift ([`Self::summary_marked`]). Presentation, not logical state.
+    summary_lift: crate::ui::text_lift::TextLift,
 }
 
 impl LogicalState for CollectionScreen {
@@ -190,7 +192,14 @@ impl CollectionScreen {
             elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()), return_pending: false, teardown_closed: false,
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
-            bands: crate::ui::poster_grid::GridBands::new() }
+            bands: crate::ui::poster_grid::GridBands::new(),
+            summary_lift: crate::ui::text_lift::TextLift::new() }
+    }
+
+    /// The header summary earns its marked/lifted treatment when the header holds focus, is
+    /// marked open, and the summary truncates.
+    fn summary_marked(&self, header_focused: bool) -> bool {
+        header_focused && self.header_marked && self.summary_more
     }
 
     fn target(&self, want: usize) -> CollectionTarget {
@@ -383,6 +392,9 @@ impl CollectionScreen {
         self.bands.focus(self.focused_row(collection, cx), false);
         self.bands.tick(crate::ui::poster_grid::STYLE.k_scroll, t.dt());
         self.scroll.step(self.scroll_target, K_SCROLL, t.dt());
+        let header_focused = cx.focus.current
+            .is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM);
+        self.summary_lift.step(self.summary_marked(header_focused), t.dt());
         if (self.scroll.pos - self.scroll_target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
             fx.note(PresentEvent::Motion);
         }
@@ -464,13 +476,15 @@ impl CollectionScreen {
         if collection.summary.is_empty() { return; }
         let view = summary_view(&collection.summary, measure);
         let h = view.measure_h(TEXT_W);
-        if focused && self.header_marked && self.summary_more {
-            widgets::text_block_highlight(p, Rect::new(COL_X - theme::space::SM,
-                summary_y - theme::space::SM, TEXT_W + 2.0 * theme::space::SM,
-                h + 2.0 * theme::space::SM));
-        }
-        view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
-        if self.summary_more { view.draw_more(p, COL_X, summary_y, TEXT_W, h, focused && self.header_marked); }
+        let plate = Rect::new(COL_X - theme::space::SM, summary_y - theme::space::SM,
+            TEXT_W + 2.0 * theme::space::SM, h + 2.0 * theme::space::SM);
+        crate::ui::text_lift::draw_focused(p, plate, widgets::TEXT_BLOCK_HL_RAD, &self.summary_lift,
+            crate::ui::text_lift::CENTRE, |p| {
+                view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
+                if self.summary_more {
+                    view.draw_more(p, COL_X, summary_y, TEXT_W, h, self.summary_marked(focused));
+                }
+            });
     }
 
     /// Card `index`'s persistent label: the one [`Self::sync`] built, or — for a landing the page

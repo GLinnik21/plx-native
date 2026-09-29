@@ -244,15 +244,23 @@ pub(crate) fn video_plane_bound() -> bool {
 /// `target` with `vel` decayed to zero, so a settled screen does not even reach the store.
 #[inline]
 pub(crate) fn note_spring(pos: f32, target: f32, vel: f32) {
-    let t = (REST_REL * (1.0 + pos.abs().max(target.abs()))).min(REST_CAP);
-    // `vel * dt` is the travel this frame — the only form in which a velocity is comparable to a
-    // distance, and the whole reason the tail of every scroll used to keep the panel awake.
-    if (pos - target).abs() > t || (vel * DT.with(|d| d.get())).abs() > t {
+    if !settled(pos, target, vel) {
         MOVING.with(|m| m.set(true));
         if SCOPE_DEPTH.with(|d| d.get()) == 0 {
             PAGE_MOVING.with(|m| m.set(true));
         }
     }
+}
+
+/// Whether a spring at `pos` heading for `target` with `vel` is visibly at rest — the exact test
+/// [`note_spring`] applies, exported so an animator can snap a settled spring onto its target
+/// (`Spring::jump`) and hand the compositor an exactly-resting final frame.
+#[inline]
+pub(crate) fn settled(pos: f32, target: f32, vel: f32) -> bool {
+    let t = (REST_REL * (1.0 + pos.abs().max(target.abs()))).min(REST_CAP);
+    // `vel * dt` is the travel this frame — the only form in which a velocity is comparable to a
+    // distance, and the whole reason the tail of every scroll used to keep the panel awake.
+    (pos - target).abs() <= t && (vel * DT.with(|d| d.get())).abs() <= t
 }
 
 /// A [`Spring::jump`](crate::ui::Spring::jump) teleported a value that was not already there.

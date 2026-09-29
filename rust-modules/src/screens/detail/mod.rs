@@ -38,6 +38,7 @@ use crate::ui::machine::{
     Leave, LogicalState, Machine, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
+use crate::ui::text_lift::{lifted, TextLift, TEXT_LIFT_SCALE, TOP_CENTRE};
 use crate::ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat,
@@ -191,6 +192,12 @@ pub(crate) struct DetailScreen {
     episode_scroll: Spring,
     tab_scroll: Spring,
     episode_scale: [Spring; EP_SCALE_MAX],
+    /// Each episode label block's focus lift, earned by the TEXT stop alone (the plate also shows
+    /// for the still's pop — see `episodes::draw_cell`). Slots past the episode count stay at rest.
+    episode_text_lift: [TextLift; EP_SCALE_MAX],
+    /// The About card's and the Languages column's focus lifts (`Located::About(0)` / `(1)`).
+    about_card_lift: TextLift,
+    about_lang_lift: TextLift,
     related: CardRow,
     collection: CardRow,
     extras: CardRow,
@@ -404,6 +411,9 @@ impl DetailScreen {
             episode_scroll: Spring::at(0.0),
             tab_scroll: Spring::at(0.0),
             episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
+            episode_text_lift: [TextLift::new(); EP_SCALE_MAX],
+            about_card_lift: TextLift::new(),
+            about_lang_lift: TextLift::new(),
             related: CardRow::new(),
             collection: CardRow::new(),
             extras: CardRow::new(),
@@ -445,6 +455,11 @@ impl DetailScreen {
         }
         self.return_pending = true;
         self.sync_keys(meta);
+    }
+
+    /// Episode `i`'s label-block lift; at rest for a slot with no state.
+    fn episode_lift(&self, i: usize) -> TextLift {
+        self.episode_text_lift.get(i).copied().unwrap_or_default()
     }
 
     fn engine_key(&self, local: u32) -> Option<u32> {
@@ -653,6 +668,7 @@ impl DetailScreen {
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
                 self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
+                &self.episode_lift(i),
                 f.measure,
                 meta,
             ),
@@ -1373,12 +1389,15 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 let drawn = if row == episodes::Row::Still {
                     base.scaled(self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0))
                 } else {
-                    base
+                    // Grows from its top edge, like `episodes::draw_cell`'s block.
+                    lifted(base, TOP_CENTRE, self.episode_lift(i).scale())
                 };
                 let rest = if row == episodes::Row::Still {
-                    base.scaled(crate::ui::widgets::CARD_FOCUS_SCALE)
+                    base.scaled(crate::ui::theme::EP_CARD_FOCUS_SCALE)
                 } else {
-                    base
+                    // Like the still's, the rest rect is the fully-lifted size, so focus-geometry
+                    // distances are measured against a stable size, not one mid-animation.
+                    lifted(base, TOP_CENTRE, TEXT_LIFT_SCALE)
                 };
                 (drawn, rest, Some(i as u32))
             }
@@ -2069,6 +2088,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                                 _ => None,
                             },
                             |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
+                            |i| self.episode_lift(i),
                             f.measure,
                             meta,
                         );
@@ -2132,8 +2152,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                         below_hero,
                         d,
                         top,
-                        f.focus.current.map(|k| k.elem),
                         self.tracks_available(meta),
+                        &self.about_card_lift,
+                        &self.about_lang_lift,
                         f.measure,
                     ),
                     _ => {}
@@ -3109,7 +3130,7 @@ impl DetailScreen {
         for (i, spring) in self.episode_scale.iter_mut().enumerate() {
             spring.step(
                 if episode_focus == Some(i) {
-                    crate::ui::widgets::CARD_FOCUS_SCALE
+                    crate::ui::theme::EP_CARD_FOCUS_SCALE
                 } else {
                     1.0
                 },
@@ -3117,6 +3138,20 @@ impl DetailScreen {
                 dt,
             );
         }
+        let text_focus = match focused {
+            Some(Located::Episode(i, episodes::Row::Text)) => Some(i),
+            _ => None,
+        };
+        let n_episodes = d.map_or(0, |d| d.episodes.len());
+        for (i, lift) in self.episode_text_lift.iter_mut().enumerate() {
+            if i < n_episodes {
+                lift.step(text_focus == Some(i), dt);
+            } else {
+                lift.reset(); // a slot with no episode holds no lift over from a longer season
+            }
+        }
+        self.about_card_lift.step(focused == Some(Located::About(0)), dt);
+        self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
             let related_focus = match focused {
