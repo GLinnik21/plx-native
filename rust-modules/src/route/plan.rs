@@ -1706,17 +1706,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // before either branch is taken. The enhancement turns the Original route it decorates into
     // a remux (M1: PMS answers either param with a Part transcode, video copy, audio re-encoded
     // with the DSP), so it applies only where that remux is itself allowed, and it is spent
-    // through the same `flavors_allowed` door the link and the rung use.
-    let planned_family = if adaptive {
-        RouteFamily::Other
-    } else if directplay {
-        RouteFamily::Direct
-    } else if remux {
-        RouteFamily::Remux
-    } else {
-        RouteFamily::Other
-    };
-    let audio = if remux && planned_family != RouteFamily::Other && !probe_refused_enhancement {
+    // through the same `flavors_allowed` door the link and the rung use. (`remux` alone already
+    // implies "not `Other`": adaptive forces HLS and never sets `remux`, so the family this ask
+    // targets is always the enhanceable remux itself, never whatever `directplay` decided.)
+    let audio = if remux && !adaptive && !probe_refused_enhancement {
         enhancement_for(plan.auto_original.as_ref(), RouteFamily::Remux)
     } else {
         crate::plex::AudioEnhancements::NONE

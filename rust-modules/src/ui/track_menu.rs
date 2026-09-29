@@ -451,18 +451,24 @@ impl TrackMenuState {
 
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         if tab == 0 {
-            self.targets = Vec::new();
             // I1/I2: the offer is read from the live route on every (re)build, so the rows are
             // simply ABSENT without Plex Pass (or an unknown subscription) — never drawn dim.
-            self.enhance_shown = crate::route::audio_enhancements_offered_live(ps)
-                .then(|| crate::route::displayed_audio_enhancements(ps));
-            self.table.set_sections(self.build_audio(meta), self.active_audio().max(0), slide);
+            self.rebuild_audio(crate::route::menu_enhancements(ps), meta, slide);
         } else {
             let (sections, targets) = self.layout(ps, meta);
             let sel = sel_for_targets(&targets, self.active_sub);
             self.targets = targets;
             self.table.set_sections(sections, sel, slide);
         }
+    }
+
+    /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
+    /// recomputing it — `update`'s per-frame poll already has it fresh, and handing it here keeps
+    /// `route::menu_enhancements(ps)` to exactly one call per rebuild instead of two.
+    fn rebuild_audio(&mut self, enhance_shown: Option<crate::plex::AudioEnhancements>, meta: metadata::MetadataView<'_>, slide: bool) {
+        self.targets = Vec::new();
+        self.enhance_shown = enhance_shown;
+        self.table.set_sections(self.build_audio(meta), self.active_audio().max(0), slide);
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -492,10 +498,9 @@ impl TrackMenuState {
     /// second, divergent way.
     pub(crate) fn update(&mut self, dt: f32, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         if self.tab == 0 {
-            let live = crate::route::audio_enhancements_offered_live(ps)
-                .then(|| crate::route::displayed_audio_enhancements(ps));
+            let live = crate::route::menu_enhancements(ps);
             if live != self.enhance_shown {
-                self.rebuild(ps, meta, 0, false);
+                self.rebuild_audio(live, meta, false);
             }
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.

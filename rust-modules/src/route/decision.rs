@@ -3420,12 +3420,12 @@ pub(super) enum RecoveryFlavour {
 /// during an HLS recovery the live contract still says `FixedHls` (family `Other`, never offered)
 /// and is only overwritten once the replacement is published.
 fn recovery_want(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> crate::plex::AudioEnhancements {
+    // `pass`/`subtitle_shown`/`refused` are the live session's own facts, identical to `facts(ps)`;
+    // only `base`/`carried` differ, because this candidate is not yet `ps.auto_original`/`cur_audio`.
     let facts = EnhancementFacts {
-        pass: crate::plex::serverinfo::subscription_of(cur_sid(ps)),
         base: Some(candidate),
         carried: candidate.audio.as_ref(),
-        subtitle_shown: ps.cur_sub_sid != 0,
-        refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+        ..facts(ps)
     };
     let family = if candidate.direct {
         RouteFamily::Direct
@@ -6990,11 +6990,7 @@ fn want_live(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
     if !enhancement_quality() {
         return crate::plex::AudioEnhancements::NONE;
     }
-    let target = match live_family(ps) {
-        RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
-        RouteFamily::Other => RouteFamily::Other,
-    };
-    desired_audio(crate::player::audio_enhancements(), enhancements_offered(&facts(ps), target))
+    desired_audio(crate::player::audio_enhancements(), audio_enhancements_offered_live(ps))
 }
 
 /// Whether the quality preference admits an Original-family route at all — Auto (which may run
@@ -7309,11 +7305,17 @@ pub(crate) fn displayed_audio_enhancements(ps: &PlaybackSession) -> crate::plex:
 /// the reconcile use, against the live route: an applied enhancement keeps its rows even though
 /// its own route is a remux.
 pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
-    let target = match live_family(ps) {
-        RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
-        RouteFamily::Other => RouteFamily::Other,
-    };
-    enhancements_offered(&facts(ps), target)
+    // `enhancements_offered` only distinguishes "Direct or Remux" from "Other" (`RouteFamily`'s
+    // own doc), so remapping Direct to Remux here changed nothing observable — `live_family`'s
+    // own answer already sorts into the same two buckets the predicate reads.
+    enhancements_offered(&facts(ps), live_family(ps))
+}
+
+/// **The Audio tab's one question, answered once.** `Some(displayed)` when the rows are offered at
+/// all, `None` when they are absent — the exact `offered.then(|| displayed(...))` every menu-side
+/// caller was computing for itself from the two predicates above.
+pub(crate) fn menu_enhancements(ps: &PlaybackSession) -> Option<crate::plex::AudioEnhancements> {
+    audio_enhancements_offered_live(ps).then(|| displayed_audio_enhancements(ps))
 }
 
 /// **Test-only session builder for the Audio tab's enhancement rows (issue #266 PR 4).** Every
