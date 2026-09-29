@@ -79,6 +79,9 @@ impl Live {
 enum Delivery {
     Direct,
     Remux(crate::plex::AudioEnhancements),
+    /// M7 follow-up: an ALREADY-APPLIED Burn (`remux: false`, forced re-encode) — for tests that
+    /// need to start mid-play already burning a subtitle, rather than transitioning into one.
+    Burn(crate::plex::AudioEnhancements),
     Hls,
 }
 
@@ -102,7 +105,13 @@ fn install(
         Delivery::Remux(a) => (
             format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=enh-remux-1"),
             "enh-remux-1".to_owned(),
-            enhanced_remux_contract(a),
+            enhanced_remux_contract(a, false),
+            if a.any() { EnhancementOutcome::Applied } else { EnhancementOutcome::Off },
+        ),
+        Delivery::Burn(a) => (
+            format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=enh-remux-1"),
+            "enh-remux-1".to_owned(),
+            enhanced_remux_contract(a, true),
             if a.any() { EnhancementOutcome::Applied } else { EnhancementOutcome::Off },
         ),
         Delivery::Hls => (
@@ -204,7 +213,7 @@ fn step_decides_from_session_without_metadata() {
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "pref off");
     crate::player::restore_audio_enhancements(PREF);
     // No metadata store exists anywhere in this test: the facts are the session's own.
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, false)));
     live.finish();
     cleanup(&mut ps);
 }
@@ -217,7 +226,7 @@ fn step_table_each_row() {
     crate::player::restore_audio_enhancements(PREF);
     // Row 1: wanted and different from applied.
     install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, false)));
     // Wanted and already applied: nothing to do.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
@@ -226,7 +235,7 @@ fn step_table_each_row() {
     assert_eq!(enhancement_step(&ps), EnhancementStep::ReleaseToDirect);
     // Row 3: same, remux candidate.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(false, a1(), None)), 0);
-    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(NONE)));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(NONE, false)));
     // Row 4: no candidate at all.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), None, 0);
     assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
@@ -240,7 +249,7 @@ fn step_table_each_row() {
 
 #[test]
 fn claim_dispatch_table_each_cell() {
-    let c = enhanced_remux_contract(PREF);
+    let c = enhanced_remux_contract(PREF, false);
     use ClaimFallback::{Legacy, Reject};
     let cells = [
         (EnhancementStep::ReleaseToDirect, false, ClaimPrimary::ReleaseToDirect, Reject),
@@ -291,7 +300,7 @@ fn recovery_hls_bootstrap_pref_on_is_enhanced_remux() {
         Some(AutoOriginalReload::Remux),
     );
     assert_eq!(query_param(&ps.url, "normalizeLoudness"), Some("1"), "{}", ps.url);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     assert_eq!(ps.stream_acodec, "ac3", "I4: the decision's output codec");
     let requests = live.finish();
@@ -356,7 +365,7 @@ fn toggle_on_from_direct_queues_retranscode_then_remux_params() {
     assert!(!action.displaced_pick, "a bare toggle displaces no pick");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     assert_eq!(ps.stream_acodec, "ac3");
     assert!(ps.tsession.starts_with("enh-logical-"), "same logical session: {}", ps.tsession);
@@ -503,7 +512,7 @@ fn toggle_off_with_remux_candidate_is_plain_remux() {
     let (action, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, false));
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
     let requests = live.finish();
     assert!(!requests.iter().any(|r| r.contains("normalizeLoudness")), "{requests:?}");
@@ -536,7 +545,7 @@ fn toggle_during_pending_original_sets_deferred_reconcile() {
     let (action, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     live.finish();
     cleanup(&mut ps);
 }
@@ -596,7 +605,7 @@ fn capable_pick_while_enhanced_keeps_the_enhanced_remux() {
     assert!(!action.displaced_pick);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     assert_eq!(ps.cur_audio, Some(a3()));
     let requests = live.finish();
     let d = decisions(&requests);
@@ -669,7 +678,7 @@ fn native_capable_pick_with_pref_on_goes_remux_not_native() {
     assert!(action.displaced_pick);
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     assert_eq!(ps.cur_audio, Some(a1()));
     let requests = live.finish();
     assert_eq!(query_param(decisions(&requests)[0], "audioStreamID"), Some("11"));
@@ -707,14 +716,15 @@ fn subtitle_off_on_direct_with_pref_converges_to_remux() {
     let live = Live::start(EnhMode::Honor("ac3"));
     crate::player::restore_audio_enhancements(PREF);
     install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), Some(2))), 77);
-    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "a shown subtitle hides it");
+    // M7: an embedded subtitle already on screen no longer hides the offer — it wants a burn.
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, true)));
     commit_subtitle_selection(&mut ps, -1, 0, false);
     assert!(pending_user_route_intent(UserRouteIntent::Retranscode));
     let (action, tail) = claim(&mut ps);
     assert!(!action.displaced_pick, "a direct subtitle never reloads");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     let requests = live.finish();
     let put = requests
         .iter()
@@ -748,8 +758,12 @@ fn subtitle_off_then_rejected_decision_keeps_sub0_no_burn_on_seek() {
     cleanup(&mut ps);
 }
 
+/// M7 / owner decision superseded the old I6 behaviour this test's name once described: picking
+/// an EMBEDDED subtitle while a Plex Pass enhancement is live no longer releases to Direct with
+/// the subtitle client-rendered — it stays on the enhanced route and forces a burn, keeping BOTH
+/// the subtitle and the audio processing in the one re-encode.
 #[test]
-fn subtitle_pick_while_enhanced_auto_releases_client_rendered() {
+fn subtitle_pick_while_enhanced_auto_burns_embedded() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let live = Live::start(EnhMode::Honor("ac3"));
@@ -758,23 +772,41 @@ fn subtitle_pick_while_enhanced_auto_releases_client_rendered() {
     crate::player::restore_audio_enhancements(PREF);
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     commit_subtitle_selection(&mut ps, 2, 77, true);
+    // The candidate still follows the pick (a later Off can still recover to Direct with it
+    // client-rendered), but the LIVE route does not release to it — it burns instead.
     assert_eq!(ps.auto_original.as_ref().and_then(|c| c.subtitle_ordinal), Some(2));
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, true)));
     let (action, tail) = claim(&mut ps);
-    assert!(action.displaced_pick, "on a remux the subtitle's own refresh was displaced");
-    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
-    assert_eq!(
-        crate::player::SHARED.desired_sub_idx.load(std::sync::atomic::Ordering::Relaxed),
-        2,
-        "client-rendered on the direct play",
-    );
-    assert!(ps.cur_auto_original_watched);
+    // `reconcile_enhancement` marks its own queued Retranscode as a displaced pick whenever it
+    // fires mid-transcode (`legacy_reloads == transcoding`) — the burn IS the subtitle's own
+    // reload, so this is the correct bookkeeping, not a separate legacy fallback underneath it.
+    assert!(action.displaced_pick);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, true));
+    assert!(!ps.cur_contract.remux, "a burn is a real re-encode");
     let requests = live.finish();
-    assert!(decisions(&requests).is_empty(), "no burn: {requests:?}");
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 1, "{requests:?}");
+    assert_eq!(query_param(d[0], "normalizeLoudness"), Some("1"), "the burn keeps the enhancement");
+    assert!(
+        requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "subtitleStreamID") == Some("77")),
+        "{requests:?}"
+    );
     cleanup(&mut ps);
 }
 
+/// A subtitle the client renders itself (an external sidecar) is UNAFFECTED **by the
+/// enhancement's own route** (M7 / owner decision): [`enhancement_step`] sees no reason to
+/// change anything, and the DSP preference is never dropped. Picking ANY subtitle while already
+/// transcoding still gets the pre-existing, M7-unrelated safety burn (`commit_track`'s own doc:
+/// "while transcoding the commit above already asked for a burn ... selecting here is harmless")
+/// — that mechanism does not know or care whether the pick was a sidecar or embedded, and this
+/// test is not the place to change it. What M7 owns, and what this proves, is narrower: the burn
+/// request rides ALONGSIDE the still-live `normalizeLoudness` param, never displacing it, and
+/// [`enhancement_step`] itself never treats a sidecar as something to release or re-route for.
 #[test]
-fn subtitle_pick_while_enhanced_original_releases_client_rendered() {
+fn subtitle_pick_while_enhanced_sidecar_keeps_the_enhancement() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let live = Live::start(EnhMode::Honor("ac3"));
@@ -782,15 +814,159 @@ fn subtitle_pick_while_enhanced_original_releases_client_rendered() {
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     // An external sidecar: no demuxer ordinal, drawn by `player::sidecar` once direct.
     commit_subtitle_selection(&mut ps, -1, 78, true);
-    assert!(ps.auto_original.is_some());
+    assert!(ps.auto_original.is_some(), "the candidate still follows the pick for a later Off");
+    assert_eq!(
+        enhancement_step(&ps),
+        EnhancementStep::NotInvolved,
+        "a sidecar is never something the ENHANCEMENT'S OWN route reacts to"
+    );
     let (_, tail) = claim(&mut ps);
-    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
-    assert!(!ps.cur_auto_original_watched, "Original quality is not watched");
+    assert_eq!(tail, ClaimTail::Retranscode, "the pre-existing while-transcoding refresh, not a release");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    assert!(!d.is_empty(), "{requests:?}");
+    assert!(
+        d.iter().all(|r| query_param(r, "normalizeLoudness") == Some("1")),
+        "the enhancement is never dropped for a sidecar pick: {requests:?}",
+    );
+    cleanup(&mut ps);
+}
+
+// ---- M7 follow-up: mid-play picks while a Burn is ALREADY the live route -------------------
+//
+// The tests above (`subtitle_pick_while_enhanced_auto_burns_embedded` etc.) all TRANSITION into
+// a Burn from a plain remux or Direct. These four instead start already burning
+// (`Delivery::Burn`) and change ONE thing at a time, to pin down the gap the owner's follow-up
+// named directly: a subtitle or audio change while enhanced must never re-request with a STALE
+// `subtitleStreamID`/`audioStreamID` — `commit_audio_selection`/`commit_subtitle_selection` write
+// `ps.cur_audio`/`ps.cur_sub_sid` unconditionally, before `reconcile_enhancement` ever queues the
+// claim that reads them back ("reconcile at claim"), so the wire request is built from what was
+// JUST picked, never from what was playing before it.
+
+/// Picking a DIFFERENT embedded subtitle while already burning must burn the NEW id, not the one
+/// that was already on screen.
+#[test]
+fn subtitle_change_while_burning_uses_the_new_id_not_the_stale_one() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    // Already burning subtitle id 77 (embedded ordinal 2).
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    assert!(live_is_own_burn(&ps), "fixture models an ALREADY-applied Burn");
+    // Pick a different embedded subtitle: ordinal 5, PMS stream id 88. The route FLAVOUR does not
+    // change (still an enhanced Burn either way), so `enhancement_step` itself reads `NotInvolved`
+    // — the id change rides `commit_subtitle_selection`'s own unconditional
+    // `request_transcode_refresh` (the pre-existing "already transcoding" safety burn), not a
+    // route the enhancement machinery thinks it owns.
+    commit_subtitle_selection(&mut ps, 5, 88, true);
+    assert_eq!(ps.cur_sub_sid, 88, "the fresh pick, written unconditionally");
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "same route flavour, still a Burn");
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
     let requests = live.finish();
     assert!(
-        !requests.iter().any(|r| r.contains("/decision?") && query_param(r, "subtitleStreamID") == Some("78")),
-        "no burn subtitleStreamID: {requests:?}",
+        requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "subtitleStreamID") == Some("88")),
+        "the new id: {requests:?}"
     );
+    assert!(
+        !requests.iter().any(|r| query_param(r, "subtitleStreamID") == Some("77")),
+        "must not still carry the stale id: {requests:?}"
+    );
+    cleanup(&mut ps);
+}
+
+/// Turning the subtitle Off while already burning must drop the burn (a plain enhanced remux —
+/// no `subtitles=burn`, no `subtitleStreamID`) while keeping the DSP preference itself.
+#[test]
+fn subtitle_off_while_burning_drops_the_burn_keeps_the_enhancement() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    commit_subtitle_selection(&mut ps, -1, 0, true);
+    assert_eq!(ps.cur_sub_sid, 0);
+    assert_eq!(
+        enhancement_step(&ps),
+        EnhancementStep::Remux(enhanced_remux_contract(PREF, false)),
+        "back to a plain enhanced remux, no burn"
+    );
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(ps.cur_contract.remux, "no longer forced to re-encode");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "normalizeLoudness"), Some("1"), "the enhancement itself survives");
+    assert_eq!(query_param(last, "subtitles"), None, "no burn request once Off: {last}");
+    assert!(
+        !requests.iter().any(|r| query_param(r, "subtitleStreamID") == Some("77")),
+        "must not still ask PMS to burn the stale id: {requests:?}"
+    );
+    cleanup(&mut ps);
+}
+
+/// An audio change while already burning must carry the NEW `audioStreamID`, never the one that
+/// was playing before the pick, and must keep the burn (the on-screen subtitle did not change).
+#[test]
+fn audio_change_while_burning_uses_the_new_id_and_keeps_the_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    commit_audio_selection(&mut ps, a3());
+    assert_eq!(ps.cur_audio, Some(a3()), "the fresh pick, written unconditionally");
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "still a real re-encode: the burn is unaffected by the audio pick");
+    let requests = live.finish();
+    let d = decisions(&requests);
+    let last = d.last().expect("a decision was made");
+    assert_eq!(query_param(last, "audioStreamID"), Some("13"), "A3's id — the NEW pick");
+    assert_ne!(query_param(last, "audioStreamID"), Some("11"), "not A1's stale id");
+    assert_eq!(query_param(last, "normalizeLoudness"), Some("1"));
+    cleanup(&mut ps);
+}
+
+/// Turning the enhancement preference off while it is burning must release all the way back to
+/// direct play, with the subtitle the candidate carries restored client-side — never left
+/// pointing at the server burn that no longer exists.
+#[test]
+fn enhancement_off_while_burning_releases_to_direct_with_the_subtitle_restored() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    // The candidate is a DIRECT one carrying subtitle ordinal 2 (client-renderable) — the state a
+    // real resolve leaves when the embedded pick first forced the burn.
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert!(original_recovery_pending());
+    assert!(!is_transcoding(&ps), "back to the raw Part");
+    assert_eq!(ps.cur_contract.audio, NONE);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
+    assert_eq!(
+        ps.auto_original.as_ref().and_then(|c| c.subtitle_ordinal),
+        Some(2),
+        "the candidate still names the subtitle to render client-side once Direct lands"
+    );
+    let requests = live.finish();
+    assert!(decisions(&requests).is_empty(), "a release opens the raw Part, no /decision: {requests:?}");
     cleanup(&mut ps);
 }
 
@@ -834,22 +1010,30 @@ fn rejected_remux_with_displaced_audio_runs_native_in_claim() {
     cleanup(&mut ps);
 }
 
+/// M7 narrowed this: the enhancement only ever burns when IT is what wants the burn
+/// (`enhancement_step`), which requires `enhancement_quality()` — Auto or Original. Under a fixed
+/// rung the enhancement is never involved at all (I5), so an embedded subtitle pick there still
+/// runs the ordinary "displaced pick's own reload" path (`legacy_action`) — which burns the
+/// subtitle on its own account, carrying no Plex Pass params, because there is no offer here to
+/// carry them from.
 #[test]
-fn rejected_release_with_displaced_subtitle_runs_legacy_burn() {
+fn displaced_subtitle_on_a_fixed_rung_runs_legacy_burn_without_enhancement_params() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::P720);
     crate::player::restore_audio_enhancements(PREF);
+    // The applied route is still Remux-shaped (a fixed-rung refresh has not landed yet) — the
+    // same in-flight seam the original regression exercised, now driven by the quality gate
+    // itself rather than a field mutation `enhancement_step` never reads.
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "a fixed rung is never the enhancement's business (I5)");
     commit_subtitle_selection(&mut ps, 2, 77, true);
-    // The release is refused at claim (the applied contract is no longer Original-family).
-    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).applied_quality = Quality::P720;
     let (action, tail) = claim(&mut ps);
-    assert!(action.displaced_pick);
     assert_eq!(tail, ClaimTail::Retranscode, "the subtitle's own burn refresh ran instead");
     settle(&mut ps, &action, tail);
     assert!(!ps.cur_contract.remux);
-    assert_eq!(ps.cur_contract.audio, NONE, "a burn never keeps the params (I6)");
+    assert_eq!(ps.cur_contract.audio, NONE, "no offer was ever standing here to carry params from");
     let requests = live.finish();
     let d = decisions(&requests);
     assert_eq!(d.len(), 1, "{requests:?}");
@@ -1014,7 +1198,7 @@ fn remux_release_open_failure_rolls_back_with_audio_intact() {
     assert!(rollback_original_recovery(&mut ps).is_some());
     assert_eq!(ps.tsession, "enh-remux-1");
     assert_eq!(active_encoder(), "enh-remux-1");
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF), "audio intact");
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false), "audio intact");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
     // The pump rebases the restored route through `transcode_seek`; it carries the params.
     assert!(transcode_seek(&mut ps, 60).is_some());
@@ -1056,7 +1240,7 @@ fn transcode_seek_preserves_enhancement_params() {
     install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(candidate(true, a1(), None)), 0);
     assert!(transcode_seek(&mut ps, 120).is_some());
     assert_eq!(query_param(&ps.url, "normalizeLoudness"), Some("1"), "{}", ps.url);
-    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF));
+    assert_eq!(ps.cur_contract, enhanced_remux_contract(PREF, false));
     let requests = live.finish();
     assert_eq!(query_param(decisions(&requests)[0], "normalizeLoudness"), Some("1"));
     cleanup(&mut ps);
@@ -1137,4 +1321,162 @@ fn recovery_enhanced_remux_refused_falls_back_to_plain_original_refused() {
 fn recovery_enhanced_remux_ignored_falls_back_to_plain_original_refused() {
     recovery_enhanced_remux_falls_back(EnhMode::Ignore, true);
     recovery_enhanced_remux_falls_back(EnhMode::Ignore, false);
+}
+
+// ---- device bug (PR #309): a live re-pick of an already-burning embedded subtitle -----------
+//
+// The device case `audio_enhancement_burns_embedded_subtitle` (rk 1804) boots straight onto the
+// enhancement's own Burn — PMS remembers the part's subtitle selection across runs, so a fresh
+// boot with an embedded default already lands on `enhancement_route == Burn` (M7), not on a plain
+// enhanced remux the way `subtitle_pick_while_enhanced_auto_burns_embedded` transitions INTO one.
+// The `install()` fixture used everywhere else in this file writes `ps.cur_contract` etc. by hand
+// and never exercises the real cold-start plan builder, so it cannot see whatever the resolve path
+// leaves behind that `commit_subtitle_selection` then reads differently than the synthetic fixture
+// does. This test goes through `build_stream`/`apply_plan` for the COLD START, exactly like
+// `plan_audio_enhancement_tests::embedded_default_subtitle_with_enhancement_is_burned`, then drives
+// the SAME live re-pick the device's menupick trigger made (the identical subtitle id already
+// burning) through the real `commit_subtitle_selection`/claim path.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+
+    let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
+    let sid = crate::plex::register_for_test("enh-repick", "127.0.0.1", port, "token", "enh-client");
+    let client = crate::plex::client_for(sid).unwrap();
+    client.set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+
+    let audio = crate::metadata::Stream {
+        id: 10976,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        channels: 2,
+        default: true,
+        selected: true,
+        can_normalize_loudness: true,
+        ..Default::default()
+    };
+    let sub = selected_sub(10980, "srt");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    env.quality = Quality::Auto;
+    env.pass = Subscription::Yes;
+    env.audio_enhancements = PREF;
+    env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
+    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    assert!(!plan.contract.remux, "cold start must be a real burn re-encode, not a plain remux");
+    assert_eq!(query_param(&plan.url, "subtitleStreamID"), Some("10980"), "{}", plan.url);
+    assert_eq!(query_param(&plan.url, "subtitles"), Some("burn"), "{}", plan.url);
+    apply_plan(&mut ps, plan, "1804");
+    assert!(is_transcoding(&ps), "cold start landed on a transcode");
+    assert!(live_is_own_burn(&ps), "the installed route must read as the enhancement's own Burn");
+
+    // The device's menupick trigger re-picks the SAME embedded subtitle already burning — the
+    // harness pressed OK on a track menu row that was already selected. `sub_idx` is arbitrary (a
+    // burn never fills `sub_render_ordinal`; the menu computes its own from metadata).
+    commit_subtitle_selection(&mut ps, 2, 10980, true);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "same route flavour, still a Burn");
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "must still be a real re-encode after the re-pick");
+    assert_eq!(ps.cur_contract.audio, PREF, "the DSP preference must survive the re-pick");
+
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 2, "{requests:?}");
+    assert_eq!(query_param(d[1], "normalizeLoudness"), Some("1"), "the re-pick keeps the enhancement: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitleStreamID"), Some("10980"), "the re-pick must still burn: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the re-pick must still burn: {}", d[1]);
+
+    cleanup(&mut ps);
+    crate::plex::reset_servers_for_test();
+}
+
+/// The FIRST device run's actual entry state (`/tmp/enh-burn-tv/logs/...log`, before its own PUT
+/// persisted `sub=10980` and contaminated the retry): cold start has NO subtitle selected
+/// (`select streams: ... sub=0`), so it lands on the ORDINARY enhanced remux — matching the
+/// manifest's own description of this case. The live pick that follows is the FIRST time this
+/// playback asks for the embedded subtitle at all, unlike the re-pick above.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+
+    let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
+    let sid = crate::plex::register_for_test("enh-firstpick", "127.0.0.1", port, "token", "enh-client");
+    let client = crate::plex::client_for(sid).unwrap();
+    client.set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+
+    let audio = crate::metadata::Stream {
+        id: 10976,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        channels: 2,
+        default: true,
+        selected: true,
+        can_normalize_loudness: true,
+        ..Default::default()
+    };
+    // No track carries `selected: true` and no account/show subtitle preference is set, so
+    // `pick_dp_subtitle_account` returns `None` — the cold start's own `sub=0`, same as the
+    // device's first run.
+    let sub = crate::metadata::Stream {
+        id: 10980,
+        index: 0,
+        lang_code: "eng".into(),
+        codec: "srt".into(),
+        selected: false,
+        ..Default::default()
+    };
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    env.quality = Quality::Auto;
+    env.pass = Subscription::Yes;
+    env.audio_enhancements = PREF;
+    env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
+    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    assert!(plan.contract.remux, "cold start must be the ORDINARY enhanced remux, no subtitle yet");
+    assert_eq!(query_param(&plan.url, "subtitleStreamID"), None, "{}", plan.url);
+    assert_eq!(query_param(&plan.url, "normalizeLoudness"), Some("1"), "{}", plan.url);
+    apply_plan(&mut ps, plan, "1804");
+    assert!(is_transcoding(&ps), "cold start landed on a transcode");
+    assert_eq!(ps.cur_sub_sid, 0);
+    assert!(!live_is_own_burn(&ps), "cold start is a plain enhanced remux, not yet a Burn");
+
+    // The FIRST-ever pick of the embedded subtitle (ordinal arbitrary; a burn never fills
+    // `sub_render_ordinal`, so the menu computes its own from metadata).
+    commit_subtitle_selection(&mut ps, 0, 10980, true);
+    assert_eq!(
+        enhancement_step(&ps),
+        EnhancementStep::Remux(enhanced_remux_contract(PREF, true)),
+        "an embedded pick while enhanced must force a Burn"
+    );
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "the pick must turn the plain remux into a real re-encode");
+    assert_eq!(ps.cur_contract.audio, PREF, "the DSP preference must survive the pick");
+
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 2, "{requests:?}");
+    assert_eq!(query_param(d[1], "normalizeLoudness"), Some("1"), "the pick keeps the enhancement: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitleStreamID"), Some("10980"), "the pick must burn: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the pick must burn: {}", d[1]);
+
+    cleanup(&mut ps);
+    crate::plex::reset_servers_for_test();
 }

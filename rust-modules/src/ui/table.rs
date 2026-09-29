@@ -97,6 +97,18 @@ impl Row {
             ..Self::new("")
         }
     }
+    /// **A non-selectable INFORMATIONAL line** — the same "cannot be focused" contract as
+    /// [`Row::separator`] (skipped by every selection/hit walk that checks [`Self::sep`]), but it
+    /// carries a label and draws quiet CAPTION text instead of a hairline. For a one-line reason
+    /// attached to the rows above it (e.g. "Not available with subtitles on.") — never a hairline's
+    /// own job of dividing two groups, and never a focusable row a stray OK could land on.
+    pub fn note(text: impl Into<String>) -> Self {
+        Self {
+            sep: true,
+            dim: true,
+            ..Self::new(text)
+        }
+    }
     pub fn checked(mut self, v: bool) -> Self {
         self.checked = v;
         self
@@ -171,10 +183,10 @@ impl Row {
     /// `tall` is the TABLE's two-line measure — see [`TableView::tall_rows`]. A row cannot answer
     /// this alone: 92 and 98 are both correct, and which one applies is a property of the LIST.
     fn height_in(&self, tall: f32) -> f32 {
-        if self.sep {
-            SEP_H
-        } else if self.detail.is_empty() {
-            ROW_H
+        if self.sep && self.label.is_empty() {
+            SEP_H // the hairline
+        } else if self.sep || self.detail.is_empty() {
+            ROW_H // a `note` row (one line of CAPTION text) or a plain row with no detail line
         } else {
             tall
         }
@@ -953,7 +965,7 @@ impl TableView {
                 return;
             }
             let p = p.alpha(edge);
-            if row.sep {
+            if row.sep && row.label.is_empty() {
                 // grouping hairline, on the row's centre line and inset to the label column so it
                 // reads as a divider between groups rather than a full-bleed panel rule
                 p.rect(
@@ -968,6 +980,18 @@ impl TableView {
                     theme::HAIRLINE,
                     0.0,
                 );
+                return;
+            }
+            if row.sep {
+                // a `note` row: one line of quiet CAPTION text, never a mark or a pill — it cannot
+                // be focused (skipped by every `sep` check above), so it never draws over the
+                // sliding highlight either.
+                if let Ok(cs) = CString::new(row.label.clone()) {
+                    let nsz = theme::size::CAPTION;
+                    Label::new(cs.as_ptr(), nsz, dimc)
+                        .v(VAlign::Middle)
+                        .draw(p, Rect::new(content_x, sy, (text_right - content_x).max(0.0), h));
+                }
                 return;
             }
             // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only

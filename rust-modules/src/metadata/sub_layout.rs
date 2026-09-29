@@ -47,6 +47,10 @@ pub(crate) enum RowTarget {
     Sub(usize),
     Timing,
     Color,
+    /// The non-selectable footnote naming why Timing/Color are dim (M7 follow-up: a live Burn).
+    /// Never produced by [`sub_sections`] itself — `ui::track_menu` inserts it, alongside the row,
+    /// once it knows the live route is actually burning right now, which this pure model does not.
+    Note,
 }
 
 /// The one badge a track row may show — never more than one (`player.html:954`'s priority:

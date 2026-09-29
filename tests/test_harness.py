@@ -3312,6 +3312,78 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement_release(["some unrelated line"])
         self.assertFalse(ok, why)
 
+    def test_audio_enhancement_burn_op_tells_reencode_from_remux(self):
+        """The grader used to fail EVERY correct Burn: it rejected any post-pick stream whose path
+        contained `start.mkv`, but a Burn (a real re-encode) is ALSO served from `start.mkv`
+        (`TranscodeDelivery::ProgressiveMkv`) — only the ordinary enhanced REMUX is disqualified,
+        and the two are told apart by the query fields `transcoder.rs`'s `transcode_query` sets
+        (transcoder.rs:311-324): a remux carries `directStreamAudio=1` and no cap; a re-encode
+        carries `videoResolution=`+`maxVideoBitrate=` and never `directStreamAudio`.
+
+        Fixture paths below are lifted from real TV log lines (redacted of nothing but the host,
+        which `redact()` already strips): the remux shape carries `directStreamAudio=1`, the burn
+        shape carries `directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000&
+        audioStreamID=10976&normalizeLoudness=1&subtitleStreamID=10980&subtitleSize=100&
+        subtitles=burn`.
+        """
+        applied = "enhancement: applied boost=0 loudness=1"
+        burn_path = (
+            "/video/:/transcode/universal/start.mkv?directStream=1&videoResolution=3840x2160&"
+            "maxVideoBitrate=60000&audioStreamID=10976&normalizeLoudness=1&"
+            "subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        remux_path = (
+            "/video/:/transcode/universal/start.mkv?directStreamAudio=1&audioStreamID=10976&"
+            "normalizeLoudness=1&subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        burn_stream = f"stream: 1.2.3.4 path={burn_path}"
+        remux_stream = f"stream: 1.2.3.4 path={remux_path}"
+
+        # The correct Burn: the grader must accept it. This is the case that used to fail outright
+        # because `"start.mkv" in path` is true for a Burn too.
+        ok, why = run.op_audio_enhancement_burn([applied, burn_stream])
+        self.assertTrue(ok, why)
+
+        # The remux shape must still fail — a burn denies the remux flavour
+        # (`enhancement_policy`'s `remux: !force_burn`), so seeing `directStreamAudio=1` after the
+        # pick means the server never re-encoded at all.
+        ok, why = run.op_audio_enhancement_burn([applied, remux_stream])
+        self.assertFalse(ok, why)
+        self.assertIn("ordinary enhanced remux", why)
+
+        # A stream that is neither shape (no cap, no directStreamAudio) is caught too, distinctly.
+        neither_stream = "stream: 1.2.3.4 path=/video/:/transcode/universal/start.mkv?subtitleStreamID=10980&subtitles=burn"
+        ok, why = run.op_audio_enhancement_burn([applied, neither_stream])
+        self.assertFalse(ok, why)
+        self.assertIn("re-encode shape", why)
+
+    def test_audio_enhancement_burn_op_grades_the_second_identical_applied_line(self):
+        """A LIVE RECONCILE manifest logs TWO `enhancement: applied boost=.. loudness=..` lines
+        with IDENTICAL text: the boot-time preference decorates the candidate as an ordinary
+        remux first (no subtitle in the picture yet), then the pick reroutes it to a burn,
+        producing a second, textually-identical `applied` line. `hits[-1]` correctly picks the
+        LAST line by content, but `lines.index(hit)` then re-finds the FIRST occurrence of that
+        same text and grades the stream that follows the wrong (pre-reroute) pick — exactly what
+        happened on the real TV log at `/tmp/enh-burn-tv3/logs/
+        audio_enhancement_burns_embedded_subtitle.log`, where the grader failed a case whose
+        actual last-pick stream (around line 201) had the correct burn shape.
+        """
+        applied = "enhancement: applied boost=0 loudness=1"
+        remux_path = (
+            "/video/:/transcode/universal/start.mkv?directStreamAudio=1&audioStreamID=10976&"
+            "normalizeLoudness=1"
+        )
+        burn_path = (
+            "/video/:/transcode/universal/start.mkv?directStream=1&videoResolution=3840x2160&"
+            "maxVideoBitrate=60000&audioStreamID=10976&normalizeLoudness=1&"
+            "subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        remux_stream = f"stream: 1.2.3.4 path={remux_path}"
+        burn_stream = f"stream: 1.2.3.4 path={burn_path}"
+        lines = [applied, remux_stream, applied, burn_stream]
+        ok, why = run.op_audio_enhancement_burn(lines)
+        self.assertTrue(ok, why)
+
     def test_audio_enhancement_dispatch_picks_release_by_settle(self):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""
@@ -5692,6 +5764,109 @@ class PosterGateCoverage(unittest.TestCase):
         self.assertIn('UNFIT CATALOG', detail)
         self.assertIn('library-rows >= 6', detail)
         self.assertIn('has 5', detail)
+
+
+class StreamSelectionReset(unittest.TestCase):
+    """`pms_reset_streams` / `pms_default_audio_stream` -- the fix for a crashed run's live
+    subtitle pick persisting into the next run's starting state (`run_case` used to reset
+    viewOffset only, never the part's audio/subtitle selection). No network: `urllib.request
+    .urlopen` is mocked, so these exercise the URL-building and parsing logic only."""
+
+    def _metadata_response(self, streams, part_id=999):
+        body = json.dumps({"MediaContainer": {"Metadata": [
+            {"Media": [{"Part": [{"id": part_id, "Stream": streams}]}]}
+        ]}}).encode()
+        return io.BytesIO(body)
+
+    def test_default_audio_prefers_selected_over_default_over_first(self):
+        # selected=1 wins even when a different stream carries default=1.
+        streams = [
+            {"id": 1, "streamType": 2, "default": 1},
+            {"id": 2, "streamType": 2, "selected": 1},
+            {"id": 3, "streamType": 2},
+        ]
+        self.assertEqual(run.pms_default_audio_stream({"Stream": streams}), 2)
+
+    def test_default_audio_falls_back_to_file_default_then_first(self):
+        self.assertEqual(run.pms_default_audio_stream(
+            {"Stream": [{"id": 5, "streamType": 2, "default": 1}, {"id": 6, "streamType": 2}]}), 5)
+        self.assertEqual(run.pms_default_audio_stream(
+            {"Stream": [{"id": 7, "streamType": 2}, {"id": 8, "streamType": 2}]}), 7)
+
+    def test_default_audio_none_when_part_has_no_audio_stream(self):
+        self.assertIsNone(run.pms_default_audio_stream({"Stream": [{"id": 1, "streamType": 3}]}))
+
+    def _urlopen_ctx(self, resp):
+        cm = mock.MagicMock()
+        cm.__enter__ = mock.Mock(return_value=resp)
+        cm.__exit__ = mock.Mock(return_value=False)
+        return cm
+
+    def test_reset_streams_puts_subtitle_off_and_default_audio(self):
+        streams = [
+            {"id": 10, "streamType": 1},
+            {"id": 11, "streamType": 2, "selected": 1},
+            {"id": 12, "streamType": 3},
+        ]
+        calls = []
+
+        def fake_urlopen(req, timeout=15):
+            calls.append(req.full_url)
+            resp = self._metadata_response(streams) if len(calls) == 1 else io.BytesIO(b"")
+            resp.status = 200
+            return self._urlopen_ctx(resp)
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2, calls)
+        meta_url, put_url = calls
+        self.assertIn("/library/metadata/72", meta_url)
+        self.assertIn("/library/parts/999", put_url)
+        self.assertIn("subtitleStreamID=0", put_url)
+        self.assertIn("audioStreamID=11", put_url)
+        self.assertIn("allParts=1", put_url)
+
+    def test_reset_streams_omits_audio_param_when_part_has_none(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=15):
+            calls.append(req.full_url)
+            resp = (self._metadata_response([{"id": 1, "streamType": 3}])
+                    if len(calls) == 1 else io.BytesIO(b""))
+            resp.status = 200
+            return self._urlopen_ctx(resp)
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertTrue(ok)
+        self.assertNotIn("audioStreamID", calls[1])
+
+    def test_reset_streams_reports_failure_without_raising(self):
+        def fake_urlopen(req, timeout=15):
+            raise OSError("refused")
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertFalse(ok)
+
+    def test_server_selected_subtitle_case_opts_out_of_the_reset(self):
+        """audio_enhancement_burns_server_selected_subtitle's whole premise is PMS's OWN current
+        pick, not the manifest's declared default -- an unconditional reset would erase exactly
+        the precondition this case reads, so it must declare stream_reset: false rather than get
+        it by accident."""
+        m = _manifest()
+        cases = {c["name"]: c for c in m["cases"]}
+        case = cases["audio_enhancement_burns_server_selected_subtitle"]
+        self.assertFalse(case.get("stream_reset", True))
+
+    def test_run_case_guards_the_reset_on_stream_reset_key(self):
+        """The manifest key is only a convention unless `run_case` actually reads it -- inspect
+        the source (same trick as `abr_shape_keys` above) rather than driving the whole
+        (TV-calling) function, so this stays a host-only, network-free assertion."""
+        src = inspect.getsource(run.run_case)
+        self.assertIn('case.get("stream_reset", True)', src)
+        self.assertIn("pms_reset_streams(", src)
 
 
 if __name__ == "__main__":

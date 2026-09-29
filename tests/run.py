@@ -910,6 +910,71 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
+def pms_default_audio_stream(part):
+    """Pick the audio stream id a Part's declared default/first track names, from the `Stream`
+    list `pms_reset_streams` fetched. streamType 2 = audio (docs/pms-api.md). Prefers the
+    server's current pick (`selected`), then the file's own default flag, then whichever audio
+    stream sorts first -- the same fallback order a fresh (never-switched) play would land on.
+    Returns None if the part carries no audio stream at all (skip audioStreamID rather than send
+    a bogus one)."""
+    audio = [s for s in (part.get("Stream") or []) if int(s.get("streamType", 0) or 0) == 2]
+    for s in audio:
+        if int(s.get("selected", 0) or 0) == 1:
+            return int(s["id"])
+    for s in audio:
+        if int(s.get("default", 0) or 0) == 1:
+            return int(s["id"])
+    return int(audio[0]["id"]) if audio else None
+
+
+def pms_reset_streams(host, port, rk, token):
+    """Restore an item's PART-level audio/subtitle selection to its declared default -- subtitles
+    OFF (`subtitleStreamID=0`) and audio on its server-selected/default/first track -- via the
+    same `PUT /library/parts/<id>?...&allParts=1` shape the app itself sends from a live pick
+    (`Client::select_streams`, rust-modules/src/plex/library.rs; docs/pms-api.md "track
+    switching"). Selection is server state that PMS keeps until something else changes it: a
+    crashed run's live subtitle pick (or a case that deliberately switches one) otherwise
+    persists past that run and becomes the NEXT run's silent starting state, for the TEST
+    identity the harness token belongs to -- not just for the case that set it. Called only with
+    the harness's own (never the owner's) token. Returns True iff every Part on the item was
+    reset; failures are logged (never raised) so one bad rk does not abort the whole case."""
+    meta_url = f"http://{host}:{port}/library/metadata/{rk}?X-Plex-Token={token}"
+    req = urllib.request.Request(meta_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.load(resp)
+    except Exception as e:
+        print(f"    WARN: stream-reset metadata GET failed (rk={rk}): {e}")
+        return False
+    metas = data.get("MediaContainer", {}).get("Metadata") or []
+    if not metas:
+        print(f"    WARN: stream-reset: no metadata for rk={rk}")
+        return False
+    parts = [p for media in (metas[0].get("Media") or []) for p in (media.get("Part") or [])]
+    if not parts:
+        print(f"    WARN: stream-reset: rk={rk} has no Part to reset")
+        return False
+    ok = True
+    for part in parts:
+        part_id = part.get("id")
+        if part_id is None:
+            continue
+        q = {"allParts": "1", "subtitleStreamID": "0", "X-Plex-Token": token}
+        audio_id = pms_default_audio_stream(part)
+        if audio_id is not None:
+            q["audioStreamID"] = str(audio_id)
+        url = f"http://{host}:{port}/library/parts/{part_id}?{urllib.parse.urlencode(q)}"
+        redacted = url.replace(token, "<token>")
+        put_req = urllib.request.Request(url, method="PUT")
+        try:
+            with urllib.request.urlopen(put_req, timeout=15) as resp:
+                print(f"    stream reset: {redacted} -> {resp.status}")
+        except Exception as e:
+            print(f"    WARN: stream-reset PUT failed ({redacted}): {e}")
+            ok = False
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -1070,10 +1135,11 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
-        # "play", startup "resume" and "audio_enhancement_withheld" need no extra trigger: the last
-        # of those grades a boot-forced preference the `plxnative-audioenh` trigger above already
-        # wrote, and there is no menu row to pick because the rows are withheld from the screen
-        # (resume rides the seeded viewOffset).
+        # "play", startup "resume" and "audio_enhancement_burn" (when it names no "row" — a
+        # cold-start proof against an item whose subtitle is already server-selected) need no extra
+        # trigger: the last of those grades the boot-forced preference the `plxnative-audioenh`
+        # trigger above already wrote, and there is no menu row to pick — the candidate becomes an
+        # enhanced Burn before the first frame (resume rides the seeded viewOffset).
     return files
 
 
@@ -3744,38 +3810,86 @@ def op_audio_enhancement_release(lines):
                   f"{hit.strip()} / {redact(stream.strip())}")
 
 
-def op_audio_enhancement_withheld(lines):
-    """`audio_enhancement_withheld_under_subtitle`'s grade: the device-level proof that a shown
-    subtitle withholds Boost Dialog / Normalize Loudness even when the PERSISTED preference is
-    forced ON at boot (`plxnative-audioenh=loudness`, the same `dev::scenarios::arm_audio_enhancements`
-    trigger `op_audio_enhancement_release` above uses) — route/plan.rs's cold-start audio branch
-    computes `subtitle_shown` and feeds it into `enhancements_offered` for the same candidate the
-    preference would otherwise decorate, so the preference is evaluated and refused before the
-    first frame rather than merely hidden from the Audio tab's menu (track_menu.rs's
-    `enh_rows_absent_subtitle_shown`).
+def op_audio_enhancement_burn(lines):
+    """The M7 device proof (issue #266): an EMBEDDED subtitle on screen while the audio
+    enhancement's persisted preference is ON must not silently withdraw the offer the way I6 used
+    to — `route::plan::enhancement_availability` now answers `Offered(EnhancementRoute::Burn)` for
+    this combination, and PMS is asked for a forced re-encode carrying BOTH the DSP params and an
+    explicit `subtitleStreamID=<id>&subtitles=burn` — never the old
+    `subtitles=embedded`/`=sidecar`/`=auto` shapes M4 measured. Two manifest shapes reach this
+    grader:
 
-    Graded on three POSITIVE lines, not on the absence of one: the boot-forced preference actually
-    armed (`audioenh: forced ..`), the precondition this case depends on actually held on the
-    server (`server-selected subtitle: ..` — if a future server or library stops selecting a
-    subtitle on this item, this case must FAIL LOUDLY rather than pass vacuously because there was
-    nothing left to withhold), and no `enhancement:`-prefixed line of any kind (applied, released,
-    refused/ignored, displaced, or the plan-time `.. becomes an enhanced remux` line) — proving the
-    enhancement was never even attempted, not merely that it failed.
+    * A COLD START (`{"op": "audio_enhancement_burn"}`, no live pick): the item already carries a
+      server-selected embedded subtitle, so `route/plan.rs`'s cold-start branch computes
+      `Offered(Burn)` before the first frame and logs exactly ONE `enhancement: applied` line
+      (`route::decision::log_enhancement_outcome`, the same helper `retranscode_as` below calls —
+      before that helper existed, the cold-start branch classified the outcome but never logged it,
+      so this manifest shape had no line to grade at all).
+    * A LIVE RECONCILE (`{"op": "subtitle", "burn": true}`): the boot-time preference decorates an
+      otherwise-bare candidate as an ordinary enhanced remux first (one `enhancement: applied` line
+      with no subtitle in the picture), then the pick reroutes it to a burn
+      (`route::decision::reconcile_enhancement`), producing a SECOND `enhancement: applied` line.
+
+    Both are graded the same way, off the LAST `enhancement: applied boost=.. loudness=..` line and
+    the stream state after it:
+    1. The (last) applied line shows `loudness=1` — the DSP survives whichever path got here; a
+       route-flavour change (Remux -> Burn) must never silently drop the preference (I6/M7's whole
+       point).
+    2. The post-line stream path carries `subtitleStreamID=<id>` and `subtitles=burn` — the explicit
+       M7 shape, not `=auto`/`=embedded`/`=sidecar`.
+    3. The post-line stream is NOT `start.mkv` (`TranscodeDelivery::ProgressiveMkv`, the
+       enhancement's ordinary remux) — a burn denies the remux flavour too
+       (`enhancement_policy`'s `remux: !force_burn`), so it must show a re-encoded delivery instead.
+    4. No client-side `sub cue [..] len=N` line for the picked track AFTER the burn lands — once
+       PMS bakes the subtitle into the picture the client must not ALSO draw it, or the viewer would
+       see it twice.
     """
-    forced = find(lines, "audioenh: forced boost_dialog=false normalize_loudness=true")
-    if forced is None:
-        return False, "no `audioenh: forced boost_dialog=false normalize_loudness=true` boot line " \
-                      "(the plxnative-audioenh=loudness trigger never armed the preference)"
-    sub = find(lines, "server-selected subtitle:")
-    if sub is None:
-        return False, ("precondition failed: no `server-selected subtitle: ..` line — this item no "
-                        "longer has a server-selected subtitle for this identity, so the subtitle "
-                        "gate this case proves was never exercised")
-    enh = next((ln for ln in lines if "enhancement:" in ln), None)
-    if enh is not None:
-        return False, f"an `enhancement:` line appeared despite the shown subtitle :: {enh.strip()}"
-    return True, (f"preference forced ON, subtitle shown, enhancement withheld :: "
-                  f"{forced.strip()} / {sub.strip()}")
+    hits = [ln for ln in lines if RE_ENHANCEMENT_APPLIED.search(ln)]
+    if not hits:
+        return _enhancement_miss(
+            lines, "enhancement: applied",
+            "no `enhancement: applied boost=.. loudness=..` line at all (boot-forced preference "
+            "never took effect)",
+            refused_marker="enhancement: refused/ignored by server",
+            refused_label="the server refused/ignored the enhancement")
+    hit = hits[-1]
+    m = RE_ENHANCEMENT_APPLIED.search(hit)
+    if not m or m.group(2) != "1":
+        return False, f"re-applied line does not show loudness=1 :: {hit.strip()}"
+    # `hit` is the LAST `enhancement: applied` line by content, but a live-reconcile manifest logs
+    # TWO identical such lines (the cold-start remux, then the burn reroute); `lines.index(hit)`
+    # would silently return the FIRST occurrence and grade the wrong (pre-reroute) stream. Find the
+    # actual position of the LAST matching line instead of the first equal-text one.
+    hit_index = next(i for i in range(len(lines) - 1, -1, -1)
+                      if RE_ENHANCEMENT_APPLIED.search(lines[i]))
+    after = lines[hit_index + 1:]
+
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None:
+        return False, f"no post-pick `stream: .. path=` line :: {hit.strip()}"
+    path = RE_STREAM_PATH.search(stream).group(1)
+    if "subtitleStreamID=" not in path or "subtitles=burn" not in path:
+        return False, (f"post-pick stream is not the explicit burn shape "
+                       f"(want subtitleStreamID=..&subtitles=burn) :: {redact(stream.strip())}")
+    # Both the remux and the re-encode flavor can be served from `start.mkv`
+    # (`TranscodeDelivery::ProgressiveMkv`); the endpoint alone cannot tell them apart. The query
+    # fields `transcoder.rs`'s `transcode_query` sets DO (transcoder.rs:311-324): a remux carries
+    # `directStreamAudio=1` and no cap, a re-encode carries `videoResolution=`+`maxVideoBitrate=`
+    # and never `directStreamAudio`.
+    if "directStreamAudio=1" in path:
+        return False, (f"post-pick stream is the ordinary enhanced remux (directStreamAudio=1, no "
+                       f"re-encode cap), not a burn re-encode :: {redact(stream.strip())}")
+    if "videoResolution=" not in path or "maxVideoBitrate=" not in path:
+        return False, (f"post-pick stream is not the re-encode shape a burn always carries (want "
+                       f"videoResolution=..&maxVideoBitrate=..) :: {redact(stream.strip())}")
+
+    late_cue = next((ln for ln in after
+                     if RE_SUBCUE.search(ln) and int(RE_SUBCUE.search(ln).group(1)) > 0), None)
+    if late_cue is not None:
+        return False, (f"a client-rendered sub cue appeared after the burn landed (double "
+                       f"subtitles) :: {late_cue.strip()}")
+    return True, (f"enhancement re-applied as an explicit burn, DSP preserved :: "
+                  f"{hit.strip()} / {redact(stream.strip())}")
 
 
 def op_subtitle(lines):
@@ -4399,8 +4513,10 @@ def evaluate(case, lines):
             results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
         elif k == "audio_enhancement":
             results.append(("audio_enhancement", *op_audio_enhancement(lines)))
-        elif k == "audio_enhancement_withheld":
-            results.append(("audio_enhancement_withheld", *op_audio_enhancement_withheld(lines)))
+        elif k == "audio_enhancement_burn":
+            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
+        elif k == "subtitle" and op.get("burn"):
+            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":
@@ -4519,6 +4635,15 @@ def run_case(case, cfg, token, verbose, cond=None):
     # to kill. Declared per case rather than inferred, so the manifest still says what it starts from.
     for rk in setup.get("also_reset", []):
         pms_unscrobble(cfg["pms"]["host"], cfg["pms"]["port"], rk, token)
+
+    # A crashed run's live subtitle/audio PUT (`Client::select_streams`) is PART state on PMS,
+    # not viewOffset, so the unscrobble above does not touch it: it persists past that run and
+    # silently becomes the NEXT run's starting selection instead of the manifest's declared
+    # shape. Reset it to the item's default -- subtitles off, audio on its server-selected/first
+    # track -- for the TEST identity, unless the case's own precondition is what PMS currently has
+    # selected (`"stream_reset": false`; see audio_enhancement_burns_server_selected_subtitle).
+    if case.get("stream_reset", True):
+        pms_reset_streams(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
     # The token rides `extra=` rather than `files` so its value never reaches stdout — the only

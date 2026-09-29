@@ -209,9 +209,13 @@ fn named_unfetched_audio_keeps_its_id_and_fails_closed() {
     crate::plex::reset_servers_for_test();
 }
 
+/// Owner decision: a declared Dolby Vision source whose base layer IS self-displayable (P7/P8)
+/// gets the enhancement too — the remux plays the HDR10 base layer and simply never re-declares
+/// Dolby Vision (a remux was never able to carry `DolbyHdrInfo` at all — see `fill_direct_plan`'s
+/// own doc — so this drops nothing a remux could have kept).
 #[test]
 #[cfg(feature = "devtriggers")]
-fn dv_declared_p8_is_direct_no_params() {
+fn dv_declared_p8_usable_base_is_enhanced_remux_without_dv() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
@@ -222,46 +226,94 @@ fn dv_declared_p8_is_direct_no_params() {
         },
         |env, _| env.dv_capability = Some(crate::webos::caps::DvCapability::Supported));
     assert!(
-        r.plan.dv_decision.presentation.declared().is_some(),
-        "precondition: the P8 direct play declares DolbyHdrInfo",
+        r.plan.auto_original.as_ref().is_some_and(|c| c.dv_decision.presentation.declared().is_some()),
+        "precondition: the P8 direct play would have declared DolbyHdrInfo",
     );
-    assert_direct_no_params(&r);
+    assert_enhanced(&r);
+    assert!(
+        r.plan.dv_decision.presentation.declared().is_none(),
+        "the remux never carries DolbyHdrInfo — Dolby Vision turns off while the enhancement is on",
+    );
     crate::plex::reset_servers_for_test();
 }
 
-/// I7's other half, at the predicate: a base whose DV base layer is not self-displayable is never
-/// offered, whatever else holds (end to end such a file is refused Original before a candidate
-/// exists, so the predicate is where the rule can be seen on its own).
+/// I7's other half, at the predicate: a base whose DV base layer is not self-displayable is a
+/// plain reason (Disabled, never Hidden — Plex Pass is Yes here), whatever else holds (end to end
+/// such a file is refused Original before a candidate exists, so the predicate is where the rule
+/// can be seen on its own).
 #[test]
-fn dv_unusable_base_is_direct_no_params() {
+fn dv_unusable_base_is_disabled_not_offered() {
     let carried = CarriedAudio::from_stream(&track(1, "ac3", 2, true), 0);
     let mut base = test_original_candidate(None);
     base.audio = Some(carried.clone());
-    let facts = |b| EnhancementFacts { pass: Subscription::Yes, base: Some(b), carried: Some(&carried), subtitle_shown: false, refused: false };
+    let facts = |b| EnhancementFacts { pass: Subscription::Yes, base: Some(b), carried: Some(&carried), subtitle_effect: SubtitleEffect::None, refused: false };
     assert!(enhancements_offered(&facts(&base), RouteFamily::Direct), "control: the clean base is offered");
     let mut unusable = base.clone();
     unusable.dovi = p5();
     assert!(unusable.dovi.base_layer_unusable());
     assert!(!enhancements_offered(&facts(&unusable), RouteFamily::Direct));
+    assert_eq!(
+        enhancement_availability(&facts(&unusable), RouteFamily::Direct),
+        EnhancementAvailability::Disabled(DisabledReason::DolbyVisionUnusable),
+    );
     assert_eq!(desired_audio(PREF, enhancements_offered(&facts(&unusable), RouteFamily::Direct)), crate::plex::AudioEnhancements::NONE);
 }
 
+/// M7 / owner decision: an embedded subtitle keeps playing by BURNING it in — the audio
+/// enhancement forces a real re-encode instead of the ordinary uncapped remux.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn embedded_default_subtitle_is_direct_no_params() {
+fn embedded_default_subtitle_with_enhancement_is_burned() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
         |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
         |_, _| {});
-    assert!(r.plan.sub_render_ordinal.is_some(), "precondition: the embedded subtitle is shown");
-    assert_direct_no_params(&r);
+    // `sub_render_ordinal` is only ever filled by `fill_direct_plan` — a burn never calls it, by
+    // construction (it is not a direct play) — so the subtitle's identity is proven below instead,
+    // on the wire: `subtitleStreamID=9&subtitles=burn` is the only evidence a burn CAN carry.
+    assert!(r.plan.url.contains("start.mkv"), "a burn is never a direct play: {}", r.plan.url);
+    assert!(!r.plan.contract.remux, "a burn is a real re-encode, not a codec-preserving copy");
+    assert_eq!(r.plan.contract.audio, PREF);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("9"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("burn"), "{}", r.plan.url);
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied);
     crate::plex::reset_servers_for_test();
 }
 
+/// The cold-start twin of item 3's fix: `retranscode_as` (the LIVE reconcile path) has always
+/// printed `enhancement: applied boost=.. loudness=..` to the event log the harness greps, but the
+/// COLD START branch above — `plan.enhancement = classify_outcome(..)` in `route::plan`, reached
+/// with no live pick at all when the item already carries a server-selected embedded subtitle —
+/// never did, so a case that boots straight into a Burn had no line to key on. Grade the same
+/// scenario as `embedded_default_subtitle_with_enhancement_is_burned` above, but on the event log
+/// rather than `r.plan`, the way `tests/run.py::op_audio_enhancement_burn` actually reads it.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn server_selected_external_srt_is_direct_sidecar_restored() {
+fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let log_path = crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS);
+    let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
+        |_, _| {});
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied, "precondition: cold start is a Burn");
+    let written = std::fs::read(&log_path).unwrap();
+    let appended = String::from_utf8_lossy(&written[before as usize..]);
+    assert!(
+        appended.contains("enhancement: applied boost=0 loudness=1"),
+        "no `enhancement: applied` line from the cold-start branch :: {appended:?}"
+    );
+    crate::plex::reset_servers_for_test();
+}
+
+/// A subtitle the client renders itself (an external sidecar) is UNAFFECTED by the enhancement:
+/// the route still becomes the ordinary enhanced remux, and the sidecar restore is independent of
+/// it (`player::sidecar`, not the transcoded stream).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn server_selected_external_srt_is_enhanced_remux_sidecar_unaffected() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let external = crate::metadata::Stream {
@@ -275,14 +327,11 @@ fn server_selected_external_srt_is_direct_sidecar_restored() {
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
         move |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![external]),
         |_, _| {});
-    assert_direct_no_params(&r);
+    assert_enhanced(&r);
     assert!(
         !r.requests.iter().any(|l| l.starts_with("PUT ") && query_param(l, "subtitleStreamID").is_some_and(|v| v != "0")),
-        "no subtitle PUT: {:?}", r.requests,
+        "no burn PUT for a sidecar: {:?}", r.requests,
     );
-    apply_plan(&mut ps, r.plan, "rk-enh");
-    assert!(crate::player::sidecar::selected(), "the server's sidecar is restored on the direct play");
-    crate::player::sidecar::deselect();
     crate::plex::reset_servers_for_test();
 }
 
