@@ -110,7 +110,7 @@ fn apply_plan_installs_contract_outcome_audio() {
     );
     assert_eq!(ps.cur_contract.audio, audio, "the contract carries what the URL asked for");
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
-    assert_eq!(cur_audio(&ps), Some(carried), "the plan's own track, not one rebuilt from acodec");
+    assert_eq!(ps.cur_audio, Some(carried), "the plan's own track, not one rebuilt from acodec");
 
     // A plan that carried no track (server default, list not fetched) installs no track.
     apply_plan(
@@ -125,7 +125,7 @@ fn apply_plan_installs_contract_outcome_audio() {
     );
     assert_eq!(ps.cur_contract.audio, crate::plex::AudioEnhancements::NONE);
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
-    assert_eq!(cur_audio(&ps), None, "no fabricated track from the flat codec fields");
+    assert_eq!(ps.cur_audio, None, "no fabricated track from the flat codec fields");
 }
 
 #[test]

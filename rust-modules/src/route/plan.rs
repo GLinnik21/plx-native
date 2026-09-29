@@ -630,12 +630,22 @@ pub(super) fn enhancement_fallback(
     }
 }
 
+/// Log + diag the server's refusal of an enhanced ask, from whichever call site first learns of
+/// it. `context` is the site-specific tail after the shared "enhancement: refused/ignored by
+/// server" opening, so every site keeps the exact log sentence it always had.
+pub(super) fn note_enhancement_refused(context: &str, audio: crate::plex::AudioEnhancements) {
+    crate::player::log(&format!("enhancement: refused/ignored by server{context}"));
+    crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+        boost_dialog: audio.boost_dialog,
+        normalize_loudness: audio.normalize_loudness,
+    });
+}
+
 /// The audio lane's own stream decision off a `/decision` body (`copy`/`transcode`), if it says.
 fn decision_audio(mc: &crate::plex::MediaContainer) -> Option<&str> {
     mc.metadata
         .first()
-        .and_then(|m| m.media.first())
-        .and_then(|md| md.part.first())
+        .and_then(|m| m.first_part())
         .and_then(|p| p.stream.iter().find(|s| s.stream_type == 2))
         .map(|s| s.decision.as_str())
 }
@@ -1695,17 +1705,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // before either branch is taken. The enhancement turns the Original route it decorates into
     // a remux (M1: PMS answers either param with a Part transcode, video copy, audio re-encoded
     // with the DSP), so it applies only where that remux is itself allowed, and it is spent
-    // through the same `flavors_allowed` door the link and the rung use.
-    let planned_family = if adaptive {
-        RouteFamily::Other
-    } else if directplay {
-        RouteFamily::Direct
-    } else if remux {
-        RouteFamily::Remux
-    } else {
-        RouteFamily::Other
-    };
-    let audio = if remux && planned_family != RouteFamily::Other && !probe_refused_enhancement {
+    // through the same `flavors_allowed` door the link and the rung use. (`remux` alone already
+    // implies "not `Other`": adaptive forces HLS and never sets `remux`, so the family this ask
+    // targets is always the enhanceable remux itself, never whatever `directplay` decided.)
+    let audio = if remux && !adaptive && !probe_refused_enhancement {
         enhancement_for(plan.auto_original.as_ref(), RouteFamily::Remux)
     } else {
         crate::plex::AudioEnhancements::NONE
@@ -1843,11 +1846,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
         // the enhancement, on the same session, and remember that this server said no.
-        crate::player::log("enhancement: refused/ignored by server; fell back");
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: audio.boost_dialog,
-            normalize_loudness: audio.normalize_loudness,
-        });
+        note_enhancement_refused("; fell back", audio);
         plan.contract.audio = crate::plex::AudioEnhancements::NONE;
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
         if enhanced_from_direct {
@@ -1877,10 +1876,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         decision = client.transcode_decision(&sp);
     } else if probe_refused_enhancement && pre_audio.any() {
         // The remote remux probe already asked and was refused; the play was built without it.
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: pre_audio.boost_dialog,
-            normalize_loudness: pre_audio.normalize_loudness,
-        });
+        // measure_remote_remux already logged and recorded the diag event at the refusal point.
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);

@@ -130,10 +130,11 @@ pub(crate) struct Scenarios {
     pub(crate) play_await: Option<(crate::plex::ServerId, String, u32)>,
     pub(crate) menu_tried: bool,
     pub(crate) menupick_tried: bool,
-    /// dev: the row `/tmp/plxnative-menupick` still owes the track menu — see `App.menupick_row`'s
-    /// old doc: the panel opens and is picked on separate frames, so the pick is carried here until
-    /// the surface it names exists.
-    pub(crate) menupick_row: Option<c_int>,
+    /// dev: the row `/tmp/plxnative-menupick` still owes the track menu, as its RAW second field
+    /// (an absolute row number, or a named Audio-tab target such as `"boost"`/`"loudness"` — see
+    /// `menupick_arm`'s doc): the panel opens and is picked on separate frames, so the pick is
+    /// carried here until the surface it names exists.
+    pub(crate) menupick_target: Option<String>,
     /// `/tmp/plxnative-subtiming` — see [`subtiming_arm`] and [`Subtiming`].
     pub(crate) subtiming: Subtiming,
     pub(crate) pause_tried: bool,
@@ -1480,31 +1481,40 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
     }
 }
 
+/// `/tmp/plxnative-menupick=<tab>,<target>`: `target` is either an absolute `TableView` row
+/// number (the original contract) or, on the Audio tab, a NAMED target — `"boost"`/`"loudness"` —
+/// resolved through the panel's own [`crate::ui::track_menu::AudioRowTarget`] row map
+/// (`TrackMenuState::row_for_audio_target`). A name survives a track-count change a hand-written
+/// row number does not: `audio_enhancement_arm` below writes one instead of deriving the row
+/// itself, which is the issue #266 PR4 fix this trigger inherits (see
+/// `TrackMenuState::row_for_audio_target`'s doc for that history). An unrecognized name logs a
+/// clear line and commits nothing, same shape as the existing "row already active" no-commit log.
 fn menupick_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.menupick_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 7000 {
         app.scenarios.menupick_tried = true;
         if let Some(s) = crate::dev::read("menupick") {
             let mut it = s.split(',');
             let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
-            let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
+            let target = it.next().map(|x| x.trim().to_string()).unwrap_or_else(|| "0".to_string());
             crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab });
-            app.scenarios.menupick_row = Some(row);
+            app.scenarios.menupick_target = Some(target);
         }
     }
-    if let Some(row) = app.scenarios.menupick_row.take() {
+    if let Some(target) = app.scenarios.menupick_target.take() {
         let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
-            Some(surface) => {
-                match surface.pick_track_row(meta, row) {
+            Some(surface) => match surface.resolve_menupick_row(&target) {
+                Some(row) => match surface.pick_track_row(meta, row) {
                     Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
                     // The menu's own on_ok treats picking the already-active row as a no-op: no
                     // commit, no route transition line. Without this, a manifest case whose row
                     // no longer differs from the start pick (e.g. #210's file-default rule) fails
                     // downstream as "no route transition" with nothing pointing back at menupick.
                     None => crate::log(&format!("menupick: row {row} already active — no commit")),
-                }
-            }
-            None => app.scenarios.menupick_row = Some(row),
+                },
+                None => crate::log(&format!("menupick: unknown target {target:?} — no commit")),
+            },
+            None => app.scenarios.menupick_target = Some(target),
         }
     }
 }

@@ -180,6 +180,38 @@ pub(super) fn write_json(socket: &mut std::net::TcpStream, body: &[u8]) {
     socket.write_all(body).expect("body");
 }
 
+/// A bodyless status line, `Content-Length: 0`, `Connection: close` — the shape every synthetic
+/// server in this file used for a plain refusal/ack before this helper existed.
+pub(super) fn write_status(socket: &mut std::net::TcpStream, code: u16) {
+    use std::io::Write;
+    let reason = match code {
+        200 => "OK",
+        400 => "Bad Request",
+        503 => "Service Unavailable",
+        _ => "",
+    };
+    write!(
+        socket,
+        "HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .expect("status line");
+}
+
+/// A `206 Partial Content` answer covering `[0, n)` of a `2n`-byte resource, body filled with
+/// `0x55` — the fixed "prove a Range GET works" shape every probe/admission fixture in this file
+/// used before this helper existed.
+pub(super) fn write_partial(socket: &mut std::net::TcpStream, n: usize) {
+    use std::io::Write;
+    write!(
+        socket,
+        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n",
+        n.saturating_sub(1),
+        n.saturating_mul(2),
+    )
+    .expect("partial headers");
+    socket.write_all(&vec![0x55; n]).expect("partial body");
+}
+
 /// Loopback PMS that answers PlayQueue / PUT / `/decision` long enough for `build_stream`.
 pub(super) fn plan_pms(
     n: usize,
@@ -228,33 +260,14 @@ pub(super) fn plan_pms_inner(
                 Ok((mut socket, _)) => {
                     let first = drain_http(&mut socket);
                     if start_bytes.is_some() && first.contains("/library/parts/") {
-                        use std::io::Write;
-                        write!(
-                            socket,
-                            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        )
-                        .expect("503");
+                        write_status(&mut socket, 503);
                     } else if let Some(bytes) =
                         start_bytes.filter(|_| first.contains("start.mkv"))
                     {
-                        use std::io::Write;
                         if bytes == 0 {
-                            write!(
-                                socket,
-                                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                            )
-                            .expect("empty start.mkv");
+                            write_status(&mut socket, 200);
                         } else {
-                            write!(
-                                socket,
-                                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n",
-                                bytes.saturating_sub(1),
-                                bytes.saturating_mul(2),
-                            )
-                            .expect("start.mkv headers");
-                            socket
-                                .write_all(&vec![0x55; bytes])
-                                .expect("start.mkv body");
+                            write_partial(&mut socket, bytes);
                         }
                     } else if first.contains("/decision?")
                         && first.contains("hasMDE=1")
@@ -295,7 +308,6 @@ pub(super) fn selection_probe_pms(
     refuse: bool,
     burn: i64,
 ) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<(String, (i64, i64))>>) {
-    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();
@@ -320,11 +332,10 @@ pub(super) fn selection_probe_pms(
                             remote_probe_plan(320).unwrap().target_bytes
                         } else { 0 };
                         if bytes > 0 {
-                            write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n", bytes - 1, bytes * 2).unwrap();
+                            write_partial(&mut socket, bytes);
                         } else {
-                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                            write_status(&mut socket, 200);
                         }
-                        socket.write_all(&vec![0x55; bytes]).unwrap();
                     } else if line.contains("/decision?") {
                         let body: &[u8] = if !line.contains("hasMDE=1") && (refuse || !ready) {
                             br#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":2000,"transcodeDecisionText":"synthetic refusal"}}"#
@@ -518,7 +529,7 @@ pub(super) fn enhancement_pms_parts(
                     let enhanced = query_param(&line, "boostDialog") == Some("1")
                         || query_param(&line, "normalizeLoudness") == Some("1");
                     if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Refuse) {
-                        write!(socket, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                        write_status(&mut socket, 503);
                     } else if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Reset) {
                         // A valid 206 answer to the exact Range the admission asked for, then the
                         // connection dies before any of the promised body arrives: curl reports
@@ -540,10 +551,9 @@ pub(super) fn enhancement_pms_parts(
                         drop(socket);
                     } else if line.contains("start.mkv") || line.starts_with("GET /library/parts/") {
                         if media_bytes > 0 {
-                            write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {media_bytes}\r\nConnection: close\r\n\r\n", media_bytes - 1, media_bytes * 2).unwrap();
-                            let _ = socket.write_all(&vec![0x55; media_bytes]);
+                            write_partial(&mut socket, media_bytes);
                         } else {
-                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                            write_status(&mut socket, 200);
                         }
                     } else if line.contains("/decision?") && line.contains("hasMDE=1") {
                         write_json(&mut socket, mde);

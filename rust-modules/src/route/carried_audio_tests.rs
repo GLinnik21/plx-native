@@ -86,7 +86,7 @@ fn none_round_trips_publication_projection_pending() {
 
     // A native-Original recovery trial's snapshot/restore path.
     let mut pending = snapshot_route(&ps, "enc-1".into(), 0);
-    assert!(pending.cur_audio.is_none());
+    assert!(pending.previous.audio.is_none());
     assert!(pending.deferred_audio.is_none());
     let effects = DeferredOriginalEffects::from_pending(&mut pending);
     assert!(effects.is_empty());

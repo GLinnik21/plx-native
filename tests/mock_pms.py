@@ -435,8 +435,7 @@ class Library:
             out.update(channels=int(stream.get("channels", 0)),
                        audioChannelLayout=stream.get("channel_layout", ""),
                        displayTitle=f"{lang or 'und'} ({codec.upper()})")
-            if self.loudness_analysis:
-                out["canNormalizeLoudness"] = "1"
+            self._maybe_loudness(out)
         else:
             out["displayTitle"] = f"{lang or 'und'} ({codec.upper()})"
             out["forced"] = bool(disp.get("forced", 0))
@@ -572,48 +571,35 @@ class Library:
             out.append(t)
         return out
 
-    def _media(self, rng, rk, part, duration):
-        audio = {"id": part * 10 + 2, "streamType": 2, "codec": "ac3", "index": 1,
-                 "channels": 6, "language": "en", "languageCode": "eng",
-                 "displayTitle": "English (AC3 5.1)", "selected": True}
+    def _maybe_loudness(self, audio):
+        """PMS string-encodes this boolean on the wire (#266)."""
         if self.loudness_analysis:
-            # PMS string-encodes this boolean on the wire (#266).
             audio["canNormalizeLoudness"] = "1"
-        return [{
-            "id": rk, "duration": duration, "bitrate": 8000, "width": 1920, "height": 1080,
-            "aspectRatio": 1.78, "audioChannels": 6, "audioCodec": "ac3", "videoCodec": "h264",
-            "videoResolution": "1080", "container": "mkv", "videoFrameRate": "24p",
-            "videoProfile": "high",
-            "Part": [{
-                "id": part, "key": f"/library/parts/{part}/{1_700_000_000 + part}/file.mkv",
-                "duration": duration, "file": f"/{sname(rng)}/{sname(rng)}.mkv",
-                "size": 4_000_000_000, "container": "mkv", "videoProfile": "high",
-                "Stream": [
-                    {"id": part * 10 + 1, "streamType": 1, "codec": "h264", "index": 0,
-                     "width": 1920, "height": 1080, "displayTitle": "1080p (H.264)"},
-                    audio,
-                    {"id": part * 10 + 3, "streamType": 3, "codec": "srt", "index": 2,
-                     "language": "en", "languageCode": "eng", "displayTitle": "English (SRT)"},
-                ],
-            }],
-        }]
+        return audio
 
-    def _enhancement_movie_media(self, rng, rk, part, duration, *, acodec, channels,
-                                  video_extra=None, sub=None):
-        """One fixed #266 fixture item's Media block. `sub`: `None` (an ordinary embedded SRT,
-        not selected/default — same as `_media`'s), `"embedded_default"` (default+selected
-        embedded SRT), or `"external_selected"` (a server-selected external SRT sidecar stream,
-        `key` set, never actually fetchable — no sidecar file backs it, matching a movie fixture
-        this module never claims to be a probed file)."""
+    def _media(self, rng, rk, part, duration, *, acodec="ac3", channels=6,
+               audio_display="English (AC3 5.1)", video_extra=None, sub=None):
+        """A movie's Media block. The generated library calls this with no keyword arguments,
+        which must keep producing exactly the original literal shape (`_media`'s pre-#266 output,
+        byte for byte). `_add_enhancement_fixtures` calls it with `acodec`/`channels` set and an
+        explicit `audio_display` for the five fixed #266 fixture movies (`ENHANCEMENT_*_RK`),
+        folded in here rather than kept as a separate `_enhancement_movie_media` because the two
+        builders differed only in these knobs. `video_extra`: an optional dict merged onto the
+        video stream (e.g. the DV_P8 fixture's Dolby Vision fields) — note the top-level
+        `videoCodec` stays the literal `"h264"` even when `video_extra` overrides the stream's own
+        `codec`, matching both builders' pre-fold behaviour. `sub`: `None` (an ordinary embedded
+        SRT, not selected/default), `"embedded_default"` (default+selected embedded SRT), or
+        `"external_selected"` (a server-selected external SRT sidecar stream, `key` set, never
+        actually fetchable — no sidecar file backs it, matching a movie fixture this module never
+        claims to be a probed file)."""
         video = {"id": part * 10 + 1, "streamType": 1, "codec": "h264", "index": 0,
                  "width": 1920, "height": 1080, "displayTitle": "1080p (H.264)"}
         if video_extra:
             video.update(video_extra)
         audio = {"id": part * 10 + 2, "streamType": 2, "codec": acodec, "index": 1,
                  "channels": channels, "language": "en", "languageCode": "eng",
-                 "displayTitle": f"English ({acodec.upper()} {channels}ch)", "selected": True}
-        if self.loudness_analysis:
-            audio["canNormalizeLoudness"] = "1"
+                 "displayTitle": audio_display, "selected": True}
+        self._maybe_loudness(audio)
         streams = [video, audio]
         embedded_sub = {"id": part * 10 + 3, "streamType": 3, "codec": "srt", "index": 2,
                         "language": "en", "languageCode": "eng", "displayTitle": "English (SRT)"}
@@ -670,8 +656,9 @@ class Library:
                 "tagline": swords(rng, 4), "originallyAvailableAt": f"{it['year']}-03-14",
                 "rating": 7.0, "audienceRating": 7.0, "Genre": [], "Director": [], "Writer": [],
                 "Role": [], "Country": [], "Chapter": [], "Marker": [], "Rating": [],
-                "Media": self._enhancement_movie_media(
+                "Media": self._media(
                     rng, rk, part, dur, acodec=acodec, channels=channels,
+                    audio_display=f"English ({acodec.upper()} {channels}ch)",
                     video_extra=video_extra, sub=sub),
             })
             self.items[rk] = it

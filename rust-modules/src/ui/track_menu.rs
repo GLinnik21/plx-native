@@ -53,6 +53,23 @@ const SUB_PANEL_W: f32 = 620.0;
 /// The Audio panel's width — unchanged from before the grouped Subtitles redesign.
 const AUDIO_PANEL_W: f32 = 560.0;
 
+/// One drawn row of the Audio tab, by POSITION — the Audio-tab counterpart of [`RowTarget`],
+/// which only ever describes a Subtitles row. [`TrackMenuState::build_audio`] is the only writer;
+/// [`TrackMenuState::on_ok`]'s tab==0 arm dispatches on it instead of comparing `sel` against a
+/// recomputed "row past the last track" boundary, the same shape the Subtitles tab already used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AudioRowTarget {
+    /// A track row — the index into the playing item's audio list
+    /// ([`crate::metadata::PlayingItem::audio`]).
+    Track(usize),
+    /// The Boost dialog toggle row (issue #266) — present only while [`TrackMenuState::enhance_shown`]
+    /// is `Some`, immediately after the last [`Self::Track`].
+    Boost,
+    /// The Normalize loudness toggle row (issue #266) — present only while
+    /// [`TrackMenuState::enhance_shown`] is `Some`, immediately after [`Self::Boost`].
+    Loudness,
+}
+
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
 /// the appear fraction as a parameter instead of stepping its own [`Popover`].
@@ -60,12 +77,16 @@ pub(crate) struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
-    /// The flat row → meaning map for the CURRENTLY BUILT tab's table — one [`SubRow::target`] per
-    /// drawn row, kept alongside the `Section`s it built so [`Self::on_ok`] reads back what a row
-    /// IS by POSITION instead of re-deriving it (and instead of disagreeing with what was actually
-    /// drawn, the way a fresh call to [`visible_subs`] could once a transcode starts). Empty on the
-    /// Audio tab, which has no such indirection.
+    /// The Subtitles tab's flat row → meaning map — one [`SubRow::target`] per drawn row, kept
+    /// alongside the `Section`s it built so [`Self::on_ok`] reads back what a row IS by POSITION
+    /// instead of re-deriving it (and instead of disagreeing with what was actually drawn, the way
+    /// a fresh call to [`visible_subs`] could once a transcode starts). Empty while the Audio tab
+    /// is built; see [`Self::audio_targets`] for its counterpart.
     targets: Vec<RowTarget>,
+    /// The Audio tab's flat row → meaning map — [`AudioRowTarget`]'s counterpart to
+    /// [`Self::targets`], built by [`Self::build_audio`] and read back by [`Self::on_ok`]. Empty
+    /// while the Subtitles tab is built.
+    audio_targets: Vec<AudioRowTarget>,
     /// The timing offset (ms) the Timing row reads out — seeded from the player on open. Kept
     /// locally (rather than re-reading the player's atomic on every draw) so the Timing capsule's
     /// eventual hand-off starts from what THIS panel showed, not from a commit the loop has not
@@ -161,6 +182,7 @@ impl TrackMenuState {
             active_audio: 0,
             active_sub: -1,
             targets: Vec::new(),
+            audio_targets: Vec::new(),
             offset_ms: crate::player::subtitle_offset_ms(),
             tone: crate::player::subtitle_tone(),
             yours,
@@ -268,6 +290,22 @@ impl TrackMenuState {
         }
     }
 
+    /// Resolve a NAMED Audio-tab target (`"boost"`/`"loudness"`) to its absolute table row, for
+    /// the `/tmp/plxnative-menupick` trigger's named form — an alternative to a row number hand-
+    /// derived from the item's track count, which is exactly the issue #266 PR4 bug: this harness
+    /// once hardcoded the Normalize Loudness row from a WRONG assumed track count. Reading it back
+    /// through [`Self::audio_targets`], the same map [`Self::on_ok`] dispatches on, means the name
+    /// is correct however many tracks the item actually has. `None` when `name` is unrecognized,
+    /// or recognized but not currently built (the DSP toggle rows are not offered right now).
+    pub(crate) fn row_for_audio_target(&self, name: &str) -> Option<c_int> {
+        let target = match name {
+            "boost" => AudioRowTarget::Boost,
+            "loudness" => AudioRowTarget::Loudness,
+            _ => return None,
+        };
+        self.audio_targets.iter().position(|t| *t == target).map(|i| i as c_int)
+    }
+
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
@@ -285,50 +323,52 @@ impl TrackMenuState {
         let sel = self.table.sel;
         if tab == 0 {
             // The two Plex Pass DSP rows (issue #266), appended after the audio tracks — see
-            // `Self::build_audio`. `enhance_base` is the row past the last real track; only a row
-            // at or past it belongs to them, so a track pick below never mistakes one for a track.
-            if let Some(shown) = self.enhance_shown {
-                let enhance_base = tracks(meta).map_or(0, |t| t.audio.len()) as c_int;
-                if sel >= enhance_base {
-                    let mut a = shown;
-                    let boost_row = sel == enhance_base;
-                    if boost_row {
+            // `Self::build_audio`, which builds `self.audio_targets` alongside them, so a track
+            // pick below is never mistaken for one of these by position arithmetic.
+            return match self.audio_targets.get(sel.max(0) as usize).copied() {
+                target @ (Some(AudioRowTarget::Boost) | Some(AudioRowTarget::Loudness)) => {
+                    let mut a = self.enhance_shown.unwrap_or(crate::plex::AudioEnhancements::NONE);
+                    if target == Some(AudioRowTarget::Boost) {
                         a.boost_dialog = !a.boost_dialog;
                     } else {
                         a.normalize_loudness = !a.normalize_loudness;
                     }
                     self.enhance_shown = Some(a);
                     if let Some(row) = self.table.row_mut(sel) {
-                        row.toggle = Some(if boost_row { a.boost_dialog } else { a.normalize_loudness });
+                        row.toggle = Some(if target == Some(AudioRowTarget::Boost) {
+                            a.boost_dialog
+                        } else {
+                            a.normalize_loudness
+                        });
                     }
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                         feature: crate::diag::schema::Feature::AudioEnhancement,
                     });
-                    return TrackOk::Commit {
-                        commit: TrackCommit::AudioEnhancement(a),
-                        keep_open: true,
-                    };
+                    TrackOk::Commit { commit: TrackCommit::AudioEnhancement(a), keep_open: true }
                 }
-            }
-            let changed = self.active_audio != sel;
-            self.active_audio = sel;
-            if changed {
-                // the menu only reports the pick — native-switch vs re-transcode is route's policy.
-                // The demuxer-facing index is the CONTAINER ordinal (audio_ordinal), not the row.
-                if let Some(s) = tracks(meta).and_then(|t| t.audio.get(sel.max(0) as usize)) {
-                    let ord = tracks(meta)
-                        .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
-                        .unwrap_or(sel);
-                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                        feature: crate::diag::schema::Feature::AudioTrack,
-                    });
-                    return TrackOk::Commit {
-                        commit: TrackCommit::Audio(crate::route::CarriedAudio::from_stream(s, ord)),
-                        keep_open: false,
-                    };
+                _ => {
+                    let changed = self.active_audio != sel;
+                    self.active_audio = sel;
+                    if changed {
+                        // the menu only reports the pick — native-switch vs re-transcode is
+                        // route's policy. The demuxer-facing index is the CONTAINER ordinal
+                        // (audio_ordinal), not the row.
+                        if let Some(s) = tracks(meta).and_then(|t| t.audio.get(sel.max(0) as usize)) {
+                            let ord = tracks(meta)
+                                .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
+                                .unwrap_or(sel);
+                            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                                feature: crate::diag::schema::Feature::AudioTrack,
+                            });
+                            return TrackOk::Commit {
+                                commit: TrackCommit::Audio(crate::route::CarriedAudio::from_stream(s, ord)),
+                                keep_open: false,
+                            };
+                        }
+                    }
+                    TrackOk::Dismiss
                 }
-            }
-            return TrackOk::Dismiss;
+            };
         }
 
         match self.targets.get(sel.max(0) as usize).copied() {
@@ -383,17 +423,20 @@ impl TrackMenuState {
         }
     }
 
-    /// The Audio tab's sections: the track list, plus — only when [`Self::enhance_shown`] is
-    /// `Some` (I1/I2: the row set itself is the gate, never a greyed row) — a second, headerless
-    /// section carrying the two Plex Pass DSP toggles, the same "own section, no header" idiom the
-    /// Subtitles tab's Timing/Color pair uses.
-    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Vec<Section> {
+    /// The Audio tab's sections and row map: the track list, plus — only when
+    /// [`Self::enhance_shown`] is `Some` (I1/I2: the row set itself is the gate, never a greyed
+    /// row) — a second, headerless section carrying the two Plex Pass DSP toggles, the same "own
+    /// section, no header" idiom the Subtitles tab's Timing/Color pair uses. The returned
+    /// `Vec<AudioRowTarget>` names each row in the same order the sections draw them, mirroring
+    /// [`Self::layout`]'s `(Vec<Section>, Vec<RowTarget>)` for the Subtitles tab.
+    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<AudioRowTarget>) {
         let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
             Some(t) => t,
-            None => return vec![sec],
+            None => return (vec![sec], Vec::new()),
         };
         let names = crate::player::SHARED.track_names.lock().unwrap();
+        let mut targets = Vec::new();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
                 crate::i18n::msg::widgets_tracks_unknown()
@@ -426,6 +469,7 @@ impl TrackMenuState {
                 row = row.badge(Badge::Ad);
             }
             sec = sec.row(row);
+            targets.push(AudioRowTarget::Track(i));
         }
         let mut sections = vec![sec];
         if let Some(shown) = self.enhance_shown {
@@ -433,8 +477,10 @@ impl TrackMenuState {
                 .row(Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(shown.boost_dialog))
                 .row(Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness));
             sections.push(enh);
+            targets.push(AudioRowTarget::Boost);
+            targets.push(AudioRowTarget::Loudness);
         }
-        sections
+        (sections, targets)
     }
 
     /// Build the Subtitles tab's sections and row map from the CURRENT state — the one place the
@@ -451,18 +497,27 @@ impl TrackMenuState {
 
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         if tab == 0 {
-            self.targets = Vec::new();
             // I1/I2: the offer is read from the live route on every (re)build, so the rows are
             // simply ABSENT without Plex Pass (or an unknown subscription) — never drawn dim.
-            self.enhance_shown = crate::route::audio_enhancements_offered_live(ps)
-                .then(|| crate::route::displayed_audio_enhancements(ps));
-            self.table.set_sections(self.build_audio(meta), self.active_audio().max(0), slide);
+            self.rebuild_audio(crate::route::menu_enhancements(ps), meta, slide);
         } else {
             let (sections, targets) = self.layout(ps, meta);
             let sel = sel_for_targets(&targets, self.active_sub);
             self.targets = targets;
+            self.audio_targets = Vec::new();
             self.table.set_sections(sections, sel, slide);
         }
+    }
+
+    /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
+    /// recomputing it — `update`'s per-frame poll already has it fresh, and handing it here keeps
+    /// `route::menu_enhancements(ps)` to exactly one call per rebuild instead of two.
+    fn rebuild_audio(&mut self, enhance_shown: Option<crate::plex::AudioEnhancements>, meta: metadata::MetadataView<'_>, slide: bool) {
+        self.targets = Vec::new();
+        self.enhance_shown = enhance_shown;
+        let (sections, targets) = self.build_audio(meta);
+        self.audio_targets = targets;
+        self.table.set_sections(sections, self.active_audio().max(0), slide);
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -492,10 +547,9 @@ impl TrackMenuState {
     /// second, divergent way.
     pub(crate) fn update(&mut self, dt: f32, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         if self.tab == 0 {
-            let live = crate::route::audio_enhancements_offered_live(ps)
-                .then(|| crate::route::displayed_audio_enhancements(ps));
+            let live = crate::route::menu_enhancements(ps);
             if live != self.enhance_shown {
-                self.rebuild(ps, meta, 0, false);
+                self.rebuild_audio(live, meta, false);
             }
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
@@ -1444,6 +1498,30 @@ mod tests {
         menu.focus_row(0);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Dismiss);
     }
+
+    /// [`AudioRowTarget`]'s row map, with no enhancement offered: one [`AudioRowTarget::Track`]
+    /// per audio track, in the same order they were drawn, and nothing else — varying the track
+    /// count to prove the map tracks the list rather than assuming a fixed length.
+    #[test]
+    fn audio_targets_map_one_row_per_track_with_no_enhancement() {
+        for n in [0usize, 1, 3] {
+            let ps = crate::route::PlaybackSession::IDLE;
+            let audio = (0..n)
+                .map(|i| crate::metadata::Stream {
+                    id: 10 + i as i64,
+                    index: i as i64,
+                    codec: "aac".into(),
+                    channels: 2,
+                    default: i == 0,
+                    ..Default::default()
+                })
+                .collect();
+            let store = store_with_audio(audio);
+            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+            let want: Vec<AudioRowTarget> = (0..n).map(AudioRowTarget::Track).collect();
+            assert_eq!(menu.audio_targets, want, "n={n}");
+        }
+    }
 }
 
 /// Issue #266 PR 4: the Audio tab's Boost dialog / Normalize loudness toggle rows. The offer/
@@ -1612,6 +1690,33 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
+    /// `TrackMenuState::row_for_audio_target` is the `/tmp/plxnative-menupick` named-target
+    /// resolver: `"boost"`/`"loudness"` map to the two toggle rows AFTER the one track, and any
+    /// other name is `None` rather than a guess — the same "unknown name, no commit" contract
+    /// `menupick_arm` logs on.
+    #[test]
+    fn row_for_audio_target_resolves_boost_and_loudness_when_shown() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
+        assert_eq!(menu.row_for_audio_target("boost"), Some(1), "row 0 is the one track");
+        assert_eq!(menu.row_for_audio_target("loudness"), Some(2));
+        assert_eq!(menu.row_for_audio_target("normalize_loudness"), None, "the old op-name spelling is not a row name");
+        assert_eq!(menu.row_for_audio_target("bogus"), None);
+        teardown(&ps);
+    }
+
+    /// Without an offer, the DSP rows are not built at all, so their names resolve to nothing —
+    /// never to a stale row from a previous build.
+    #[test]
+    fn row_for_audio_target_none_without_enhancement_rows() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) =
+            audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
+        assert_eq!(menu.row_for_audio_target("boost"), None);
+        assert_eq!(menu.row_for_audio_target("loudness"), None);
+        teardown(&ps);
+    }
+
     #[test]
     fn enh_rows_present_pass_capable_enhanced_remux() {
         let _g = crate::testlock::serial();
@@ -1648,6 +1753,11 @@ mod enhancement_menu_tests {
         assert_eq!(menu.table.sections[0].rows.len(), 2, "both tracks in the track section");
         let enh = &menu.table.sections[1];
         assert_eq!(enh.rows.len(), 2, "the toggle rows sit in their own section, right after the tracks");
+        assert_eq!(
+            menu.audio_targets,
+            vec![AudioRowTarget::Track(0), AudioRowTarget::Track(1), AudioRowTarget::Boost, AudioRowTarget::Loudness],
+            "the row map names both tracks, then Boost, then Loudness, in drawn order"
+        );
         teardown(&ps);
     }
 
@@ -1828,6 +1938,7 @@ mod focus_tests {
             active_audio: 0,
             active_sub: -1,
             targets: Vec::new(),
+            audio_targets: Vec::new(),
             offset_ms: 0,
             tone: SubtitleTone::White,
             yours: Vec::new(),

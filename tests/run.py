@@ -910,27 +910,6 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
-def pms_audio_track_count(host, port, rk, token):
-    """The number of audio streams (`streamType == 2`) on an item's first `Part`, straight from
-    `/library/metadata/<rk>` — never assumed from the manifest's symbolic item key.
-
-    Issue #266 PR4 review: this harness once hardcoded the Normalize Loudness row as an absolute
-    `TableView` index derived from a WRONG audio-track count (`movie_h264_ac3_1080p` was assumed
-    to carry one audio track; the real server item behind that symbolic key has three). Reading
-    the count from the server the case is actually about to run against is what makes the derived
-    row correct regardless of which library filled in `manifest.local.json`'s symbolic mapping.
-    Token never printed.
-    """
-    q = urllib.parse.urlencode({"X-Plex-Token": token})
-    url = f"http://{host}:{port}/library/metadata/{rk}?{q}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        doc = json.load(resp)
-    meta = doc["MediaContainer"]["Metadata"][0]
-    part = meta["Media"][0]["Part"][0]
-    return sum(1 for s in part.get("Stream", []) if s.get("streamType") == 2)
-
-
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -1077,22 +1056,15 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "audio_enhancement":
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
-            # appended after the audio tracks (`track_menu.rs`'s `build_audio`'s `enhance_base`)
-            # — an ABSOLUTE `TableView` row, exactly what `menupick` already expects (headers do
-            # not count). PR4 review: this used to be a row number HARDCODED in the manifest,
-            # derived from an assumption about the item's track count that turned out to be wrong
-            # on the real server (`movie_h264_ac3_1080p` was assumed 1 audio track; the real item
-            # has 3). Deriving it here from `n_audio` — the count `run_case` fetched from the
-            # server for THIS case, via `pms_audio_track_count` — means the row is correct
-            # whichever library `manifest.local.json` points the symbolic item key at.
-            n_audio = case.get("n_audio")
-            if n_audio is None:
-                sys.exit(f"case {case.get('name')!r}: an `audio_enhancement` op needs "
-                          f"case['n_audio'] resolved first (run_case does this before calling "
-                          f"triggers_for_case; a hand-built case must set it directly)")
+            # appended after the audio tracks (`track_menu.rs`'s `build_audio`). `menupick` names
+            # them rather than stating a row: `AudioRowTarget`/`TrackMenuState::row_for_audio_target`
+            # resolve "boost"/"loudness" through the SAME row map `on_ok` dispatches on, so the
+            # trigger is correct regardless of the item's own track count — the derived-row-number
+            # dance this replaced (PR4's fix for a row hardcoded against a wrong track count) is
+            # gone; there is no track count to get wrong any more.
             which = op.get("which", "normalize_loudness")
-            row = n_audio if which == "boost_dialog" else n_audio + 1
-            files.append(("plxnative-menupick", f'0,{row}'))
+            name = "boost" if which == "boost_dialog" else "loudness"
+            files.append(("plxnative-menupick", f'0,{name}'))
         elif kind == "pause_resume":
             files.append((
                 "plxnative-autopause",
@@ -3634,6 +3606,25 @@ def _video_codec(line):
     return None
 
 
+def _enhancement_miss(lines, hit_label, fallback_msg, refused_marker=None, refused_label=None):
+    """The shared "the expected line never showed up" preamble for the #266 audio-enhancement
+    graders below: check whether the trigger fired but the app logged no commit — either
+    `menupick: row .. already active — no commit` (the same marker `op_audio_switch`/`op_subtitle`
+    check) or `menupick: unknown target ".." — no commit` (the row for boost/loudness was never
+    offered, `dev/scenarios.rs`'s `arm_audio_enhancements` menupick handler) — then, if the caller
+    has one, whether the server explicitly refused/ignored the request, before falling back to the
+    caller's own generic message. `hit_label` names the missing line for the no-commit message;
+    `fallback_msg` is returned verbatim when neither more specific cause is found."""
+    no_commit = next((ln for ln in lines if "menupick: " in ln and "no commit" in ln), None)
+    if no_commit is not None:
+        return False, f"no `{hit_label}` line :: {no_commit.strip()}"
+    if refused_marker is not None:
+        refused = find(lines, refused_marker)
+        if refused is not None:
+            return False, f"{refused_label} :: {refused.strip()}"
+    return False, fallback_msg
+
+
 def op_audio_enhancement(lines):
     """A live Boost Dialog / Normalize Loudness toggle (issue #266), asked for mid-play through
     the SAME single-shot `plxnative-menupick` mechanism `op_audio_switch`/`op_subtitle` use.
@@ -3659,13 +3650,11 @@ def op_audio_enhancement(lines):
     """
     hit = find(lines, "enhancement: applied boost=")
     if hit is None:
-        no_commit = find(lines, "menupick: row")
-        if no_commit is not None:
-            return False, f"no `enhancement: applied` line :: {no_commit.strip()}"
-        refused = find(lines, "enhancement: refused/ignored by server")
-        if refused is not None:
-            return False, f"the server refused/ignored the enhancement :: {refused.strip()}"
-        return False, "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)"
+        return _enhancement_miss(
+            lines, "enhancement: applied",
+            "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)",
+            refused_marker="enhancement: refused/ignored by server",
+            refused_label="the server refused/ignored the enhancement")
     m = RE_ENHANCEMENT_APPLIED.search(hit)
     if not m or m.group(2) != "1":
         return False, f"applied line does not show loudness=1 :: {hit.strip()}"
@@ -3729,10 +3718,9 @@ def op_audio_enhancement_release(lines):
     """
     hit = find(lines, "enhancement: released to Original")
     if hit is None:
-        no_commit = find(lines, "menupick: row")
-        if no_commit is not None:
-            return False, f"no `enhancement: released` line :: {no_commit.strip()}"
-        return False, "no `enhancement: released to Original ..` line (release never took effect)"
+        return _enhancement_miss(
+            lines, "enhancement: released",
+            "no `enhancement: released to Original ..` line (release never took effect)")
     after = lines[lines.index(hit) + 1:]
     refused = find(lines, "server refused the Original Part")
     if refused is not None:
@@ -4538,12 +4526,6 @@ def run_case(case, cfg, token, verbose, cond=None):
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
-    # issue #266 PR4 review: resolve the audio-track count from the SERVER, not from an assumption
-    # about the symbolic item key, before `triggers_for_case` needs it to derive the enhancement
-    # row. Only cases that actually carry an `audio_enhancement` op pay for the extra round-trip.
-    if any(op.get("op") == "audio_enhancement" for op in case.get("operations", [])):
-        case["n_audio"] = pms_audio_track_count(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
-        print(f"    n_audio: {case['n_audio']} (from /library/metadata/{case['rk']})")
     files = triggers_for_case(case)
     # `session: stored` — boot from the install's own signed-in session instead of the injected
     # identity. The injected token installs the compiled PMS_HOST as a PLAINTEXT origin, which
