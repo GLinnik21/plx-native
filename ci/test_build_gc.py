@@ -11,7 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-MODES = ("--incremental", "--orphans", "--lanes", "--cache", "--worktrees", "--all")
+MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
 
 
 class BuildGcTests(unittest.TestCase):
@@ -321,6 +321,91 @@ class BuildGcTests(unittest.TestCase):
         self.assertNotIn("in use, skipped", diagnostic)
         for stranded in sentinels:
             self.assertFalse(stranded.exists(), "ancestor mistaken for a builder: " + diagnostic)
+
+    # --- `--stale` ---------------------------------------------------------------------------
+    # A synthetic `deps/` directory with two metadata hashes of ONE crate: an OLD, superseded
+    # hash (binary + .d + two `.rcgu.o` objects, all 30h old) and the NEWEST hash (binary + .d
+    # fresh, its two `.rcgu.o` objects independently aged past the threshold). The main fixture
+    # repo IS the "main checkout" as far as build-gc.sh is concerned (no worktrees added), so this
+    # exercises the conservative age-only rule: the old hash is deleted outright, the newest
+    # hash's binary and `.d` survive untouched, and only ITS stale objects are declined.
+    def _stale_deps_fixture(self):
+        fixture = self.fixture(0, 0)
+        repo, _, _, _ = fixture
+        deps = repo / "rust-modules/target/debug/deps"
+        deps.mkdir(parents=True)
+        now = time.time()
+        old = now - 30 * 3600
+        fresh = now - 1 * 3600
+
+        def touch(name, mtime, executable=False):
+            path = deps / name
+            path.write_bytes(b"")
+            if executable:
+                path.chmod(0o755)
+            os.utime(path, (mtime, mtime))
+            return path
+
+        old_files = [
+            touch("plxnative_modules-aaaaaaaaaaaaaaaa", old, executable=True),
+            touch("plxnative_modules-aaaaaaaaaaaaaaaa.d", old),
+            touch("plxnative_modules-aaaaaaaaaaaaaaaa.codehash-cgu.00.rcgu.o", old),
+            touch("plxnative_modules-aaaaaaaaaaaaaaaa.codehash-cgu.01.rcgu.o", old),
+        ]
+        newest_core = [
+            touch("plxnative_modules-bbbbbbbbbbbbbbbb", fresh, executable=True),
+            touch("plxnative_modules-bbbbbbbbbbbbbbbb.d", fresh),
+        ]
+        newest_stale_objects = [
+            touch("plxnative_modules-bbbbbbbbbbbbbbbb.codehash-cgu.00.rcgu.o", old),
+            touch("plxnative_modules-bbbbbbbbbbbbbbbb.codehash-cgu.01.rcgu.o", old),
+        ]
+        return fixture, old_files, newest_core, newest_stale_objects
+
+    def test_stale_preview_reports_superseded_hash_and_declined_objects_without_deleting(self):
+        fixture, old_files, newest_core, newest_stale_objects = self._stale_deps_fixture()
+        result = self.run_gc(fixture, "--stale", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("would remove", diagnostic)
+        self.assertIn("plxnative_modules-aaaaaaaaaaaaaaaa (4 files)", diagnostic)
+        self.assertIn("plxnative_modules-bbbbbbbbbbbbbbbb rcgu.o objects (2 files)", diagnostic)
+        for p in old_files + newest_core + newest_stale_objects:
+            self.assertTrue(p.exists(), "-n deleted a file: " + diagnostic)
+
+    def test_stale_deletes_superseded_hash_keeps_newest_binary_declines_its_old_objects(self):
+        fixture, old_files, newest_core, newest_stale_objects = self._stale_deps_fixture()
+        result = self.run_gc(fixture, "--stale")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for p in old_files:
+            self.assertFalse(p.exists(), "superseded hash survived --stale: " + diagnostic)
+        for p in newest_stale_objects:
+            self.assertFalse(p.exists(), "stale object of the kept hash survived: " + diagnostic)
+        for p in newest_core:
+            self.assertTrue(p.exists(), "the newest hash's binary/.d was deleted: " + diagnostic)
+
+    def test_stale_keeps_a_hash_younger_than_the_threshold_even_if_superseded(self):
+        # A THIRD hash, younger than the (overridden, tiny) threshold: even though it is neither
+        # the newest for its crate nor old enough, it must survive — the "keep anything younger
+        # than $PLX_GC_STALE_HOURS" clause is independent of the newest-hash rule.
+        fixture, old_files, newest_core, newest_stale_objects = self._stale_deps_fixture()
+        repo, env, _, _ = fixture
+        deps = repo / "rust-modules/target/debug/deps"
+        young_but_superseded = deps / "plxnative_modules-cccccccccccccccc"
+        young_but_superseded.write_bytes(b"")
+        young_but_superseded.chmod(0o755)
+        recent = time.time() - 2 * 3600
+        os.utime(young_but_superseded, (recent, recent))
+        env = dict(env, PLX_GC_STALE_HOURS="3")
+        result = subprocess.run(["sh", "tools/build-gc.sh", "--stale"], cwd=repo, env=env,
+                                text=True, capture_output=True, timeout=20)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue(young_but_superseded.exists(),
+                        "a hash younger than the threshold was reclaimed: " + diagnostic)
+        for p in old_files:
+            self.assertFalse(p.exists(), "superseded hash survived --stale: " + diagnostic)
 
     # --- `--auto` ----------------------------------------------------------------------------
     # `PLX_GC_TEST_FREE_KIB` stands in for `df`, and `PLX_GC_MIN_FREE_GIB`/`PLX_GC_IDLE_MIN`

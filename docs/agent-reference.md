@@ -132,9 +132,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   hair *smaller* than without) — but its target dir is 356 MB, and this repo already keys a
   separate `rust-modules/target*` per configuration and multiplies that again per worktree.
   (**`make disk` is how you see what that has come to**, across every checkout at once, and
-  `tools/build-gc.sh --incremental|--lanes|--worktrees|--all` is how you get it back — every mode
-  there except `--worktrees` deletes only rebuildable output; `--worktrees` removes finished lane
-  checkouts. Measured 2026-09-03,
+  `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` is how you get it back —
+  every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes
+  finished lane checkouts. `--stale` is the one mode that also reaches into the MAIN checkout's
+  own `rust-modules/target` (age-gated only there, never the newest hash per crate), because
+  cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
+  `plxnative_modules-*` files across 6 dead hashes, 5.5 GB, all last written 2026-09-17. Measured
+  2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
   **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
   worktree is not supposed to write an incremental cache at all — the Makefile says so beside
