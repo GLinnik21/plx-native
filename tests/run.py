@@ -910,6 +910,27 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
+def pms_audio_track_count(host, port, rk, token):
+    """The number of audio streams (`streamType == 2`) on an item's first `Part`, straight from
+    `/library/metadata/<rk>` — never assumed from the manifest's symbolic item key.
+
+    Issue #266 PR4 review: this harness once hardcoded the Normalize Loudness row as an absolute
+    `TableView` index derived from a WRONG audio-track count (`movie_h264_ac3_1080p` was assumed
+    to carry one audio track; the real server item behind that symbolic key has three). Reading
+    the count from the server the case is actually about to run against is what makes the derived
+    row correct regardless of which library filled in `manifest.local.json`'s symbolic mapping.
+    Token never printed.
+    """
+    q = urllib.parse.urlencode({"X-Plex-Token": token})
+    url = f"http://{host}:{port}/library/metadata/{rk}?{q}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        doc = json.load(resp)
+    meta = doc["MediaContainer"]["Metadata"][0]
+    part = meta["Media"][0]["Part"][0]
+    return sum(1 for s in part.get("Stream", []) if s.get("streamType") == 2)
+
+
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -988,6 +1009,14 @@ def triggers_for_case(case, url_base=None):
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
         files.append(("plxnative-gstlog", gst_debug))
+    # issue #266 PR4 review: force the PERSISTED Boost Dialog / Normalize Loudness preference at
+    # boot on EVERY case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements`
+    # calls the real persisting setter, so a case's starting preference is a property of the
+    # manifest instead of of whatever a PREVIOUS case's (or a real person's) toggle left behind. A
+    # case opts into a non-off start with `"audio_enhancements_boot": "loudness"` (used by the
+    # reset case below to prove the cold-start "a saved preference forces a remux" path);
+    # everything else gets `"off"`.
+    files.append(("plxnative-audioenh", case.get("audio_enhancements_boot", "off")))
     # Arbitrary extra dev triggers, `{"name": content}` → `plxnative-<name>` in the runtime root
     # (`null` for a bare flag). For the one-run experiments a trigger exists for — `sinkmax`,
     # `nofps` — without teaching the harness a key per knob; the case's own triggers above win on
@@ -1046,12 +1075,33 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
+        elif kind == "audio_enhancement":
+            # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
+            # appended after the audio tracks (`track_menu.rs`'s `build_audio`'s `enhance_base`)
+            # — an ABSOLUTE `TableView` row, exactly what `menupick` already expects (headers do
+            # not count). PR4 review: this used to be a row number HARDCODED in the manifest,
+            # derived from an assumption about the item's track count that turned out to be wrong
+            # on the real server (`movie_h264_ac3_1080p` was assumed 1 audio track; the real item
+            # has 3). Deriving it here from `n_audio` — the count `run_case` fetched from the
+            # server for THIS case, via `pms_audio_track_count` — means the row is correct
+            # whichever library `manifest.local.json` points the symbolic item key at.
+            n_audio = case.get("n_audio")
+            if n_audio is None:
+                sys.exit(f"case {case.get('name')!r}: an `audio_enhancement` op needs "
+                          f"case['n_audio'] resolved first (run_case does this before calling "
+                          f"triggers_for_case; a hand-built case must set it directly)")
+            which = op.get("which", "normalize_loudness")
+            row = n_audio if which == "boost_dialog" else n_audio + 1
+            files.append(("plxnative-menupick", f'0,{row}'))
         elif kind == "pause_resume":
             files.append((
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
-        # "play" and startup "resume" need no extra trigger (resume rides the seeded viewOffset).
+        # "play", startup "resume" and "audio_enhancement_withheld" need no extra trigger: the last
+        # of those grades a boot-forced preference the `plxnative-audioenh` trigger above already
+        # wrote, and there is no menu row to pick because the rows are withheld from the screen
+        # (resume rides the seeded viewOffset).
     return files
 
 
@@ -3504,6 +3554,12 @@ def a_no_demux_failure(lines):
 # still grades.
 AUDIO_NATIVE_SWITCH_LINES = ("route transition: native audio idx=", "audio switch (native)")
 AUDIO_RETRANSCODE_LINES = ("route transition: user retranscode", "re-transcode:")
+# issue #266: `route/decision.rs`'s `retranscode_as` logs this ONLY when `EnhancementOutcome`
+# becomes `Applied` — the server demonstrably ran the DSP params, not merely accepted a request a
+# source-copy would have produced anyway (`EnhancementOutcome`'s own doc). `decision output: v=..
+# a=..` is the SAME call's statement of what the negotiated codecs actually are.
+RE_ENHANCEMENT_APPLIED = re.compile(r"enhancement: applied boost=(\d) loudness=(\d)")
+RE_DECISION_OUTPUT = re.compile(r"decision output: v=(\S+) a=(\S+)")
 
 
 def _find_any(lines, needles):
@@ -3556,6 +3612,182 @@ def op_audio_transcode(lines):
         return False, (f"video was RE-ENCODED across the audio switch ({cs[0][0]} -> {cs[-1][0]}); "
                        f"expected a copy :: {cs[-1][3].strip()}")
     return True, f"transcode switch OK (video copied, {cs[-1][0] if cs else '?'}) :: {rl_t.strip()}"
+
+
+# LG's buffer-feed audio vocabulary (`player::engine::audio_payload_codec`) back to the PMS codec
+# names a `decision output:` line uses, so the two can be compared.
+LOAD_AUDIO_TO_PMS = {"ac3": "ac3", "ac3 plus": "eac3", "aac": "aac", "dts": "dts"}
+# The Load vocabulary's video names back to the demuxer's (`ff: v=#0 codec=..`).
+LOAD_VIDEO_TO_FF = {"h264": "h264", "h265": "hevc", "hevc": "hevc"}
+
+
+def _video_codec(line):
+    """The video codec a `load: v=..` or `ff: v=#0 codec=..` line states, in the demuxer's names;
+    None for any other line."""
+    m = RE_CODEC.search(line)
+    if m:
+        return m.group(1).lower()
+    m = RE_LOAD.search(line)
+    if m:
+        v = m.group(1).lower()
+        return LOAD_VIDEO_TO_FF.get(v, v)
+    return None
+
+
+def op_audio_enhancement(lines):
+    """A live Boost Dialog / Normalize Loudness toggle (issue #266), asked for mid-play through
+    the SAME single-shot `plxnative-menupick` mechanism `op_audio_switch`/`op_subtitle` use.
+
+    Graded in order:
+    1. The ask reached the server and TOOK EFFECT: the app's own `enhancement: applied boost=..
+       loudness=1` line, printed only on `EnhancementOutcome::Applied` (`route/decision.rs`'s
+       `retranscode_as`), so a request the server merely accepted (or silently ignored) fails.
+    2. The Load was declared with the audio the server actually negotiated: the `decision output:`
+       audio codec at/before the applied line (`retranscode_as` logs its own codecs first) equals
+       the post-toggle `load: .. a=".."` codec. Invariant I4: the payload follows /decision's
+       OUTPUT, never the source or a literal — PMS 1.43.4 answers a DSP param over an AAC source
+       with `a=aac`, over AC-3 with `ac3`.
+    3. The route is a REMUX, not a re-encode: the video codec after the toggle (`ff: v=`, else the
+       post-toggle `load: v=`) equals the codec before it (the last `ff: v=`/`load: v=` before the
+       applied line — a direct-play start may be torn down before it ever logged `ff: v=`).
+    4. The post-toggle stream is `start.mkv` (`TranscodeDelivery::ProgressiveMkv`), the one
+       delivery PMS answers a DSP param with; an HLS re-encode under a fixed rung would be
+       `start.m3u8`, a different, non-enhanced contract by design.
+    5. No `ff: open_input failed` after the applied line. The demuxer the reload tears down logs
+       `ff: aborted during open_input` instead (`ff::open_input_failure_note`), so this line is
+       only ever a source that really would not open.
+    """
+    hit = find(lines, "enhancement: applied boost=")
+    if hit is None:
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `enhancement: applied` line :: {no_commit.strip()}"
+        refused = find(lines, "enhancement: refused/ignored by server")
+        if refused is not None:
+            return False, f"the server refused/ignored the enhancement :: {refused.strip()}"
+        return False, "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)"
+    m = RE_ENHANCEMENT_APPLIED.search(hit)
+    if not m or m.group(2) != "1":
+        return False, f"applied line does not show loudness=1 :: {hit.strip()}"
+    hit_i = lines.index(hit)
+    before, after = lines[:hit_i + 1], lines[hit_i + 1:]
+
+    dec = next((ln for ln in reversed(before) if RE_DECISION_OUTPUT.search(ln)), None)
+    if dec is None:
+        return False, f"no `decision output:` line at/before the toggle :: {hit.strip()}"
+    negotiated = RE_DECISION_OUTPUT.search(dec).group(2).lower()
+    load = next((ln for ln in after if RE_LOAD.search(ln)), None)
+    if load is None:
+        return False, f"no post-toggle `load: v=.. a=\"..\"` line :: {hit.strip()}"
+    declared_raw = RE_LOAD.search(load).group(2).lower()
+    declared = LOAD_AUDIO_TO_PMS.get(declared_raw, declared_raw)
+    if declared != negotiated:
+        return False, (f"Load declared audio {declared_raw!r} but the server negotiated "
+                       f"{negotiated!r} :: {dec.strip()} / {load.strip()}")
+
+    pre = next((c for c in map(_video_codec, reversed(before)) if c), None)
+    if pre is None:
+        return False, f"no pre-toggle `load: v=`/`ff: v=` line to compare the video against :: {hit.strip()}"
+    post_line = (next((ln for ln in after if RE_CODEC.search(ln)), None)
+                 or next((ln for ln in after if RE_LOAD.search(ln)), None))
+    post = _video_codec(post_line) if post_line else None
+    if post != pre:
+        return False, (f"video was RE-ENCODED across the enhancement toggle ({pre} -> {post}); "
+                       f"expected a copy (remux) :: {(post_line or hit).strip()}")
+
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None or "start.mkv" not in RE_STREAM_PATH.search(stream).group(1):
+        return False, (f"the post-toggle stream is not start.mkv (not a remux) :: "
+                       f"{redact((stream or hit).strip())}")
+    failed = next((ln for ln in after if "ff: open_input failed" in ln), None)
+    if failed is not None:
+        return False, f"a source failed to open after the toggle :: {failed.strip()}"
+    return True, (f"enhancement applied as a {post} remux declaring {declared_raw} audio "
+                  f"(negotiated {negotiated}) :: {hit.strip()} / {redact(stream.strip())}")
+
+
+def op_audio_enhancement_release(lines):
+    """The `audio_enhancement_normalize_reset` case's own settle grade: this case boots with
+    `plxnative-audioenh=loudness` forcing the PERSISTED preference ON before the first frame (via
+    `dev::scenarios::arm_audio_enhancements` -> `player::set_audio_enhancements`, the SAME real
+    setter a person's pick calls) — proving the cold-start `route/plan.rs` path (a saved
+    preference turns an otherwise direct-playable candidate into an enhanced remux before route
+    ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
+    ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
+    playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
+    -> `recover_auto_to_original_for(.. EnhancementReleased)`). Because the toggle goes through the
+    ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
+    real — the case ends idempotent with no second op needed.
+
+    Graded on where the release actually LANDED, not on the line announcing it: `enhancement:
+    released to Original direct play`, then the next `stream: .. path=` is the item's
+    `/library/parts/` Part, no later `start.mkv`/`start.m3u8` stream line (a failed trial rolls
+    back to the enhanced remux the release was leaving), and no `status=503` stream line after the
+    release (the refusal PR 4's first device run met). The Part is admitted before the trial
+    (`route::decision::admit_original_part`); a server that refuses it gets the plain remux, logged
+    `enhancement: released to Original remux`, which this case — whose item direct-plays — fails.
+    """
+    hit = find(lines, "enhancement: released to Original")
+    if hit is None:
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `enhancement: released` line :: {no_commit.strip()}"
+        return False, "no `enhancement: released to Original ..` line (release never took effect)"
+    after = lines[lines.index(hit) + 1:]
+    refused = find(lines, "server refused the Original Part")
+    if refused is not None:
+        return False, f"the server refused the Original Part :: {redact(refused.strip())}"
+    if "released to Original direct play" not in hit:
+        return False, f"the release did not land on direct play :: {hit.strip()}"
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None:
+        return False, f"no `stream: .. path=` line after the release :: {hit.strip()}"
+    if not RE_STREAM_PATH.search(stream).group(1).startswith("/library/parts/"):
+        return False, f"the release's stream is not the Original Part :: {redact(stream.strip())}"
+    later = next((ln for ln in after if RE_STREAM_PATH.search(ln)
+                  and re.search(r"start\.(mkv|m3u8)", RE_STREAM_PATH.search(ln).group(1))), None)
+    if later is not None:
+        return False, (f"a transcode stream followed the release (the trial rolled back) :: "
+                       f"{redact(later.strip())}")
+    refusal = next((ln for ln in after if "stream:" in ln and "status=503" in ln), None)
+    if refusal is not None:
+        return False, f"the server answered 503 after the release :: {redact(refusal.strip())}"
+    return True, (f"enhancement released to Original direct play on the Part :: "
+                  f"{hit.strip()} / {redact(stream.strip())}")
+
+
+def op_audio_enhancement_withheld(lines):
+    """`audio_enhancement_withheld_under_subtitle`'s grade: the device-level proof that a shown
+    subtitle withholds Boost Dialog / Normalize Loudness even when the PERSISTED preference is
+    forced ON at boot (`plxnative-audioenh=loudness`, the same `dev::scenarios::arm_audio_enhancements`
+    trigger `op_audio_enhancement_release` above uses) — route/plan.rs's cold-start audio branch
+    computes `subtitle_shown` and feeds it into `enhancements_offered` for the same candidate the
+    preference would otherwise decorate, so the preference is evaluated and refused before the
+    first frame rather than merely hidden from the Audio tab's menu (track_menu.rs's
+    `enh_rows_absent_subtitle_shown`).
+
+    Graded on three POSITIVE lines, not on the absence of one: the boot-forced preference actually
+    armed (`audioenh: forced ..`), the precondition this case depends on actually held on the
+    server (`server-selected subtitle: ..` — if a future server or library stops selecting a
+    subtitle on this item, this case must FAIL LOUDLY rather than pass vacuously because there was
+    nothing left to withhold), and no `enhancement:`-prefixed line of any kind (applied, released,
+    refused/ignored, displaced, or the plan-time `.. becomes an enhanced remux` line) — proving the
+    enhancement was never even attempted, not merely that it failed.
+    """
+    forced = find(lines, "audioenh: forced boost_dialog=false normalize_loudness=true")
+    if forced is None:
+        return False, "no `audioenh: forced boost_dialog=false normalize_loudness=true` boot line " \
+                      "(the plxnative-audioenh=loudness trigger never armed the preference)"
+    sub = find(lines, "server-selected subtitle:")
+    if sub is None:
+        return False, ("precondition failed: no `server-selected subtitle: ..` line — this item no "
+                        "longer has a server-selected subtitle for this identity, so the subtitle "
+                        "gate this case proves was never exercised")
+    enh = next((ln for ln in lines if "enhancement:" in ln), None)
+    if enh is not None:
+        return False, f"an `enhancement:` line appeared despite the shown subtitle :: {enh.strip()}"
+    return True, (f"preference forced ON, subtitle shown, enhancement withheld :: "
+                  f"{forced.strip()} / {sub.strip()}")
 
 
 def op_subtitle(lines):
@@ -4175,6 +4407,12 @@ def evaluate(case, lines):
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
             results.append(("audio_transcode", *op_audio_transcode(lines)))
+        elif k == "audio_enhancement" and op.get("settle") == "released":
+            results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
+        elif k == "audio_enhancement":
+            results.append(("audio_enhancement", *op_audio_enhancement(lines)))
+        elif k == "audio_enhancement_withheld":
+            results.append(("audio_enhancement_withheld", *op_audio_enhancement_withheld(lines)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":
@@ -4300,6 +4538,12 @@ def run_case(case, cfg, token, verbose, cond=None):
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
+    # issue #266 PR4 review: resolve the audio-track count from the SERVER, not from an assumption
+    # about the symbolic item key, before `triggers_for_case` needs it to derive the enhancement
+    # row. Only cases that actually carry an `audio_enhancement` op pay for the extra round-trip.
+    if any(op.get("op") == "audio_enhancement" for op in case.get("operations", [])):
+        case["n_audio"] = pms_audio_track_count(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
+        print(f"    n_audio: {case['n_audio']} (from /library/metadata/{case['rk']})")
     files = triggers_for_case(case)
     # `session: stored` — boot from the install's own signed-in session instead of the injected
     # identity. The injected token installs the compiled PMS_HOST as a PLAINTEXT origin, which

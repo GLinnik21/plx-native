@@ -864,6 +864,50 @@ user-selected fixed rungs remain on the progressive direct-play/start.mkv paths 
 
 ---
 
+## 6a. Plex Pass audio DSP — `boostDialog` / `normalizeLoudness` (issue #266, measured against PMS 1.43.4.10903 with Plex Pass)
+
+Two universal-transcoder query params, each `1` or absent (never `0` — omit to mean off). PMS
+accepts them on the transcode leg only; `Stream.canNormalizeLoudness` (bool, lenient-decoded like
+every other PMS bool) says per-track whether the server has the loudness analysis the DSP needs.
+Every session opened for these measurements was stopped afterward; see `/tmp/plx266/measurements.md`
+for the raw captures behind this table.
+
+| # | Request | Result |
+|---|---|---|
+| M1 | MDE shape `directPlay=1&directStream=1&directStreamAudio=1` plus either param | direct play becomes a Part TRANSCODE: video copy, audio transcoded to ac3 with the same channel count. `directPlayDecisionText` never names the enhancement — there is no wire signal that a DSP-driven remux differs from an ordinary one. Both params `=0` reproduces the baseline (no remux). |
+| M2 | Remux shape `directPlay=0&directStream=1&directStreamAudio=1` (profile matroska, hevc/h264, ac3/eac3) | AC3 2.0: the baseline COPIES the audio; adding a param TRANSCODES it (audio decision `copy`→`transcode` is directly observable — the wire test for "did the server honour the ask"). AAC 5.1: audio transcodes to ac3 6ch with or without the params (already transcoded at baseline, so the ask is unobservable there — this is `EnhancementOutcome::Unverified`). |
+| M3 | Re-encode shapes (`directStream=1` with a quality ceiling; `directStream=0&directStreamAudio=1`) | Audio transcodes even at baseline, and a server-selected SRT is burned into the video. The params change nothing observable — the enhancement is never offered on a re-encode rung (I5) precisely because there is nothing here to verify. |
+| M4 | Enhanced remux plus `subtitleStreamID` for an embedded SRT | `subtitles=embedded` or `=sidecar`: video copy, subtitle decision `unavailable` — PMS refuses to carry a text subtitle into the progressive MKV the enhancement produces. `subtitles=auto`: the server instead re-encodes the video and burns it. Either way a subtitle and the enhancement cannot share a route, which is I6. |
+| M5 | Part GET (`Range: bytes=0-1023`) on a transcode session, after MDE, after MDE followed by an enhanced-remux decision on the same session, and after only an enhanced decision | 206 Partial Content in every case from a host, including with the remux encoder still live, stopped physically, stopped with `closeResourceSession=1`, or abandoned. PR 4's device run nonetheless met a **503** on the Part right after releasing an enhanced remux; what PMS keyed it on did not reproduce off the television, so a release asks for the Part before it trials it and falls to the plain remux on a refusal (`route::decision::admit_original_part`). |
+| M6 | MDE `/decision` on a session whose transcoder is live | The MDE ENDS that transcoder: an HLS session's later segments answer 404 (200 without the MDE) and its stop 404; a progressive session's `start.mkv` at an offset on the same id answers 400 until it is re-decided. Re-issuing MDE is harmless only when nothing is live — never before a Part GET whose rollback needs the encoder still running. |
+
+**Known device-only gap on M5 (`audio_enhancement_normalize_reset`, `tests/manifest.json`, 2026-09-29).**
+Admitting the Part before the trial (`admit_original_part`) does not close the 503 in every case:
+with the enhanced `start.mkv` actually **playing** first — timelines posted on that same session id,
+not just decided — the admission's own Part GET still meets HTTP 503 on the television, and the
+release honestly lands on the plain codec-copy Original remux (`enhancement: server refused the
+Original Part (HTTP 503); restoring Original as a remux`) instead of Direct Play. Host probes as
+Guest against the same server and Part identity could not reproduce this: every Part GET came back
+200/206, with the remux encoder live, stopped, or abandoned, same session id, identical header keys.
+The one variable a host cannot create is the posted timelines, so the leading untested hypothesis is
+that PMS refuses a raw Part on a session it has already seen post `state=playing` timelines (a
+"session lacking permission to direct play" style refusal) — untestable from a host because a
+timeline post is a real watch-history write. The harness case is `known_gap` (XFAIL) until this is
+understood or worked around; a release from a session that has posted playing timelines returns to
+Direct Play only when PMS admits the Part, otherwise it returns to the plain Original remux.
+
+**Client-side reading.** `route::plan::enhancements_offered` (I1-I7) gates the ASK; the wire params
+are never sent outside a Direct/Remux target even when the viewer's preference is on (M3, I5).
+`route::EnhancementOutcome` grades the ANSWER from the params' own observability in the table above:
+`Applied` (M1/M2 AC3: the transcode happened and the source codec is in the profile's copy list),
+`Unverified` (M2 AAC: transcoded regardless, so honoring the ask cannot be told apart from ignoring
+it), `Refused` (the server declined the params outright, or the audio decision came back `copy`
+despite them). The player's Audio tab ("Boost dialog"/"Normalize loudness", `ui/track_menu.rs`)
+and the diagnostics Audio-row suffix / `route_line`'s `enh=<word>` both read this outcome, never the
+bare ask.
+
+---
+
 ## 7. Progress reporting — `/:/timeline` (DOCUMENTED ONLY, not called live)
 
 Sources: python-plexapi `plexapi/base.py` (`Playable.updateTimeline`,

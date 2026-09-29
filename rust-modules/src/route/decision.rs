@@ -664,6 +664,31 @@ pub(crate) enum RecoveryCause {
     EnhancementReleased,
 }
 
+impl RecoveryCause {
+    /// The log prefix this cause's recovery lines carry.
+    fn log_tag(self) -> &'static str {
+        match self {
+            RecoveryCause::Automatic => "auto",
+            RecoveryCause::ManualOriginal => "quality",
+            RecoveryCause::EnhancementReleased => "enhancement",
+        }
+    }
+
+    /// Whether [`admit_original_part`] must ask the server before this cause's Direct trial is
+    /// published. `Automatic` already has its answer: the Auto watchdog samples this exact Part
+    /// on this exact identity on its own worker thread before it ever proposes the recovery
+    /// (`probe_original_while_hls_cancellable`), so a second admission on the main thread would
+    /// only add up to its own budget (`PART_ADMISSION_BUDGET`) of UI/feed block for a question
+    /// already answered. `ManualOriginal` and `EnhancementReleased` fire from something the viewer
+    /// just did, with no prior sample of this Part, so they still need to ask.
+    fn needs_part_admission(self) -> bool {
+        match self {
+            RecoveryCause::Automatic => false,
+            RecoveryCause::ManualOriginal | RecoveryCause::EnhancementReleased => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AutomaticRouteIntent {
     OriginalToHls {
@@ -3480,6 +3505,23 @@ pub(crate) fn recover_auto_to_original_for(
         return None;
     }
     let mut rollback = snapshot_route(ps, expected_encoder.clone(), offset_secs);
+    // A direct trial is only worth starting on a Part the server will actually serve this
+    // identity. One the server refuses is reached as its codec-copy remux instead — the shape the
+    // resolve builds whenever the server will not direct-play — rather than opened, failed and
+    // rolled back to the route being left (see [`admit_original_part`]).
+    let flavour = match flavour {
+        RecoveryFlavour::Direct => match admit_original_part(ps, &candidate, expected, cause) {
+            PartAdmission::Admitted => RecoveryFlavour::Direct,
+            PartAdmission::Refused(why) => {
+                crate::player::log(&format!(
+                    "{}: server refused the Original Part ({why}); restoring Original as a remux",
+                    cause.log_tag()
+                ));
+                RecoveryFlavour::Remux(crate::plex::AudioEnhancements::NONE)
+            }
+        },
+        remux => remux,
+    };
     let RecoveryFlavour::Remux(audio) = flavour else {
         return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, false);
     };
@@ -3492,10 +3534,28 @@ pub(crate) fn recover_auto_to_original_for(
         match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)? {
             OriginalRemux::Prepared(replacement) => replacement,
             // The server will not apply the params and the candidate direct-plays: the plain
-            // Original IS that direct play, exactly as the resolve's own fallback returns to it.
-            OriginalRemux::RefusedToDirect => {
-                return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
-            }
+            // Original IS that direct play, exactly as the resolve's own fallback returns to it —
+            // when the server will serve its Part; otherwise the plain remux of the same Original.
+            OriginalRemux::RefusedToDirect => match admit_original_part(ps, &candidate, expected, cause) {
+                PartAdmission::Admitted => {
+                    return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
+                }
+                PartAdmission::Refused(why) => {
+                    crate::player::log(&format!(
+                        "{}: server refused the Original Part ({why}); restoring Original as a remux",
+                        cause.log_tag()
+                    ));
+                    let none = crate::plex::AudioEnhancements::NONE;
+                    match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none)? {
+                        OriginalRemux::Prepared(replacement) => {
+                            // The enhancement the plain remux dropped was the server's refusal.
+                            ps.cur_enhancement = EnhancementOutcome::Refused;
+                            replacement
+                        }
+                        OriginalRemux::RefusedToDirect => return None,
+                    }
+                }
+            },
         };
     rollback.replacement_encoder = replacement;
     set_pending_original(ps, rollback, automatic);
@@ -3516,6 +3576,83 @@ pub(crate) fn recover_auto_to_original_for(
         crate::player::report::DeliveryReason::OriginalRecovery,
     );
     Some(AutoOriginalReload::Remux)
+}
+
+/// Whether the server will serve an Original's raw Part to this playback right now.
+pub(super) enum PartAdmission {
+    Admitted,
+    /// Why not, for the log: the HTTP status, or the transport failure that stood for one.
+    Refused(String),
+}
+
+/// Bytes the admission reads before it lets go: enough to prove a body arrives, nothing more.
+const PART_ADMISSION_BYTES: usize = 16 * 1024;
+/// Header and body budget, each. The claim this answers runs on the pump's main-thread PMS half
+/// beside a `/decision` call, so it is bounded well under the API timeout that call carries.
+const PART_ADMISSION_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// **Ask the server for the Original's Part on the exact identity the trial would open it on,
+/// before the trial is started.** A recovery used to publish the raw Part as an unproven trial
+/// and let the demuxer find out: PR 4's device run (PMS 1.43.4, issue #266) released an enhanced
+/// remux to its direct play, the Part came back **503**, and the rollback restored the enhanced
+/// route — the only route `PendingOriginal` holds — under a preference, a menu and a log line that
+/// all said the enhancement was off. A manual Original and an enhancement release did not ask at
+/// all. Automatic still does not ask here: the Auto watchdog already sampled this exact Part on
+/// the same identity on its own worker thread before proposing the recovery
+/// (`probe_original_while_hls_cancellable`), so a second main-thread admission would only add its
+/// own budget as UI/feed block for a cause that already has its answer (`RecoveryCause::
+/// needs_part_admission`).
+///
+/// What PMS keys that 503 on did not reproduce from a host against the same server with the
+/// same identity (every Part GET after an enhanced remux decision, with the encoder held,
+/// stopped physically, stopped with `closeResourceSession=1`, or abandoned, answered 200/206), so
+/// this reads the answer rather than predicting it. **It does not re-register an MDE first:**
+/// measured on that server, an MDE `/decision` on a session with a live encoder ends that encoder
+/// (HLS segments 404, a later `start.mkv` without a fresh decision 400) — which is precisely the
+/// route a failed trial must be able to return to.
+///
+/// A fixture candidate (`probe_part` not a server path) has nothing to ask and is admitted, and so
+/// is a Part the server did not answer inside the budget, or one whose connection failed mid-body
+/// after a known status (`ThroughputFailure::BodyRead`): the admission bounds how long the claim
+/// can hold the pump, and only the server's OWN answer — a refusal status, or headers with no body
+/// behind them — is a refusal; a transport failure is not.
+fn admit_original_part(
+    ps: &PlaybackSession,
+    candidate: &AutoOriginalCandidate,
+    expected: &WorkerTicket,
+    cause: RecoveryCause,
+) -> PartAdmission {
+    if !cause.needs_part_admission() || !candidate.probe_part.starts_with('/') {
+        return PartAdmission::Admitted;
+    }
+    let Some(client) = cur_client(ps) else {
+        return PartAdmission::Refused("no client for this server".into());
+    };
+    let url = client
+        .direct_play_url(&candidate.probe_part, expected.encoder())
+        .to_url();
+    use crate::curlio::{OpenErr, ThroughputFailure};
+    match crate::curlio::sample_throughput_result(
+        &url,
+        PART_ADMISSION_BYTES,
+        PART_ADMISSION_BUDGET,
+        PART_ADMISSION_BUDGET,
+    ) {
+        // Only the server's own answer refuses: a status it will not stream, or headers with no
+        // body behind them.
+        Err(ThroughputFailure::Open(OpenErr::Status(status))) => {
+            PartAdmission::Refused(format!("HTTP {status}"))
+        }
+        Err(failure @ ThroughputFailure::NoBody { .. }) => {
+            PartAdmission::Refused(format!("{failure:?}"))
+        }
+        // A body, a transport failure mid-read (`BodyRead`: the server answered with a status and
+        // then the connection died before delivering it), or no answer inside the budget (a slow
+        // server, no bounded client on this build): nothing here is the server's OWN refusal, so
+        // the trial's own open — with its rollback — stays the judge, exactly as before this
+        // admission existed.
+        Ok(_) | Err(_) => PartAdmission::Admitted,
+    }
 }
 
 /// The direct-play half of an Original recovery (the candidate's raw Part). `enhancement_refused`
@@ -4333,6 +4470,24 @@ pub(crate) fn set_stream_declaration_for_test(
 /// and only one of them can explain a decode problem.
 pub(crate) fn is_remux(ps: &PlaybackSession) -> bool {
     ps.cur_contract.remux
+}
+/// The Plex Pass DSP the live route was ASKED for (issue #266) — `cur_contract.audio`, distinct
+/// from what the server did with it (see [`cur_enhancement_label`]). Read by the diagnostics
+/// Audio row's suffix.
+pub(crate) fn cur_audio_enhancements(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
+    ps.cur_contract.audio
+}
+/// **Narrow diagnostics accessor** — deliberately not `pub(crate) fn cur_enhancement`, which would
+/// widen [`EnhancementOutcome`] itself past `pub(super)` for one read-only caller. `None` for
+/// `Off` (nothing to report); otherwise the wire word `app::diagnostics::route_line` appends as
+/// `enh=<word>`.
+pub(crate) fn cur_enhancement_label(ps: &PlaybackSession) -> Option<&'static str> {
+    match ps.cur_enhancement {
+        EnhancementOutcome::Off => None,
+        EnhancementOutcome::Applied => Some("applied"),
+        EnhancementOutcome::Unverified => Some("unverified"),
+        EnhancementOutcome::Refused => Some("refused"),
+    }
 }
 /// Did this playback forbid the server a video stream COPY? Read by the seek and audio-switch
 /// rebuilds so the constraint survives them — see [`PlaybackSession::cur_contract`].
@@ -6532,6 +6687,10 @@ fn prepare_original_remux(
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         crate::player::log("enhancement: refused/ignored by server in Original recovery; fell back");
+        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+            boost_dialog: audio.boost_dialog,
+            normalize_loudness: audio.normalize_loudness,
+        });
         if candidate.direct {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
@@ -6729,6 +6888,10 @@ fn retranscode_as(
     // is a rejected action: the current stream is retained and the menu shows what plays.
     if enhancement_fallback(Some(&decision), audio) == Fallback::Retry {
         crate::player::log("enhancement: refused/ignored by server; current stream retained");
+        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+            boost_dialog: audio.boost_dialog,
+            normalize_loudness: audio.normalize_loudness,
+        });
         let _ = c.transcode_stop(&qsess);
         return None;
     }
@@ -6775,6 +6938,17 @@ fn retranscode_as(
         "decision output: v={} a={}",
         output_codecs.0, output_codecs.1,
     ));
+    // A harness-readable statement of what actually took effect, distinct from the ask: only
+    // `Applied` means the server demonstrably ran the params (`EnhancementOutcome`'s own doc), so
+    // an on-device case grading a live toggle has one line to key on instead of inferring the
+    // outcome from the codec/URL lines above.
+    if matches!(enhancement, EnhancementOutcome::Applied) {
+        crate::player::log(&format!(
+            "enhancement: applied boost={} loudness={}",
+            i32::from(audio.boost_dialog),
+            i32::from(audio.normalize_loudness),
+        ));
+    }
     if !expected_encoder.is_empty() && expected_encoder != qsess {
         let old = expected_encoder;
         let worker_old = old.clone();
@@ -7147,7 +7321,6 @@ pub(crate) fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bo
 /// **Menu display truth.** While a user action is queued or in flight the rows show what the
 /// preference is asking of the live route; once settled they show what the server APPLIED. A
 /// claim-time rejection therefore shows what actually plays, and pressing the row again retries.
-#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
 pub(crate) fn displayed_audio_enhancements(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
     let in_flight = {
         let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
@@ -7163,13 +7336,134 @@ pub(crate) fn displayed_audio_enhancements(ps: &PlaybackSession) -> crate::plex:
 /// Are the rows shown at all (I1/I2: absent, never greyed)? The same predicate the resolve and
 /// the reconcile use, against the live route: an applied enhancement keeps its rows even though
 /// its own route is a remux.
-#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
 pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
     let target = match live_family(ps) {
         RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
         RouteFamily::Other => RouteFamily::Other,
     };
     enhancements_offered(&facts(ps), target)
+}
+
+/// **Test-only session builder for the Audio tab's enhancement rows (issue #266 PR 4).** Every
+/// `PlaybackSession` field is private to this module by design (see `PlaybackSession::IDLE`'s own
+/// doc), so `ui::track_menu`'s tests — which live outside `route` and see only this module's
+/// `pub(crate)` surface — cannot build one field-by-field the way this module's own tests do.
+/// This is the one door: it drives every input `audio_enhancements_offered_live`/
+/// `displayed_audio_enhancements` read (I1-I7), registers a throwaway server carrying the given
+/// Plex Pass tristate, and returns the session plus that server's id so the caller can
+/// `crate::plex::reset_servers_for_test()` when done. Caller holds `crate::testlock::serial()`.
+#[cfg(test)]
+pub(crate) struct EnhTestFixture {
+    pub(crate) pass: crate::plex::serverinfo::Subscription,
+    /// `None` = still direct-playing (Direct family). `Some(true)` = a progressive-MKV remux
+    /// (Remux family — a plain Original remux, or an already-applied enhancement). `Some(false)`
+    /// = any other transcode shape (Other family — HLS, a fixed rung, a relay: I5 excludes all of
+    /// them identically, so one shape stands for the group).
+    pub(crate) remux: Option<bool>,
+    /// `auto_original` present at all — `false` reproduces I5's forced-direct-play/fixed-rung/
+    /// relay/non-Original-MDE exclusion, which is exactly "no candidate was ever computed".
+    pub(crate) base_present: bool,
+    /// The base route's own Dolby Vision declaration (I7).
+    pub(crate) dv_declared: bool,
+    /// `None` = server default audio, facts unknown (fails closed). `Some(capable)` = a known
+    /// carried track with or without `canNormalizeLoudness`.
+    pub(crate) carried_capable: Option<bool>,
+    /// A subtitle is on screen (I6) — the explicit pick and the restored sidecar are the same
+    /// live-session fact (`cur_sub_sid != 0`; see [`facts`]'s doc).
+    pub(crate) subtitle_shown: bool,
+    /// This playback's server already refused or ignored the params once.
+    pub(crate) refused: bool,
+    /// The server never answered (an unreachable decision — `classify_outcome`'s `Unverified`).
+    /// Takes precedence over `applied.any()` alone, but `refused` wins if both are set.
+    pub(crate) unverified: bool,
+    /// The contract's own `audio` — what the live route has actually applied.
+    pub(crate) applied: crate::plex::AudioEnhancements,
+    /// Force `displayed_audio_enhancements`'s in-flight branch (a user edit queued, not yet
+    /// settled), so it reads `want_live` instead of `cur_contract.audio`.
+    pub(crate) in_flight: bool,
+}
+
+#[cfg(test)]
+impl Default for EnhTestFixture {
+    fn default() -> Self {
+        Self {
+            pass: crate::plex::serverinfo::Subscription::Yes,
+            remux: Some(true),
+            base_present: true,
+            dv_declared: false,
+            carried_capable: Some(true),
+            subtitle_shown: false,
+            refused: false,
+            unverified: false,
+            applied: crate::plex::AudioEnhancements::NONE,
+            in_flight: false,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, ServerId) {
+    let sid = crate::plex::register_for_test("enh-menu-test", "127.0.0.1", 1, "token", "enh-menu-client");
+    crate::plex::serverinfo::store_for_test(sid, route.pass, "1.43.4");
+
+    let mut ps = PlaybackSession::IDLE;
+    ps.cur_sid = sid;
+    ps.cur_sub_sid = if route.subtitle_shown { 999 } else { 0 };
+    ps.cur_enhancement = if route.refused {
+        EnhancementOutcome::Refused
+    } else if route.unverified {
+        EnhancementOutcome::Unverified
+    } else if route.applied.any() {
+        EnhancementOutcome::Applied
+    } else {
+        EnhancementOutcome::Off
+    };
+    ps.cur_contract = crate::plex::EncodeContract {
+        remux: matches!(route.remux, Some(true)),
+        delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+        no_video_copy: false,
+        ceiling: None,
+        audio: route.applied,
+    };
+    ps.tsession = if route.remux.is_some() { "enh-menu-test-session".to_owned() } else { String::new() };
+    ps.cur_audio = route.carried_capable.map(|capable| CarriedAudio {
+        sid: 501,
+        ordinal: 1,
+        codec: "ac3".into(),
+        channels: 2,
+        can_normalize_loudness: capable,
+        immersive: false,
+    });
+    ps.auto_original = route.base_present.then(|| AutoOriginalCandidate {
+        url: "https://example.invalid/source.mkv".into(),
+        probe_part: "https://example.invalid/source.mkv".into(),
+        direct: route.remux.is_none(),
+        vcodec: "hevc".into(),
+        fps: 23.976,
+        dovi: crate::metadata::Dovi::NONE,
+        dv_decision: if route.dv_declared {
+            crate::metadata::DvDecision {
+                capability: crate::webos::caps::DvCapability::Supported,
+                presentation: crate::metadata::DvPresentation::Declare(crate::metadata::DolbyHdrInfo {
+                    profile_id: 8,
+                    track_type: "single",
+                    encryption_type: "clear",
+                }),
+            }
+        } else {
+            crate::metadata::DvDecision::NONE
+        },
+        audio: ps.cur_audio.clone(),
+        subtitle_ordinal: None,
+    });
+
+    if route.in_flight {
+        let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        control.pending_user = Some(UserRouteIntent::Retranscode);
+        control.phase = ControlPhase::StagingUser(control.next_action);
+    }
+
+    (ps, sid)
 }
 
 // ---- selection commits: playback POLICY for the in-player track menu. The menu only reports

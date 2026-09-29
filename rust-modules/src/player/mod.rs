@@ -1575,7 +1575,6 @@ pub(crate) fn set_audio_enhancements(a: crate::plex::AudioEnhancements) {
 /// **The Audio tab's toggle rows land here** (issue #266): persist the preference, then bring the
 /// playing route in line with it. The reconcile itself defers behind a pending Original trial, so
 /// a toggle during one applies to whichever route that trial settles on.
-#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
 pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: crate::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);

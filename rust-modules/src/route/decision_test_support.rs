@@ -479,6 +479,31 @@ pub(super) fn enhancement_pms(
     mode: EnhMode,
     media_bytes: usize,
 ) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+    enhancement_pms_parts(mde, mode, media_bytes, PartAnswer::Serve)
+}
+
+/// How [`enhancement_pms_parts`] answers a raw `/library/parts/` GET.
+#[derive(Clone, Copy)]
+pub(super) enum PartAnswer {
+    /// The same bytes `start.mkv` gets.
+    Serve,
+    /// `503 Service Unavailable` — what the device got for the Original Part on the release of an
+    /// enhanced remux (issue #266 PR 4 device run, PMS 1.43.4: "Denying access due to session
+    /// lacking permission to direct play" is the server's own wording for this status).
+    Refuse,
+    /// Headers with a `Content-Length` the connection then never delivers: a transport failure
+    /// (curl reports `CURLE_PARTIAL_FILE`) mid-body, not a status the server chose. This is the
+    /// shape `ThroughputFailure::BodyRead` classifies, distinct from `Refuse`'s definite status.
+    Reset,
+}
+
+/// [`enhancement_pms`] with the raw Part's answer chosen separately from `start.mkv`'s.
+pub(super) fn enhancement_pms_parts(
+    mde: &'static [u8],
+    mode: EnhMode,
+    media_bytes: usize,
+    parts: PartAnswer,
+) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
     use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
@@ -492,7 +517,28 @@ pub(super) fn enhancement_pms(
                     let line = drain_http(&mut socket);
                     let enhanced = query_param(&line, "boostDialog") == Some("1")
                         || query_param(&line, "normalizeLoudness") == Some("1");
-                    if line.contains("start.mkv") || line.starts_with("GET /library/parts/") {
+                    if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Refuse) {
+                        write!(socket, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    } else if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Reset) {
+                        // A valid 206 answer to the exact Range the admission asked for, then the
+                        // connection dies before any of the promised body arrives: curl reports
+                        // this as a transport failure (`CURLE_PARTIAL_FILE`) on an otherwise
+                        // successful response, not as the server's own answer.
+                        let len = media_bytes.max(1);
+                        let _ = write!(
+                            socket,
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {len}\r\n\r\n",
+                            len - 1,
+                            len * 2,
+                        );
+                        let _ = socket.flush();
+                        // Give curl a chance to parse the headers (and this admission's own open
+                        // to succeed) as a call separate from the one that meets the closed
+                        // connection, so the failure lands in the body-read phase deterministically
+                        // rather than racing the header parse itself.
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        drop(socket);
+                    } else if line.contains("start.mkv") || line.starts_with("GET /library/parts/") {
                         if media_bytes > 0 {
                             write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {media_bytes}\r\nConnection: close\r\n\r\n", media_bytes - 1, media_bytes * 2).unwrap();
                             let _ = socket.write_all(&vec![0x55; media_bytes]);

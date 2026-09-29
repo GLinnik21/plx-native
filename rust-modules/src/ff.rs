@@ -7635,6 +7635,26 @@ fn hls_demux(
     Ok(())
 }
 
+/// Whether a demux exit that published no access unit is a playback failure — the ONE rule both
+/// the HLS and the progressive tails read. A demuxer that produced nothing and ended on its own
+/// failed; one whose lane teardown aborted was told to stop (a reload, a seek, BACK), whatever
+/// early exit that took, and must neither log a failure nor raise `demux_failed`.
+fn unproductive_exit_failed(pushed_any: bool, lane_aborted: bool) -> bool {
+    !pushed_any && !lane_aborted
+}
+
+/// The log line for an `avformat_open_input` that returned no context. Teardown aborts the lanes
+/// and `read_cb` answers the abort with EOF, so an open cut short that way returns whatever the
+/// truncated probe made of it (`AVERROR_INVALIDDATA` on a Matroska header) — a stop that must not
+/// read as the source failing to open. Issue #266's normalize run was misread exactly so.
+fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
+    if lane_aborted {
+        format!("ff: aborted during open_input r={r}")
+    } else {
+        format!("ff: open_input failed r={r}")
+    }
+}
+
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
 /// Takes an [`Origin`](crate::plex::Origin) rather than a `(host, port)` pair because **the scheme
@@ -7711,7 +7731,9 @@ pub(crate) fn demux(
                 SHARED.demux_failed.store(true, Ordering::Release);
             }
         }
-        if !PUSHED_ANY.load(Ordering::Relaxed) && !unsafe { crate::aq::aq_is_aborted(aq_p) } {
+        if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
+            crate::aq::aq_is_aborted(aq_p)
+        }) {
             SHARED.demux_failed.store(true, Ordering::Release);
         }
         crate::aq::aq_set_eof(aq_p);
@@ -7908,7 +7930,7 @@ pub(crate) fn demux(
                     std::ptr::null_mut(),
                 );
                 if r < 0 || fmt.is_null() {
-                    crate::player::log(&format!("ff: open_input failed r={r}"));
+                    crate::player::log(&open_input_failure_note(r, crate::aq::aq_is_aborted(aq_p)));
                     free_avio(avio);
                     break;
                 }
@@ -8518,8 +8540,11 @@ pub(crate) fn demux(
     // waiting, `frames` stays 0, and the HUD says "Buffering…" forever with nothing in the log to
     // say why. That is precisely the report that came back from webOS 6 and 10, and it is why the
     // report could not name a cause. Failing loudly here does not fix any of those bugs; it makes
-    // the next one diagnosable.
-    if !PUSHED_ANY.load(Ordering::Relaxed) {
+    // the next one diagnosable. An exit teardown asked for is not one of them: see
+    // `unproductive_exit_failed`.
+    if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
+        crate::aq::aq_is_aborted(aq_p)
+    }) {
         crate::player::log("ff: demux produced no access units — treating as a failure");
         SHARED.demux_failed.store(true, Ordering::Release);
     }

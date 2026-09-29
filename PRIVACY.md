@@ -176,6 +176,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `signin.failed` | `kind` — `pin_create` / `authorization` / `discovery` / `other` |
 | `signin.cancelled` | *(none)* |
 | `feature.used` | `feature` — one of a fixed list of feature names |
+| `enhancement.refused` | `boost_dialog` — `true` / `false`; `normalize_loudness` — `true` / `false` |
 | `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
 | `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
 | `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified` |

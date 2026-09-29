@@ -153,6 +153,8 @@
   "widgets.repair.unreadable": "La reparación terminó, pero la app aún no puede acceder a /dev/rtkmem. Cierra y vuelve a abrir la app.",
   "widgets.repair.unsupported": "La reparación del entorno aislado no está disponible en este dispositivo.",
   "widgets.tracks.color": "Color",
+  "widgets.tracks.boost_dialog": "Realzar diálogos",
+  "widgets.tracks.normalize_loudness": "Normalizar volumen",
   "widgets.tracks.timing": "Sincronización",
   "widgets.tracks.external_badge": "EXTERNOS",
   "widgets.tracks.tone_white": "Blanco",

@@ -678,6 +678,12 @@ pub(crate) unsafe fn construct(
     // The subtitle tone rides the same file and the same moment: a preference, restored once.
     crate::player::restore_subtitle_tone(session.subtitle_tone());
     crate::player::restore_audio_enhancements(session.audio_enhancements());
+    // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the PERSISTED enhancement
+    // preference right after it was restored from whatever the install actually has saved, so a
+    // harness case's starting preference never depends on what an earlier run's pick left behind.
+    // Unlike every other boot override on this page, this one calls the real persisting setter —
+    // see `dev::scenarios::arm_audio_enhancements`'s own doc for why.
+    if !controlled { crate::dev::scenarios::arm_audio_enhancements(); }
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,

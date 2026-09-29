@@ -82,6 +82,13 @@ pub(crate) struct TrackMenuState {
     /// `metadata::lang_key`, never by literal string equality). Owned rather than borrowed, so
     /// a rebuild (tab switch) needs nothing from the caller beyond `ps`/`meta`.
     yours: Vec<String>,
+    /// The Audio tab's Plex Pass DSP toggle rows (issue #266) — `None` when they are not offered
+    /// (I1/I2: absent, never greyed), else what they currently read out: "desired while pending,
+    /// applied otherwise" (`route::displayed_audio_enhancements`), same reasoning as
+    /// [`Self::offset_ms`]/[`Self::tone`] — a run of toggle presses inside one open counts from
+    /// what THIS panel last drew, and [`Self::rebuild`] is the only writer, on every (re)build of
+    /// the Audio tab (`new`/`focus_tab`).
+    enhance_shown: Option<crate::plex::AudioEnhancements>,
     table: TableView, // main-thread only
 }
 
@@ -97,6 +104,12 @@ pub(crate) enum TrackCommit {
     /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
     /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
     Audio(crate::route::CarriedAudio),
+    /// The Audio tab's Boost dialog / Normalize loudness toggle rows (issue #266): the full
+    /// preference after the flip, so the loop's `player::request_audio_enhancement` has both
+    /// bits regardless of which row was pressed. Built from [`TrackMenuState::enhance_shown`],
+    /// never re-derived from `ps` here — the panel owns its own rows, not the playback (see this
+    /// enum's own doc).
+    AudioEnhancement(crate::plex::AudioEnhancements),
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
@@ -151,6 +164,7 @@ impl TrackMenuState {
             offset_ms: crate::player::subtitle_offset_ms(),
             tone: crate::player::subtitle_tone(),
             yours,
+            enhance_shown: None,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -270,6 +284,32 @@ impl TrackMenuState {
         let tab = self.tab;
         let sel = self.table.sel;
         if tab == 0 {
+            // The two Plex Pass DSP rows (issue #266), appended after the audio tracks — see
+            // `Self::build_audio`. `enhance_base` is the row past the last real track; only a row
+            // at or past it belongs to them, so a track pick below never mistakes one for a track.
+            if let Some(shown) = self.enhance_shown {
+                let enhance_base = tracks(meta).map_or(0, |t| t.audio.len()) as c_int;
+                if sel >= enhance_base {
+                    let mut a = shown;
+                    let boost_row = sel == enhance_base;
+                    if boost_row {
+                        a.boost_dialog = !a.boost_dialog;
+                    } else {
+                        a.normalize_loudness = !a.normalize_loudness;
+                    }
+                    self.enhance_shown = Some(a);
+                    if let Some(row) = self.table.row_mut(sel) {
+                        row.toggle = Some(if boost_row { a.boost_dialog } else { a.normalize_loudness });
+                    }
+                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                        feature: crate::diag::schema::Feature::AudioEnhancement,
+                    });
+                    return TrackOk::Commit {
+                        commit: TrackCommit::AudioEnhancement(a),
+                        keep_open: true,
+                    };
+                }
+            }
             let changed = self.active_audio != sel;
             self.active_audio = sel;
             if changed {
@@ -343,11 +383,15 @@ impl TrackMenuState {
         }
     }
 
-    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Section {
+    /// The Audio tab's sections: the track list, plus — only when [`Self::enhance_shown`] is
+    /// `Some` (I1/I2: the row set itself is the gate, never a greyed row) — a second, headerless
+    /// section carrying the two Plex Pass DSP toggles, the same "own section, no header" idiom the
+    /// Subtitles tab's Timing/Color pair uses.
+    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Vec<Section> {
         let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
             Some(t) => t,
-            None => return sec,
+            None => return vec![sec],
         };
         let names = crate::player::SHARED.track_names.lock().unwrap();
         for (i, s) in d.audio.iter().enumerate() {
@@ -383,7 +427,14 @@ impl TrackMenuState {
             }
             sec = sec.row(row);
         }
-        sec
+        let mut sections = vec![sec];
+        if let Some(shown) = self.enhance_shown {
+            let enh = Section::new("")
+                .row(Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(shown.boost_dialog))
+                .row(Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness));
+            sections.push(enh);
+        }
+        sections
     }
 
     /// Build the Subtitles tab's sections and row map from the CURRENT state — the one place the
@@ -401,7 +452,11 @@ impl TrackMenuState {
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         if tab == 0 {
             self.targets = Vec::new();
-            self.table.set_sections(vec![self.build_audio(meta)], self.active_audio().max(0), slide);
+            // I1/I2: the offer is read from the live route on every (re)build, so the rows are
+            // simply ABSENT without Plex Pass (or an unknown subscription) — never drawn dim.
+            self.enhance_shown = crate::route::audio_enhancements_offered_live(ps)
+                .then(|| crate::route::displayed_audio_enhancements(ps));
+            self.table.set_sections(self.build_audio(meta), self.active_audio().max(0), slide);
         } else {
             let (sections, targets) = self.layout(ps, meta);
             let sel = sel_for_targets(&targets, self.active_sub);
@@ -427,7 +482,22 @@ impl TrackMenuState {
         Rect::new(px, py, pw, ph)
     }
 
-    pub(crate) fn update(&mut self, dt: f32) {
+    /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
+    /// this menu itself fired settles asynchronously (the server's `EnhancementOutcome`, or a
+    /// mid-play route change moving the family in or out of `Remux`), and the two rows must
+    /// track that the moment it lands rather than freeze at whatever `on_ok`/`rebuild` last drew
+    /// — otherwise a refusal leaves a row reading "On" for a preference the route already gave up
+    /// on. `rebuild`'s own recomputation of `enhance_shown` is the single source of truth here
+    /// too, so this only ever asks "did that answer change since last frame", never rebuilds it a
+    /// second, divergent way.
+    pub(crate) fn update(&mut self, dt: f32, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        if self.tab == 0 {
+            let live = crate::route::audio_enhancements_offered_live(ps)
+                .then(|| crate::route::displayed_audio_enhancements(ps));
+            if live != self.enhance_shown {
+                self.rebuild(ps, meta, 0, false);
+            }
+        }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let h = self.panel_rect().h;
         self.table.update(dt, h);
@@ -823,8 +893,9 @@ mod tests {
     }
 
     /// A store with `audio` installed as the playing item's audio list — the audio-tab
-    /// counterpart to [`store_with`].
-    fn store_with_audio(audio: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
+    /// counterpart to [`store_with`]. `pub(super)`: `enhancement_menu_tests` below builds the
+    /// same fixture shape for the Audio tab's DSP toggle rows (issue #266 PR 4).
+    pub(super) fn store_with_audio(audio: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
         let mut store = crate::stores::metadata::MetadataStore::default();
         let mut item = metadata::PlayingItem::with_subs(Vec::new());
         item.audio = audio;
@@ -1375,6 +1446,345 @@ mod tests {
     }
 }
 
+/// Issue #266 PR 4: the Audio tab's Boost dialog / Normalize loudness toggle rows. The offer/
+/// refusal gating (I1-I7) is graded once, pure, over `route::plan::enhancements_offered` by PR
+/// 2/3's own suites; these tests instead pin the MENU's own contract on top of that predicate:
+/// the rows are ABSENT (never greyed — I1/I2) exactly when the live route does not offer them,
+/// PRESENT with the right labels/toggle-state when it does, and a press flips the right bit and
+/// keeps the panel open.
+#[cfg(test)]
+mod enhancement_menu_tests {
+    use super::*;
+    use super::tests::store_with_audio;
+    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
+
+    /// One playing audio track — enough for `tracks(meta)` to be `Some` so `build_audio` does not
+    /// take its "no playing item" early return. The enhancement offer itself is driven entirely by
+    /// the `PlaybackSession` (`EnhTestFixture`), never by this store.
+    fn one_track_store() -> crate::stores::metadata::MetadataStore {
+        store_with_audio(vec![crate::metadata::Stream {
+            id: 501,
+            index: 0,
+            codec: "ac3".into(),
+            channels: 2,
+            default: true,
+            ..Default::default()
+        }])
+    }
+
+    /// Build the Audio tab against `route`. Caller holds `testlock::serial()` — `EnhTestFixture`
+    /// touches the process-global server registry and (when `in_flight`) `PLAYER_CONTROL`.
+    fn audio_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
+        let (ps, _sid) = enhancement_test_session(route);
+        let store = one_track_store();
+        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        (menu, ps)
+    }
+
+    fn teardown(ps: &crate::route::PlaybackSession) {
+        reset_player_control_for_test(ps);
+        crate::plex::reset_servers_for_test();
+    }
+
+    // ---- absent: I1-I7 ---------------------------------------------------------------------
+
+    #[test]
+    fn enh_rows_absent_no_pass() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) =
+            audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        assert_eq!(menu.table.sections.len(), 1, "track list only — no second section at all");
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_unknown_subscription() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            pass: crate::plex::serverinfo::Subscription::Unknown,
+            ..Default::default()
+        });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_incapable_track() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_dv() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { dv_declared: true, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_subtitle_shown() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { subtitle_shown: true, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    /// A restored sidecar reads the same live fact as an explicit subtitle pick — `cur_sub_sid !=
+    /// 0`, per `route::facts`'s own doc — so this is the identical input as the test above, named
+    /// for the other production path that sets it.
+    #[test]
+    fn enh_rows_absent_sidecar_shown() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { subtitle_shown: true, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    /// I5 excludes every non-Direct/Remux shape identically (HLS, a fixed rung, a relay); one
+    /// `Other`-family route stands for the group, since the predicate cannot tell them apart.
+    #[test]
+    fn enh_rows_absent_hls() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_reencode_rung() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_relay() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    /// A forced direct play (or a fixed rung/relay/non-Original MDE) never computes an
+    /// `auto_original` candidate at all — `base_present: false` reproduces exactly that.
+    #[test]
+    fn enh_rows_absent_forced() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { base_present: false, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_refused() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { refused: true, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_absent_server_default_audio() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: None, ..Default::default() });
+        assert_eq!(menu.enhance_shown, None);
+        teardown(&ps);
+    }
+
+    // ---- present -----------------------------------------------------------------------------
+
+    #[test]
+    fn enh_rows_present_pass_capable_direct() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
+        assert!(menu.enhance_shown.is_some());
+        assert_eq!(menu.table.sections.len(), 2, "track list + the headerless enhancement section");
+        let enh = &menu.table.sections[1];
+        assert_eq!(enh.header, "");
+        assert_eq!(enh.rows.len(), 2);
+        assert_eq!(enh.rows[0].label, crate::i18n::msg::widgets_tracks_boost_dialog());
+        assert_eq!(enh.rows[1].label, crate::i18n::msg::widgets_tracks_normalize_loudness());
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_rows_present_pass_capable_enhanced_remux() {
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(true),
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            ..Default::default()
+        });
+        assert!(menu.enhance_shown.is_some());
+        let enh = &menu.table.sections[1];
+        assert_eq!(enh.rows[0].toggle, Some(true));
+        assert_eq!(enh.rows[1].toggle, Some(false));
+        teardown(&ps);
+    }
+
+    // ---- row indices / toggling ---------------------------------------------------------------
+
+    #[test]
+    fn enh_rows_follow_audio_rows_indices_stable() {
+        let _g = crate::testlock::serial();
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
+        let store = store_with_audio(vec![
+            crate::metadata::Stream {
+                id: 501,
+                index: 0,
+                codec: "ac3".into(),
+                channels: 2,
+                default: true,
+                ..Default::default()
+            },
+            crate::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
+        ]);
+        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        assert_eq!(menu.table.sections[0].rows.len(), 2, "both tracks in the track section");
+        let enh = &menu.table.sections[1];
+        assert_eq!(enh.rows.len(), 2, "the toggle rows sit in their own section, right after the tracks");
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_ok_toggles_and_keeps_open() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
+        let store = one_track_store();
+        menu.focus_row(1); // row 0 = the one audio track; row 1 = Boost dialog
+        let outcome = menu.on_ok(store.view());
+        assert_eq!(
+            outcome,
+            TrackOk::Commit {
+                commit: TrackCommit::AudioEnhancement(crate::plex::AudioEnhancements {
+                    boost_dialog: true,
+                    normalize_loudness: false,
+                }),
+                keep_open: true,
+            }
+        );
+        assert_eq!(menu.table.sections[1].rows[0].toggle, Some(true));
+
+        // a second press on the SAME row flips it back, and the panel is still open to take it
+        let outcome = menu.on_ok(store.view());
+        assert_eq!(
+            outcome,
+            TrackOk::Commit {
+                commit: TrackCommit::AudioEnhancement(crate::plex::AudioEnhancements::NONE),
+                keep_open: true,
+            }
+        );
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_row_shows_desired_while_pending_applied_otherwise() {
+        let _g = crate::testlock::serial();
+        // Settled (no user edit queued): the row reads what the contract actually APPLIED.
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            ..Default::default()
+        });
+        assert_eq!(
+            menu.enhance_shown,
+            Some(crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }),
+        );
+        teardown(&ps);
+        drop(_g);
+
+        // In flight (a user edit queued, not yet settled): the row reads the DESIRED preference.
+        let _g = crate::testlock::serial();
+        let desired = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+        crate::player::set_audio_enhancements(desired);
+        let (menu, ps) = audio_tab(EnhTestFixture { in_flight: true, ..Default::default() });
+        assert_eq!(menu.enhance_shown, Some(desired));
+        crate::player::set_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+        teardown(&ps);
+    }
+
+    #[test]
+    fn enh_row_stops_reading_on_once_a_live_refusal_settles() {
+        let _g = crate::testlock::serial();
+        // Opens reading Normalize Loudness ON — the same shape `on_ok`'s own optimistic
+        // `self.enhance_shown = Some(a)` leaves a freshly-picked row in, before the server has
+        // answered.
+        let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            ..Default::default()
+        });
+        assert_eq!(menu.table.sections[1].rows[1].toggle, Some(true));
+
+        // The SAME playback settles as Refused (I5 excludes it from the offer entirely) — a LIVE
+        // change this menu never caused, delivered exactly the way `PlayerOverlayScreen`'s Tick
+        // handler feeds it: a fresh `&PlaybackSession` from the host every frame, not a rebuild
+        // the panel triggers itself.
+        let (ps_refused, _sid2) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
+        let store = one_track_store();
+        menu.update(0.0, &ps_refused, store.view());
+        assert_eq!(menu.enhance_shown, None, "a settled refusal must drop the offer, not leave a row reading On");
+        assert_eq!(menu.table.sections.len(), 1, "the headerless DSP section goes with it");
+
+        teardown(&ps_ok);
+    }
+
+    // ---- locale + width gates ------------------------------------------------------------------
+
+    /// **No row label ever leaks a "Plex Pass" mention**, in any shipped locale — the rows are
+    /// ordinary audio settings; the gate that hid them from everyone else is never named in
+    /// prose the viewer who HAS them ever reads.
+    #[test]
+    fn enh_locale_values_never_mention_plex_pass() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            for value in [
+                crate::i18n::msg::widgets_tracks_boost_dialog(),
+                crate::i18n::msg::widgets_tracks_normalize_loudness(),
+            ] {
+                let lower = value.to_lowercase();
+                assert!(!lower.contains("plex pass"), "{language:?}: {value:?} names the gate");
+            }
+        }
+    }
+
+    /// **Every enhancement row fits the Audio panel in every shipped language**, same discipline
+    /// as `every_subtitles_row_fits_the_panel_in_every_language` above over the Subtitles panel.
+    ///
+    /// `locales/be/widgets.json`'s `normalize_loudness` reads "Нармалізацыя гуку" ("normalization
+    /// of sound") rather than the more literal "Нармалізацыя гучнасці" ("normalization of
+    /// loudness") on purpose: this test measures the literal phrase at 378px against this panel's
+    /// 369px column — 9px over — while "гуку" measures under. Re-check with this test before
+    /// changing the Belarusian string back; do not assume either phrase's width from the source
+    /// text alone.
+    #[test]
+    fn enh_rows_fit_width_560_es_be() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let (menu, ps) = audio_tab(EnhTestFixture {
+                applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+                ..Default::default()
+            });
+            out.extend(
+                menu.table
+                    .elided_rows(AUDIO_PANEL_W, &ShippedMeasure, HEADROOM)
+                    .into_iter()
+                    .map(|e| format!("{}: {e}", language.tag())),
+            );
+            teardown(&ps);
+        }
+        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+    }
+}
+
 #[cfg(test)]
 mod focus_tests {
     use super::*;
@@ -1421,6 +1831,7 @@ mod focus_tests {
             offset_ms: 0,
             tone: SubtitleTone::White,
             yours: Vec::new(),
+            enhance_shown: None,
             table,
         }
     }
