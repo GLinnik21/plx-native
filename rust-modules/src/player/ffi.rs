@@ -114,6 +114,16 @@ pub(crate) fn play_calls_for_test() -> u64 {
 }
 
 #[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn clock_run_for_test(base_ns: i64) {
+    sys::clock_run_for_test(base_ns);
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn clock_state_for_test() -> (i64, bool) {
+    sys::clock_state_for_test()
+}
+
+#[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_callback_intercepts_for_test(value: u32) {
     sys::force_callback_intercepts_for_test(value);
 }

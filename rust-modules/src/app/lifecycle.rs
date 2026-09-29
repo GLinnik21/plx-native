@@ -38,6 +38,9 @@ pub(crate) fn set_transport_paused(
     pa: &mut crate::player::adapter::PlayerAdapter,
     value: bool,
 ) -> bool {
+    // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
+    // press that finds the transport already in the state it asks for.
+    crate::player::claim_hold::note_user_transport();
     if paused() == value {
         return true;
     }

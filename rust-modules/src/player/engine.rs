@@ -1675,6 +1675,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             crate::route::clear_url(ps);
             SHARED.reset_session();
             TX.reset();
+            super::claim_hold::clear();
             // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
             // already spent. Publish the completed stop rather than latching `Stopping` — see
             // `route::finish_engine_teardown`.
@@ -1855,6 +1856,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     } else {
         SHARED.reset_session();
         TX.reset();
+        super::claim_hold::clear();
     }
     if !for_reload {
         // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload

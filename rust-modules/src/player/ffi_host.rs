@@ -297,6 +297,22 @@ pub(super) fn reset_native_lifecycle_for_test() {
     Clock::rewind();
 }
 
+/// Start the sink clock running at `base_ns` in the fed-PTS space with plenty of fed media ahead,
+/// so a test can watch whether it advances. Test-only: production starts it through `sf_play`.
+#[cfg(test)]
+pub(super) fn clock_run_for_test(base_ns: i64) {
+    Clock::rewind();
+    BASE_NS.store(base_ns, Relaxed);
+    FED_MAX_NS.store(i64::MAX / 2, Relaxed);
+    RESUMED_AT_MS.store(now_ms(), Relaxed);
+    PLAYING.store(true, Relaxed);
+}
+/// The sink clock's position and whether it is running. Test-only.
+#[cfg(test)]
+pub(super) fn clock_state_for_test() -> (i64, bool) {
+    (Clock::position_ns(), PLAYING.load(Relaxed))
+}
+
 impl Clock {
     /// Where the sink claims to be presenting, in the fed-PTS timeline `sf_on_event` expects.
     ///

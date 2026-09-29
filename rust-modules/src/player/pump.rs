@@ -908,7 +908,13 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         // while this is pending; it only starts returning `Some` again once `run_claim_tail`
         // settles the drained landing.
         if let Some((action, tail, pending_seek, user_target)) = crate::route::take_ready_retranscode_claim(ps) {
-            if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
+            // The claim held presentation at its offset for the flight (`claim_hold`). Give play
+            // back only once the tail has run: a rejection left the same Engine playing, and an
+            // accepted claim's reload has kept the pause, so the Play lands on the NEW stream.
+            let hold = super::claim_hold::take(action.serial());
+            let replaced = run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+            super::claim_hold::release(pa, hold);
+            if replaced {
                 return;
             }
             (eng, mt) = reacquire_engine(pa);
@@ -934,9 +940,13 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                                 (eng, mt) = reacquire_engine(pa);
                             }
                             crate::route::RetranscodeClaimDispatch::Pending => {
-                                // A worker now owns the PMS half; nothing to do this frame. The
-                                // drain at the top of this block picks up the landing later —
-                                // never a join, never a blocked frame.
+                                // A worker now owns the PMS half. The drain at the top of this
+                                // block picks up the landing later — never a join, never a
+                                // blocked frame. Meanwhile presentation holds at the claim offset:
+                                // the landing reloads THERE, so letting the flight play would show
+                                // the same seconds twice.
+                                super::claim_hold::engage(pa, action.serial());
+                                (eng, mt) = reacquire_engine(pa);
                             }
                         }
                     }

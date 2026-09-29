@@ -743,6 +743,20 @@ pub(crate) struct ClaimedRouteAction {
     claim_snapshot: Option<Box<ClaimSnapshot>>,
 }
 
+impl ClaimedRouteAction {
+    /// The claim's identity, for a holder outside `route` (the player's presentation hold) that
+    /// must tell THIS claim's flight from any other.
+    pub(crate) fn serial(&self) -> u64 {
+        self.serial
+    }
+}
+
+/// Whether the claim with this serial is still the one `ControlPhase` is waiting on: false after a
+/// teardown, a fresh playback request or its own settlement.
+pub(crate) fn claim_is_applying(serial: u64) -> bool {
+    control_phase_is_applying(serial)
+}
+
 /// See [`ClaimedRouteAction::claim_snapshot`]. `projection` is intentionally not `Debug` (it embeds
 /// [`AutoOriginalCandidate`], which carries no derive) — the manual impl below reports the two
 /// scalar fields, which are what a log line about a stale claim actually wants.
