@@ -3856,7 +3856,13 @@ def op_audio_enhancement_burn(lines):
     m = RE_ENHANCEMENT_APPLIED.search(hit)
     if not m or m.group(2) != "1":
         return False, f"re-applied line does not show loudness=1 :: {hit.strip()}"
-    after = lines[lines.index(hit) + 1:]
+    # `hit` is the LAST `enhancement: applied` line by content, but a live-reconcile manifest logs
+    # TWO identical such lines (the cold-start remux, then the burn reroute); `lines.index(hit)`
+    # would silently return the FIRST occurrence and grade the wrong (pre-reroute) stream. Find the
+    # actual position of the LAST matching line instead of the first equal-text one.
+    hit_index = next(i for i in range(len(lines) - 1, -1, -1)
+                      if RE_ENHANCEMENT_APPLIED.search(lines[i]))
+    after = lines[hit_index + 1:]
 
     stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
     if stream is None:

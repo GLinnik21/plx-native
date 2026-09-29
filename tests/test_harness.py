@@ -3357,6 +3357,33 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertFalse(ok, why)
         self.assertIn("re-encode shape", why)
 
+    def test_audio_enhancement_burn_op_grades_the_second_identical_applied_line(self):
+        """A LIVE RECONCILE manifest logs TWO `enhancement: applied boost=.. loudness=..` lines
+        with IDENTICAL text: the boot-time preference decorates the candidate as an ordinary
+        remux first (no subtitle in the picture yet), then the pick reroutes it to a burn,
+        producing a second, textually-identical `applied` line. `hits[-1]` correctly picks the
+        LAST line by content, but `lines.index(hit)` then re-finds the FIRST occurrence of that
+        same text and grades the stream that follows the wrong (pre-reroute) pick — exactly what
+        happened on the real TV log at `/tmp/enh-burn-tv3/logs/
+        audio_enhancement_burns_embedded_subtitle.log`, where the grader failed a case whose
+        actual last-pick stream (around line 201) had the correct burn shape.
+        """
+        applied = "enhancement: applied boost=0 loudness=1"
+        remux_path = (
+            "/video/:/transcode/universal/start.mkv?directStreamAudio=1&audioStreamID=10976&"
+            "normalizeLoudness=1"
+        )
+        burn_path = (
+            "/video/:/transcode/universal/start.mkv?directStream=1&videoResolution=3840x2160&"
+            "maxVideoBitrate=60000&audioStreamID=10976&normalizeLoudness=1&"
+            "subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        remux_stream = f"stream: 1.2.3.4 path={remux_path}"
+        burn_stream = f"stream: 1.2.3.4 path={burn_path}"
+        lines = [applied, remux_stream, applied, burn_stream]
+        ok, why = run.op_audio_enhancement_burn(lines)
+        self.assertTrue(ok, why)
+
     def test_audio_enhancement_dispatch_picks_release_by_settle(self):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""
