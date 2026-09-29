@@ -1899,21 +1899,9 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                     stop_tx.send(first).expect("publish stop request");
                 }
             } else if resource_closed {
-                socket
-                    .write_all(
-                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .expect("terminated resource response");
+                write_status(&mut socket, 503);
             } else {
-                write!(
-                    socket,
-                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes - 1,
-                    bytes * 2,
-                    bytes,
-                )
-                .expect("source headers");
-                socket.write_all(&vec![0x55; bytes]).expect("source body");
+                write_partial(&mut socket, bytes);
             }
         }
         all_tx.send(requests).expect("publish direct lifecycle");

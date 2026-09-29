@@ -4924,24 +4924,8 @@ mod audio_enhancements_tests {
             "a NONE preference must stay omitted, exactly like every other preference in this \
              struct, so a session written before this field existed serializes unchanged: {json}"
         );
-        let prefs_json = serde_json::to_string(
-            &serde_json::to_value(&CanonicalSessionPreferences {
-                language: session.language,
-                playback_quality: session.playback_quality,
-                direct_play_mode: session.direct_play_mode,
-                auto_sign_in: session.auto_sign_in,
-                last_library: session.last_library.clone(),
-                library_sorts: session.library_sorts.clone(),
-                last_hero_blur: session.last_hero_blur,
-                trailer_autoplay: session.trailer_autoplay,
-                subtitle_tone: session.subtitle_tone,
-                plaintext_consent: session.plaintext_consent.clone(),
-                audio_enhancements: session.audio_enhancements,
-                extensions: BTreeMap::new(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let prefs_json =
+            serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
         assert!(
             !prefs_json.contains("audio_enhancements"),
             "the canonical public preferences payload must omit it too: {prefs_json}"

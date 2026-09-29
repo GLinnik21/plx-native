@@ -3138,12 +3138,8 @@ pub(crate) fn arm_auto_fixture(
             dovi: crate::metadata::Dovi::NONE,
             dv_decision: crate::metadata::DvDecision::NONE,
             audio: Some(CarriedAudio {
-                sid: 0,
-                ordinal: -1,
                 codec: "aac".into(),
-                channels: 0,
-                can_normalize_loudness: false,
-                immersive: false,
+                ..CarriedAudio::named(0, -1)
             }),
             subtitle_ordinal: None,
         });
@@ -7435,12 +7431,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
         immersive: false,
     });
     ps.auto_original = route.base_present.then(|| AutoOriginalCandidate {
-        url: "https://example.invalid/source.mkv".into(),
-        probe_part: "https://example.invalid/source.mkv".into(),
         direct: route.remux.is_none(),
-        vcodec: "hevc".into(),
-        fps: 23.976,
-        dovi: crate::metadata::Dovi::NONE,
         dv_decision: if route.dv_declared {
             crate::metadata::DvDecision {
                 capability: crate::webos::caps::DvCapability::Supported,
@@ -7454,7 +7445,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
             crate::metadata::DvDecision::NONE
         },
         audio: ps.cur_audio.clone(),
-        subtitle_ordinal: None,
+        ..test_support::test_original_candidate(None)
     });
 
     if route.in_flight {

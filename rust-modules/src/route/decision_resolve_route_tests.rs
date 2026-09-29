@@ -60,7 +60,7 @@ fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
     reset_session(&mut ps);
     { let s = &mut ps; {
         s.url = "https://example.invalid/failed-candidate.mkv".into();
-        s.cur_audio = Some(CarriedAudio { sid: 17, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false });
+        s.cur_audio = Some(CarriedAudio::named(17, -1));
     } };
     let failed_projection = route_projection(&ps);
     {
@@ -571,7 +571,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
         s.cur_contract.no_video_copy = true;
         s.cur_contract.ceiling = Some(crate::abr::Rung::P480.ceiling());
         s.cur_auto_original_watched = false;
-        s.cur_audio = Some(CarriedAudio { sid: 17, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false });
+        s.cur_audio = Some(CarriedAudio::named(17, -1));
         s.cur_sub_sid = 23;
         s.stream_vcodec = "h264".into();
         s.stream_acodec = "aac".into();
@@ -590,7 +590,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
         s.cur_contract.no_video_copy = false;
         s.cur_contract.ceiling = Some(crate::abr::Rung::Uhd.ceiling());
         s.cur_auto_original_watched = true;
-        s.cur_audio = Some(CarriedAudio { sid: 99, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false });
+        s.cur_audio = Some(CarriedAudio::named(99, -1));
         s.cur_sub_sid = 101;
         s.stream_vcodec = "hevc".into();
         s.stream_acodec = "eac3".into();
@@ -637,7 +637,7 @@ fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
             seconds_per_segment: 2,
         };
         s.cur_contract.ceiling = Some(crate::abr::Rung::P480.ceiling());
-        s.cur_audio = Some(CarriedAudio { sid: 17, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false });
+        s.cur_audio = Some(CarriedAudio::named(17, -1));
         s.cur_sub_sid = 23;
         s.stream_vcodec = "h264".into();
         s.stream_acodec = "aac".into();
@@ -652,7 +652,7 @@ fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
     let worker = worker_ticket();
 
     begin_user_contract_boundary();
-    { let s = &mut ps; s.cur_audio = Some(CarriedAudio { sid: 99, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false }) };
+    { let s = &mut ps; s.cur_audio = Some(CarriedAudio::named(99, -1)) };
     request_user_route_intent(&ps, UserRouteIntent::Retranscode);
     assert!(replace_active_hls_for(
         &worker,
@@ -1462,7 +1462,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     { let s = &mut ps; {
         s.request = Some(request.clone());
         s.requested_resume_ns = 3_600_000_000_000;
-        s.cur_audio = Some(CarriedAudio { sid: 17, ordinal: -1, codec: String::new(), channels: 0, can_normalize_loudness: false, immersive: false });
+        s.cur_audio = Some(CarriedAudio::named(17, -1));
         s.cur_sub_sid = 23;
     } };
 
@@ -1608,7 +1608,7 @@ fn encoder_cleanup_ledger_releases_only_on_exact_absence() {
 #[cfg(feature = "devtriggers")]
 fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
     if !crate::net::global_init() || !crate::curlio::available() {
@@ -1640,17 +1640,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
             headers.push(line);
         }
         tx.send((first, headers)).expect("publish request");
-        write!(
-            socket,
-            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            probe_bytes - 1,
-            probe_bytes * 2,
-            probe_bytes,
-        )
-        .expect("source headers");
-        socket
-            .write_all(&vec![0x55; probe_bytes])
-            .expect("source body");
+        write_partial(&mut socket, probe_bytes);
     });
 
     let sid = crate::plex::register_for_test(
@@ -1814,7 +1804,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
 #[cfg(feature = "devtriggers")]
 fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
     if !crate::net::global_init() || !crate::curlio::available() {
@@ -1839,17 +1829,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
             "http://fixture.invalid/new.m3u8",
             crate::abr::Rung::P720,
         );
-        write!(
-            socket,
-            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            probe_bytes - 1,
-            probe_bytes * 2,
-            probe_bytes,
-        )
-        .expect("source headers");
-        socket
-            .write_all(&vec![0x55; probe_bytes])
-            .expect("source body");
+        write_partial(&mut socket, probe_bytes);
     });
 
     let sid = crate::plex::register_for_test(
@@ -1908,7 +1888,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
 #[cfg(feature = "devtriggers")]
 fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
 
     let _g = fresh_registry(&mut ps);
     if !crate::net::global_init() || !crate::curlio::available() {
@@ -1934,17 +1914,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
             }
             requests.push(line);
         }
-        write!(
-            socket,
-            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            probe_bytes - 1,
-            probe_bytes * 2,
-            probe_bytes,
-        )
-        .expect("source headers");
-        socket
-            .write_all(&vec![0x55; probe_bytes])
-            .expect("source body");
+        write_partial(&mut socket, probe_bytes);
         drop(socket);
 
         listener.set_nonblocking(true).unwrap();

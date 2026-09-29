@@ -1871,6 +1871,36 @@ mod tests {
     use super::*;
     use crate::route::{reset_player_control_for_test, EnhTestFixture};
 
+    /// `enhancement_test_session` registers a synthetic server AND a playback session; every
+    /// caller must undo both in the same order, and the five call sites below once repeated that
+    /// two-line teardown by hand. This wraps the pair as an RAII scope instead: `Deref` lets a
+    /// guard stand in for the `PlaybackSession` at every read site, and `Drop` runs the identical
+    /// teardown at the identical point — end of the owning block — that the manual calls did.
+    struct EnhTestSession {
+        ps: crate::route::PlaybackSession,
+    }
+
+    impl EnhTestSession {
+        fn new(fixture: EnhTestFixture) -> Self {
+            let (ps, _sid) = crate::route::enhancement_test_session(fixture);
+            Self { ps }
+        }
+    }
+
+    impl std::ops::Deref for EnhTestSession {
+        type Target = crate::route::PlaybackSession;
+        fn deref(&self) -> &Self::Target {
+            &self.ps
+        }
+    }
+
+    impl Drop for EnhTestSession {
+        fn drop(&mut self) {
+            reset_player_control_for_test(&self.ps);
+            crate::plex::reset_servers_for_test();
+        }
+    }
+
     /// Issue #266 PR 4: the Audio row's " · dialog boost"/" · loudness" suffix names what the
     /// server DEMONSTRABLY did with the ask (`EnhancementOutcome::Applied`), never merely what the
     /// viewer requested — `Unverified`/`Refused`/`Off` all say nothing was provably added, so the
@@ -1884,8 +1914,7 @@ mod tests {
             (crate::plex::AudioEnhancements::NONE, false, false), // Off: nothing asked
             (both, true, false),   // Refused: asked, but the server did not honour it
         ] {
-            let (ps, _sid) =
-                crate::route::enhancement_test_session(EnhTestFixture { applied, refused, ..Default::default() });
+            let ps = EnhTestSession::new(EnhTestFixture { applied, refused, ..Default::default() });
             let d = crate::player::Diag::default();
             let audio_row = pipeline_rows(&ps, &d, (0, 0, 0), 0)
                 .into_iter()
@@ -1897,8 +1926,6 @@ mod tests {
                 expect_suffix,
                 "applied={applied:?} refused={refused} -> {val:?}",
             );
-            reset_player_control_for_test(&ps);
-            crate::plex::reset_servers_for_test();
         }
     }
 
@@ -1911,34 +1938,33 @@ mod tests {
         let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
         let d = crate::player::Diag::default();
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture::default());
-        assert!(!route_line(&ps, &d).contains("enh="), "Off: no enh= at all");
-        reset_player_control_for_test(&ps);
-        crate::plex::reset_servers_for_test();
+        {
+            let ps = EnhTestSession::new(EnhTestFixture::default());
+            assert!(!route_line(&ps, &d).contains("enh="), "Off: no enh= at all");
+        }
 
-        let (ps, _sid) =
-            crate::route::enhancement_test_session(EnhTestFixture { applied: asked, ..Default::default() });
-        assert!(route_line(&ps, &d).contains("enh=applied"));
-        reset_player_control_for_test(&ps);
-        crate::plex::reset_servers_for_test();
+        {
+            let ps = EnhTestSession::new(EnhTestFixture { applied: asked, ..Default::default() });
+            assert!(route_line(&ps, &d).contains("enh=applied"));
+        }
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture {
-            applied: asked,
-            refused: true,
-            ..Default::default()
-        });
-        assert!(route_line(&ps, &d).contains("enh=refused"));
-        reset_player_control_for_test(&ps);
-        crate::plex::reset_servers_for_test();
+        {
+            let ps = EnhTestSession::new(EnhTestFixture {
+                applied: asked,
+                refused: true,
+                ..Default::default()
+            });
+            assert!(route_line(&ps, &d).contains("enh=refused"));
+        }
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture {
-            applied: asked,
-            unverified: true,
-            ..Default::default()
-        });
-        assert!(route_line(&ps, &d).contains("enh=unverified"));
-        reset_player_control_for_test(&ps);
-        crate::plex::reset_servers_for_test();
+        {
+            let ps = EnhTestSession::new(EnhTestFixture {
+                applied: asked,
+                unverified: true,
+                ..Default::default()
+            });
+            assert!(route_line(&ps, &d).contains("enh=unverified"));
+        }
     }
     use crate::ui::consts::{SCR_H, SCR_W};
 
