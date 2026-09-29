@@ -31,8 +31,21 @@ use crate::i18n::msg;
 ///   `collection_metadata_is_dropped_but_collection_shelves_of_movies_survive`), so naming the
 ///   library again would repeat a heading the section page already carries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Scope {
-    Home,
+pub(crate) enum Scope<'a> {
+    /// `library` is the hub's own `librarySectionTitle` (present on every item PMS returns, per
+    /// `docs/pms-api.md` §2) — the per-library form needs it to interpolate ("Recently Added in
+    /// {library}"), so an empty `library` falls back to `pms_title` rather than drawing "Recently
+    /// Added in" with nothing after it. `identifier_is_unique` is whether `hub_identifier` names
+    /// exactly ONE hub in the same `/hubs` response (see [`crate::pms::project`], which counts
+    /// before it loops): the per-type form ("Recently Added Movies") when a household owns
+    /// exactly one library of that type and PMS answers with one such hub, or the per-library form
+    /// the moment PMS mints more than one because it is disambiguating between same-type
+    /// libraries (`home_keeps_recently_added_rows_for_two_same_type_libraries`,
+    /// `pms_multi_source_merge_tests.rs`). Both fields are meaningless at [`Scope::Section`]: every
+    /// id it sees there is already scoped to one library by construction, and PMS itself drops the
+    /// "in {library}" qualifier there, so carrying them on that variant would just be an argument
+    /// every Section-scope caller has to invent.
+    Home { library: &'a str, identifier_is_unique: bool },
     Section,
 }
 
@@ -77,30 +90,9 @@ fn recently_added_whole_server_type(hub_identifier: &str) -> Option<fn() -> &'st
     }
 }
 
-/// The one hub-title override, for both [`Scope`]s.
-///
-/// `library` is the hub's own `librarySectionTitle` (present on every item PMS returns, per
-/// `docs/pms-api.md` §2) — Home's per-library form needs it to interpolate ("Recently Added in
-/// {library}"), so an empty `library` there (an older/partial fixture, or a payload PMS sent
-/// without it) falls back to `pms_title` rather than drawing "Recently Added in" with nothing
-/// after it. Section scope's string carries no `{library}`, so it never consults this argument.
-///
-/// `identifier_is_unique` is Home-only: whether `hub_identifier` names exactly ONE hub in the
-/// same `/hubs` response (see [`crate::pms::project`], which counts before it loops). It decides
-/// a `home.<type>.recent` hub's wording — the per-type form ("Recently Added Movies") when a
-/// household owns exactly one library of that type and PMS answers with one such hub, or the
-/// per-library form ("Recently Added in {library}") the moment PMS mints more than one because it
-/// is disambiguating between same-type libraries
-/// (`home_keeps_recently_added_rows_for_two_same_type_libraries`,
-/// `pms_multi_source_merge_tests.rs`). Section scope ignores it: every id it sees there is already
-/// scoped to one library by construction.
-pub(crate) fn localized_hub_title(
-    scope: Scope,
-    hub_identifier: &str,
-    pms_title: &str,
-    library: &str,
-    identifier_is_unique: bool,
-) -> String {
+/// The one hub-title override, for both [`Scope`]s — see the enum's doc for what each variant's
+/// payload means and why only [`Scope::Home`] carries one.
+pub(crate) fn localized_hub_title(scope: Scope<'_>, hub_identifier: &str, pms_title: &str) -> String {
     if is_recently_added_hub(hub_identifier) {
         match scope {
             Scope::Section => {
@@ -108,7 +100,7 @@ pub(crate) fn localized_hub_title(
                 // here, and so does the override; no library name is needed to say it.
                 return msg::browse_library_hub_recently_added().to_string();
             }
-            Scope::Home => {
+            Scope::Home { library, identifier_is_unique } => {
                 // A whole-server hub PMS minted because there is exactly one library of that
                 // type reads more naturally by type ("Recently Added Movies") than by library
                 // name ("Recently Added in Movies") — the per-library form is reserved for when
@@ -127,8 +119,8 @@ pub(crate) fn localized_hub_title(
         }
     }
     match (scope, hub_identifier) {
-        (Scope::Home, "home.ondeck" | "home.onDeck") => msg::browse_home_hub_on_deck().to_string(),
-        (Scope::Home, "home.playlists") => msg::browse_home_hub_recent_playlists().to_string(),
+        (Scope::Home { .. }, "home.ondeck" | "home.onDeck") => msg::browse_home_hub_on_deck().to_string(),
+        (Scope::Home { .. }, "home.playlists") => msg::browse_home_hub_recent_playlists().to_string(),
         _ => pms_title.to_string(),
     }
 }

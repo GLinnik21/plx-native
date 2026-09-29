@@ -863,11 +863,9 @@ fn project(
             hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
         out.shelves.push(Shelf {
             title: crate::plex::hub_title::localized_hub_title(
-                crate::plex::hub_title::Scope::Home,
+                crate::plex::hub_title::Scope::Home { library, identifier_is_unique },
                 &hub.hub_identifier,
                 &hub.title,
-                library,
-                identifier_is_unique,
             ),
             hub_id: hub.hub_identifier.clone(),
             key: hub.key.clone(),

@@ -1244,13 +1244,12 @@ fn title_marquee(
     text: *const c_char,
     y: f32,
     glyph: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    w: f32,
 ) {
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = play_icon_size(sz);
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
-    let w = title_w(text, measure);
     let draw_glyph = |gx: f32| {
         let (ct, cb) = crate::text::text_cap_band(sz, bold);
         let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
@@ -1354,19 +1353,24 @@ fn draw_label_block(
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
     let elide_caption = |s: &str, w: f32| crate::text::elide_by(s, w, false, |t| measure.width_str(t, csz, false));
-    let title_run = label.title.as_ref().map_or(0.0, |t| {
-        (glyph_lead(theme::size::LABEL, label.glyph) + title_w(t.as_ptr(), measure)).min(full)
-    });
-    let caption_run = label.caption.as_ref().map_or(0.0, |c| {
-        measure.width_str(&elide_caption(&c.to_string_lossy(), full), csz, false)
+    // Measured once and threaded through: the title's drawn width feeds both how wide the block
+    // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
+    let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
+    let title_run = title_w_val.map_or(0.0, |w| (glyph_lead(theme::size::LABEL, label.glyph) + w).min(full));
+    // The caption string is converted from the raw `CStr` once and reused for both elide passes
+    // below, even though the two passes elide to different budgets (`full` to size the block,
+    // `at.w` — never wider, per `place_label` — to fit the block that was actually placed).
+    let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
+    let caption_run = caption_str.as_ref().map_or(0.0, |s| {
+        measure.width_str(&elide_caption(s, full), csz, false)
     });
     let at = place_label(p, rect, sty, title_run.max(caption_run));
     if let Some(t) = &label.title {
-        title_marquee(p, at, t.as_ptr(), y, label.glyph, measure);
+        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0));
         y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
-    if let Some(c) = &label.caption {
-        if let Ok(tc) = std::ffi::CString::new(elide_caption(&c.to_string_lossy(), at.w)) {
+    if let Some(s) = &caption_str {
+        if let Ok(tc) = std::ffi::CString::new(elide_caption(s, at.w)) {
             let w = measure.width(&tc, csz, false);
             p.text(tc.as_ptr(), at.run_x(w), y, csz, theme::TEXT_SECONDARY, 0, 0);
         }
