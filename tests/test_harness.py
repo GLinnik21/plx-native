@@ -3312,6 +3312,51 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement_release(["some unrelated line"])
         self.assertFalse(ok, why)
 
+    def test_audio_enhancement_burn_op_tells_reencode_from_remux(self):
+        """The grader used to fail EVERY correct Burn: it rejected any post-pick stream whose path
+        contained `start.mkv`, but a Burn (a real re-encode) is ALSO served from `start.mkv`
+        (`TranscodeDelivery::ProgressiveMkv`) — only the ordinary enhanced REMUX is disqualified,
+        and the two are told apart by the query fields `transcoder.rs`'s `transcode_query` sets
+        (transcoder.rs:311-324): a remux carries `directStreamAudio=1` and no cap; a re-encode
+        carries `videoResolution=`+`maxVideoBitrate=` and never `directStreamAudio`.
+
+        Fixture paths below are lifted from real TV log lines (redacted of nothing but the host,
+        which `redact()` already strips): the remux shape carries `directStreamAudio=1`, the burn
+        shape carries `directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000&
+        audioStreamID=10976&normalizeLoudness=1&subtitleStreamID=10980&subtitleSize=100&
+        subtitles=burn`.
+        """
+        applied = "enhancement: applied boost=0 loudness=1"
+        burn_path = (
+            "/video/:/transcode/universal/start.mkv?directStream=1&videoResolution=3840x2160&"
+            "maxVideoBitrate=60000&audioStreamID=10976&normalizeLoudness=1&"
+            "subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        remux_path = (
+            "/video/:/transcode/universal/start.mkv?directStreamAudio=1&audioStreamID=10976&"
+            "normalizeLoudness=1&subtitleStreamID=10980&subtitleSize=100&subtitles=burn"
+        )
+        burn_stream = f"stream: 1.2.3.4 path={burn_path}"
+        remux_stream = f"stream: 1.2.3.4 path={remux_path}"
+
+        # The correct Burn: the grader must accept it. This is the case that used to fail outright
+        # because `"start.mkv" in path` is true for a Burn too.
+        ok, why = run.op_audio_enhancement_burn([applied, burn_stream])
+        self.assertTrue(ok, why)
+
+        # The remux shape must still fail — a burn denies the remux flavour
+        # (`enhancement_policy`'s `remux: !force_burn`), so seeing `directStreamAudio=1` after the
+        # pick means the server never re-encoded at all.
+        ok, why = run.op_audio_enhancement_burn([applied, remux_stream])
+        self.assertFalse(ok, why)
+        self.assertIn("ordinary enhanced remux", why)
+
+        # A stream that is neither shape (no cap, no directStreamAudio) is caught too, distinctly.
+        neither_stream = "stream: 1.2.3.4 path=/video/:/transcode/universal/start.mkv?subtitleStreamID=10980&subtitles=burn"
+        ok, why = run.op_audio_enhancement_burn([applied, neither_stream])
+        self.assertFalse(ok, why)
+        self.assertIn("re-encode shape", why)
+
     def test_audio_enhancement_dispatch_picks_release_by_settle(self):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""

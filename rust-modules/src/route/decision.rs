@@ -6859,6 +6859,32 @@ fn retranscode_contract(ps: &PlaybackSession) -> crate::plex::EncodeContract {
     }
 }
 
+/// Log the harness-readable pair every enhancement-graded decision produces, shared by
+/// `retranscode_as` (the live reconcile path) and `route::plan`'s cold-start branch — the two
+/// places that classify a fresh `/decision` body and must therefore agree on the exact wording.
+/// `output_codecs` is `None` when no decision body was available to read a codec pair from (the
+/// `decision output:` line is then skipped, matching the caller having nothing to report); the
+/// `enhancement: applied ..` line is printed only when `outcome` is [`EnhancementOutcome::Applied`]
+/// — a harness-readable statement of what actually took effect, distinct from the ask, so an
+/// on-device case grading a live toggle (or a cold-start Burn) has one line to key on instead of
+/// inferring the outcome from the codec/URL lines above.
+pub(super) fn log_enhancement_outcome(
+    output_codecs: Option<(&str, &str)>,
+    outcome: EnhancementOutcome,
+    audio: crate::plex::AudioEnhancements,
+) {
+    if let Some((v, a)) = output_codecs {
+        crate::player::log(&format!("decision output: v={v} a={a}"));
+    }
+    if matches!(outcome, EnhancementOutcome::Applied) {
+        crate::player::log(&format!(
+            "enhancement: applied boost={} loudness={}",
+            i32::from(audio.boost_dialog),
+            i32::from(audio.normalize_loudness),
+        ));
+    }
+}
+
 /// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
 /// included). Publishes `cur_contract` and `cur_enhancement` only after PMS accepted it — the
 /// applied enhancement is never written at the selection (I9).
@@ -6976,21 +7002,11 @@ fn retranscode_as(
         clear_output_dv(s);
         s.stream_immersive = false;
     } };
-    crate::player::log(&format!(
-        "decision output: v={} a={}",
-        output_codecs.0, output_codecs.1,
-    ));
-    // A harness-readable statement of what actually took effect, distinct from the ask: only
-    // `Applied` means the server demonstrably ran the params (`EnhancementOutcome`'s own doc), so
-    // an on-device case grading a live toggle has one line to key on instead of inferring the
-    // outcome from the codec/URL lines above.
-    if matches!(enhancement, EnhancementOutcome::Applied) {
-        crate::player::log(&format!(
-            "enhancement: applied boost={} loudness={}",
-            i32::from(audio.boost_dialog),
-            i32::from(audio.normalize_loudness),
-        ));
-    }
+    log_enhancement_outcome(
+        Some((&output_codecs.0, &output_codecs.1)),
+        enhancement,
+        audio,
+    );
     if !expected_encoder.is_empty() && expected_encoder != qsess {
         let old = expected_encoder;
         let worker_old = old.clone();

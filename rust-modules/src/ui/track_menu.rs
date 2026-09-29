@@ -295,14 +295,15 @@ impl TrackMenuState {
             .unwrap_or(0)
     }
 
-    /// Derive the checked tracks from the PLAYBACK state on every open — the route owns the truth
-    /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit), so the menu can
-    /// never show a stale or desynced checkmark: the auto-picked default/smart-DP track is checked
-    /// on first open, a replayed item resets with the playback, and a prior pick round-trips by id.
-    /// When no id is recorded (codec-default play), the file's flagged default is checked.
-    /// Deliberately does NOT touch `tab`: [`TrackMenuState::new`] sets it directly.
-    fn sync_item(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        let (audio, sub) = match tracks(meta) {
+    /// Derive the checked tracks from the PLAYBACK state — the route owns the truth
+    /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit): the auto-picked
+    /// default/smart-DP track is checked on first open, a replayed item resets with the playback,
+    /// and a prior pick round-trips by id. When no id is recorded (codec-default play), the file's
+    /// flagged default is checked. Free function (no `&self`) so both [`Self::sync_item`] (on
+    /// every open) and the live poll below (PR #309 field report) derive the SAME pair the same
+    /// way — the desync that report caught was exactly two readers of this answer drifting apart.
+    fn derive_active(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (c_int, c_int) {
+        match tracks(meta) {
             Some(t) => {
                 let asid = crate::route::cur_audio_sid(ps);
                 let audio = (asid > 0)
@@ -319,9 +320,50 @@ impl TrackMenuState {
                 (audio, sub)
             }
             None => (0, -1),
-        };
+        }
+    }
+
+    /// [`Self::derive_active`] on every open — the menu can never show a stale or desynced
+    /// checkmark at the moment it appears. Deliberately does NOT touch `tab`:
+    /// [`TrackMenuState::new`] sets it directly.
+    fn sync_item(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        let (audio, sub) = Self::derive_active(ps, meta);
         self.active_audio = audio;
         self.active_sub = sub;
+    }
+
+    /// The Subtitles tab's half of the live poll `Self::update` runs every tick, mirroring the
+    /// Audio tab's own `enh_state` poll just above it. Issue #309's field report: a subtitle pick
+    /// that reroutes the play to (or away from) the enhancement's own Burn lands `active_sub`
+    /// at once (`Self::on_ok`'s own optimistic write), but `sub_style_locked` can only become true
+    /// once the Burn's `/decision` round trip actually answers (`route::decision::retranscode_as`,
+    /// a real network call) — seconds later. A panel that stays open across that window (the
+    /// diagnostic `screens::player::overlay::pick_track_row` trigger deliberately does, "so a
+    /// capture can show the picked track") was built and never touched again, so its drawn
+    /// checkmark and its Color/Timing dim state both kept whatever `Self::layout` baked at open,
+    /// disagreeing with the route by the time a capture actually looked at it. `rebuild`'s own
+    /// subtitle arm always re-homes the cursor onto the checked row — correct for an open or a tab
+    /// switch, wrong for a background poll that must not steal focus from wherever the viewer's
+    /// cursor actually is (the exact focus-desync class `rebuild_audio`'s doc above already names)
+    /// — so this looks the current row up by [`RowTarget`] identity in the freshly built list
+    /// instead of snapping to the active track, the same fix `rebuild_audio` applies for the Audio
+    /// tab's own poll.
+    fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        let (_, live_sub) = Self::derive_active(ps, meta);
+        let locked = crate::route::live_is_own_burn(ps);
+        if live_sub == self.active_sub && locked == self.sub_style_locked {
+            return;
+        }
+        let current = self.targets.get(self.table.sel.max(0) as usize).copied();
+        self.active_sub = live_sub;
+        let (sections, targets) = self.layout(ps, meta);
+        let sel = current
+            .and_then(|t| targets.iter().position(|x| *x == t))
+            .map(|i| i as c_int)
+            .unwrap_or_else(|| sel_for_targets(&targets, self.active_sub));
+        self.targets = targets;
+        self.audio_targets = Vec::new();
+        self.table.set_sections(sections, sel, false);
     }
 
     /// Focus an ABSOLUTE table row — the /tmp/plxnative-menupick trigger's contract ("row N").
@@ -761,6 +803,8 @@ impl TrackMenuState {
             {
                 self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, false);
             }
+        } else {
+            self.poll_subtitle_state(ps, meta);
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let h = self.panel_rect().h;
@@ -2530,6 +2574,62 @@ mod enhancement_menu_tests {
             other => panic!("expected a live Subtitle commit, got {other:?}"),
         }
         teardown(&ps);
+    }
+
+    /// **PR #309 field report**: a TV screenshot taken ~14s after a subtitle pick showed the
+    /// Subtitles menu still open — "Full" (the embedded track) focused, but the checkmark still on
+    /// "Off" and Color not dimmed. The pick's own optimistic write (`Self::on_ok`) lands
+    /// `active_sub` at once, but the Burn it triggers is a real `/decision` network round trip
+    /// (`route::decision::retranscode_as`) that only lands `live_is_own_burn` seconds later — the
+    /// gap between the pick and the screenshot. A panel built before that round trip landed, and
+    /// left open across it the way the diagnostic `screens::player::overlay::pick_track_row`
+    /// trigger deliberately does ("the trigger exists to leave the chosen track's panel on screen
+    /// for a capture"), never rebuilt its checked row or its lock — until `Self::update`'s new
+    /// per-tick poll (mirroring the Audio tab's own live poll just above it) started catching it.
+    #[test]
+    fn subtitles_tab_poll_catches_a_burn_that_lands_after_the_panel_opened() {
+        let _g = crate::testlock::serial();
+        // Opened before the pick: subtitle Off, no burn yet — the same cold-start shape
+        // `subtitle_first_pick_while_plain_enhanced_remux_burns_it` (route/decision_audio_
+        // enhancement_tests.rs) drives before its own live pick.
+        let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::None,
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied_burn: false,
+            ..Default::default()
+        });
+        assert_eq!(menu.active_sub, -1, "off is checked before the pick");
+        assert!(!menu.sub_style_locked, "not a burn yet");
+
+        // Seconds later: the SAME session's route has actually landed the Burn (a fresh
+        // `PlaybackSession` standing in for the live one having moved on while this menu instance
+        // sat untouched — `ps` is process-external state the menu never owns a copy of).
+        let (ps_after, _sid) = enhancement_test_session(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            applied_burn: true,
+            ..Default::default()
+        });
+        let store = super::tests::store_with(vec![crate::metadata::Stream {
+            id: 999,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "subrip".into(),
+            ..Default::default()
+        }]);
+        menu.update(0.016, &ps_after, store.view());
+
+        assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
+        assert!(menu.sub_style_locked, "Color/Timing must lock once the live route is really a Burn");
+        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).expect("Color row present");
+        assert!(flat_rows(&menu)[color_i].dim, "Color must actually redraw dim, not just flag it internally");
+        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).expect("Off row present");
+        assert!(!flat_rows(&menu)[off_i].checked, "Off must no longer read checked");
+        let sub_i = menu.targets.iter().position(|t| *t == RowTarget::Sub(0)).expect("Sub(0) row present");
+        assert!(flat_rows(&menu)[sub_i].checked, "the embedded track must read checked, not Off");
+
+        teardown(&ps_after);
     }
 
     /// The locked note fits the Subtitles panel in every shipped language, same discipline as

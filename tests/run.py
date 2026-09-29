@@ -3821,7 +3821,10 @@ def op_audio_enhancement_burn(lines):
 
     * A COLD START (`{"op": "audio_enhancement_burn"}`, no live pick): the item already carries a
       server-selected embedded subtitle, so `route/plan.rs`'s cold-start branch computes
-      `Offered(Burn)` before the first frame and there is exactly ONE `enhancement: applied` line.
+      `Offered(Burn)` before the first frame and logs exactly ONE `enhancement: applied` line
+      (`route::decision::log_enhancement_outcome`, the same helper `retranscode_as` below calls —
+      before that helper existed, the cold-start branch classified the outcome but never logged it,
+      so this manifest shape had no line to grade at all).
     * A LIVE RECONCILE (`{"op": "subtitle", "burn": true}`): the boot-time preference decorates an
       otherwise-bare candidate as an ordinary enhanced remux first (one `enhancement: applied` line
       with no subtitle in the picture), then the pick reroutes it to a burn
@@ -3862,9 +3865,17 @@ def op_audio_enhancement_burn(lines):
     if "subtitleStreamID=" not in path or "subtitles=burn" not in path:
         return False, (f"post-pick stream is not the explicit burn shape "
                        f"(want subtitleStreamID=..&subtitles=burn) :: {redact(stream.strip())}")
-    if "start.mkv" in path:
-        return False, (f"post-pick stream is the ordinary enhanced remux, not a burn re-encode "
-                       f":: {redact(stream.strip())}")
+    # Both the remux and the re-encode flavor can be served from `start.mkv`
+    # (`TranscodeDelivery::ProgressiveMkv`); the endpoint alone cannot tell them apart. The query
+    # fields `transcoder.rs`'s `transcode_query` sets DO (transcoder.rs:311-324): a remux carries
+    # `directStreamAudio=1` and no cap, a re-encode carries `videoResolution=`+`maxVideoBitrate=`
+    # and never `directStreamAudio`.
+    if "directStreamAudio=1" in path:
+        return False, (f"post-pick stream is the ordinary enhanced remux (directStreamAudio=1, no "
+                       f"re-encode cap), not a burn re-encode :: {redact(stream.strip())}")
+    if "videoResolution=" not in path or "maxVideoBitrate=" not in path:
+        return False, (f"post-pick stream is not the re-encode shape a burn always carries (want "
+                       f"videoResolution=..&maxVideoBitrate=..) :: {redact(stream.strip())}")
 
     late_cue = next((ln for ln in after
                      if RE_SUBCUE.search(ln) and int(RE_SUBCUE.search(ln).group(1)) > 0), None)

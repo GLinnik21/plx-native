@@ -2028,6 +2028,20 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);
+        // The cold-start twin of `retranscode_as`'s live-reconcile logging (issue #266/M7): this
+        // branch can ALSO land an enhanced remux (or, forced by an embedded subtitle, a Burn)
+        // before the first frame, with no live pick in the picture, and the harness case had no
+        // `enhancement: applied` line to key on until this call was added. Shared helper so the
+        // two call sites cannot drift on wording.
+        super::decision::log_enhancement_outcome(
+            decision
+                .as_ref()
+                .and_then(decision_codecs)
+                .as_ref()
+                .map(|(v, a)| (v.as_str(), a.as_str())),
+            plan.enhancement,
+            audio,
+        );
     }
     if let Some(mc) = decision {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than

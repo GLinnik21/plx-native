@@ -281,6 +281,33 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
     crate::plex::reset_servers_for_test();
 }
 
+/// The cold-start twin of item 3's fix: `retranscode_as` (the LIVE reconcile path) has always
+/// printed `enhancement: applied boost=.. loudness=..` to the event log the harness greps, but the
+/// COLD START branch above — `plan.enhancement = classify_outcome(..)` in `route::plan`, reached
+/// with no live pick at all when the item already carries a server-selected embedded subtitle —
+/// never did, so a case that boots straight into a Burn had no line to key on. Grade the same
+/// scenario as `embedded_default_subtitle_with_enhancement_is_burned` above, but on the event log
+/// rather than `r.plan`, the way `tests/run.py::op_audio_enhancement_burn` actually reads it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let log_path = crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS);
+    let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
+        |_, _| {});
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied, "precondition: cold start is a Burn");
+    let written = std::fs::read(&log_path).unwrap();
+    let appended = String::from_utf8_lossy(&written[before as usize..]);
+    assert!(
+        appended.contains("enhancement: applied boost=0 loudness=1"),
+        "no `enhancement: applied` line from the cold-start branch :: {appended:?}"
+    );
+    crate::plex::reset_servers_for_test();
+}
+
 /// A subtitle the client renders itself (an external sidecar) is UNAFFECTED by the enhancement:
 /// the route still becomes the ordinary enhanced remux, and the sidecar restore is independent of
 /// it (`player::sidecar`, not the transcoded stream).
