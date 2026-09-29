@@ -863,7 +863,18 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     // is not a competing mailbox: it supplies this action's target, so the two become ONE reload
     // instead of either resetting the seek or rebuilding at the position the viewer already left.
     if stream && eng.stage >= Stage::Playing && !(eng.flushed && eng.rebase_pending) {
-        if let Some(action) = crate::route::claim_route_action() {
+        // A retranscode claim's PMS half may now be running on a worker (the freeze this fixes:
+        // `execute_retranscode_claim` used to run `put_selection` + `/decision` right on this frame
+        // thread). Drain any landing BEFORE trying to claim a new action — `ControlPhase` stays
+        // `Applying` the whole time, so `claim_route_action` below never fires for the SAME action
+        // while this is pending; it only starts returning `Some` again once `run_claim_tail`
+        // settles the drained landing.
+        if let Some((action, tail, pending_seek, user_target)) = crate::route::take_ready_retranscode_claim(ps) {
+            if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
+                return;
+            }
+            (eng, mt) = reacquire_engine(pa);
+        } else if let Some(action) = crate::route::claim_route_action() {
             let pending_seek = TX.seek_to_ns.load(Relaxed);
             let current_pos = SHARED.playpos_ns.load(Relaxed).max(0);
             let user_target = if pending_seek >= 0 {
@@ -877,11 +888,19 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                         // "Retranscode" means "reconcile at claim" (issue #266): the route PMS
                         // half decides between the enhancement and today's rebuild.
                         let secs = user_target / 1_000_000_000;
-                        let tail = crate::route::execute_retranscode_claim(ps, &action, secs);
-                        if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
-                            return;
+                        match crate::route::execute_retranscode_claim(ps, &action, secs, pending_seek, user_target) {
+                            crate::route::RetranscodeClaimDispatch::Sync(tail) => {
+                                if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
+                                    return;
+                                }
+                                (eng, mt) = reacquire_engine(pa);
+                            }
+                            crate::route::RetranscodeClaimDispatch::Pending => {
+                                // A worker now owns the PMS half; nothing to do this frame. The
+                                // drain at the top of this block picks up the landing later —
+                                // never a join, never a blocked frame.
+                            }
                         }
-                        (eng, mt) = reacquire_engine(pa);
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
                         crate::route::honour_displaced_pick(ps, action.displaced_pick, "NativeAudioReload");

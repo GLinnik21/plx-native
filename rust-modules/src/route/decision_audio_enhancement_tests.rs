@@ -159,7 +159,25 @@ fn toggle(ps: &mut PlaybackSession, a: crate::plex::AudioEnhancements) -> bool {
 fn claim(ps: &mut PlaybackSession) -> (ClaimedRouteAction, ClaimTail) {
     let action = claim_route_action().expect("a queued user action");
     let tail = match action.intent {
-        RouteIntent::User(UserRouteIntent::Retranscode) => execute_retranscode_claim(ps, &action, 60),
+        RouteIntent::User(UserRouteIntent::Retranscode) => {
+            match execute_retranscode_claim(ps, &action, 60, -1, 0) {
+                RetranscodeClaimDispatch::Sync(tail) => tail,
+                // The PMS half now runs on a worker (the freeze fix): wait for its landing the
+                // same way the pump does on a later frame, against the SAME loopback fixture this
+                // test already drives, then apply it exactly as `take_ready_retranscode_claim`
+                // would.
+                RetranscodeClaimDispatch::Pending => {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        if let Some((_, tail, _, _)) = take_ready_retranscode_claim(ps) {
+                            break tail;
+                        }
+                        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            }
+        }
         RouteIntent::User(UserRouteIntent::RecoverOriginal(cause)) => {
             execute_recover_original_claim(ps, &action, 60, cause)
         }
@@ -185,6 +203,122 @@ fn desired_audio_idx() -> i32 {
 
 fn decisions(requests: &[String]) -> Vec<&String> {
     requests.iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
+}
+
+/// Same shape as [`Live::start`], but the live `/decision` answer (not the `hasMDE=1` probe) is
+/// held for `delay` before it is written. Gives a test a reliable window in which the claim's
+/// worker is known to be "in flight" — past its own initial ticket check, waiting on the network —
+/// so a concurrent, main-thread route event started from the test can land inside that window
+/// without racing thread start-up.
+fn slow_live(delay: std::time::Duration) -> Live {
+    assert!(crate::net::global_init() && crate::curlio::available());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port() as i32;
+    listener.set_nonblocking(true).unwrap();
+    let (done, stop) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        loop {
+            match crate::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let line = drain_http(&mut socket);
+                    if line.contains("/decision?") && line.contains("hasMDE=1") {
+                        write_json(&mut socket, MDE_DIRECTPLAY);
+                    } else if line.contains("/decision?") {
+                        std::thread::sleep(delay);
+                        write_json(&mut socket, MDE_TRANSCODE_COPY);
+                    } else {
+                        write_json(&mut socket, EMPTY_MC);
+                    }
+                    requests.push(line);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.try_recv().is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(e) => panic!("fixture accept: {e}"),
+            }
+        }
+        requests
+    });
+    let sid = crate::plex::register_for_test("enh-live-slow", "127.0.0.1", port, "token", "enh-client");
+    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    Live { sid, port, done, server }
+}
+
+/// The staleness protection the async split newly depends on: the old synchronous
+/// `retranscode_as` held the frame thread for its whole `/decision` round trip, so nothing else
+/// on that thread could run while it waited. Now a claim's PMS half runs on a worker, which opens
+/// a real window in which some OTHER main-thread route event (leaving this item to start a fresh
+/// Load, an ABR commit, a stop) can change the ticket the worker snapshotted. `try_retranscode`'s
+/// `is_worker_ticket_current` check and `replace_active_encoder_for`'s own commit-time check are
+/// exactly what must catch that: the stale worker's landing must discard cleanly (no session
+/// mutation), and the phase it releases must not block whatever happens next.
+#[test]
+fn claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pick_applies() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = slow_live(std::time::Duration::from_millis(150));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(
+        matches!(dispatch, RetranscodeClaimDispatch::Pending),
+        "expected the PMS half to move to a worker, got {dispatch:?}",
+    );
+
+    // A concurrent, newer route event bumps the engine/media epoch while the worker above is
+    // still waiting on the (deliberately slow) `/decision` response.
+    begin_engine_teardown(true);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (action, tail, ..) = loop {
+        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
+            break landing;
+        }
+        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(
+        matches!(tail, ClaimTail::Rejected(_)),
+        "a ticket invalidated mid-flight must discard the claim, got {tail:?}",
+    );
+    settle(&mut ps, &action, tail);
+    assert_eq!(
+        ps.cur_enhancement,
+        EnhancementOutcome::Off,
+        "the discarded worker must not have touched the session projection",
+    );
+    assert_eq!(phase(), ControlPhase::Stable, "the discard must release the reducer");
+
+    // The second, current pick is unaffected by the first's discard: a fresh claim against the
+    // now-current ticket applies normally.
+    assert!(toggle(&mut ps, PREF));
+    let action2 = claim_route_action().expect("phase returned to Stable after the discard");
+    let dispatch2 = execute_retranscode_claim(&mut ps, &action2, 60, -1, 0);
+    let tail2 = match dispatch2 {
+        RetranscodeClaimDispatch::Sync(tail) => tail,
+        RetranscodeClaimDispatch::Pending => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some((_, tail, _, _)) = take_ready_retranscode_claim(&mut ps) {
+                    break tail;
+                }
+                assert!(std::time::Instant::now() < deadline, "second worker never landed");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    };
+    assert_eq!(tail2, ClaimTail::Retranscode, "the second, current pick must still apply");
+    settle(&mut ps, &action2, tail2);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+
+    live.finish();
+    cleanup(&mut ps);
 }
 
 fn phase() -> ControlPhase {
@@ -373,6 +507,124 @@ fn toggle_on_from_direct_queues_retranscode_then_remux_params() {
     let d = decisions(&requests);
     assert_eq!(d.len(), 1, "{requests:?}");
     assert_eq!(query_param(d[0], "normalizeLoudness"), Some("1"));
+    cleanup(&mut ps);
+}
+
+/// The freeze this guards against: `execute_retranscode_claim` used to run `put_selection` (a
+/// synchronous PUT) and `/decision` (a synchronous GET, up to 15s on stable HTTP) right on
+/// whichever thread called it — in production, the per-frame pump thread. `FrameScope` marks a
+/// thread as that frame thread; `assert_may_block`, wired into `http::request_with` (the one PMS
+/// dispatch chokepoint), panics the instant PMS I/O happens inside a `FrameScope` without an
+/// explicit `allow_blocking` escape (see `task::blocking::tests::a_helper_call_inside_a_frame_is_rejected`
+/// for the same mechanism guarding a storage call). If this call still ran `put_selection`/
+/// `/decision` inline, the `execute_retranscode_claim` call below would panic with "main-thread
+/// block: PMS HTTP" instead of returning `Pending`.
+#[test]
+fn claim_frees_the_frame_thread_pms_call_runs_on_a_worker() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+
+    let _frame = crate::task::FrameScope::enter();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(
+        matches!(dispatch, RetranscodeClaimDispatch::Pending),
+        "expected the PMS half to move to a worker, got {dispatch:?}",
+    );
+    drop(_frame);
+
+    // The worker landed on its own thread (FrameScope's depth is thread-local and starts at 0
+    // there), so it was free to block on the loopback fixture; the frame thread above never did.
+    // Drain the mailbox exactly the way the pump does on a later frame.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (action, tail, ..) = loop {
+        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
+            break landing;
+        }
+        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+    assert_eq!(ps.stream_acodec, "ac3");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A refused spawn (the OS could not create the worker thread) must settle exactly like a
+/// refused decision: `ControlPhase` returns to `Stable` and the session is untouched, never left
+/// stuck in `Applying` forever. `force_next_retranscode_spawn_refusal` is a test-only seam
+/// (`spawn_small`'s stack size is fixed, so the `unsatisfiable stack` trick `task::tests` uses is
+/// not reachable here) that makes `spawn_retranscode_claim` report refusal without actually
+/// spawning — see its doc comment in `route::decision` for why this mirrors
+/// `storage_worker::Writer::start_refused`.
+#[test]
+fn a_refused_spawn_settles_like_a_refused_decision_not_a_stuck_applying() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+
+    force_next_retranscode_spawn_refusal();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    let tail = match dispatch {
+        RetranscodeClaimDispatch::Sync(tail) => tail,
+        RetranscodeClaimDispatch::Pending => panic!("a forced spawn refusal must resolve synchronously"),
+    };
+    assert!(
+        matches!(tail, ClaimTail::Rejected(_)),
+        "a refused spawn must settle as a rejection, got {tail:?}",
+    );
+    settle(&mut ps, &action, tail);
+    assert_eq!(phase(), ControlPhase::Stable, "a refused spawn must not leave the reducer Applying");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off, "nothing reached PMS; the session is untouched");
+
+    // The reducer is usable again: a fresh claim (this time with a real spawn) applies normally.
+    assert!(toggle(&mut ps, PREF));
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The async split moved WHERE `try_retranscode` runs, never WHAT it does on a refusal: it still
+/// speculatively starts a physical encoder (`next_encoder_session` + `transcode_start_url`)
+/// before it can know the server will refuse the params, and still must stop that exact session
+/// rather than leak it. This is unchanged production code (`try_retranscode`'s own refusal arms),
+/// graded here through the new async claim path to prove the split did not drop it.
+#[test]
+fn a_refused_retranscode_still_stops_the_speculative_encoder() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Refuse);
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Rejected(ENHANCEMENT_REJECTED));
+    settle(&mut ps, &action, tail);
+    assert_eq!(
+        ps.cur_enhancement,
+        EnhancementOutcome::Off,
+        "refusal falls back to the prior, unenhanced route",
+    );
+    assert!(
+        !is_transcoding(&ps),
+        "still Direct: the refused speculative encoder never became the live route",
+    );
+    let requests = live.finish();
+    assert!(
+        requests.iter().any(|r| r.contains("/video/:/transcode/universal/stop")),
+        "a refused decision must stop the encoder it speculatively started: {requests:?}",
+    );
     cleanup(&mut ps);
 }
 

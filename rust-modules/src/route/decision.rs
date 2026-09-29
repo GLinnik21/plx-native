@@ -3229,6 +3229,11 @@ pub(crate) fn fallback_auto_to_hls_for(
     measured_kbps: u32,
     offset_secs: i64,
 ) -> Option<String> {
+    // Frame-thread PMS I/O, out of scope for this change (see `execute_retranscode_claim`'s doc):
+    // the automatic ABR watchdog's own encoder rebuild, same call graph as `transcode_seek`'s.
+    let _block = crate::task::allow_blocking(
+        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+    );
     if forced_direct_play(ps) { return None; }
     if !is_worker_ticket_current(expected) {
         return None;
@@ -3468,6 +3473,15 @@ pub(crate) fn recover_auto_to_original_for(
     offset_secs: i64,
     cause: RecoveryCause,
 ) -> Option<AutoOriginalReload> {
+    // Frame-thread PMS I/O, out of scope for this change (see `execute_retranscode_claim`'s doc,
+    // and its own `ClaimPrimary::ReleaseToDirect` arm which reaches this same function): a Part
+    // GET admission probe (`admit_original_part`/`admit_or_plain_remux`) runs synchronously here,
+    // whether this call came from the user claim path, the automatic ABR watchdog, or a plain
+    // seek. This guard is per-call, not per-caller, so it covers all three without duplicating it
+    // at each call site.
+    let _block = crate::task::allow_blocking(
+        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+    );
     let automatic = cause == RecoveryCause::Automatic;
     if forced_direct_play(ps) { return None; }
     // One handoff owns both the unproven replacement and the retained client-side HLS route until
@@ -4896,6 +4910,12 @@ pub(crate) fn drain_scrobble() {
 /// is not a transcode or PMS refuses the replacement. The old stream stays live until the new
 /// decision has succeeded and the route publication wins, so a failed seek cannot cut playback.
 pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Option<String> {
+    // Frame-thread PMS I/O, out of scope for this change (see `execute_retranscode_claim`'s doc):
+    // a seek during transcode rebuilds the physical encoder synchronously, same as the automatic
+    // ABR watchdog's own call into `retranscode_as`.
+    let _block = crate::task::allow_blocking(
+        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+    );
     if forced_direct_play(ps) { return None; }
     if transcode_session(ps).is_empty() {
         return None;
@@ -6811,6 +6831,15 @@ fn prepare_original_remux(
 /// unchanged). Sets `url` + `tsession`, runs /decision, and returns the new start.mkv URL
 /// (the demux re-opens it from byte 0), or None.
 pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs: i64) -> Option<String> {
+    let contract = plain_rebuild_precheck(ps, expected)?;
+    retranscode_as(ps, expected, offset_secs, contract)
+}
+
+/// The ticket/HLS-sync check `retranscode_for` runs before building the "rebuild today's route"
+/// contract — split out so the async claim worker (which never touches `PlaybackSession`) can run
+/// it on the main thread once, up front, and hand the resulting [`crate::plex::EncodeContract`]
+/// into whichever attempt (primary or Legacy fallback) actually needs it.
+fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> Option<crate::plex::EncodeContract> {
     if !is_worker_ticket_current(expected) {
         return None;
     }
@@ -6823,8 +6852,7 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
             return None;
         }
     }
-    let contract = retranscode_contract(ps);
-    retranscode_as(ps, expected, offset_secs, contract)
+    Some(retranscode_contract(ps))
 }
 
 /// The contract a plain rebuild of the current route asks for: today's delivery, ceiling and
@@ -6885,83 +6913,109 @@ pub(super) fn log_enhancement_outcome(
     }
 }
 
-/// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
-/// included). Publishes `cur_contract` and `cur_enhancement` only after PMS accepted it — the
-/// applied enhancement is never written at the selection (I9).
-fn retranscode_as(
-    ps: &mut PlaybackSession,
-    expected: &WorkerTicket,
+/// Everything `retranscode_as`'s network half needs, owned so it can run on a worker instead of
+/// the frame thread (see [`execute_retranscode_claim`]'s doc for the crash this exists to fix).
+/// Captured once, on the main thread, from a `PlaybackSession` the worker never sees again.
+#[derive(Clone)]
+struct RetranscodeClaimInputs {
+    client: &'static crate::plex::Client,
+    sid: ServerId,
+    rk: String,
+    part_id: i64,
+    audio_sid: i64,
+    subtitle_sid: i64,
+    namespace: String,
     offset_secs: i64,
-    contract: crate::plex::EncodeContract,
-) -> Option<String> {
-    if forced_direct_play(ps) { return None; }
-    let c = cur_client(ps)?;
-    let rk = cur_rk(ps);
-    if rk.is_empty() || !is_worker_ticket_current(expected) {
-        return None;
-    }
-    // Snapshot the desired contract, but publish none of it before PMS has answered and the full
-    // worker/action ticket still owns the route. This prevents a failed `/decision` from making
-    // diagnostics claim the requested 22 Mbps while the old 1.1 Mbps encoder still serves bytes.
-    let crate::plex::EncodeContract {
-        remux,
-        delivery,
-        ceiling,
-        audio,
-        ..
-    } = contract;
-    let audio_sid = cur_audio_sid(ps);
-    let subtitle_sid = cur_sub_sid(ps);
-    let (fallback_vcodec, fallback_acodec) = if remux {
+    expected: WorkerTicket,
+    src_vcodec: String,
+    src_acodec: String,
+    carried_audio: Option<CarriedAudio>,
+}
+
+/// What one `/decision` attempt produced.
+enum RetranscodeWorkerOutcome {
+    Applied {
+        qsess: String,
+        url: String,
+        vcodec: String,
+        acodec: String,
+        contract: crate::plex::EncodeContract,
+        enhancement: EnhancementOutcome,
+    },
+    Refused,
+}
+
+/// The fallback codecs `retranscode_as` used to compute inline, as a pure function of the owned
+/// inputs plus whichever contract this attempt is building — needed twice now (a primary attempt
+/// and, on refusal, a Legacy fallback attempt may build a different contract), so it is a function
+/// rather than a one-shot local.
+fn retranscode_fallback_codecs(
+    inputs: &RetranscodeClaimInputs,
+    contract: &crate::plex::EncodeContract,
+) -> (String, String) {
+    if contract.remux {
         (
-            ps.src_vcodec.clone(),
-            if audio.any() {
+            inputs.src_vcodec.clone(),
+            if contract.audio.any() {
                 // I4: the enhanced audio is re-encoded to the profile's first target; the source
                 // codec here would describe bytes that never arrive (silent audio).
                 "ac3".to_owned()
             } else {
                 // A plain remux copies the carried track; server default falls back to the file's.
-                ps.cur_audio
+                inputs
+                    .carried_audio
                     .as_ref()
                     .filter(|a| !a.codec.is_empty())
-                    .map_or_else(|| ps.src_acodec.clone(), |a| a.codec.clone())
+                    .map_or_else(|| inputs.src_acodec.clone(), |a| a.codec.clone())
             },
         )
-    } else if matches!(delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
+    } else if matches!(contract.delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
         ("h264".to_owned(), "aac".to_owned())
     } else {
         (
             crate::devcaps::caps().encode_vcodec().to_owned(),
             "ac3".to_owned(),
         )
-    };
-    put_selection(cur_sid(ps), cur_part_id(ps), audio_sid, subtitle_sid); // drives encode + burn
-    let logical = sess(ps);
-    let namespace = if logical.is_empty() {
-        format!("plxnative-{rk}")
-    } else {
-        logical
-    };
-    let qsess = next_encoder_session(&namespace);
+    }
+}
+
+/// One `put_selection` + `/decision` attempt, gated on `inputs.expected` throughout — the exact
+/// network body `retranscode_as` used to run inline on the frame thread. Pure with respect to
+/// `PlaybackSession` (never sees one): everything it needs is in `inputs`/`contract`, and
+/// everything it decides is returned rather than written, so it may run on
+/// [`crate::task::spawn_small`] as well as synchronously.
+fn try_retranscode(
+    inputs: &RetranscodeClaimInputs,
+    contract: crate::plex::EncodeContract,
+) -> RetranscodeWorkerOutcome {
+    if !is_worker_ticket_current(&inputs.expected) {
+        return RetranscodeWorkerOutcome::Refused;
+    }
+    let crate::plex::EncodeContract {
+        delivery, ceiling, audio, ..
+    } = contract;
+    let (fallback_vcodec, fallback_acodec) = retranscode_fallback_codecs(inputs, &contract);
+    put_selection(inputs.sid, inputs.part_id, inputs.audio_sid, inputs.subtitle_sid); // drives encode + burn
+    let qsess = next_encoder_session(&inputs.namespace);
     let sp = transcode_spec(
-        &rk,
+        &inputs.rk,
         &qsess,
         &qsess,
-        crate::plex::TranscodeOffset::from_seconds(offset_secs.max(0)),
-        audio_sid,
-        subtitle_sid,
+        crate::plex::TranscodeOffset::from_seconds(inputs.offset_secs.max(0)),
+        inputs.audio_sid,
+        inputs.subtitle_sid,
         contract,
     );
-    let Some(decision) = c.transcode_decision(&sp) else {
-        let _ = c.transcode_stop(&qsess);
-        return None;
+    let Some(decision) = inputs.client.transcode_decision(&sp) else {
+        let _ = inputs.client.transcode_stop(&qsess);
+        return RetranscodeWorkerOutcome::Refused;
     };
     // A live toggle the server refuses (or silently ignores — audio `copy` despite the params)
     // is a rejected action: the current stream is retained and the menu shows what plays.
     if enhancement_fallback(Some(&decision), audio) == Fallback::Retry {
         note_enhancement_refused("; current stream retained", audio);
-        let _ = c.transcode_stop(&qsess);
-        return None;
+        let _ = inputs.client.transcode_stop(&qsess);
+        return RetranscodeWorkerOutcome::Refused;
     }
     if let Some(reason) = refusal(&decision) {
         crate::player::log(&format!(
@@ -6972,62 +7026,137 @@ fn retranscode_as(
                 ": server supplied a reason"
             },
         ));
-        let _ = c.transcode_stop(&qsess);
-        return None;
+        let _ = inputs.client.transcode_stop(&qsess);
+        return RetranscodeWorkerOutcome::Refused;
     }
     let output_codecs = decision_codecs(&decision).unwrap_or((fallback_vcodec, fallback_acodec));
-    let url = c.transcode_start_url(&sp).to_url();
+    let url = inputs.client.transcode_start_url(&sp).to_url();
     let replacement_installed = match (delivery, ceiling.and_then(crate::abr::Rung::from_ceiling)) {
         (crate::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) => {
-            replace_active_hls_for(expected, &qsess, &url, rung, None).is_some()
+            replace_active_hls_for(&inputs.expected, &qsess, &url, rung, None).is_some()
         }
-        _ => replace_active_encoder_for(expected, &qsess).is_some(),
+        _ => replace_active_encoder_for(&inputs.expected, &qsess).is_some(),
     };
     if !replacement_installed {
         // A concurrent ABR commit or teardown won while the decision request was in flight. Do not
         // reload onto a session which no longer belongs to this playback generation.
-        let _ = c.transcode_stop(&qsess);
-        return None;
+        let _ = inputs.client.transcode_stop(&qsess);
+        return RetranscodeWorkerOutcome::Refused;
     }
-    let expected_encoder = expected.encoder().to_owned();
-    let enhancement = classify_outcome(Some(&decision), ps.cur_audio.as_ref(), audio);
-    { let s = &mut *ps; {
-        s.cur_contract = contract;
-        s.cur_enhancement = enhancement;
-        s.tsession = qsess.clone();
-        s.url = url.clone();
-        s.stream_vcodec = output_codecs.0.clone();
-        s.stream_acodec = output_codecs.1.clone();
-        s.stream_fps = 0.0;
-        clear_output_dv(s);
-        s.stream_immersive = false;
-    } };
-    log_enhancement_outcome(
-        Some((&output_codecs.0, &output_codecs.1)),
-        enhancement,
-        audio,
-    );
-    if !expected_encoder.is_empty() && expected_encoder != qsess {
-        let old = expected_encoder;
-        let worker_old = old.clone();
-        if crate::task::spawn_small_keeping("retranscode-stop", move || {
-            let _ = c.transcode_stop(&worker_old);
-        })
-        .is_none()
-        {
-            let _ = c.transcode_stop(&old);
-        }
+    if !inputs.expected.encoder().is_empty() && inputs.expected.encoder() != qsess {
+        // Already off the frame thread wherever this runs now (worker or, for the still-inline
+        // sync callers, wrapped in `allow_blocking`) — no need for `retranscode_as`'s old nested
+        // `spawn_small_keeping` just to avoid blocking main.
+        let _ = inputs.client.transcode_stop(inputs.expected.encoder());
     }
+    let enhancement = classify_outcome(Some(&decision), inputs.carried_audio.as_ref(), audio);
+    log_enhancement_outcome(Some((output_codecs.0.as_str(), output_codecs.1.as_str())), enhancement, audio);
     // NEVER log the URL. `transcode_start_url` ends in `X-Plex-Token=…`, and this line is reached
     // by an ordinary audio-track switch — so the app's own support channel ("send us
     // /tmp/plxnative-events.log") was asking users to paste a live PMS credential into a public
     // issue thread. The rk, the track ids and the offset are the whole diagnostic value here; the
     // URL added nothing that is not derivable from them.
     crate::player::log(&format!(
-        "retranscode rk={rk} audio={} sub={} offset={offset_secs} -> transcode start",
-        audio_sid, subtitle_sid
+        "retranscode rk={} audio={} sub={} offset={} -> transcode start",
+        inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    Some(url)
+    RetranscodeWorkerOutcome::Applied {
+        qsess,
+        url,
+        vcodec: output_codecs.0,
+        acodec: output_codecs.1,
+        contract,
+        enhancement,
+    }
+}
+
+/// Snapshot everything [`try_retranscode`] needs off `ps`, or `None` for exactly the reasons
+/// `retranscode_as` used to bail before touching PMS.
+fn prepare_retranscode_inputs(
+    ps: &PlaybackSession,
+    expected: &WorkerTicket,
+    offset_secs: i64,
+) -> Option<RetranscodeClaimInputs> {
+    if forced_direct_play(ps) {
+        return None;
+    }
+    let client = cur_client(ps)?;
+    let rk = cur_rk(ps);
+    if rk.is_empty() || !is_worker_ticket_current(expected) {
+        return None;
+    }
+    let logical = sess(ps);
+    let namespace = if logical.is_empty() {
+        format!("plxnative-{rk}")
+    } else {
+        logical
+    };
+    Some(RetranscodeClaimInputs {
+        client,
+        sid: cur_sid(ps),
+        part_id: cur_part_id(ps),
+        audio_sid: cur_audio_sid(ps),
+        subtitle_sid: cur_sub_sid(ps),
+        namespace,
+        offset_secs,
+        expected: expected.clone(),
+        src_vcodec: ps.src_vcodec.clone(),
+        src_acodec: ps.src_acodec.clone(),
+        carried_audio: ps.cur_audio.clone(),
+        rk,
+    })
+}
+
+/// Install a successful attempt's session projection. Publishes `cur_contract` and
+/// `cur_enhancement` only after PMS accepted it — the applied enhancement is never written at the
+/// selection (I9) — same rule `retranscode_as` always followed, now shared by the sync and worker
+/// paths.
+fn install_retranscode_outcome(
+    ps: &mut PlaybackSession,
+    qsess: String,
+    url: String,
+    vcodec: String,
+    acodec: String,
+    contract: crate::plex::EncodeContract,
+    enhancement: EnhancementOutcome,
+) {
+    let s = &mut *ps;
+    s.cur_contract = contract;
+    s.cur_enhancement = enhancement;
+    s.tsession = qsess;
+    s.url = url;
+    s.stream_vcodec = vcodec;
+    s.stream_acodec = acodec;
+    s.stream_fps = 0.0;
+    clear_output_dv(s);
+    s.stream_immersive = false;
+}
+
+/// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
+/// included). **Still synchronous** — used by the automatic ABR watchdog
+/// (`fallback_auto_to_hls_for`/`install_auto_hls`) and `retranscode_for`'s other sync callers,
+/// which this change does not move off the frame thread (see `execute_retranscode_claim`'s doc for
+/// what did move, and the follow-up this leaves).
+fn retranscode_as(
+    ps: &mut PlaybackSession,
+    expected: &WorkerTicket,
+    offset_secs: i64,
+    contract: crate::plex::EncodeContract,
+) -> Option<String> {
+    let inputs = prepare_retranscode_inputs(ps, expected, offset_secs)?;
+    let outcome = {
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+        );
+        try_retranscode(&inputs, contract)
+    };
+    match outcome {
+        RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement } => {
+            install_retranscode_outcome(ps, qsess, url.clone(), vcodec, acodec, contract, enhancement);
+            Some(url)
+        }
+        RetranscodeWorkerOutcome::Refused => None,
+    }
 }
 
 // ---- issue #266: the live audio-enhancement state machine ------------------------------------
@@ -7363,38 +7492,218 @@ fn claim_fallback(
     }
 }
 
+/// What a claimed `Retranscode` need to build if it fails and owes the displaced pick's own
+/// reload, computed on the main thread (the worker never touches `PlaybackSession`) alongside the
+/// primary attempt so the worker can run the whole "try, then maybe fall back" sequence without a
+/// second main-thread round trip.
+enum RetranscodeFallback {
+    RejectWith(&'static str),
+    /// No PMS I/O — `run_legacy`'s own `LegacyAction::Native`. Staged on the main thread once the
+    /// worker lands, since `stage_native_audio` writes `PlaybackSession`.
+    Native { ordinal: i32, codec: String },
+    Retranscode(crate::plex::EncodeContract),
+}
+
+/// The worker's verdict, applied to `PlaybackSession` by [`take_ready_retranscode_claim`].
+enum RetranscodeClaimResult {
+    Retranscode {
+        qsess: String,
+        url: String,
+        vcodec: String,
+        acodec: String,
+        contract: crate::plex::EncodeContract,
+        enhancement: EnhancementOutcome,
+    },
+    NativeAudio { ordinal: i32, codec: String },
+    Rejected(&'static str),
+}
+
+/// One claimed `Retranscode`'s worker landing, gated for reuse the same way every other mailbox in
+/// this module is: [`take_ready_retranscode_claim`] hands the pieces back to the pump exactly as
+/// they were at claim time, and [`finish_route_action`]'s own `action.serial` check (inside
+/// `run_claim_tail`) is what actually decides whether a stale result may still publish.
+struct RetranscodeClaimLanding {
+    action: ClaimedRouteAction,
+    pending_seek: i64,
+    user_target: i64,
+    result: RetranscodeClaimResult,
+}
+
+static RETRANSCODE_CLAIM_SLOT: std::sync::Mutex<Option<RetranscodeClaimLanding>> =
+    std::sync::Mutex::new(None);
+
+/// The worker body: try the primary attempt, and on refusal run whichever fallback the claim owes
+/// — all off the frame thread, all before anything reaches [`RETRANSCODE_CLAIM_SLOT`].
+fn run_retranscode_claim_worker(
+    inputs: &RetranscodeClaimInputs,
+    primary_contract: crate::plex::EncodeContract,
+    fallback: RetranscodeFallback,
+) -> RetranscodeClaimResult {
+    if let RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement } =
+        try_retranscode(inputs, primary_contract)
+    {
+        return RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement };
+    }
+    match fallback {
+        RetranscodeFallback::RejectWith(reason) => RetranscodeClaimResult::Rejected(reason),
+        RetranscodeFallback::Native { ordinal, codec } => {
+            RetranscodeClaimResult::NativeAudio { ordinal, codec }
+        }
+        RetranscodeFallback::Retranscode(contract) => match try_retranscode(inputs, contract) {
+            RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement } => {
+                RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement }
+            }
+            RetranscodeWorkerOutcome::Refused => RetranscodeClaimResult::Rejected(LEGACY_REJECTED),
+        },
+    }
+}
+
+// A host test cannot politely exhaust the real thread limit (see `task`'s own module doc), and
+// `spawn_small` fixes its stack size, so the `Some(usize::MAX / 2)` trick `task::tests` uses to
+// force `spawn_with` to fail is not reachable from here. This is the same shape of seam
+// `storage_worker::Writer::start_refused` uses for the analogous case: an explicit, test-only
+// override, checked only in `cfg(test)` builds, so the shipping path is exactly `spawn_small`.
+#[cfg(test)]
+thread_local! {
+    static FORCE_RETRANSCODE_SPAWN_REFUSAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test-only: make the next [`spawn_retranscode_claim`] on THIS thread report refusal without
+/// actually spawning, so a test can grade the no-stuck-`Applying` path without needing to exhaust
+/// the OS thread table.
+#[cfg(test)]
+pub(super) fn force_next_retranscode_spawn_refusal() {
+    FORCE_RETRANSCODE_SPAWN_REFUSAL.with(|f| f.set(true));
+}
+
+fn spawn_retranscode_claim(
+    action: ClaimedRouteAction,
+    pending_seek: i64,
+    user_target: i64,
+    inputs: RetranscodeClaimInputs,
+    primary_contract: crate::plex::EncodeContract,
+    fallback: RetranscodeFallback,
+) -> bool {
+    #[cfg(test)]
+    if FORCE_RETRANSCODE_SPAWN_REFUSAL.with(|f| f.replace(false)) {
+        return false;
+    }
+    crate::task::spawn_small("retranscode-claim", move || {
+        let result = run_retranscode_claim_worker(&inputs, primary_contract, fallback);
+        *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(RetranscodeClaimLanding { action, pending_seek, user_target, result });
+    })
+}
+
+/// Drained once a frame by the pump, before it tries to claim a fresh action (a claim stays
+/// `Applying` — see `claim_route_action` — for as long as this mailbox is empty, so nothing else
+/// can race it). Applies the worker's session-projection fields, exactly where `retranscode_as`
+/// used to write them inline, then hands back what `run_claim_tail` needs — the same
+/// `(ClaimTail, pending_seek, user_target)` shape the frame that claimed this action would have
+/// produced synchronously before this change.
+pub(crate) fn take_ready_retranscode_claim(
+    ps: &mut PlaybackSession,
+) -> Option<(ClaimedRouteAction, ClaimTail, i64, i64)> {
+    let landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let tail = match landing.result {
+        RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement } => {
+            install_retranscode_outcome(ps, qsess, url, vcodec, acodec, contract, enhancement);
+            ClaimTail::Retranscode
+        }
+        RetranscodeClaimResult::NativeAudio { ordinal, codec } => {
+            crate::player::stage_native_audio(ps, ordinal, &codec);
+            ClaimTail::NativeAudio
+        }
+        RetranscodeClaimResult::Rejected(reason) => ClaimTail::Rejected(reason),
+    };
+    Some((landing.action, tail, landing.pending_seek, landing.user_target))
+}
+
+/// What the pump does with [`execute_retranscode_claim`]'s result.
+#[derive(Debug)]
+pub(crate) enum RetranscodeClaimDispatch {
+    /// Resolved without reaching PMS: the pump may call `run_claim_tail` this same frame.
+    Sync(ClaimTail),
+    /// A worker now owns the PMS half; [`take_ready_retranscode_claim`] collects the result on a
+    /// later frame. `ControlPhase` stays `Applying` throughout (`claim_route_action` already
+    /// refuses a new claim until then), so nothing else can race it.
+    Pending,
+}
+
 /// PMS half of a claimed user `Retranscode` ("reconcile at claim").
+///
+/// **The freeze this exists to fix:** a live track pick, an enhancement toggle or a quality change
+/// used to run `put_selection` (a synchronous PUT) and then `/decision` (a synchronous GET, up to
+/// 15 s on stable, aborted at ~2 s by the dev threadcheck watchdog) right here, on the frame
+/// thread — so the whole app froze while PMS was slow. Only the arms that reach PMS
+/// (`ClaimPrimary::Remux`/`Retranscode`, and Legacy's own `LegacyAction::Retranscode` fallback) are
+/// moved to a worker; `ClaimPrimary::ReleaseToDirect` (`recover_auto_to_original_for`) and the
+/// automatic ABR watchdog's own `retranscode_as` call (`fallback_auto_to_hls_for`/
+/// `install_auto_hls`) still block the frame thread and are marked `allow_blocking` — a deliberate,
+/// out-of-scope-for-this-change exception, not a fresh regression.
 pub(crate) fn execute_retranscode_claim(
     ps: &mut PlaybackSession,
     action: &ClaimedRouteAction,
     offset_secs: i64,
-) -> ClaimTail {
+    pending_seek: i64,
+    user_target: i64,
+) -> RetranscodeClaimDispatch {
     let dispatch = claim_dispatch(enhancement_step(ps), action.displaced_pick);
-    let expected = &action.ticket;
-    let done = match dispatch.primary {
-        ClaimPrimary::ReleaseToDirect => recover_auto_to_original_for(
-            ps,
-            expected,
-            offset_secs,
-            RecoveryCause::EnhancementReleased,
-        )
-        .map(ClaimTail::Original),
-        ClaimPrimary::Remux(contract) => {
-            retranscode_as(ps, expected, offset_secs, contract).map(|_| ClaimTail::Retranscode)
+    let expected = action.ticket.clone();
+    let primary_contract = match dispatch.primary {
+        ClaimPrimary::ReleaseToDirect => {
+            // `recover_auto_to_original_for` and `claim_fallback`'s `retranscode_as` both carry
+            // their own `allow_blocking` guard, so this arm needs none of its own.
+            let tail = recover_auto_to_original_for(ps, &expected, offset_secs, RecoveryCause::EnhancementReleased)
+                .map(ClaimTail::Original)
+                .unwrap_or_else(|| claim_fallback(ps, &expected, offset_secs, dispatch.on_failure, ENHANCEMENT_REJECTED));
+            return RetranscodeClaimDispatch::Sync(tail);
         }
-        ClaimPrimary::Legacy => run_legacy(ps, expected, offset_secs),
-        ClaimPrimary::Retranscode => {
-            retranscode_for(ps, expected, offset_secs).map(|_| ClaimTail::Retranscode)
-        }
+        ClaimPrimary::Legacy => match legacy_action(ps) {
+            LegacyAction::Native { ordinal, codec } => {
+                crate::player::stage_native_audio(ps, ordinal, &codec);
+                return RetranscodeClaimDispatch::Sync(ClaimTail::NativeAudio);
+            }
+            LegacyAction::Retranscode => match plain_rebuild_precheck(ps, &expected) {
+                Some(contract) => contract,
+                None => return RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(LEGACY_REJECTED)),
+            },
+        },
+        ClaimPrimary::Remux(contract) => contract,
+        ClaimPrimary::Retranscode => match plain_rebuild_precheck(ps, &expected) {
+            Some(contract) => contract,
+            None => return RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(RETRANSCODE_REJECTED)),
+        },
     };
-    done.unwrap_or_else(|| {
-        let reject = match dispatch.primary {
-            ClaimPrimary::ReleaseToDirect | ClaimPrimary::Remux(_) => ENHANCEMENT_REJECTED,
-            ClaimPrimary::Legacy => LEGACY_REJECTED,
-            ClaimPrimary::Retranscode => RETRANSCODE_REJECTED,
-        };
-        claim_fallback(ps, expected, offset_secs, dispatch.on_failure, reject)
-    })
+    let primary_reject = match dispatch.primary {
+        ClaimPrimary::Remux(_) => ENHANCEMENT_REJECTED,
+        _ => RETRANSCODE_REJECTED,
+    };
+    // The fallback owed on refusal, precomputed the same way: `legacy_action`/the plain-rebuild
+    // contract are pure reads of `ps` as it stands right now — the worker never gets another
+    // chance to read it.
+    let fallback = match dispatch.on_failure {
+        ClaimFallback::Reject => RetranscodeFallback::RejectWith(primary_reject),
+        ClaimFallback::Legacy => match legacy_action(ps) {
+            LegacyAction::Native { ordinal, codec } => RetranscodeFallback::Native { ordinal, codec },
+            LegacyAction::Retranscode => match plain_rebuild_precheck(ps, &expected) {
+                Some(contract) => RetranscodeFallback::Retranscode(contract),
+                None => RetranscodeFallback::RejectWith(LEGACY_REJECTED),
+            },
+        },
+    };
+    let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
+        return RetranscodeClaimDispatch::Sync(claim_fallback(ps, &expected, offset_secs, dispatch.on_failure, primary_reject));
+    };
+    if spawn_retranscode_claim(action.clone(), pending_seek, user_target, inputs, primary_contract, fallback) {
+        RetranscodeClaimDispatch::Pending
+    } else {
+        // The OS refused the thread: settle exactly like a synchronous rejection. `run_claim_tail`'s
+        // `Rejected` arm calls `finish_route_action`, which returns `ControlPhase` to `Stable` —
+        // there is no stuck `Applying` the way an unspawned resolve needed `settle_failed_resolve_spawn`
+        // to unstick, because `claim_route_action` already reserved this exact serial for us.
+        RetranscodeClaimDispatch::Sync(ClaimTail::Rejected(primary_reject))
+    }
 }
 
 /// PMS half of a claimed user `RecoverOriginal`. A displaced pick merged under it (the merge table
