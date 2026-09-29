@@ -2304,7 +2304,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
-                            crate::ui::popover::host::begin_frame(fr.underlay_moving);
+                            crate::diag::spans::span("host", || crate::ui::popover::host::begin_frame(fr.underlay_moving));
                         }
                         use crate::ui::frame::backdrop::Z;
                         let layers = app.pages.backdrop_layers(crate::ui::nav::page_alpha());
@@ -2341,9 +2341,12 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         for (ceiling, rect) in jobs {
                             let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
                             let reg = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
-                            if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
-                                crate::gfx::retain_backdrop(ceiling);
-                            }
+                            // `src`: one blur source job, its replay of the page prefix included.
+                            crate::diag::spans::span("src", || {
+                                if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
+                                    crate::gfx::retain_backdrop(ceiling);
+                                }
+                            });
                         }
                         // An opaque route ground replaces the page entirely.
                         if plan != super::bridge::PagePlan::SurfacesOnly {

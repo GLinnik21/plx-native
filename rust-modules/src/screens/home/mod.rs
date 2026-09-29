@@ -1418,6 +1418,7 @@ impl HomeScreen {
     }
 
     pub(crate) fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, '_, H>, view: HubsView<'_>) {
+        if !f.records_stops() { return; }
         let focus = f.focus.current;
         let status = status_read(view);
         let hero_len = if status.is_some() {

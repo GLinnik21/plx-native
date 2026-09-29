@@ -750,6 +750,10 @@ impl FilmographyScreen {
             frame.h,
         );
 
+        // Everything below registers stops, which only the visible walk records.
+        if !f.records_stops() {
+            return;
+        }
         let clip = Rect::new(layout.content.x, 0.0, SCR_W - layout.content.x, SCR_H);
         for (i, rect) in self.pill_rects(f.measure).into_iter().enumerate() {
             f.stop(

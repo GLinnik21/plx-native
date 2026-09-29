@@ -277,6 +277,7 @@ impl PlayerScreen {
         f: &mut DrawFrame<'_, '_, H>,
         hud_drawn: bool,
     ) {
+        if !f.records_stops() { return; }
         let mut groups = Vec::new();
         Focusable::<H>::groups(self, f.cx, &mut groups);
         for g in groups.iter().filter(|g| self.group_drawn(g.id, hud_drawn)) {

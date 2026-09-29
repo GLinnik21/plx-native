@@ -1188,6 +1188,45 @@ fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
     );
 }
 
+/// **A surface's first frames rasterise none of its text; they warm it.** A presented surface is
+/// held at appear 0 while its host snapshot renders (`PopoverMotion`'s hold). It used to draw its
+/// whole tree through the live painter on exactly that frame, so a cold Settings open rasterised
+/// and uploaded all 21 of its strings in the heaviest GPU frame a modal has — `modal-100`'s cycle
+/// 1, 44 ms. A held surface is invisible, so it is walked through the text recorder instead —
+/// including text painted off a `Painter::root()` the surface built itself, as Settings does. The
+/// capture frame only records; the hold then lasts while the prewarm budget makes the text
+/// resident, and the ramp's first frame finds it cached.
+#[test]
+fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
+    let (mut d, mut rig, _) = booted();
+    crate::text::reset_prewarm_for_test();
+    crate::ui::fixture::modal_draws_text(true);
+    let runs = crate::text::capture_text_runs_for_test(|| {
+        open_modal(&mut d, &mut rig, Style::Compact, 16);
+        d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    });
+    let motion = d.nav.modals.top().unwrap().motion;
+    assert!(motion.held() && motion.capture_frame(), "premise: the present frame is the held capture");
+    assert!(runs.iter().any(|r| r == "modal surface text"), "the held surface was walked through the recorder: {runs:?}");
+    assert!(crate::text::prewarm_pending(), "…its text is queued");
+    assert!(
+        !crate::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
+        "…and the capture frame spent nothing on it"
+    );
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    let motion = d.nav.modals.top().unwrap().motion;
+    assert!(motion.held() && !motion.capture_frame(), "held past the capture while its text was pending");
+    assert!(
+        crate::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
+        "the next held frame's prewarm budget made the text resident"
+    );
+    assert!(!crate::text::prewarm_pending());
+    d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+    assert!(!d.nav.modals.top().unwrap().motion.held(), "nothing pending: the ramp starts");
+    crate::ui::fixture::modal_draws_text(false);
+    crate::text::reset_prewarm_for_test();
+}
+
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out
 /// PREPARES a pushed destination — its body mounts ahead of the floor, and a mount is where a
 /// screen consumes its one-shot seed (the player's origin, a detail page's season). A second

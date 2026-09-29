@@ -213,3 +213,22 @@ three were recorded afresh on shape `10638452537178981056`, imported with `tools
 import`, marked anchor again, and passed Targets and Resolve with zero difference counters. The
 alphabet gains the mock's audio-enhancement codecs (`aac`, `hevc`) and the client-localized hub
 titles (`Recently Added Movies`, `Recently Added TV`).
+
+The navigation-frame-drops change (PR #312) also moved recorded behaviour without moving the
+shape: `6-settings-family` and `12-filmography-detail-return` diverged at frames 77 and 76
+respectively (all counters otherwise zero), while `1-boot-home-chip-grid` stayed SAME. Both
+anchors present a held modal/panel, and the divergence was attributed by replaying with each of
+the commit's two behaviour changes switched off individually. Gating focus stops to the visible
+walk alone (`DrawFrame::records_stops`) left the divergence unchanged; disabling it instead made
+`12-filmography-detail-return` diverge on a second frame, ruling it out. Reverting the held
+surface's text-recording path — `PopoverMotion::tick` no longer extending its hold while
+`crate::text::prewarm_pending()` is true, and the surface loop drawing every surface with
+`Painter::root()` again — reproduced SAME with every counter at zero on both anchors. That is the
+cause: the new hold extension changes how many frames a held Settings/Filmography surface stays at
+appear 0 before ramping, which moves `PopoverMotion`'s own state on exactly the frame the anchor
+recorded a modal opening. The owner approved re-anchoring on 2026-09-30 ("rerecord"): both were
+recorded afresh on the unchanged shape `10638452537178981056` (schema 3) — old fixture removed,
+`tools/plxnative-rec import`, `anchor: true` restored by hand in each manifest.json, since an
+anchor whose shape has not moved refuses both `rerecord` (shape unchanged) and `rebaseline`
+(anchors always refuse it) — and passed Targets and Resolve with zero difference counters. The
+closed alphabet did not move.

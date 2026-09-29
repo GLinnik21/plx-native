@@ -1651,3 +1651,23 @@ from the television, with the panel off and the sound muted.
 
 These cycles fail the gate on purpose. Raising `bench_missed_max` to the measured count would turn
 drops into a baseline.
+
+### 2026-09-29: invisible walks stop doing visible-walk work (host-sim evidence only)
+
+- **Settings' `surf` cost was cold text on the capture frame.** A presented surface is held at
+  appear 0 on the frame that renders the host snapshot. Its walk drew live, so Settings rasterised
+  and uploaded 21 strings there. Handing the surface `Painter::recording()` was not enough:
+  Settings (like every panel) builds its own `Painter::root()`. `ui::record_walk` now makes
+  EVERY painter record for the length of a prewarm walk. The page dip's walk uses it too. A held
+  surface's strings are recorded on the capture frame and drained on the next held frame, under
+  the shared per-frame prewarm budget. The hold lasts while text is pending, up to
+  `SURFACE_TEXT_HOLD_MAX_MS` (100 ms). On the host sim the capture frame's `draw` fell from 4.8 to
+  1.9 ms, `surf` from 3.1 to 0.4 ms, and `textx21` moved out of it.
+- **Stops were placed by every walk.** Detail's `record_stops` (and Home's, Library's, the
+  player's, Person's, Search's, Collection's and Filmography's) ran in the discovery walk, each
+  blur-source replay and the text recorder. Only the visible walk's stops reach the hit map.
+  `DrawFrame::records_stops` now gates them. A 24-episode show placed 51 stops in discovery
+  alone.
+- New FRAMEDROP spans: `text` (a glyph-cache miss), `host`, `src`, `warm` and `warmdrain`. They
+  are there so the television can attribute what is left. The GPU-side `clear` waits and the 1080p
+  backdrop upload are not addressed here.

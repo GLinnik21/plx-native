@@ -530,7 +530,8 @@ impl CollectionScreen {
                 self.draw_card(p, item, &self.label_at(collection, index, item), index, true, f.press.scale, f.measure);
             }
         }
-        for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
+        let visible = if f.records_stops() { crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) } else { 0..0 };
+        for index in visible {
             let Some(elem) = self.elem_at(collection, index) else { continue };
             let focused = current == Some(index);
             let rect = self.card_rect(index, focused, if focused { f.press.scale } else { 1.0 });

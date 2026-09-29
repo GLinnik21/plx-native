@@ -3373,3 +3373,41 @@ fn a_show_walk_derives_the_layout_identity_once_not_once_per_stop() {
     assert!(full_walk <= EPISODES, "one draw hashed {full_walk} episodes for a {EPISODES}-episode season");
     clear();
 }
+
+/// **A walk that feeds no hit map places no stop.** The frame walks this page up to four times —
+/// the text prewarm, backdrop discovery, each blur source, the visible pass — and only the visible
+/// one's stops reach `Input`'s hit map. `record_stops` places two stops per episode, each through
+/// the section flow, so every other walk paid a whole placement pass for a list the dispatcher
+/// dropped. Pinned on a show, where that pass is largest: outside the visible walk it must derive
+/// no layout identity and register nothing.
+#[test]
+fn record_stops_places_nothing_outside_the_visible_walk() {
+    use crate::ui::frame::backdrop::{self, Z};
+    const EPISODES: usize = 24;
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=EPISODES as i64).map(|i| episode(&format!("e{i}"), i)).collect();
+    let _guard = install(show);
+    let screen = bare(&_guard, sid, "show");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let walk = |painter: crate::ui::Painter| {
+        STAMPED_EPISODES.with(|n| n.set(0));
+        let mut f = DrawFrame::new(&context, painter);
+        screen.record_stops(&mut f);
+        (f.stops().len(), STAMPED_EPISODES.with(|n| n.get()))
+    };
+    let (visible, _) = walk(crate::ui::Painter::root());
+    assert!(visible >= 2 * EPISODES, "the visible walk registers every episode row ({visible})");
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(backdrop::Sources::default()));
+    {
+        let _discovery = backdrop::discover(sources.clone());
+        assert_eq!(walk(crate::ui::Painter::root()), (0, 0), "backdrop discovery placed stops");
+    }
+    {
+        let _source = backdrop::enter(sources, Z::OPENER);
+        assert_eq!(walk(crate::ui::Painter::root()), (0, 0), "a blur source walk placed stops");
+    }
+    assert_eq!(walk(crate::ui::Painter::recording()), (0, 0), "the text prewarm walk placed stops");
+    clear();
+}

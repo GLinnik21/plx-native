@@ -1072,6 +1072,20 @@ unsafe fn text_tex(
             }
         }
     }
+    // A miss rasterises, scans ink and allocates a fresh GL texture — the first-use cost a cold
+    // screen pays per string. Timed as the frame's `text` span, so a `FRAMEDROP` line says how
+    // many strings a slow frame rasterised and what they cost (`diag::spans`).
+    crate::diag::spans::span("text", || text_tex_miss(s_bytes, s_c, sz, bold, hash))
+}
+
+/// [`text_tex`]'s miss: render, upload and store one string.
+unsafe fn text_tex_miss(
+    s_bytes: &[u8],
+    s_c: *const c_char,
+    sz: c_int,
+    bold: c_int,
+    hash: u64,
+) -> (c_uint, c_int, c_int, c_int, c_int) {
     // A string the base face cannot draw on its own goes through the run compositor; everything
     // else — every ASCII string, and every string Inter fully covers — takes the single
     // `TTF_RenderUTF8_Blended` it always did, byte for byte. A compositor FAILURE also falls
