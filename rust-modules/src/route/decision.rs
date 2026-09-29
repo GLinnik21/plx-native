@@ -3505,53 +3505,65 @@ pub(crate) fn recover_auto_to_original_for(
     // resolve builds whenever the server will not direct-play — rather than opened, failed and
     // rolled back to the route being left (see [`admit_original_part`]).
     let flavour = match flavour {
-        RecoveryFlavour::Direct => match admit_original_part(ps, &candidate, expected, cause) {
-            PartAdmission::Admitted => RecoveryFlavour::Direct,
-            PartAdmission::Refused(why) => {
-                crate::player::log(&format!(
-                    "{}: server refused the Original Part ({why}); restoring Original as a remux",
-                    cause.log_tag()
-                ));
+        RecoveryFlavour::Direct => match admit_or_plain_remux(ps, &candidate, expected, cause) {
+            AdmitOrPlainRemux::Admitted => RecoveryFlavour::Direct,
+            AdmitOrPlainRemux::PlainRemux => {
                 RecoveryFlavour::Remux(crate::plex::AudioEnhancements::NONE)
             }
         },
         remux => remux,
     };
     let RecoveryFlavour::Remux(audio) = flavour else {
-        return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, false);
+        return recover_original_direct(
+            ps,
+            &candidate,
+            expected,
+            rollback,
+            watched,
+            cause,
+            EnhancementOutcome::Off,
+        );
     };
     // `/decision` only registers the replacement. Just like a raw Part open, it does not prove
     // that Starfish can read and decode the resulting MKV. Publish the remux without stopping the
     // old HLS encoder, then put both exact identities in PendingOriginal; decoded frames retire
     // HLS, while a failed open restores its client-side route snapshot and retires this unproven
     // remux. Only the next HLS response establishes PMS-side cursor continuity.
-    let replacement =
-        match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)? {
-            OriginalRemux::Prepared(replacement) => replacement,
-            // The server will not apply the params and the candidate direct-plays: the plain
-            // Original IS that direct play, exactly as the resolve's own fallback returns to it —
-            // when the server will serve its Part; otherwise the plain remux of the same Original.
-            OriginalRemux::RefusedToDirect => match admit_original_part(ps, &candidate, expected, cause) {
-                PartAdmission::Admitted => {
-                    return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
+    let replacement = match prepare_original_remux(
+        ps,
+        &candidate,
+        expected,
+        offset_secs,
+        watched,
+        audio,
+        false,
+    )? {
+        OriginalRemux::Prepared(replacement, _outcome) => replacement,
+        // The server will not apply the params and the candidate direct-plays: the plain
+        // Original IS that direct play, exactly as the resolve's own fallback returns to it —
+        // when the server will serve its Part; otherwise the plain remux of the same Original.
+        OriginalRemux::RefusedToDirect => match admit_or_plain_remux(ps, &candidate, expected, cause) {
+            AdmitOrPlainRemux::Admitted => {
+                return recover_original_direct(
+                    ps,
+                    &candidate,
+                    expected,
+                    rollback,
+                    watched,
+                    cause,
+                    EnhancementOutcome::Refused,
+                );
+            }
+            AdmitOrPlainRemux::PlainRemux => {
+                let none = crate::plex::AudioEnhancements::NONE;
+                match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none, true)?
+                {
+                    OriginalRemux::Prepared(replacement, _outcome) => replacement,
+                    OriginalRemux::RefusedToDirect => return None,
                 }
-                PartAdmission::Refused(why) => {
-                    crate::player::log(&format!(
-                        "{}: server refused the Original Part ({why}); restoring Original as a remux",
-                        cause.log_tag()
-                    ));
-                    let none = crate::plex::AudioEnhancements::NONE;
-                    match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none)? {
-                        OriginalRemux::Prepared(replacement) => {
-                            // The enhancement the plain remux dropped was the server's refusal.
-                            ps.cur_enhancement = EnhancementOutcome::Refused;
-                            replacement
-                        }
-                        OriginalRemux::RefusedToDirect => return None,
-                    }
-                }
-            },
-        };
+            }
+        },
+    };
     rollback.replacement_encoder = replacement;
     set_pending_original(ps, rollback, automatic);
     crate::player::clear_original_failure();
@@ -3650,8 +3662,39 @@ fn admit_original_part(
     }
 }
 
-/// The direct-play half of an Original recovery (the candidate's raw Part). `enhancement_refused`
-/// records that an enhanced remux was asked for first and the server would not apply it, so the
+/// [`admit_or_plain_remux`]'s answer: either the Part is admitted and the caller's own plan
+/// stands, or it is not and the caller falls back to the plain (unenhanced) remux — the same
+/// shape the resolve itself builds whenever the server will not serve the Part.
+enum AdmitOrPlainRemux {
+    Admitted,
+    PlainRemux,
+}
+
+/// Ask the server whether it will serve the Original's Part, and log the shared refusal sentence
+/// once for both call sites that reach a direct trial only to find it will not
+/// ([`recover_auto_to_original_for`]'s initial `RecoveryFlavour::Direct` arm, and its retry after
+/// [`prepare_original_remux`] itself reports `RefusedToDirect`).
+fn admit_or_plain_remux(
+    ps: &PlaybackSession,
+    candidate: &AutoOriginalCandidate,
+    expected: &WorkerTicket,
+    cause: RecoveryCause,
+) -> AdmitOrPlainRemux {
+    match admit_original_part(ps, candidate, expected, cause) {
+        PartAdmission::Admitted => AdmitOrPlainRemux::Admitted,
+        PartAdmission::Refused(why) => {
+            crate::player::log(&format!(
+                "{}: server refused the Original Part ({why}); restoring Original as a remux",
+                cause.log_tag()
+            ));
+            AdmitOrPlainRemux::PlainRemux
+        }
+    }
+}
+
+/// The direct-play half of an Original recovery (the candidate's raw Part). `outcome` is the
+/// [`EnhancementOutcome`] this direct play settles on: `Off` when no enhancement was in play,
+/// `Refused` when an enhanced remux was asked for first and the server would not apply it, so the
 /// offer stays withdrawn for this playback (the resolve's and the preflight's `Refused`).
 fn recover_original_direct(
     ps: &mut PlaybackSession,
@@ -3660,7 +3703,7 @@ fn recover_original_direct(
     rollback: PendingOriginal,
     watched: bool,
     cause: RecoveryCause,
-    enhancement_refused: bool,
+    outcome: EnhancementOutcome,
 ) -> Option<AutoOriginalReload> {
     let automatic = cause == RecoveryCause::Automatic;
     let expected_encoder = expected.encoder();
@@ -3685,11 +3728,7 @@ fn recover_original_direct(
         s.url = source_url;
         s.tsession.clear();
         s.cur_contract = crate::plex::EncodeContract::original(false, crate::plex::AudioEnhancements::NONE);
-        s.cur_enhancement = if enhancement_refused {
-            EnhancementOutcome::Refused
-        } else {
-            EnhancementOutcome::Off
-        };
+        s.cur_enhancement = outcome;
         s.cur_auto_original_watched = watched;
         s.cur_audio = candidate.audio.clone();
         s.stream_vcodec = candidate.vcodec.clone();
@@ -6587,8 +6626,10 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
 /// What [`prepare_original_remux`] published (`None` from it = the recovery failed and the held
 /// route is untouched).
 enum OriginalRemux {
-    /// The remux replacement's encoder session, registered and published.
-    Prepared(String),
+    /// The remux replacement's encoder session, registered and published, with the
+    /// [`EnhancementOutcome`] it was graded and already written to `ps.cur_enhancement` — the
+    /// caller does not need to (and must not) grade it again.
+    Prepared(String, EnhancementOutcome),
     /// The server would not apply the enhancement and the candidate direct-plays: nothing was
     /// published, and the plain Original is the direct play the caller now installs as `Refused`.
     RefusedToDirect,
@@ -6597,7 +6638,11 @@ enum OriginalRemux {
 /// Register and publish a codec-preserving Original remux without retiring `expected_hls`.
 /// `PendingOriginal` owns the two-session commit/rollback after this returns. `audio` is the
 /// recovery's own [`recovery_flavour`] (issue #266): `NONE` for the plain remux, else the params
-/// the enhanced Original carries.
+/// the enhanced Original carries. `known_refused` is set by the caller when this exact playback
+/// already had an enhancement refused earlier in the same recovery attempt (the direct-play retry
+/// that reaches here with `audio` forced to `NONE`) — the plain remux this call now prepares
+/// carries no params of its own to refuse, but it exists only because the server would not honour
+/// the ask, so it must still grade `Refused` rather than `Off`.
 fn prepare_original_remux(
     ps: &mut PlaybackSession,
     candidate: &AutoOriginalCandidate,
@@ -6605,6 +6650,7 @@ fn prepare_original_remux(
     offset_secs: i64,
     watched: bool,
     audio: crate::plex::AudioEnhancements,
+    known_refused: bool,
 ) -> Option<OriginalRemux> {
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
@@ -6681,7 +6727,7 @@ fn prepare_original_remux(
             },
         )
     });
-    let enhancement = if enhancement_refused {
+    let enhancement = if enhancement_refused || known_refused {
         EnhancementOutcome::Refused
     } else {
         classify_outcome(decision.as_ref(), candidate.audio.as_ref(), audio)
@@ -6708,7 +6754,7 @@ fn prepare_original_remux(
         "decision output: v={} a={}",
         output_codecs.0, output_codecs.1
     ));
-    Some(OriginalRemux::Prepared(replacement))
+    Some(OriginalRemux::Prepared(replacement, enhancement))
 }
 
 /// Re-transcode the current item (the session's `cur_rk`) at `offset_secs`, carrying the CURRENT
@@ -7093,6 +7139,18 @@ pub(crate) enum ClaimFallback {
     Reject,
 }
 
+impl ClaimFallback {
+    /// What a failed claim owes: the displaced pick's legacy reload when there is one to honour,
+    /// otherwise a plain rejection.
+    fn owed(displaced_pick: bool) -> Self {
+        if displaced_pick {
+            Self::Legacy
+        } else {
+            Self::Reject
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Dispatch {
     pub(crate) primary: ClaimPrimary,
@@ -7102,11 +7160,7 @@ pub(crate) struct Dispatch {
 /// **Pure: the claim-time dispatch table** for a `Retranscode` (plan §6.1). Kept separate from the
 /// effects so every cell is unit-testable without PMS or an Engine.
 pub(crate) fn claim_dispatch(step: EnhancementStep, displaced_pick: bool) -> Dispatch {
-    let owed = if displaced_pick {
-        ClaimFallback::Legacy
-    } else {
-        ClaimFallback::Reject
-    };
+    let owed = ClaimFallback::owed(displaced_pick);
     match step {
         EnhancementStep::ReleaseToDirect => Dispatch {
             primary: ClaimPrimary::ReleaseToDirect,
@@ -7225,11 +7279,7 @@ pub(crate) fn execute_recover_original_claim(
             ps,
             &action.ticket,
             offset_secs,
-            if action.displaced_pick {
-                ClaimFallback::Legacy
-            } else {
-                ClaimFallback::Reject
-            },
+            ClaimFallback::owed(action.displaced_pick),
             "route transition: manual Original was rejected; current stream retained",
         ),
     }
