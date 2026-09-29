@@ -630,6 +630,17 @@ pub(super) fn enhancement_fallback(
     }
 }
 
+/// Log + diag the server's refusal of an enhanced ask, from whichever call site first learns of
+/// it. `context` is the site-specific tail after the shared "enhancement: refused/ignored by
+/// server" opening, so every site keeps the exact log sentence it always had.
+pub(super) fn note_enhancement_refused(context: &str, audio: crate::plex::AudioEnhancements) {
+    crate::player::log(&format!("enhancement: refused/ignored by server{context}"));
+    crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
+        boost_dialog: audio.boost_dialog,
+        normalize_loudness: audio.normalize_loudness,
+    });
+}
+
 /// The audio lane's own stream decision off a `/decision` body (`copy`/`transcode`), if it says.
 fn decision_audio(mc: &crate::plex::MediaContainer) -> Option<&str> {
     mc.metadata
@@ -1843,11 +1854,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
         // the enhancement, on the same session, and remember that this server said no.
-        crate::player::log("enhancement: refused/ignored by server; fell back");
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: audio.boost_dialog,
-            normalize_loudness: audio.normalize_loudness,
-        });
+        note_enhancement_refused("; fell back", audio);
         plan.contract.audio = crate::plex::AudioEnhancements::NONE;
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
         if enhanced_from_direct {
@@ -1877,10 +1884,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         decision = client.transcode_decision(&sp);
     } else if probe_refused_enhancement && pre_audio.any() {
         // The remote remux probe already asked and was refused; the play was built without it.
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: pre_audio.boost_dialog,
-            normalize_loudness: pre_audio.normalize_loudness,
-        });
+        // measure_remote_remux already logged and recorded the diag event at the refusal point.
         plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);

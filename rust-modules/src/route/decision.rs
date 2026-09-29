@@ -5483,7 +5483,7 @@ pub(super) fn measure_remote_remux(
     if audio.any() && enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         // Nothing enhanced has been fetched yet: re-deciding on the same session replaces the
         // enhanced registration, exactly as the play path's own fallback does.
-        crate::player::log("enhancement: refused/ignored by server in remote remux preflight; fell back");
+        note_enhancement_refused(" in remote remux preflight; fell back", audio);
         enhancement_refused = true;
         spec = spec_for(crate::plex::AudioEnhancements::NONE);
         decision = client.transcode_decision(&spec);
@@ -6686,11 +6686,7 @@ fn prepare_original_remux(
     // again this playback. Nothing enhanced was fetched, so re-deciding on the same replacement
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
-        crate::player::log("enhancement: refused/ignored by server in Original recovery; fell back");
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: audio.boost_dialog,
-            normalize_loudness: audio.normalize_loudness,
-        });
+        note_enhancement_refused(" in Original recovery; fell back", audio);
         if candidate.direct {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
@@ -6887,11 +6883,7 @@ fn retranscode_as(
     // A live toggle the server refuses (or silently ignores — audio `copy` despite the params)
     // is a rejected action: the current stream is retained and the menu shows what plays.
     if enhancement_fallback(Some(&decision), audio) == Fallback::Retry {
-        crate::player::log("enhancement: refused/ignored by server; current stream retained");
-        crate::diag::event(crate::diag::schema::DiagEvent::EnhancementRefused {
-            boost_dialog: audio.boost_dialog,
-            normalize_loudness: audio.normalize_loudness,
-        });
+        note_enhancement_refused("; current stream retained", audio);
         let _ = c.transcode_stop(&qsess);
         return None;
     }
