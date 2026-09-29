@@ -186,13 +186,17 @@ fn claim(ps: &mut PlaybackSession) -> (ClaimedRouteAction, ClaimTail) {
     (action, tail)
 }
 
-/// What the pump's tail does for a PMS half that prepared a route.
-fn settle(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail) {
+/// What the pump's tail does for a PMS half that prepared a route. Returns whether the action was
+/// still owned (`ControlPhase::Applying(action.serial)`) at settle time — `false` means a teardown
+/// or later action already superseded it, exactly the case `finish_route_action`'s own `bool`
+/// return exists to report; callers that need it use it, callers that always expect ownership just
+/// discard it as before.
+fn settle(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail) -> bool {
     match tail {
         ClaimTail::Retranscode | ClaimTail::NativeAudio => {
             finish_route_action(ps, action, RouteApplyResult::Prepared)
         }
-        ClaimTail::Original(_) => {}
+        ClaimTail::Original(_) => true,
         ClaimTail::Rejected(_) => finish_route_action(ps, action, RouteApplyResult::Rejected),
     }
 }
@@ -244,6 +248,53 @@ fn slow_live(delay: std::time::Duration) -> Live {
         requests
     });
     let sid = crate::plex::register_for_test("enh-live-slow", "127.0.0.1", port, "token", "enh-client");
+    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+    Live { sid, port, done, server }
+}
+
+/// A server whose every live `/decision` (not the `hasMDE=1` probe) answers `generalDecisionCode
+/// 2000`, regardless of whether the request carries the enhancement params. `enhancement_pms`'s own
+/// `EnhMode::Refuse` only fires for an ENHANCED request (issue #266's fixture is scoped to that
+/// case), so a plain rebuild with no enhancement params — a Legacy displaced-pick burn, for
+/// instance — always succeeds against it. This fixture refuses everything, for a test that needs a
+/// PLAIN retranscode attempt to fail server-side.
+fn always_refusing_live() -> Live {
+    assert!(crate::net::global_init() && crate::curlio::available());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port() as i32;
+    listener.set_nonblocking(true).unwrap();
+    let (done, stop) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        loop {
+            match crate::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let line = drain_http(&mut socket);
+                    if line.contains("/decision?") && line.contains("hasMDE=1") {
+                        write_json(&mut socket, MDE_DIRECTPLAY);
+                    } else if line.contains("/decision?") {
+                        write_json(
+                            &mut socket,
+                            br#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":4020,"transcodeDecisionText":"synthetic plain refusal","Metadata":[]}}"#,
+                        );
+                    } else {
+                        write_json(&mut socket, EMPTY_MC);
+                    }
+                    requests.push(line);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.try_recv().is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(e) => panic!("fixture accept: {e}"),
+            }
+        }
+        requests
+    });
+    let sid = crate::plex::register_for_test("enh-live-refuse", "127.0.0.1", port, "token", "enh-client");
     crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
     crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
     Live { sid, port, done, server }
@@ -1731,4 +1782,270 @@ fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
 
     cleanup(&mut ps);
     crate::plex::reset_servers_for_test();
+=======
+// ---- PR review follow-up: off-main-thread claim PMS I/O, mailbox lifetime, snapshot isolation --
+
+/// Finding: `execute_retranscode_claim`'s `primary_reject` match had collapsed
+/// `ClaimPrimary::Legacy` into the same `RETRANSCODE_REJECTED` arm as `ClaimPrimary::Retranscode`
+/// (pre-PR code had them as separate `match` arms — see `git show 4bf2bef27^`). A Legacy primary is
+/// a displaced pick's own reload, not a plain user retranscode, so its refusal must keep
+/// `LEGACY_REJECTED`. `ClaimPrimary::Legacy` is only reached through `claim_dispatch`'s
+/// `(NotInvolved, displaced=true)` row, which the ordinary track/enhancement flows do not produce
+/// on their own (a displaced pick is normally merged behind a `Remux`/`ReleaseToDirect` primary
+/// instead — see `claim_dispatch_table_each_cell`), so this test builds the `ClaimedRouteAction`
+/// directly rather than trying to walk the UI there.
+#[test]
+fn legacy_primary_rejection_keeps_the_legacy_rejected_label() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    // No offer (`auto_original: None`, preference off) makes `enhancement_step` `NotInvolved`;
+    // TrueHD is not direct-playable, so `legacy_action` returns `Retranscode`.
+    install(&mut ps, &live, Delivery::Direct, a4(), None, 0);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
+    assert_eq!(legacy_action(&ps), LegacyAction::Retranscode);
+    assert_eq!(
+        claim_dispatch(EnhancementStep::NotInvolved, true),
+        Dispatch { primary: ClaimPrimary::Legacy, on_failure: ClaimFallback::Reject },
+    );
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(1);
+    let action = ClaimedRouteAction {
+        serial: 1,
+        ticket: worker_ticket(),
+        intent: RouteIntent::User(UserRouteIntent::Retranscode),
+        displaced_pick: true,
+        claim_snapshot: None,
+    };
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    let tail = match dispatch {
+        RetranscodeClaimDispatch::Sync(tail) => tail,
+        RetranscodeClaimDispatch::Pending => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some((_, tail, _, _)) = take_ready_retranscode_claim(&mut ps) {
+                    break tail;
+                }
+                assert!(std::time::Instant::now() < deadline, "worker never landed");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    };
+    assert_eq!(
+        tail,
+        ClaimTail::Rejected(LEGACY_REJECTED),
+        "a Legacy primary's own reload must keep its own label, not the plain retranscode's",
+    );
+    live.finish();
+    reset_player_control_for_test(&mut ps);
+    reset_session(&mut ps);
+    crate::player::restore_audio_enhancements(NONE);
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+}
+
+/// Finding: `commit_audio_selection`/`commit_subtitle_selection` used to call `put_selection`
+/// synchronously on whatever thread called them, including the frame thread reaching them from
+/// `app/playback.rs::commit_track` inside the run-loop's own `FrameScope`. `assert_may_block`
+/// panics in `cfg(test)` for any blocking PMS call made while a `FrameScope` is entered and the
+/// call site has no `allow_blocking` guard — so this test alone would have panicked on
+/// `4bf2bef27` (`main-thread block: select stream selection`), before `queue_put_selection` moved
+/// the PUT onto a serial worker.
+#[test]
+fn commit_track_inside_a_frame_does_not_trip_the_blocking_guard() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+    let _frame = crate::task::FrameScope::enter();
+    commit_audio_selection(&mut ps, a3()); // native pick: PUT must not run inline here
+    drop(_frame);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let idle = !SELECTION_WORKER_RUNNING.load(Ordering::Acquire)
+            && SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+        if idle {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "selection worker never drained");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let requests = live.finish();
+    assert!(
+        requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "audioStreamID") == Some("13")),
+        "the PUT must still really reach PMS, just off the frame thread: {requests:?}",
+    );
+    cleanup(&mut ps);
+}
+
+/// Finding: a worker panicking mid-`/decision` used to leave `ControlPhase::Applying` stuck
+/// forever — nothing else could ever post to `RETRANSCODE_CLAIM_SLOT` for that serial, and
+/// `claim_route_action` refuses a new claim while any `Applying` holds. `spawn_retranscode_claim`'s
+/// `PostRejectedOnPanic` guard is what makes this test terminate at all: without it, the poll loop
+/// below spins until its own deadline assertion fails, which is the "stuck forever" this proves is
+/// fixed.
+#[test]
+fn a_worker_panic_still_releases_applying_instead_of_hanging_forever() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    force_next_retranscode_worker_panic();
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (action, tail, ..) = loop {
+        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
+            break landing;
+        }
+        assert!(std::time::Instant::now() < deadline, "a panicked worker left Applying stuck");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(tail, ClaimTail::Rejected(RETRANSCODE_WORKER_PANICKED));
+    settle(&mut ps, &action, tail);
+    assert_eq!(phase(), ControlPhase::Stable, "the panic must still release the reducer");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off, "nothing reached PMS session state");
+
+    // The reducer is usable again after the panic released it.
+    assert!(toggle(&mut ps, PREF));
+    let (action2, tail2) = claim(&mut ps);
+    assert_eq!(tail2, ClaimTail::Retranscode);
+    settle(&mut ps, &action2, tail2);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Finding: a second edit that queues while a claim's worker is still in flight advances
+/// `desired_revision`/`ps` right away (nothing blocks the frame thread from taking it), so by the
+/// time the FIRST claim's landing arrives, reading those live would record the landing as if it
+/// had applied the SECOND edit's revision. `execute_retranscode_claim` now snapshots
+/// revision/quality/projection at claim time (`ClaimSnapshot`) and `finish_route_action` publishes
+/// that snapshot instead of re-reading `ps`. Before the fix, the assertion on `applied_revision`
+/// below observed the SECOND toggle's revision after the FIRST claim settled.
+#[test]
+fn a_second_edit_queued_mid_flight_does_not_get_marked_as_the_first_claims_landing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = slow_live(std::time::Duration::from_millis(150));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let first_revision = desired_contract_revision();
+    let action = claim_route_action().expect("a queued user action");
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
+
+    // A second edit crosses its own user-contract boundary (`begin_user_contract_boundary`, which
+    // every track/quality setter calls up front regardless of `ControlPhase`) and so advances
+    // `desired_revision` right away, while the first claim's worker is still waiting on the
+    // deliberately slow `/decision` response — exactly the freeze fix's own window.
+    commit_audio_selection(&mut ps, a3());
+    let second_revision = desired_contract_revision();
+    assert_ne!(first_revision, second_revision, "the second edit really did advance the contract");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (action, tail, ..) = loop {
+        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
+            break landing;
+        }
+        assert!(std::time::Instant::now() < deadline, "first claim worker never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(tail, ClaimTail::Retranscode, "the first claim's own attempt still applies");
+    settle(&mut ps, &action, tail);
+    assert_eq!(
+        PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).applied_revision,
+        first_revision,
+        "the landing must publish what IT was built from, not whatever queued after it",
+    );
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Finding: the mailbox used to survive a full teardown/fresh playback request untouched, so a
+/// slow claim's landing from the OLD item could apply to whatever plays next. `begin_playback_request`
+/// now discards any landing still sitting in the slot before it does anything else.
+#[test]
+fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = slow_live(std::time::Duration::from_millis(150));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
+
+    // Wait for the worker to actually post its landing before tearing the item down, so this
+    // exercises the mailbox-clearing itself rather than a claim that never got the chance to run.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        assert!(std::time::Instant::now() < deadline, "worker never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    // Back, then a fresh playback request for a different item.
+    begin_engine_teardown(false);
+    assert!(begin_playback_request());
+    assert!(
+        RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+        "the old item's landing must not survive into the new playback",
+    );
+    assert!(
+        take_ready_retranscode_claim(&mut ps).is_none(),
+        "nothing is left to apply to the new session",
+    );
+
+    live.finish();
+    reset_player_control_for_test(&mut ps);
+    reset_session(&mut ps);
+    crate::player::restore_audio_enhancements(NONE);
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+}
+
+/// Finding: `transcode_seek`/`commit_user_seek` used to run for an unrelated claim's own seek
+/// branches while `ControlPhase::Applying` was held by a DIFFERENT in-flight claim — replacing the
+/// encoder or bumping `media_epoch` out from under the worker's own ticket, so the worker's
+/// landing silently discarded even though nothing actually superseded it. The pump now skips its
+/// seek branches entirely while `claim_in_flight()` holds; `transcode_seek` also refuses directly.
+/// This test exercises `transcode_seek` itself: called during another claim's flight it must
+/// return `None` rather than proceeding, which on `4bf2bef27` it did not.
+#[test]
+fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = slow_live(std::time::Duration::from_millis(150));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
+    assert!(claim_in_flight(), "the claim above is still Applying");
+
+    assert_eq!(
+        transcode_seek(&mut ps, 90),
+        None,
+        "a seek reaching in during another claim's flight must be refused, not silently corrupt it",
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (action, tail, ..) = loop {
+        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
+            break landing;
+        }
+        assert!(std::time::Instant::now() < deadline, "claim worker never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(tail, ClaimTail::Retranscode, "the seek attempt above must not have disturbed it");
+    settle(&mut ps, &action, tail);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+
+    live.finish();
+    cleanup(&mut ps);
+>>>>>>> 697e86caa (Fix Opus review findings on the claim PMS-I/O-off-main-thread split)
 }

@@ -668,6 +668,35 @@ fn run_claim_tail(
     }
 }
 
+/// At claim-landing time, decide whether the seek target this claim was built with (`pending_seek`,
+/// captured when the claim was made) is still the newest one requested. The pump's own pending-seek
+/// branch skips entirely while `claim_in_flight()` holds (see its own doc), so a fresher tap that
+/// landed during this claim's flight sits untouched in `TX.seek_to_ns` rather than being folded in —
+/// committing THIS claim's stale target with `commit_user_seek` would silently discard it. Returns
+/// the fresher value to re-arm into `TX.seek_to_ns` after the reload resets it
+/// (`TX::reset_for_reload`), or `None` if there is nothing to carry.
+fn commit_or_carry_seek(pending_seek: i64) -> Option<i64> {
+    if pending_seek < 0 {
+        return None;
+    }
+    let current = TX.seek_to_ns.load(Relaxed);
+    if current == pending_seek {
+        crate::route::commit_user_seek();
+        None
+    } else {
+        Some(current)
+    }
+}
+
+/// Restore a fresher seek target carried past a reload by [`commit_or_carry_seek`]. The pump's
+/// ordinary pending-seek branch (no longer blocked — the claim it was waiting on just settled)
+/// picks it up on the very next tick, exactly as if it had just arrived.
+fn rearm_carried_seek(carried: Option<i64>) {
+    if let Some(target) = carried {
+        TX.seek_to_ns.store(target, Release);
+    }
+}
+
 /// A prepared transcode route: settle the action, cross the seek, reload onto it.
 fn retranscode_tail(
     ps: &mut crate::route::PlaybackSession,
@@ -677,10 +706,15 @@ fn retranscode_tail(
     user_target: i64,
 ) {
     let secs = user_target / 1_000_000_000;
-    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared);
-    if pending_seek >= 0 {
-        crate::route::commit_user_seek();
+    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared) {
+        // A teardown or a fresh playback request superseded this action while the worker ran (see
+        // `finish_route_action`'s own doc on its `bool` return) — `ps` may already belong to a
+        // different item. Reloading onto it now would be exactly the corruption the mailbox-clearing
+        // fix exists to prevent.
+        super::log("route transition: user retranscode landing superseded; not reloading");
+        return;
     }
+    let carried_seek = commit_or_carry_seek(pending_seek);
     super::log(&format!(
         "route transition: user retranscode at {secs}s{}",
         if pending_seek >= 0 { " + seek" } else { "" },
@@ -689,6 +723,7 @@ fn retranscode_tail(
         super::engine::reload_transcode(ps, pa, user_target),
         "user retranscode reload",
     );
+    rearm_carried_seek(carried_seek);
 }
 
 /// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
@@ -700,10 +735,11 @@ fn native_audio_tail(
     user_target: i64,
 ) {
     let idx = SHARED.desired_audio_idx.load(Relaxed);
-    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared);
-    if pending_seek >= 0 {
-        crate::route::commit_user_seek();
+    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared) {
+        super::log("route transition: native audio landing superseded; not reloading");
+        return;
     }
+    let carried_seek = commit_or_carry_seek(pending_seek);
     super::log(&format!(
         "route transition: native audio idx={idx} at {}s{}",
         user_target / 1_000_000_000,
@@ -713,6 +749,7 @@ fn native_audio_tail(
         super::engine::switch_audio_native(ps, pa, idx, user_target),
         "native audio reload",
     );
+    rearm_carried_seek(carried_seek);
 }
 
 /// A staged Original trial: its PendingOriginal already owns the phase, so there is no
@@ -733,8 +770,9 @@ fn rejected_tail(
     action: &crate::route::ClaimedRouteAction,
     msg: &str,
 ) {
-    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Rejected);
-    super::log(msg);
+    if crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Rejected) {
+        super::log(msg);
+    }
 }
 
 pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
@@ -1078,8 +1116,16 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     // PMS (~700ms): the retry closes the demux socket, so a premature watchdog KILLS an open that
     // was about to succeed and restarts it — at 500ms a rapid tap-burst self-DoS'd into the
     // reload fallback every time (caught by the seek_rapid harness cases).
+    // A claim's worker owns `ControlPhase::Applying` and has no vocabulary for a seek reload
+    // reaching in and replacing the encoder/engine out from under it (see `claim_in_flight`'s own
+    // doc). Skip both this branch and the plain pending-seek branch below while one is in flight —
+    // `TX.seek_to_ns` stays exactly where it is and the retranscode/native-audio tail re-checks it
+    // once the claim lands (`commit_or_carry_seek`).
     const SEEK_STUCK_MS: u32 = 1200;
-    if eng.flushed && eng.rebase_pending && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS {
+    if eng.flushed && eng.rebase_pending
+        && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS
+        && !crate::route::claim_in_flight()
+    {
         // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
         // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
         // target would land where the user already tapped away from, then seek AGAIN.
@@ -1128,6 +1174,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     if stream
         && t >= 0
         && !crate::route::original_recovery_pending()
+        && !crate::route::claim_in_flight() // see the SEEK_STUCK_MS branch's doc above
         && !(eng.flushed && eng.rebase_pending) // coalesce: don't stack in-place seeks
         && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
