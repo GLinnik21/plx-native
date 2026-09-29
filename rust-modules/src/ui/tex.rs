@@ -24,7 +24,23 @@
 //! `ui/frame/render_set.rs`) on every `make sim` debug build while a release build only logged.
 //! [`TEX_RESIDENT_BYTES_MAX`] is the second, independent ceiling `evict_for` enforces: LRU by
 //! `last_used`, oldest first, exactly as the count cap already did — the two ceilings share one
-//! eviction loop and either can fire first.
+//! eviction loop and either can fire first — **but LRU alone is not the whole policy**: see the
+//! next paragraph.
+//!
+//! **On-screen art stays; arrivals lose.** `resolve` stamps each [`Entry`] with the draw-frame
+//! serial it was resolved on ([`TexCache::frame`], advanced once per [`prepare`] call, always
+//! before that frame's draw). `evict_for` will not evict an entry drawn in the current or the
+//! last completed frame, nor `protect` (a key being re-uploaded in place); if evicting every
+//! OTHER eligible entry still would not make room, the incoming upload is REJECTED instead: a
+//! brand-new key's pixels are dropped and the key joins [`TexCache::unresident`] as a REFUSAL
+//! (`app/adapters/poster.rs`'s `RESIDENCY_LOST`/`RESIDENCY_REFUSED` split counts this apart from a
+//! genuine loss), so the source parks it with its existing cooldown instead of the tile cycling
+//! with its row sibling forever (device log: `posters: residency lost=` climbing on an idle
+//! screen; the `poster-gate` eviction scenario failing `reason=target-or-art`). An image bigger
+//! than the whole budget, with no on-screen art in the way, is still admitted: sheer size never
+//! loses, only on-screen art does. This mirrors the glyph cache's own hot window (`text.rs`, phase
+//! 11) — each keeps its OWN frame serial, advanced at its own use point, rather than a cache
+//! reaching across the crate for another's clock.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -66,11 +82,18 @@ pub trait Source {
     /// An item's clearLogo, at the source's one logo request box.
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
-    /// The render cache cannot keep this key resident: either its decoded result was rejected or
-    /// count/byte pressure released its texture. This is one residency notification, not a fetch
-    /// request; before it returns, the source must stop answering READY for the key. A later
-    /// source probe decides whether and when to fetch again.
-    fn unresident(&self, key: PosterKey);
+    /// The render cache cannot keep this key resident: its decoded result was rejected, an
+    /// already-resident texture was released under count/byte pressure, or a brand-new arrival was
+    /// refused outright because pressure left nothing evictable that was not on screen a moment
+    /// ago (never resident at all, in that last case — `refused` is `true`). This is one residency
+    /// notification, not a fetch request; before it returns, the source must stop answering READY
+    /// for the key. A later source probe decides whether and when to fetch again.
+    ///
+    /// `refused` distinguishes the "never resident" case from the other two so a caller can count
+    /// and log it separately (a rejected ARRIVAL is not the same field signal as genuine residency
+    /// LOSS, even though both demote the same slot the same way) — see `app/adapters/poster.rs`'s
+    /// `RESIDENCY_LOST`/`RESIDENCY_REFUSED` split.
+    fn unresident(&self, key: PosterKey, refused: bool);
     /// Nothing wanted, fetching or decoded-but-unaccepted — the prefetch gate.
     fn idle(&self) -> bool;
 }
@@ -262,8 +285,8 @@ pub fn accept(r: PosterReady<PosterKey>) {
         c.accept(r);
         c.take_unresident().collect::<Vec<_>>()
     });
-    for key in unresident {
-        with_source(|s| s.unresident(key), ());
+    for (key, refused) in unresident {
+        with_source(|s| s.unresident(key, refused), ());
     }
 }
 
@@ -278,8 +301,8 @@ pub fn prepare(b: &mut Budget, up: &mut dyn Uploader, present: &mut PresentHandl
         let n = c.prepare(b, up, present, now_us);
         (n, c.take_unresident().collect::<Vec<_>>())
     });
-    for key in unresident {
-        with_source(|s| s.unresident(key), ());
+    for (key, refused) in unresident {
+        with_source(|s| s.unresident(key, refused), ());
     }
     n
 }
@@ -354,15 +377,35 @@ struct Entry {
     /// rather than recomputed from `tex.w * tex.h * 4` at each release, so the accumulator is
     /// conserved by construction: what a release subtracts is exactly what the upload added.
     bytes: usize,
+    /// The [`TexCache::frame`] serial as of this entry's most recent [`TexCache::resolve`], or
+    /// `0` (the sentinel) if it has never been drawn since it was uploaded. DISTINCT from
+    /// `last_used`, which is a per-call LRU tick bumped on every resolve regardless of which
+    /// frame it lands in: `evict_for` needs to know whether an entry was on screen a moment ago,
+    /// not merely which of several same-frame resolves happened first. `0` is a safe "never
+    /// drawn" sentinel because [`TexCache::frame`] only ever advances from inside [`prepare`],
+    /// which always runs (and so reaches at least `1`) before the first `resolve` that could
+    /// possibly touch a freshly-inserted entry — see [`TexCache::prepare`]'s doc.
+    drawn_frame: u64,
 }
 
 pub struct TexCache<K> {
     resident: HashMap<K, Entry>,
     pending: VecDeque<(K, Decoded)>,
-    /// Keys the cache could not keep resident, waiting to cross the key-only [`Source`] seam.
-    /// Rejection and pressure release deliberately share this queue: both revoke the source's
-    /// READY claim, and neither is itself a request to fetch the resource again.
-    unresident: VecDeque<K>,
+    /// Keys the cache could not keep resident, waiting to cross the key-only [`Source`] seam, each
+    /// paired with whether the key was ever actually resident (`refused = false`) or is a brand-new
+    /// ARRIVAL that never got a texture at all (`refused = true`). Three producers deliberately
+    /// share this one queue, because all three revoke the source's READY claim and none of them is
+    /// itself a request to fetch the resource again: a rejected decode ([`TexCache::accept`],
+    /// `refused = false` — a decode failure is not the "on-screen art stays" case this fix adds),
+    /// a resident texture pressure released ([`TexCache::evict_for`] evicting it to admit something
+    /// else, `refused = false`), and — since this fix — a brand-new [`TexCache::prepare`] arrival
+    /// refused outright because every eviction candidate was on screen a moment ago (module doc,
+    /// "on-screen art stays; arrivals lose", `refused = true`). The bool is forwarded to
+    /// [`Source::unresident`] so the application can count and log a rejection separately from a
+    /// genuine loss (`app/adapters/poster.rs`'s `RESIDENCY_LOST`/`RESIDENCY_REFUSED` split) — the
+    /// two look identical from inside the source's own slot state (`P_READY` demoted to
+    /// `P_EVICTED` either way), so this cache is the only place that still knows which happened.
+    unresident: VecDeque<(K, bool)>,
     cap: usize,
     /// The byte ceiling `evict_for` holds residency under, independent of `cap`
     /// ([`TexCache::with_budget`]). `usize::MAX` (via [`TexCache::new`]) means "count-capped
@@ -371,6 +414,12 @@ pub struct TexCache<K> {
     bytes_max: usize,
     clock: u64,
     bytes: usize,
+    /// The draw-frame serial (see [`Entry::drawn_frame`]), advanced once per [`prepare`] call —
+    /// which is to say once per PRESENTING frame, since product `prepare` only ever runs on the
+    /// presenting side of the frame decision (`app/run.rs`). Starts at `0`; the first `prepare`
+    /// call advances it to `1` before touching the pending queue, so `0` is never a real frame
+    /// and stays free as [`Entry::drawn_frame`]'s "never drawn" sentinel.
+    frame: u64,
 }
 
 impl<K: Copy + Eq + Hash> TexCache<K> {
@@ -390,6 +439,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             bytes_max,
             clock: 0,
             bytes: 0,
+            frame: 0,
         }
     }
 
@@ -402,7 +452,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
                 self.pending.push_back((r.key, d));
             }
             Err(_) => {
-                self.unresident.push_back(r.key);
+                self.unresident.push_back((r.key, false));
             }
         }
     }
@@ -421,12 +471,18 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
     /// the free-function wrapper above (`ui::fixture`'s `FixtureRig`, which owns no `Source` to
     /// forward to) still has to drain this queue itself, or `has_pending` never reports false
     /// again once the cache first evicts past its cap.
-    pub(crate) fn take_unresident(&mut self) -> impl Iterator<Item = K> + '_ {
+    pub(crate) fn take_unresident(&mut self) -> impl Iterator<Item = (K, bool)> + '_ {
         self.unresident.drain(..)
     }
 
     /// The upload step (§3.3 step 9). `now_us` is read before EVERY take — one clock reading per
     /// admission decision, never one per call. Returns how many textures became resident.
+    ///
+    /// Advances [`TexCache::frame`] once, unconditionally, before touching the queue — product
+    /// `prepare` runs exactly once per PRESENTING frame (`app/run.rs`'s `prepare_window`, always
+    /// before that frame's draw), so an extra blur source pass or a discovery walk over the same
+    /// drawn frame calls `resolve` again but never calls `prepare` again, and cannot
+    /// double-advance the serial.
     ///
     /// The class is chosen by the DECODED BYTE SIZE of the image at the head of the queue
     /// ([`RESIDENCY_BYTES`]): an ordinary poster is a `Poster` take, a backdrop or a hero logo is
@@ -434,12 +490,11 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
     /// the queue is a FIFO and the head is what the frame that presents it needs, so skipping
     /// past a refused item would upload art nobody is waiting for and leave the wait in place.
     ///
-    /// Every admitted upload calls `evict_for` (LRU, oldest first) to hold BOTH residency
-    /// ceilings: the slot count (`cap`) and the decoded-byte budget (`bytes_max`,
-    /// [`TEX_RESIDENT_BYTES_MAX`] on the product cache) — never the slot count alone. A single
-    /// decoded image bigger than the whole byte budget is still uploaded: refusing it here would
-    /// refuse that poster or backdrop forever, since nothing ever makes it smaller, so it lands
-    /// with the rest of the cache evicted around it instead.
+    /// Every admitted upload calls [`TexCache::evict_for`] to hold both residency ceilings — see
+    /// its own doc for what a `false` return means and how the caller here reacts to it: a
+    /// brand-new key's decoded pixels are dropped and the key joins [`TexCache::unresident`] as a
+    /// REFUSAL; a rejected IN-PLACE replacement changes nothing at all, since its old texture is
+    /// already resident and untouched.
     pub fn prepare(
         &mut self,
         b: &mut Budget,
@@ -447,6 +502,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
         present: &mut PresentHandle<'_>,
         now_us: impl Fn() -> u64,
     ) -> usize {
+        self.frame += 1;
         let mut n = 0;
         while let Some((key, d)) = self.pending.front() {
             let key = *key;
@@ -461,23 +517,37 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             // its own eviction, so making room for a bigger re-upload never evicts itself.
             let is_new = !self.resident.contains_key(&key);
             let protect = if is_new { None } else { Some(key) };
-            self.evict_for(if is_new { 1 } else { 0 }, bytes, protect, up);
+            if !self.evict_for(if is_new { 1 } else { 0 }, bytes, protect, up) {
+                // Arrivals lose: on-screen art was in the way and nothing else was enough. Drop
+                // the decoded pixels (no GL texture is ever created, so `bytes`/`clock` are
+                // untouched either way). A brand-new key never held a texture, so it joins
+                // `unresident` as a REFUSAL, tagged apart from a genuine loss; an in-place
+                // replacement's old texture is already resident and correct, so nothing is
+                // queued — queuing here would desync the source's belief about the key from what
+                // the cache still has.
+                if is_new {
+                    self.unresident.push_back((key, true));
+                }
+                continue;
+            }
             let tex = up.upload(&d);
             up.warm(tex);
             self.clock += 1;
             self.bytes += bytes;
-            if let Some(old) = self.resident.insert(
-                key,
-                Entry {
-                    tex,
-                    last_used: self.clock,
-                    bytes,
-                },
-            ) {
-                // a re-upload of a key that was already resident: the OLD entry's bytes go with
-                // its texture
-                self.bytes = self.bytes.saturating_sub(old.bytes);
-                up.free(old.tex);
+            match self.resident.get_mut(&key) {
+                // An in-place replacement updates the existing entry rather than building a new
+                // one, so `drawn_frame` (and any on-screen protection it carries) is kept
+                // automatically — there is no separate "carry it forward" step to get right.
+                Some(old) => {
+                    self.bytes = self.bytes.saturating_sub(old.bytes);
+                    up.free(old.tex);
+                    old.tex = tex;
+                    old.bytes = bytes;
+                    old.last_used = self.clock;
+                }
+                None => {
+                    self.resident.insert(key, Entry { tex, last_used: self.clock, bytes, drawn_frame: 0 });
+                }
             }
             n += 1;
         }
@@ -494,7 +564,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             up.free(e.tex);
         }
         self.pending.retain(|(pk, _)| *pk != k);
-        self.unresident.retain(|ek| *ek != k);
+        self.unresident.retain(|(ek, _)| *ek != k);
     }
 
     /// Free everything (exit).
@@ -507,44 +577,91 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
         self.bytes = 0;
     }
 
-    /// Evict LRU-first (`last_used`, oldest first — the one policy both ceilings share) until
-    /// EITHER holds: `room` more slots fit under `cap`, or `incoming` more bytes fit under
-    /// `bytes_max`. `protect`, when set, is the key about to be re-uploaded in place — it is
-    /// excluded from victim selection so a replacement can never evict itself to make room for
-    /// its own new pixels; if it is the only entry left and the incoming size alone exceeds the
-    /// budget, the loop stops (nothing left to evict) and the caller uploads anyway. A single
-    /// image bigger than the whole budget is never refused — see [`TexCache::prepare`]'s doc —
-    /// it uploads with the cache emptied around it, `bytes` briefly over `bytes_max` until the
-    /// next upload's eviction brings it back down.
-    fn evict_for(&mut self, room: usize, incoming: usize, protect: Option<K>, up: &mut dyn Uploader) {
-        loop {
-            let over_count = self.resident.len() + room > self.cap;
-            let over_bytes = self.bytes.saturating_add(incoming) > self.bytes_max;
-            if !over_count && !over_bytes {
+    /// The only place victim eligibility is decided: `k` (currently `e`) may be evicted unless it
+    /// is `protect` (the key about to be re-uploaded in place) or was drawn in the current or the
+    /// last completed [`TexCache::frame`] (`drawn_frame == 0`, "never drawn since upload", is
+    /// deliberately NOT protected — an entry nothing has ever resolved is not what is on screen).
+    fn victim_ok(&self, k: K, e: &Entry, protect: Option<K>) -> bool {
+        Some(k) != protect && !(e.drawn_frame != 0 && e.drawn_frame + 1 >= self.frame)
+    }
+
+    /// Make `room` more slots fit under `cap` and `incoming` more bytes fit under `bytes_max` by
+    /// evicting [`TexCache::victim_ok`] entries, oldest `last_used` first. Returns `true` if the
+    /// caller may upload now, `false` if it must not: arrivals lose to on-screen art.
+    ///
+    /// Nothing is freed until it is known to be worth it: eligible entries are taken in LRU order
+    /// only in a simulation first, and the real removals happen only if that reaches both
+    /// ceilings. If it does not, and some OTHER resident entry (not `protect`) failed
+    /// [`TexCache::victim_ok`] only because it was drawn a moment ago, this returns `false` and
+    /// frees nothing — on-screen art stays, and the incoming upload retries after its cooldown.
+    /// Otherwise — the cache is empty, `protect` was the sole survivor, or every entry that was
+    /// not taken was `protect` itself — every eligible entry taken is freed and this returns
+    /// `true` regardless of whether the ceilings are now actually met: a single image bigger than
+    /// the whole budget, with nothing on-screen in the way, is admitted rather than refused
+    /// forever, since nothing would ever make it smaller.
+    ///
+    /// Known cost, not fixed here: a tile uploaded earlier in the SAME [`prepare`] call has
+    /// `drawn_frame == 0` (it has not been resolved yet) and so is not `victim_ok`-protected — a
+    /// later arrival in that same call can evict it even though it is visible this frame. One
+    /// wasted refetch, no flicker, no cycle; not the bug this fn exists to stop.
+    fn evict_for(&mut self, room: usize, incoming: usize, protect: Option<K>, up: &mut dyn Uploader) -> bool {
+        let fits = |count: usize, bytes: usize| count + room <= self.cap && bytes.saturating_add(incoming) <= self.bytes_max;
+        if fits(self.resident.len(), self.bytes) {
+            return true;
+        }
+        // Victims, oldest `last_used` first — the exact order the removal loop below frees them
+        // in, so the simulation below matches the real eviction exactly.
+        let mut victims: Vec<(K, u64, usize)> = self
+            .resident
+            .iter()
+            .filter(|&(&k, e)| self.victim_ok(k, e, protect))
+            .map(|(&k, e)| (k, e.last_used, e.bytes))
+            .collect();
+        victims.sort_unstable_by_key(|&(_, last_used, _)| last_used);
+
+        let mut count = self.resident.len();
+        let mut bytes = self.bytes;
+        let mut take = 0;
+        for &(_, _, victim_bytes) in &victims {
+            if fits(count, bytes) {
                 break;
             }
-            let victim = self
+            count -= 1;
+            bytes = bytes.saturating_sub(victim_bytes);
+            take += 1;
+        }
+        if !fits(count, bytes) {
+            // Still short after evicting every eligible entry: is anything else standing in the
+            // way, or was there simply nothing left to evict? Only the former refuses.
+            let blocked_by_screen = self
                 .resident
                 .iter()
-                .filter(|(k, _)| protect != Some(**k))
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(k, _)| *k);
-            let Some(k) = victim else { break };
+                .any(|(&k, e)| Some(k) != protect && !self.victim_ok(k, e, protect));
+            if blocked_by_screen {
+                return false;
+            }
+        }
+        for &(k, _, _) in &victims[..take] {
             if let Some(e) = self.resident.remove(&k) {
                 self.bytes = self.bytes.saturating_sub(e.bytes);
                 up.free(e.tex);
-                self.unresident.push_back(k);
+                self.unresident.push_back((k, false));
             }
         }
+        true
     }
 
-    /// The renderer's question. A hit is a use (LRU); a miss is the absent-resource rule's cue
-    /// (§8.2): draw the placeholder at the final geometry and request once.
+    /// The renderer's question. A hit is a use (LRU) AND a draw (stamps [`Entry::drawn_frame`]
+    /// with the current [`TexCache::frame`], protecting it from [`TexCache::evict_for`] on the
+    /// next `prepare`); a miss is the absent-resource rule's cue (§8.2): draw the placeholder at
+    /// the final geometry and request once.
     pub fn resolve(&mut self, k: K) -> Option<Tex> {
         self.clock += 1;
         let clock = self.clock;
+        let frame = self.frame;
         self.resident.get_mut(&k).map(|e| {
             e.last_used = clock;
+            e.drawn_frame = frame;
             e.tex
         })
     }
@@ -812,10 +929,139 @@ mod tests {
         assert!(c.resolve(3).is_some(), "the previous frame's newest survives — LRU, oldest first");
         assert_eq!(
             c.take_unresident().collect::<Vec<_>>(),
-            vec![1, 2],
-            "both byte-pressure releases are exposed for source reconciliation"
+            vec![(1, false), (2, false)],
+            "both byte-pressure releases are exposed for source reconciliation, and neither is a \
+             refusal — both keys were genuinely resident before eviction"
         );
         assert!(!c.has_pending());
+    }
+
+    /// F2: an image bigger than the whole byte budget, with nothing on screen blocking it, is
+    /// admitted rather than refused forever — refusing it here would refuse it forever, since
+    /// nothing ever makes it smaller. Exercises the empty-cache case directly, then a second
+    /// oversize arrival that must evict every off-screen (never-drawn) resident and is still
+    /// admitted even though that alone is not enough to fit the ceiling.
+    #[test]
+    fn an_oversize_image_with_no_on_screen_art_in_the_way_is_admitted() {
+        let mut present = Present::new();
+
+        // Scenario A: an empty cache. A lone image bigger than the whole byte budget is still
+        // admitted — refusing it here would refuse it forever, since nothing ever makes it
+        // smaller.
+        let mut a: TexCache<u32> = TexCache::with_budget(8, 1_000_000);
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut b = Budget::new();
+        a.accept(PosterReady {
+            key: 1,
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; 2_000_000].into_boxed_slice() }),
+        });
+        b.begin_frame(0);
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(
+            a.prepare(&mut b, &mut up, &mut ph, || 0),
+            1,
+            "a solo oversize image on an empty cache must be admitted, not refused forever"
+        );
+        assert!(a.resolve(1).is_some());
+        assert!(a.resident_bytes() > 1_000_000, "briefly over budget until the next eviction");
+
+        // Scenario B: two small, OFF-SCREEN (never resolved) residents already fill most of the
+        // budget. An oversize arrival needs more than evicting both of them would free, but
+        // nothing on screen is in the way (neither key 2 nor key 3 was ever drawn), so it is
+        // still admitted — evicting every eligible victim and forcing the rest through.
+        let mut c: TexCache<u32> = TexCache::with_budget(8, 1_000_000);
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut b = Budget::new();
+        c.accept(PosterReady {
+            key: 2,
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; 400_000].into_boxed_slice() }),
+        });
+        c.accept(PosterReady {
+            key: 3,
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; 400_000].into_boxed_slice() }),
+        });
+        b.begin_frame(0);
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(c.prepare(&mut b, &mut up, &mut ph, || 0), 2);
+        assert_eq!(c.resident_bytes(), 800_000);
+
+        c.accept(PosterReady {
+            key: 4,
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; 2_000_000].into_boxed_slice() }),
+        });
+        b.begin_frame(20_000);
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(
+            c.prepare(&mut b, &mut up, &mut ph, || 20_000),
+            1,
+            "the oversize arrival is admitted even though evicting every off-screen resident \
+             still would not fit the byte ceiling, because nothing on screen blocks it"
+        );
+        assert!(c.resolve(4).is_some(), "the new oversize key is resident");
+        assert_eq!(c.resident_count(), 1, "both off-screen keys were evicted to make room");
+        assert_eq!(
+            c.take_unresident().collect::<Vec<_>>(),
+            vec![(2, false), (3, false)],
+            "the two off-screen keys are genuine pressure releases, not refusals — they were \
+             resident before eviction and nothing about the arrival itself was refused"
+        );
+    }
+
+    /// Owner report (TV, Library > Movies, page static): the grid row half under the glass tab
+    /// bar shows ONE poster at a time — a tile loads, drops back to the skeleton as another tile
+    /// in that row loads, and so on, while every row below stays loaded. The row is the FIRST one
+    /// painted, so every frame it is resolved before any other on-screen tile and is always the
+    /// oldest `last_used` of the on-screen set. When the drawn working set is over the byte
+    /// ceiling, `evict_for` takes it; the source re-arms it on the next Draw probe; its upload is
+    /// newest and evicts the NEXT first-painted resident — its row sibling. The cooldown in the
+    /// source only paces that cycle. Driven here exactly as the frame loop does it: each frame
+    /// resolves the visible keys in paint order, then the source re-delivers whatever it was told
+    /// is unresident, then prepare uploads it.
+    ///
+    /// The contract under test: a texture the last drawn frame resolved is never evicted to admit
+    /// another texture. Over-budget arrivals must lose (stay unresident), not flip on-screen art.
+    #[test]
+    fn an_over_budget_screen_does_not_cycle_its_first_painted_row() {
+        const IMG: usize = 375_000; // a 250x375 RGBA poster
+        const VISIBLE: u32 = 18; // three six-wide rows, top row first in paint order
+        const FITS: usize = 17; // the ceiling holds one poster fewer than the screen draws
+        let poster = |k: u32| PosterReady {
+            key: k,
+            result: Ok(Decoded { w: 250, h: 375, rgba: vec![0; IMG].into_boxed_slice() }),
+        };
+        let mut c: TexCache<u32> = TexCache::with_budget(64, FITS * IMG);
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut present = Present::new();
+        let mut b = Budget::new();
+        let mut now = 0u64;
+        // Cold start: the source delivers every visible key, three uploads a frame.
+        for k in 0..VISIBLE { c.accept(poster(k)); }
+        let mut flipped = Vec::new();
+        let mut shown: Vec<u32> = Vec::new();
+        for frame in 0..40 {
+            // Prepare (step 9) runs before the draw; its evictions land on what the PREVIOUS
+            // drawn frame showed.
+            b.begin_frame(now);
+            let mut ph = PresentHandle(&mut present);
+            c.prepare(&mut b, &mut up, &mut ph, || now);
+            now += 16_000;
+            let evicted: Vec<(u32, bool)> = c.take_unresident().collect();
+            for &(k, _refused) in &evicted {
+                if frame >= 10 && shown.contains(&k) { flipped.push((frame, k)); }
+            }
+            // The draw: paint order, top row first.
+            shown = (0..VISIBLE).filter(|&k| c.resolve(k).is_some()).collect();
+            // The source re-arms every evicted key on its next Draw probe and re-delivers it.
+            for (k, _refused) in evicted { c.accept(poster(k)); }
+        }
+        // After warm-up, count the on-screen textures that lost residency to admit another.
+        assert!(
+            flipped.is_empty(),
+            "on-screen art was evicted to admit other on-screen art {} times after warm-up; \
+             first victims (frame, key): {:?}",
+            flipped.len(),
+            &flipped[..flipped.len().min(8)]
+        );
     }
 
     /// A re-upload of a key that is ALREADY resident needs no room, so it must evict nobody: the

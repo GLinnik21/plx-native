@@ -252,11 +252,21 @@ fn retry_due(s: &Pslot, now: u32) -> bool {
 /// **The residency thrash guard (Codex P1 review on PR #182, `lookup`'s P_EVICTED branch).**
 /// A `Touch::Warm` probe never reaches this guard at all — it is turned away before the branch
 /// even looks at the cooldown (see the branch itself) — so what is left for this guard to bound is
-/// narrower than the original review reads: a working set that genuinely cannot fit under
-/// [`tex::TEX_RESIDENT_BYTES_MAX`] still has the render cache evict key A to make room, a DRAW of A
-/// re-arm it, A's eventual upload evict key B, a DRAW of B re-arm IT, and so on with no bound —
-/// continuous fetch/decode/upload every frame instead of settling, driven entirely by on-screen
-/// demand rather than off-screen prefetch.
+/// narrower than the original review reads. Originally (before the render cache learned to protect
+/// on-screen art, `tex.rs`'s "on-screen art stays; arrivals lose") a working set that genuinely
+/// could not fit under [`tex::TEX_RESIDENT_BYTES_MAX`] had the render cache evict key A to make
+/// room, a DRAW of A re-arm it, A's eventual upload evict key B, a DRAW of B re-arm IT, and so on
+/// with no bound — continuous fetch/decode/upload every frame instead of settling, driven entirely
+/// by on-screen demand rather than off-screen prefetch. `tex::TexCache::evict_for` no longer lets
+/// that particular cycle happen at all: it will not evict an entry drawn in the current or the
+/// last completed frame, so a genuinely over-budget on-screen working set now REFUSES the newer
+/// arrival outright (a steady skeleton, `PosterSource::unresident`'s `refused` case) rather than
+/// evicting the older one to admit it. What is left for this guard to bound is the RECOVERY side
+/// of that refusal: a refused arrival's slot still goes `P_EVICTED` and still needs re-arming, and
+/// under sustained pressure a key that keeps getting re-armed only to be refused again the moment
+/// its cooldown clears is still churning fetch/decode/upload without ever landing — this guard
+/// paces how often that retry is allowed to turn, the same shape of problem the original review
+/// named even though the mechanism producing it changed.
 ///
 /// The guard is two pure decisions, both keyed off wall-clock ticks so they cost nothing under the
 /// store lock and are host-testable without a real elapsed second (mirrors [`retry_due`] and the
@@ -555,16 +565,28 @@ fn warn_key_refused(len: usize) {
 /// already past it, so the two numbers are an exact tally, not a sample.
 static RESIDENCY_LOST: AtomicU64 = AtomicU64::new(0);
 static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
+/// A THIRD count, separate from [`RESIDENCY_LOST`]: a brand-new arrival the render cache refused
+/// outright because every eviction candidate was on screen a moment ago
+/// (`tex::TexCache::evict_for`, "on-screen art stays; arrivals lose"). The slot transition is
+/// identical (`P_READY`/`P_DECODED` -> `P_EVICTED`, [`PosterSource::unresident`]), but nothing was
+/// ever actually resident here — conflating the two under `lost=` made an over-budget idle
+/// screen's diagnostic climb forever, because a refused arrival's cooldown keeps expiring and
+/// retrying even once no real eviction is happening at all. Kept on this seam — not folded into
+/// `tex.rs` — because that cache must stay ignorant of app-level metrics; the bool crossing it is
+/// the minimal signal [`card_motion_metrics`](crate::ui::card_motion_metrics) needs.
+static RESIDENCY_REFUSED: AtomicU64 = AtomicU64::new(0);
 
-/// The interval throttle's clock, and the `(lost, rearmed)` pair the LAST emitted line actually
-/// reported — the second half is what lets [`log_residency_settled`] tell "nothing changed since
-/// we last said so" from "the totals moved and the throttle window swallowed it".
+/// The interval throttle's clock, and the `(lost, rearmed, refused)` triple the LAST emitted line
+/// actually reported — the rest is what lets [`log_residency_settled`] tell "nothing changed
+/// since we last said so" from "the totals moved and the throttle window swallowed it".
 struct ResidencyLog {
     at: Option<std::time::Instant>,
     lost: u64,
     rearmed: u64,
+    refused: u64,
 }
-static RESIDENCY_LOG: Mutex<ResidencyLog> = Mutex::new(ResidencyLog { at: None, lost: 0, rearmed: 0 });
+static RESIDENCY_LOG: Mutex<ResidencyLog> =
+    Mutex::new(ResidencyLog { at: None, lost: 0, rearmed: 0, refused: 0 });
 
 /// Pure half of the interval throttle in [`log_residency`] — is a transition-triggered line due,
 /// given the instant of the last one actually written (`None` before the first) and now? Split
@@ -605,6 +627,7 @@ fn interval_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bo
 fn log_residency() {
     let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
     let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
+    let refused = RESIDENCY_REFUSED.load(Ordering::Relaxed);
     let now = std::time::Instant::now();
     let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
     if !interval_due(st.at, now) {
@@ -613,8 +636,9 @@ fn log_residency() {
     st.at = Some(now);
     st.lost = lost;
     st.rearmed = rearmed;
+    st.refused = refused;
     drop(st);
-    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
 /// The settle half of the instrument (see [`log_residency`]'s doc for the gap it closes): called
@@ -636,18 +660,20 @@ fn log_residency_settled(store_idle_this_frame: bool) {
     }
     let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
     let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
+    let refused = RESIDENCY_REFUSED.load(Ordering::Relaxed);
     let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
-    if st.lost == lost && st.rearmed == rearmed {
+    if st.lost == lost && st.rearmed == rearmed && st.refused == refused {
         return;
     }
     st.at = Some(std::time::Instant::now());
     st.lost = lost;
     st.rearmed = rearmed;
+    st.refused = refused;
     drop(st);
-    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
-/// Test-visible read of the two totals above, so a test grades the counters through the same
+/// Test-visible read of the two original totals, so a test grades the counters through the same
 /// atomics [`log_residency`] reads rather than a reimplementation of them.
 #[cfg(test)]
 fn residency_counts_for_test() -> (u64, u64) {
@@ -655,6 +681,14 @@ fn residency_counts_for_test() -> (u64, u64) {
         RESIDENCY_LOST.load(Ordering::Relaxed),
         RESIDENCY_REARMED.load(Ordering::Relaxed),
     )
+}
+
+/// Test-visible read of [`RESIDENCY_REFUSED`] — kept separate from
+/// [`residency_counts_for_test`] rather than widening its tuple, so the many existing callers
+/// that destructure `(lost, rearmed)` are untouched by this third counter.
+#[cfg(test)]
+fn residency_refused_for_test() -> u64 {
+    RESIDENCY_REFUSED.load(Ordering::Relaxed)
 }
 
 /// Test-visible read of the `(lost, rearmed)` pair the last emitted line actually reported, so a
@@ -828,13 +862,18 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             // and mere retention in the source LRU schedules no work. Only a Draw probe may even
             // consider re-arming an existing EVICTED slot; Warm leaves it dormant unconditionally,
             // below, before either of the DRAW-only mechanisms that follow ever run. This prevents
-            // speculative resurrection of that slot, but does not prevent cycling when the drawn
-            // working set exceeds the residency budget — that remaining DRAW-vs-DRAW case is what
-            // the cooldown gate right after this one bounds (see `evict_was_rapid`'s doc): a key's
-            // first eviction always re-arms on its very next draw (no cooldown was set for it),
-            // but a key that is being re-evicted rapidly — genuine byte pressure the store cannot
-            // resolve by itself — waits out a bounded backoff instead of re-arming on every single
-            // draw, which is what let two over-budget on-screen keys evict each other forever.
+            // speculative resurrection of that slot. EVICTED is reached several ways — a rejected
+            // decode, an off-screen (never-drawn) resident released under count/byte pressure, or a
+            // brand-new arrival refused outright because on-screen art was in the way
+            // (`tex::TexCache::evict_for`, "on-screen art stays; arrivals lose") — and
+            // [`PosterSource::unresident`]'s `refused` flag is the only place that still
+            // distinguishes the last of those from the other two. What the cooldown gate right
+            // after this one bounds is the RETRY side of a refusal under sustained pressure — a key
+            // whose cooldown keeps clearing only for its re-upload to be refused again immediately
+            // has nothing that stops the retry loop by itself (see `evict_was_rapid`'s doc): a
+            // key's first eviction or refusal always re-arms on its very next draw (no cooldown was
+            // set for it), but one that keeps recurring rapidly waits out a bounded backoff instead
+            // of retrying on every single draw.
             if g.slots[i].state == P_EVICTED {
                 if touch == Touch::Warm {
                     return (None, Warm::Known);
@@ -994,21 +1033,27 @@ impl tex::Source for PosterSource {
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
         logo_warm(ServerId::from_raw(srv), rk)
     }
-    fn unresident(&self, key: PosterKey) {
+    fn unresident(&self, key: PosterKey, refused: bool) {
         let mut g = store();
-        let mut lost = false;
+        let mut transitioned = false;
         if let Some(s) = g.slots.get_mut(key.0 as usize) {
             // A delivered decode or READY entry depends on render-cache residency. The cache
-            // calls this synchronously for both a rejected decoded result and pressure eviction,
-            // before application code can probe or recycle the key. Thus the source never answers
-            // READY for a key the cache could not make resident.
+            // calls this synchronously for a rejected decoded result, pressure eviction, or a
+            // brand-new arrival refused outright (`refused`), before application code can probe
+            // or recycle the key. Thus the source never answers READY for a key the cache could
+            // not make resident.
             if matches!(s.state, P_READY | P_DECODED) {
                 s.state = P_EVICTED;
-                lost = true;
+                transitioned = true;
                 // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
                 // (this key was evicted before, inside the thrash window) escalates the backoff
                 // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
-                // no cooldown at all, so the very next Draw probe re-arms it as before.
+                // no cooldown at all, so the very next Draw probe re-arms it as before. A refused
+                // arrival gets the identical cooldown treatment — its slot was marked `P_READY` by
+                // `drain_decoded` before the cache ever saw its pixels (issue: the render cache's
+                // admission decision runs strictly after that), so from here on it needs exactly
+                // the same pacing a genuine eviction does, or the very next Draw probe would retry
+                // the identical rejected upload every single frame.
                 let now = crate::app::clock::now();
                 s.evict_attempts = if evict_was_rapid(s.evicted_at, now) {
                     s.evict_attempts.saturating_add(1)
@@ -1024,10 +1069,17 @@ impl tex::Source for PosterSource {
             }
         }
         drop(g);
-        if lost {
-            RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "devtriggers")]
-        crate::ui::card_motion_metrics::evicted();
+        if transitioned {
+            // Same slot transition either way (`P_READY`/`P_DECODED` -> `P_EVICTED`), but a
+            // REFUSED arrival never held a texture at all: it is a separate counter and a separate
+            // field in the log line, not a residency LOSS.
+            if refused {
+                RESIDENCY_REFUSED.fetch_add(1, Ordering::Relaxed);
+            } else {
+                RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "devtriggers")]
+                crate::ui::card_motion_metrics::evicted();
+            }
             log_residency();
         }
     }
@@ -2072,13 +2124,27 @@ mod tests {
         );
         assert_ne!(tex::resolve_on(srv.raw(), SRC, 2, 2, false), 0);
 
+        // One frame with nothing drawn: `TexCache::evict_for`'s on-screen protection (this key
+        // stays resident through the frame immediately after it was drawn — the frame it would
+        // still be on screen for, if it still were) has to lapse before pressure may take it.
+        // Without this idle frame the very next `prepare` would refuse to evict a texture the
+        // prior frame just drew, exactly the "arrivals lose" rule the fix added.
+        budget.begin_frame(10_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 10_000),
+            0,
+            "nothing pending on the idle settle frame"
+        );
+
         tex::accept(decoded(PosterKey(1)));
         budget.begin_frame(20_000);
         let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 20_000),
             1,
-            "the second upload must evict the first by bytes through the product wrapper"
+            "the second upload must evict the first by bytes through the product wrapper, now \
+             that it is no longer within the on-screen protection window"
         );
         assert_eq!(store().slots[0].state, P_EVICTED);
 
@@ -2128,6 +2194,112 @@ mod tests {
             0,
             "the same source key becomes resident again"
         );
+
+        tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The product path for a REFUSED arrival (as opposed to a genuine pressure release, which
+    /// [`a_ready_source_hit_recovers_after_its_texture_is_evicted`] already covers): a brand-new
+    /// key whose only eviction candidate was drawn a moment ago must never become resident, and
+    /// the source side of that refusal must look right — `P_EVICTED` with no cooldown (a key's
+    /// first-ever eviction never gets one, [`evict_was_rapid`]'s doc), re-armed by the very next
+    /// Draw probe, and counted as a REFUSAL (`RESIDENCY_REFUSED`) rather than a loss
+    /// (`RESIDENCY_LOST`) — the distinction Opus's review of the on-screen eviction-protection fix
+    /// found missing: a rejected arrival's slot is `P_READY` exactly like a genuinely evicted one,
+    /// so without this counter split the device log's `posters: residency lost=` line kept
+    /// climbing on an over-budget idle screen even once no on-screen texture was actually being
+    /// evicted any more. Watched red against the code before that split: `refused1` read `0` and
+    /// `lost1` carried the transition instead.
+    #[test]
+    fn a_refused_arrival_is_not_counted_as_a_residency_loss() {
+        struct StubUp {
+            next: u32,
+        }
+        impl Uploader for StubUp {
+            fn upload(&mut self, d: &Decoded) -> Tex {
+                self.next += 1;
+                Tex { id: self.next, w: d.w, h: d.h }
+            }
+            fn warm(&mut self, _: Tex) {}
+            fn free(&mut self, _: Tex) {}
+        }
+
+        const BYTES: usize = 16; // the byte ceiling below fits exactly one of these
+        const SRC0: &str = "/library/metadata/42/thumb";
+        const SRC1: &str = "/library/metadata/43/thumb";
+        let (_fresh, srv, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(BYTES);
+        let path0 = key_for(srv, SRC0, 2, 2, 0);
+        let path1 = key_for(srv, SRC1, 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.quit = false;
+            let gen = crate::plex::client_for(srv).unwrap().token_gen();
+            let cache_gen = crate::imgcache::generation();
+            for (i, path) in [&path0, &path1].into_iter().enumerate() {
+                let slot = &mut g.slots[i];
+                slot.state = P_READY;
+                slot.srv = srv;
+                slot.cache_gen = cache_gen;
+                slot.token_gen = gen;
+                set_key(slot, path);
+            }
+        }
+
+        let decoded = |key| PosterReady {
+            key,
+            result: Ok(Decoded { w: 2, h: 2, rgba: vec![0; BYTES].into_boxed_slice() }),
+        };
+        let mut budget = crate::ui::frame::Budget::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut uploader = StubUp { next: 0 };
+        let (lost0, _) = residency_counts_for_test();
+        let refused0 = residency_refused_for_test();
+
+        // Key 0 arrives, uploads, and is drawn — resident AND on screen this frame.
+        tex::accept(decoded(PosterKey(0)));
+        budget.begin_frame(0);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 0), 1);
+        assert_ne!(tex::resolve_on(srv.raw(), SRC0, 2, 2, false), 0, "key 0 is resident and drawn");
+
+        // Key 1 arrives on the VERY NEXT frame, needing key 0's bytes to fit under the ceiling.
+        // Key 0 was drawn last frame, so it is protected: key 1 must be refused, not admitted by
+        // flipping key 0 off screen.
+        tex::accept(decoded(PosterKey(1)));
+        budget.begin_frame(10_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 10_000),
+            0,
+            "the arrival must be refused - its only eviction candidate was drawn last frame"
+        );
+        assert_ne!(
+            tex::resolve_on(srv.raw(), SRC0, 2, 2, false),
+            0,
+            "key 0 must still be resident - it was never evicted"
+        );
+
+        assert_eq!(
+            store().slots[1].state, P_EVICTED,
+            "the refused arrival's slot is demoted exactly like a genuine eviction"
+        );
+        assert!(
+            store().slots[1].evict_cooldown_until.is_none(),
+            "a key's first-ever eviction (real or refused) never sets a cooldown"
+        );
+        let (lost1, _) = residency_counts_for_test();
+        let refused1 = residency_refused_for_test();
+        assert_eq!(lost1, lost0, "a refused arrival was never resident - it must not count as a loss");
+        assert_eq!(refused1, refused0 + 1, "the refusal must count exactly once");
+
+        // The next Draw probe re-arms the dormant slot, as any uncooled EVICTED slot would.
+        let (hit, _) = lookup(srv, &path1, Touch::Draw);
+        assert_eq!(hit, None, "the re-armed slot has no pixels yet");
+        assert_eq!(store().slots[1].state, P_WANT, "the refusal is fully recoverable");
 
         tex::shutdown(&mut uploader);
         store().slots = [Pslot::ZERO; PT_CAP];
@@ -2350,14 +2522,14 @@ mod tests {
         }
         let (lost0, rearmed0) = residency_counts_for_test();
 
-        SOURCE.unresident(PosterKey(0));
+        SOURCE.unresident(PosterKey(0), false);
         assert_eq!(store().slots[0].state, P_EVICTED, "unresident demotes a READY slot");
         let (lost1, rearmed1) = residency_counts_for_test();
         assert_eq!(lost1, lost0 + 1, "a real READY->EVICTED transition must count exactly once");
         assert_eq!(rearmed1, rearmed0, "unresident never touches the re-arm counter");
 
         // A slot already EVICTED has no READY truth left to revoke - must not count again.
-        SOURCE.unresident(PosterKey(0));
+        SOURCE.unresident(PosterKey(0), false);
         let (lost2, _) = residency_counts_for_test();
         assert_eq!(lost2, lost1, "a slot that was already EVICTED must not be counted twice");
 
@@ -2403,7 +2575,7 @@ mod tests {
         for _ in 0..CYCLES {
             // Stand-in for the render cache's own byte-pressure eviction (real pressure needs a
             // live GL cache no host test links; this callback IS the seam it calls through).
-            SOURCE.unresident(PosterKey(0));
+            SOURCE.unresident(PosterKey(0), false);
             let (hit, _) = lookup(sid, &path, Touch::Draw);
             assert_eq!(hit, None, "an evicted slot never has pixels the same probe that finds it");
             if store().slots[0].state == P_WANT {
@@ -2634,7 +2806,7 @@ mod tests {
         // very next Draw probe, the ordinary one-eviction-then-recovery case. This primes
         // `evicted_at` so the NEXT eviction (immediately after, same tick) is the first the
         // thrash guard can see as a continuation.
-        SOURCE.unresident(PosterKey(0));
+        SOURCE.unresident(PosterKey(0), false);
         assert_eq!(
             store().slots[0].evict_cooldown_until,
             None,
@@ -2647,7 +2819,7 @@ mod tests {
 
         let schedule_ms: [u32; 8] = [250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
         for &wait in schedule_ms.iter() {
-            SOURCE.unresident(PosterKey(0)); // rapid: inside the thrash window every time
+            SOURCE.unresident(PosterKey(0), false); // rapid: inside the thrash window every time
             let cooldown = store().slots[0]
                 .evict_cooldown_until
                 .expect("a rapid re-eviction always sets a cooldown");
@@ -2704,7 +2876,7 @@ mod tests {
 
         // The window's own edge - not one millisecond less - counts as settled.
         crate::app::clock::set_replay(EVICT_THRASH_WINDOW_MS);
-        SOURCE.unresident(PosterKey(0));
+        SOURCE.unresident(PosterKey(0), false);
         {
             let g = store();
             assert_eq!(g.slots[0].evict_attempts, 0, "a settled gap must clear the escalation");
@@ -2845,7 +3017,7 @@ mod tests {
         }
 
         // The eviction: the first line in the (just reset) throttle window, so it writes.
-        SOURCE.unresident(PosterKey(0));
+        SOURCE.unresident(PosterKey(0), false);
         let (lost1, rearmed1) = residency_counts_for_test();
         assert_eq!(
             residency_last_emitted_for_test(),
