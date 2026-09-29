@@ -678,14 +678,12 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     }
     // Issue #266: only when the server DEMONSTRABLY applied the DSP — `Unverified`/`Refused`/`Off`
     // say nothing was provably added to this stream, so the row must not claim it.
-    if crate::route::cur_enhancement_label(ps) == Some("applied") {
-        let asked = crate::route::cur_audio_enhancements(ps);
-        if asked.boost_dialog {
-            audio.push_str(" · dialog boost");
-        }
-        if asked.normalize_loudness {
-            audio.push_str(" · loudness");
-        }
+    let applied = crate::route::applied_audio_enhancements(ps);
+    if applied.boost_dialog {
+        audio.push_str(" · dialog boost");
+    }
+    if applied.normalize_loudness {
+        audio.push_str(" · loudness");
     }
     v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
 

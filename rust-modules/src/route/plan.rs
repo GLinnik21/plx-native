@@ -645,8 +645,7 @@ pub(super) fn note_enhancement_refused(context: &str, audio: crate::plex::AudioE
 fn decision_audio(mc: &crate::plex::MediaContainer) -> Option<&str> {
     mc.metadata
         .first()
-        .and_then(|m| m.media.first())
-        .and_then(|md| md.part.first())
+        .and_then(|m| m.first_part())
         .and_then(|p| p.stream.iter().find(|s| s.stream_type == 2))
         .map(|s| s.decision.as_str())
 }

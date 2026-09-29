@@ -75,29 +75,6 @@ struct RetryContext {
 /// "valid until the next main-thread write" caveat those docs carried is enforced rather than
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
-/// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
-/// opposed to `EncodeContract::audio`, which is what was ASKED for. Distinguishing "on and
-/// working" from "the server ignored it" matters because PMS 1.43.4 does both: measurement M2
-/// (`/tmp/plx266/measurements.md`) found an AC3 2.0 source where the params changed the decision
-/// (a real DSP transcode) beside an AAC 5.1 source where the audio was transcoded to AC3 either
-/// way, params or not — so "the decision shows a transcode" alone cannot tell the two apart.
-///
-/// Graded by `build_stream` (`classify_outcome`, or `Refused` from its fallback) and installed by
-/// `apply_plan` beside `cur_contract` — written only after a decision, never at the selection (I9).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(super) enum EnhancementOutcome {
-    #[default]
-    Off,
-    /// Remux, the audio decision was a transcode, and the source codec is in the profile's own
-    /// copy list — the params demonstrably did something.
-    Applied,
-    /// The audio would have been transcoded anyway (PMS M2's AAC 5.1 case) — asked for, delivered,
-    /// but not provably BECAUSE of the ask.
-    Unverified,
-    /// The server refused the params outright, or silently ignored them (audio came back `copy`
-    /// despite the ask) — an old or non-conforming PMS.
-    Refused,
-}
 
 pub(crate) struct PlaybackSession {
     /// Frozen for one logical playback, including its retries and track changes.
@@ -369,6 +346,30 @@ pub(crate) struct PlaybackSession {
     /// machine still owns the engine, this says what the session may write. See
     /// [`preview_request`].
     resolved_as_preview: bool,
+}
+
+/// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
+/// opposed to `EncodeContract::audio`, which is what was ASKED for. Distinguishing "on and
+/// working" from "the server ignored it" matters because PMS 1.43.4 does both: measurement M2
+/// (`/tmp/plx266/measurements.md`) found an AC3 2.0 source where the params changed the decision
+/// (a real DSP transcode) beside an AAC 5.1 source where the audio was transcoded to AC3 either
+/// way, params or not — so "the decision shows a transcode" alone cannot tell the two apart.
+///
+/// Graded by `build_stream` (`classify_outcome`, or `Refused` from its fallback) and installed by
+/// `apply_plan` beside `cur_contract` — written only after a decision, never at the selection (I9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(super) enum EnhancementOutcome {
+    #[default]
+    Off,
+    /// Remux, the audio decision was a transcode, and the source codec is in the profile's own
+    /// copy list — the params demonstrably did something.
+    Applied,
+    /// The audio would have been transcoded anyway (PMS M2's AAC 5.1 case) — asked for, delivered,
+    /// but not provably BECAUSE of the ask.
+    Unverified,
+    /// The server refused the params outright, or silently ignored them (audio came back `copy`
+    /// despite the ask) — an old or non-conforming PMS.
+    Refused,
 }
 
 impl PlaybackSession {
@@ -4221,13 +4222,6 @@ fn cur_client(ps: &PlaybackSession) -> Option<&'static crate::plex::Client> {
 pub(crate) fn cur_audio_sid(ps: &PlaybackSession) -> i64 {
     ps.cur_audio.as_ref().map_or(0, |a| a.sid)
 }
-/// The full carried-audio record (issue #266), when known. Unused in this PR — the offering
-/// policy that reads a track's `can_normalize_loudness`/`immersive` facts lands in a later PR;
-/// kept now so that reader has a typed accessor to call instead of a new `ps.cur_audio` reach-in.
-#[allow(dead_code)]
-pub(super) fn cur_audio(ps: &PlaybackSession) -> Option<CarriedAudio> {
-    ps.cur_audio.clone()
-}
 /// The currently-playing item's Part id. Written once per item by `build_stream` from its own
 /// `part` argument. In-playback callers (audio switch, subtitle toggle, retranscode) want this;
 /// `build_stream` must pass its freshly-derived local instead, since this is not yet updated
@@ -4461,11 +4455,17 @@ pub(crate) fn set_stream_declaration_for_test(
 pub(crate) fn is_remux(ps: &PlaybackSession) -> bool {
     ps.cur_contract.remux
 }
-/// The Plex Pass DSP the live route was ASKED for (issue #266) — `cur_contract.audio`, distinct
-/// from what the server did with it (see [`cur_enhancement_label`]). Read by the diagnostics
-/// Audio row's suffix.
-pub(crate) fn cur_audio_enhancements(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
-    ps.cur_contract.audio
+/// The Plex Pass DSP the live route was ASKED for (issue #266) — `cur_contract.audio`, gated to
+/// what the server DEMONSTRABLY applied: `NONE` unless `cur_enhancement` is `Applied`
+/// (`Unverified`/`Refused`/`Off` say nothing was provably added to this stream, so a caller
+/// quoting the params must not claim them). Read by the diagnostics Audio row's suffix, which used
+/// to read the unfiltered ask and gate it on `cur_enhancement_label(ps) == Some("applied")` itself.
+pub(crate) fn applied_audio_enhancements(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
+    if ps.cur_enhancement == EnhancementOutcome::Applied {
+        ps.cur_contract.audio
+    } else {
+        crate::plex::AudioEnhancements::NONE
+    }
 }
 /// **Narrow diagnostics accessor** — deliberately not `pub(crate) fn cur_enhancement`, which would
 /// widen [`EnhancementOutcome`] itself past `pub(super)` for one read-only caller. `None` for
