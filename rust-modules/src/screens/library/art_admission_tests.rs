@@ -19,7 +19,7 @@ impl Source for ArtSpy {
     }
     fn logo(&self, _: u16, _: &str) -> Option<PosterKey> { None }
     fn logo_warm(&self, _: u16, _: &str) -> Warm { Warm::Known }
-    fn unresident(&self, _: PosterKey) {}
+    fn unresident(&self, _: PosterKey, _: bool) {}
     fn idle(&self) -> bool { true }
 }
 
