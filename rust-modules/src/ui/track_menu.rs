@@ -512,12 +512,34 @@ impl TrackMenuState {
     /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
     /// recomputing it — `update`'s per-frame poll already has it fresh, and handing it here keeps
     /// `route::menu_enhancements(ps)` to exactly one call per rebuild instead of two.
+    ///
+    /// **Preserves the focused row by its [`AudioRowTarget`] identity** rather than always
+    /// snapping to the checked track — the fix for a reported focus desync: `update`'s live poll
+    /// calls this every time the route's enhancement answer changes (the server settling an
+    /// optimistic Boost/Loudness flip, or a mid-play route change), and that used to re-home
+    /// `self.table.sel` (and the drawn pill) onto the active-audio row unconditionally. The
+    /// ENGINE's own cursor only ever moves in response to a `FocusMoved`
+    /// (`screens::player::overlay::PlayerOverlayScreen::step`'s write via [`Self::set_sel`]), and
+    /// a poll-driven rebuild fires no such event — so the highlight jumped to the checked language
+    /// row while the engine's focus stayed on the toggle row the viewer was actually on, and the
+    /// next UP/DOWN/OK acted on a row nothing showed as selected. Looking the previous row up by
+    /// its [`AudioRowTarget`] and reusing its NEW position keeps `table.sel` exactly where the
+    /// engine still thinks it is whenever that target still exists (the common case: toggling a
+    /// bit does not remove or reorder rows). A tab switch/open always reaches here too, but
+    /// `self.audio_targets` is empty then ([`Self::rebuild`]'s Subtitles arm clears it, and the
+    /// constructor never populates it first), so the lookup misses and the fallback below —
+    /// landing on the checked track — is exactly the existing open/switch behaviour.
     fn rebuild_audio(&mut self, enhance_shown: Option<crate::plex::AudioEnhancements>, meta: metadata::MetadataView<'_>, slide: bool) {
+        let prev_target = self.audio_targets.get(self.table.sel.max(0) as usize).copied();
         self.targets = Vec::new();
         self.enhance_shown = enhance_shown;
         let (sections, targets) = self.build_audio(meta);
+        let sel = prev_target
+            .and_then(|t| targets.iter().position(|x| *x == t))
+            .map(|i| i as c_int)
+            .unwrap_or_else(|| self.active_audio().max(0));
         self.audio_targets = targets;
-        self.table.set_sections(sections, self.active_audio().max(0), slide);
+        self.table.set_sections(sections, sel, slide);
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -1840,6 +1862,53 @@ mod enhancement_menu_tests {
         assert_eq!(menu.table.sections.len(), 1, "the headerless DSP section goes with it");
 
         teardown(&ps_ok);
+    }
+
+    /// **The reported bug.** A viewer holds the Audio tab open with the Boost dialog row FOCUSED
+    /// (not necessarily checked — a toggle row is never the checked track) and presses OK; the
+    /// server settles the request asynchronously, and the next frame's live poll
+    /// (`TrackMenuState::update`) sees the answer change and rebuilds. Before the fix,
+    /// `rebuild_audio` always re-homed `table.sel` onto the checked audio track, so the drawn
+    /// highlight jumped there while the ENGINE's own focus — which only moves on an actual
+    /// `FocusMoved`, never fired by this poll — stayed on the toggle row: the visual cursor and the
+    /// row the next OK/UP/DOWN actually acts on disagreed. `set_sel` here stands in for the
+    /// engine's write-back exactly as `screens::player::overlay::PlayerOverlayScreen::step` performs
+    /// it on a real `FocusMoved`, so `menu.sel()` staying put after `update` is the proof the
+    /// engine's remembered element and the drawn cursor still name the same row.
+    #[test]
+    fn live_update_preserves_focus_on_the_toggled_row_not_the_checked_track() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps_before) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: false },
+            ..Default::default()
+        });
+        // Row 0 is the one audio track (checked/active); row 1 is Boost dialog. Move the ENGINE's
+        // focus there the way a real UP press's `FocusMoved` write-back does.
+        menu.set_sel(1);
+        assert_eq!(menu.audio_targets[1], AudioRowTarget::Boost, "fixture shape: row 1 is Boost");
+
+        // The SAME playback settles Boost dialog ON — a LIVE change this menu did not itself
+        // request (mirrors the server's async `EnhancementOutcome` landing), delivered the way
+        // `update` is fed every frame: a fresh `&PlaybackSession`, not a rebuild the panel triggers.
+        let (ps_after, _sid2) = enhancement_test_session(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            ..Default::default()
+        });
+        let store = one_track_store();
+        menu.update(0.0, &ps_after, store.view());
+
+        assert_eq!(
+            menu.sel(),
+            1,
+            "the toggle row stays focused across a live poll rebuild, not snapped to the checked track"
+        );
+        assert_eq!(
+            menu.audio_targets.get(menu.sel() as usize).copied(),
+            Some(AudioRowTarget::Boost),
+            "and the row at that position is still, logically, the same Boost row"
+        );
+
+        teardown(&ps_before);
     }
 
     // ---- locale + width gates ------------------------------------------------------------------
