@@ -471,6 +471,37 @@ fn release_with_admitted_part_is_still_direct_play() {
     cleanup(&mut ps);
 }
 
+/// A transport failure mid-body is not the server's own refusal. `admit_original_part`'s own doc
+/// says an unanswered question keeps the trial: `ThroughputFailure::BodyRead` — a known status
+/// followed by a connection that dies before delivering the promised body — belongs in that
+/// "let the trial's own open decide" bucket, not in `Refused`. Before the fix this fell into
+/// `Refused` alongside a real `503`, and the release landed on the plain remux exactly as
+/// `release_with_refused_part_lands_on_the_plain_remux_not_the_enhanced_route` does; this test
+/// asserts the opposite outcome for the opposite kind of failure.
+#[test]
+fn release_with_body_reset_on_part_is_still_admitted_not_refused() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::Reset);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(
+        tail,
+        ClaimTail::Original(AutoOriginalReload::Direct),
+        "a transport failure reading the body is not a refusal; the trial's own open still decides"
+    );
+    assert!(ps.url.contains("/library/parts/960001/1/file.mkv"), "{}", ps.url);
+    assert!(!is_transcoding(&ps));
+    let requests = live.finish();
+    assert_eq!(part_gets(&requests).len(), 1, "{requests:?}");
+    assert!(decisions(&requests).is_empty(), "no remux was registered: {requests:?}");
+    cleanup(&mut ps);
+}
+
 #[test]
 fn toggle_off_with_remux_candidate_is_plain_remux() {
     let mut ps = PlaybackSession::IDLE;

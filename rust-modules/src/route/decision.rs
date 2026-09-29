@@ -673,6 +673,20 @@ impl RecoveryCause {
             RecoveryCause::EnhancementReleased => "enhancement",
         }
     }
+
+    /// Whether [`admit_original_part`] must ask the server before this cause's Direct trial is
+    /// published. `Automatic` already has its answer: the Auto watchdog samples this exact Part
+    /// on this exact identity on its own worker thread before it ever proposes the recovery
+    /// (`probe_original_while_hls_cancellable`), so a second admission on the main thread would
+    /// only add up to its own budget (`PART_ADMISSION_BUDGET`) of UI/feed block for a question
+    /// already answered. `ManualOriginal` and `EnhancementReleased` fire from something the viewer
+    /// just did, with no prior sample of this Part, so they still need to ask.
+    fn needs_part_admission(self) -> bool {
+        match self {
+            RecoveryCause::Automatic => false,
+            RecoveryCause::ManualOriginal | RecoveryCause::EnhancementReleased => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3496,7 +3510,7 @@ pub(crate) fn recover_auto_to_original_for(
     // resolve builds whenever the server will not direct-play — rather than opened, failed and
     // rolled back to the route being left (see [`admit_original_part`]).
     let flavour = match flavour {
-        RecoveryFlavour::Direct => match admit_original_part(ps, &candidate, expected) {
+        RecoveryFlavour::Direct => match admit_original_part(ps, &candidate, expected, cause) {
             PartAdmission::Admitted => RecoveryFlavour::Direct,
             PartAdmission::Refused(why) => {
                 crate::player::log(&format!(
@@ -3522,7 +3536,7 @@ pub(crate) fn recover_auto_to_original_for(
             // The server will not apply the params and the candidate direct-plays: the plain
             // Original IS that direct play, exactly as the resolve's own fallback returns to it —
             // when the server will serve its Part; otherwise the plain remux of the same Original.
-            OriginalRemux::RefusedToDirect => match admit_original_part(ps, &candidate, expected) {
+            OriginalRemux::RefusedToDirect => match admit_original_part(ps, &candidate, expected, cause) {
                 PartAdmission::Admitted => {
                     return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
                 }
@@ -3582,9 +3596,12 @@ const PART_ADMISSION_BUDGET: std::time::Duration = std::time::Duration::from_mil
 /// and let the demuxer find out: PR 4's device run (PMS 1.43.4, issue #266) released an enhanced
 /// remux to its direct play, the Part came back **503**, and the rollback restored the enhanced
 /// route — the only route `PendingOriginal` holds — under a preference, a menu and a log line that
-/// all said the enhancement was off. The Auto watchdog already samples this Part before it
-/// recovers (`probe_original_while_hls_cancellable`); a manual Original and an enhancement release
-/// did not ask at all.
+/// all said the enhancement was off. A manual Original and an enhancement release did not ask at
+/// all. Automatic still does not ask here: the Auto watchdog already sampled this exact Part on
+/// the same identity on its own worker thread before proposing the recovery
+/// (`probe_original_while_hls_cancellable`), so a second main-thread admission would only add its
+/// own budget as UI/feed block for a cause that already has its answer (`RecoveryCause::
+/// needs_part_admission`).
 ///
 /// What PMS keys that 503 on did not reproduce from a host against the same server with the
 /// same identity (every Part GET after an enhanced remux decision, with the encoder held,
@@ -3595,14 +3612,17 @@ const PART_ADMISSION_BUDGET: std::time::Duration = std::time::Duration::from_mil
 /// route a failed trial must be able to return to.
 ///
 /// A fixture candidate (`probe_part` not a server path) has nothing to ask and is admitted, and so
-/// is a Part the server did not answer inside the budget: the admission bounds how long the claim
-/// can hold the pump, and an unanswered question is not a refusal.
+/// is a Part the server did not answer inside the budget, or one whose connection failed mid-body
+/// after a known status (`ThroughputFailure::BodyRead`): the admission bounds how long the claim
+/// can hold the pump, and only the server's OWN answer — a refusal status, or headers with no body
+/// behind them — is a refusal; a transport failure is not.
 fn admit_original_part(
     ps: &PlaybackSession,
     candidate: &AutoOriginalCandidate,
     expected: &WorkerTicket,
+    cause: RecoveryCause,
 ) -> PartAdmission {
-    if !candidate.probe_part.starts_with('/') {
+    if !cause.needs_part_admission() || !candidate.probe_part.starts_with('/') {
         return PartAdmission::Admitted;
     }
     let Some(client) = cur_client(ps) else {
@@ -3623,12 +3643,14 @@ fn admit_original_part(
         Err(ThroughputFailure::Open(OpenErr::Status(status))) => {
             PartAdmission::Refused(format!("HTTP {status}"))
         }
-        Err(failure @ (ThroughputFailure::NoBody { .. } | ThroughputFailure::BodyRead { .. })) => {
+        Err(failure @ ThroughputFailure::NoBody { .. }) => {
             PartAdmission::Refused(format!("{failure:?}"))
         }
-        // A body, or no answer inside the budget (a slow server, a transport failure, no bounded
-        // client on this build): nothing says the server refuses, so the trial's own open — with
-        // its rollback — stays the judge, exactly as before this admission existed.
+        // A body, a transport failure mid-read (`BodyRead`: the server answered with a status and
+        // then the connection died before delivering it), or no answer inside the budget (a slow
+        // server, no bounded client on this build): nothing here is the server's OWN refusal, so
+        // the trial's own open — with its rollback — stays the judge, exactly as before this
+        // admission existed.
         Ok(_) | Err(_) => PartAdmission::Admitted,
     }
 }

@@ -1736,6 +1736,121 @@ fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
     crate::plex::reset_servers_for_test();
 }
 
+/// #266 follow-up: the Auto watchdog already probes this exact Part on this exact identity on its
+/// own worker thread before it ever proposes the recovery
+/// (`probe_original_while_hls_cancellable`), so a main-thread `admit_original_part` call for
+/// `RecoveryCause::Automatic` would only add up to `PART_ADMISSION_BUDGET` of redundant UI/feed
+/// block. `RecoveryCause::needs_part_admission` must keep the admission for `ManualOriginal` and
+/// `EnhancementReleased` (the viewer just acted, no prior sample exists) but skip it for
+/// `Automatic`.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn automatic_recovery_issues_no_part_admission_before_the_trial() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    use std::io::{BufRead, BufReader, Write};
+
+    let _g = fresh_registry(&mut ps);
+    if !crate::net::global_init() || !crate::curlio::available() {
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        // Any request at all inside this window is a Part admission this cause must not send;
+        // the trial itself does not open a socket during `recover_auto_to_original_for` (only the
+        // later demux open does), so an empty request list is the whole claim.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut requests = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match crate::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
+                    let mut first = String::new();
+                    reader.read_line(&mut first).expect("request line");
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).expect("request header");
+                        if line == "\r\n" || line.is_empty() { break; }
+                    }
+                    requests.push(first);
+                    let _ = socket.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+        tx.send(requests).expect("publish observation");
+    });
+
+    let sid = crate::plex::register_for_test(
+        "auto-no-admission",
+        "127.0.0.1",
+        port,
+        "token",
+        "auto-no-admission-client",
+    );
+    let client = crate::plex::client_for(sid).expect("test server installed");
+    let logical_url = client
+        .direct_play_url("/library/parts/1/file.mkv", "auto-no-admission-logical")
+        .to_url();
+    restore_quality(Quality::Auto);
+    apply_plan(&mut ps,
+        Plan {
+            sid,
+            sess: "auto-no-admission-logical".into(),
+            url: "http://fixture.invalid/hls/master.m3u8".into(),
+            tsession: "auto-no-admission-hls".into(),
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
+                seconds_per_segment: 2,
+            },
+                ceiling: Some(crate::abr::Rung::P480.ceiling()),
+                ..Default::default()
+            },
+            transport_kbps: 320,
+            auto_original: Some(AutoOriginalCandidate {
+                url: logical_url,
+                probe_part: "/library/parts/1/file.mkv".into(),
+                direct: true,
+                vcodec: "h264".into(),
+                fps: 24.0,
+                dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
+                audio: Some(CarriedAudio { sid: 0, ordinal: -1, codec: "aac".into(), channels: 0, can_normalize_loudness: false, immersive: false }),
+                subtitle_ordinal: None,
+            }),
+            ..Default::default()
+        },
+        "42",
+    );
+
+    assert_eq!(
+        recover_auto_to_original(&mut ps, 120),
+        Some(AutoOriginalReload::Direct),
+        "Automatic still reaches Direct without asking again"
+    );
+
+    let requests = rx.recv().expect("server observation");
+    server.join().unwrap();
+    assert!(
+        requests.is_empty(),
+        "Automatic must not admit the Part before the trial — the watchdog already asked: {requests:?}"
+    );
+
+    restore_quality(Quality::Original);
+    reset_session(&mut ps);
+    install_active_encoder("");
+    crate::plex::reset_servers_for_test();
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+}
+
 /// Runtime direct recovery borrows the exact active HLS Streaming Resource. A decoded frame
 /// proves the current HTTP body, but PMS checks the resource's terminated flag again on every
 /// later Range GET. Therefore confirmation stops only the physical HLS encoder, retains that
@@ -1759,9 +1874,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         let mut resource_closed = false;
-        // 0 the Part admission, 1 the direct body, 2 the HLS retirement, 3 the later Range
-        // reopen, 4 the final close.
-        for index in 0..5 {
+        for index in 0..4 {
             let (mut socket, _) = listener.accept().expect("accept direct lifecycle request");
             let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
             let mut first = String::new();
@@ -1774,7 +1887,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                 }
             }
             requests.push(first.clone());
-            if index == 2 || index == 4 {
+            if index == 1 || index == 3 {
                 assert!(first.contains("/stop?"), "{first}");
                 resource_closed |= first.contains("closeResourceSession=1");
                 socket
@@ -1782,7 +1895,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     )
                     .expect("stop response");
-                if index == 2 {
+                if index == 1 {
                     stop_tx.send(first).expect("publish stop request");
                 }
             } else if resource_closed {
@@ -1800,12 +1913,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                     bytes,
                 )
                 .expect("source headers");
-                let body = socket.write_all(&vec![0x55; bytes]);
-                // The admission (request 0) reads a few KiB and lets go, which may reset the rest
-                // of this write; every later body is read to the end.
-                if index != 0 {
-                    body.expect("source body");
-                }
+                socket.write_all(&vec![0x55; bytes]).expect("source body");
             }
         }
         all_tx.send(requests).expect("publish direct lifecycle");
@@ -1901,13 +2009,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
         "",
         "final teardown spends the retained owner"
     );
-    assert_eq!(requests.len(), 5);
-    assert!(
-        requests[0].contains("/library/parts/1/file.mkv")
-            && requests[0].contains("X-Plex-Session-Identifier=direct-hls"),
-        "the Part is admitted on the exact identity the trial opens it on: {}",
-        requests[0],
-    );
+    assert_eq!(requests.len(), 4);
     let stops: Vec<_> = requests
         .iter()
         .filter(|line| line.contains("/stop?"))
@@ -1977,20 +2079,17 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
                             break;
                         }
                     }
-                    let is_part = first.contains("/library/parts/");
                     requests.push(first);
                     // The observation window opens at the first request, not at thread start,
                     // so how long the client took to get scheduled cannot eat into it.
                     observe_until.get_or_insert_with(|| {
                         std::time::Instant::now() + std::time::Duration::from_secs(1)
                     });
-                    // The Part admission before the trial reads a body; every stop is empty.
-                    let response: &[u8] = if is_part {
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPART"
-                    } else {
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    };
-                    socket.write_all(response).expect("stop response");
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .expect("stop response");
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(4));
