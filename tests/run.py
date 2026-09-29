@@ -1079,12 +1079,8 @@ def triggers_for_case(case, url_base=None):
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
             # appended after the audio tracks (`track_menu.rs`'s `build_audio`'s `enhance_base`)
             # — an ABSOLUTE `TableView` row, exactly what `menupick` already expects (headers do
-            # not count). PR4 review: this used to be a row number HARDCODED in the manifest,
-            # derived from an assumption about the item's track count that turned out to be wrong
-            # on the real server (`movie_h264_ac3_1080p` was assumed 1 audio track; the real item
-            # has 3). Deriving it here from `n_audio` — the count `run_case` fetched from the
-            # server for THIS case, via `pms_audio_track_count` — means the row is correct
-            # whichever library `manifest.local.json` points the symbolic item key at.
+            # not count). `n_audio` is `run_case`'s `pms_audio_track_count` reading, whose
+            # docstring has the PR4 history of why this is derived rather than hardcoded.
             n_audio = case.get("n_audio")
             if n_audio is None:
                 sys.exit(f"case {case.get('name')!r}: an `audio_enhancement` op needs "
@@ -3634,6 +3630,23 @@ def _video_codec(line):
     return None
 
 
+def _enhancement_miss(lines, hit_label, fallback_msg, refused_marker=None, refused_label=None):
+    """The shared "the expected line never showed up" preamble for the #266 audio-enhancement
+    graders below: check whether the trigger fired but the app logged no commit (`menupick: row`
+    — the same marker `op_audio_switch`/`op_subtitle` check), then, if the caller has one, whether
+    the server explicitly refused/ignored the request, before falling back to the caller's own
+    generic message. `hit_label` names the missing line for the no-commit message; `fallback_msg`
+    is returned verbatim when neither more specific cause is found."""
+    no_commit = find(lines, "menupick: row")
+    if no_commit is not None:
+        return False, f"no `{hit_label}` line :: {no_commit.strip()}"
+    if refused_marker is not None:
+        refused = find(lines, refused_marker)
+        if refused is not None:
+            return False, f"{refused_label} :: {refused.strip()}"
+    return False, fallback_msg
+
+
 def op_audio_enhancement(lines):
     """A live Boost Dialog / Normalize Loudness toggle (issue #266), asked for mid-play through
     the SAME single-shot `plxnative-menupick` mechanism `op_audio_switch`/`op_subtitle` use.
@@ -3659,13 +3672,11 @@ def op_audio_enhancement(lines):
     """
     hit = find(lines, "enhancement: applied boost=")
     if hit is None:
-        no_commit = find(lines, "menupick: row")
-        if no_commit is not None:
-            return False, f"no `enhancement: applied` line :: {no_commit.strip()}"
-        refused = find(lines, "enhancement: refused/ignored by server")
-        if refused is not None:
-            return False, f"the server refused/ignored the enhancement :: {refused.strip()}"
-        return False, "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)"
+        return _enhancement_miss(
+            lines, "enhancement: applied",
+            "no `enhancement: applied boost=.. loudness=..` line (toggle never took effect)",
+            refused_marker="enhancement: refused/ignored by server",
+            refused_label="the server refused/ignored the enhancement")
     m = RE_ENHANCEMENT_APPLIED.search(hit)
     if not m or m.group(2) != "1":
         return False, f"applied line does not show loudness=1 :: {hit.strip()}"
@@ -3729,10 +3740,9 @@ def op_audio_enhancement_release(lines):
     """
     hit = find(lines, "enhancement: released to Original")
     if hit is None:
-        no_commit = find(lines, "menupick: row")
-        if no_commit is not None:
-            return False, f"no `enhancement: released` line :: {no_commit.strip()}"
-        return False, "no `enhancement: released to Original ..` line (release never took effect)"
+        return _enhancement_miss(
+            lines, "enhancement: released",
+            "no `enhancement: released to Original ..` line (release never took effect)")
     after = lines[lines.index(hit) + 1:]
     refused = find(lines, "server refused the Original Part")
     if refused is not None:
@@ -4538,9 +4548,9 @@ def run_case(case, cfg, token, verbose, cond=None):
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
-    # issue #266 PR4 review: resolve the audio-track count from the SERVER, not from an assumption
-    # about the symbolic item key, before `triggers_for_case` needs it to derive the enhancement
-    # row. Only cases that actually carry an `audio_enhancement` op pay for the extra round-trip.
+    # issue #266: resolve the audio-track count (`pms_audio_track_count`'s docstring has the PR4
+    # history) before `triggers_for_case` needs it to derive the enhancement row. Only cases that
+    # actually carry an `audio_enhancement` op pay for the extra round-trip.
     if any(op.get("op") == "audio_enhancement" for op in case.get("operations", [])):
         case["n_audio"] = pms_audio_track_count(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
         print(f"    n_audio: {case['n_audio']} (from /library/metadata/{case['rk']})")
