@@ -3608,12 +3608,14 @@ def _video_codec(line):
 
 def _enhancement_miss(lines, hit_label, fallback_msg, refused_marker=None, refused_label=None):
     """The shared "the expected line never showed up" preamble for the #266 audio-enhancement
-    graders below: check whether the trigger fired but the app logged no commit (`menupick: row`
-    — the same marker `op_audio_switch`/`op_subtitle` check), then, if the caller has one, whether
-    the server explicitly refused/ignored the request, before falling back to the caller's own
-    generic message. `hit_label` names the missing line for the no-commit message; `fallback_msg`
-    is returned verbatim when neither more specific cause is found."""
-    no_commit = find(lines, "menupick: row")
+    graders below: check whether the trigger fired but the app logged no commit — either
+    `menupick: row .. already active — no commit` (the same marker `op_audio_switch`/`op_subtitle`
+    check) or `menupick: unknown target ".." — no commit` (the row for boost/loudness was never
+    offered, `dev/scenarios.rs`'s `arm_audio_enhancements` menupick handler) — then, if the caller
+    has one, whether the server explicitly refused/ignored the request, before falling back to the
+    caller's own generic message. `hit_label` names the missing line for the no-commit message;
+    `fallback_msg` is returned verbatim when neither more specific cause is found."""
+    no_commit = next((ln for ln in lines if "menupick: " in ln and "no commit" in ln), None)
     if no_commit is not None:
         return False, f"no `{hit_label}` line :: {no_commit.strip()}"
     if refused_marker is not None:

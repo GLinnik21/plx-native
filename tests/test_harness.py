@@ -3232,6 +3232,14 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement(no_commit)
         self.assertFalse(ok, why)
         self.assertIn("no `enhancement: applied` line", why)
+        # The row was never offered at all (`menupick: unknown target ".." — no commit`,
+        # dev/scenarios.rs) -- the miss preamble must quote this line too, not just the
+        # "row already active" shape.
+        unknown_target = [h264, 'menupick: unknown target "loudness" — no commit']
+        ok, why = run.op_audio_enhancement(unknown_target)
+        self.assertFalse(ok, why)
+        self.assertIn("no `enhancement: applied` line", why)
+        self.assertIn("unknown target", why)
         refused = [h264, "enhancement: refused/ignored by server; current stream retained"]
         ok, why = run.op_audio_enhancement(refused)
         self.assertFalse(ok, why)
