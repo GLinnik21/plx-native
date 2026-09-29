@@ -2474,10 +2474,10 @@ pub(crate) fn audio_ordinal(audio: &[Stream], i: usize) -> i32 {
 /// The external subtitle the SERVER already has selected for this part and that this client can
 /// draw itself — the one `player::sidecar::restore_server_selection` switches on at a direct-play
 /// landing. ONE definition, because two readers must agree on it: the restore that turns it on,
-/// and `route::renders_subtitle`, which withholds the Plex Pass audio enhancement (issue #266 I6)
-/// whenever a subtitle will be on screen. A route that offered the enhancement for a part whose
-/// sidecar the restore then showed would pair a remux (no client-drawn sidecar on a transcode)
-/// with a subtitle the viewer was promised.
+/// and `route::subtitle_effect_of`, which the Plex Pass audio enhancement (issue #266 I6) reads to
+/// tell an unaffected sidecar apart from an embedded subtitle a remux would drop (M4/M7). A route
+/// that treated this sidecar as embedded would force a burn (or drop it outright) for a subtitle
+/// the client already draws for itself, unaffected by any remux.
 pub(crate) fn server_selected_sidecar(item: &PlayingItem) -> Option<&Stream> {
     item.subs.iter().find(|s| s.selected && s.sidecar_renderable())
 }

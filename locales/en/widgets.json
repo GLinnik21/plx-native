@@ -620,6 +620,38 @@
     "value": "Normalize loudness",
     "description": "Audio panel of the player's track selector (Plex Pass only, issue #266). Toggle row label; the On/Off read-out comes from the row's own switch state, not this string."
   },
+  "widgets.tracks.enh_note_sidecar": {
+    "value": "Subtitles won't change.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is an external file the app draws itself — reassures the viewer that turning the toggle on leaves it untouched. No jargon: never say sidecar/remux/burn."
+  },
+  "widgets.tracks.enh_note_burn": {
+    "value": "Subtitles stay on. Your Plex server will rework the video to keep them, so the picture may look a little softer.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is embedded in the file — turning the toggle on makes the server re-encode the video to keep it in view. No jargon: never say burn/re-encode/transcode."
+  },
+  "widgets.tracks.enh_note_dv_off": {
+    "value": "Dolby Vision turns off while this is on. The video still plays in HDR.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows for a Dolby Vision source whose base layer is usable — turning the toggle on plays the HDR10 base picture without the Dolby Vision declaration."
+  },
+  "widgets.tracks.enh_reason_not_analyzed": {
+    "value": "Not ready for this video yet. Your Plex server needs to scan its sound first.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the carried audio track has no canNormalizeLoudness fact yet."
+  },
+  "widgets.tracks.enh_reason_dv_unusable": {
+    "value": "Not available for this Dolby Vision video.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows for a Dolby Vision source whose base layer is not self-displayable (Profile 5)."
+  },
+  "widgets.tracks.enh_reason_dv_subtitle": {
+    "value": "Can't be used with subtitles on this Dolby Vision video. Turn subtitles off to use it.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows for a declared Dolby Vision source with an embedded subtitle on screen — the server copies the video and silently drops the subtitle rather than honoring either ask."
+  },
+  "widgets.tracks.enh_reason_quality": {
+    "value": "Available only at Original quality.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
+  },
+  "widgets.tracks.enh_reason_refused": {
+    "value": "Your Plex server couldn't turn this on for this video.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."
+  },
   "widgets.tracks.timing": {
     "value": "Timing",
     "description": "tracks timing"

@@ -235,11 +235,17 @@ pub(crate) struct PlaybackSession {
     /// old accessor kept as a projection: `.map_or(0, |a| a.sid)`, so every existing caller that
     /// only ever wanted the wire id keeps compiling unchanged.
     cur_audio: Option<CarriedAudio>,
-    /// current subtitle selection carried by any TRANSCODE of the current item (0 = none). The
-    /// subtitle is BURNED into the video (our client profile advertises no soft-sub support, so
-    /// Plex's decision is burn); direct-play subtitles are separate (client-rendered from the
-    /// demuxer, player::request_subtitle).
+    /// current subtitle selection (0 = none) — the picked Plex stream id, regardless of how it
+    /// renders: burned into any TRANSCODE (our client profile advertises no soft-sub support, so
+    /// Plex's decision is burn), or client-rendered from the demuxer on direct play
+    /// (`player::request_subtitle`).
     cur_sub_sid: i64,
+    /// Is [`Self::cur_sub_sid`] an external sidecar (`metadata::Stream::sidecar_renderable`) rather
+    /// than an embedded (in-container) track? Meaningless when `cur_sub_sid == 0`. Issue #266 I6:
+    /// this is what tells `route::decision::facts`'s [`super::plan::SubtitleEffect::Sidecar`]
+    /// (unaffected by the audio enhancement's remux) apart from
+    /// [`super::plan::SubtitleEffect::Embedded`] (needs a forced burn to survive one, M7).
+    cur_sub_sidecar: bool,
     /// The subtitle-language preference this play resolved under — the show's pref if it set one,
     /// else the account's — carried straight from [`super::plan::Plan::sub_pref_lang`] so the
     /// Subtitles menu's "yours" grouping (`metadata::sub_layout::sub_sections`) survives a reload.
@@ -401,6 +407,7 @@ impl PlaybackSession {
         cur_sid: ServerId::UNSET,
         cur_audio: None,
         cur_sub_sid: 0,
+        cur_sub_sidecar: false,
         cur_sub_pref_lang: None,
         cur_part_id: 0,
         sess: String::new(),
@@ -469,6 +476,7 @@ impl PlaybackSession {
             cur_sid,
             cur_audio,
             cur_sub_sid,
+            cur_sub_sidecar,
             cur_sub_pref_lang,
             cur_part_id,
             sess,
@@ -518,6 +526,7 @@ impl PlaybackSession {
             cur_sid: *cur_sid,
             cur_audio: cur_audio.clone(),
             cur_sub_sid: *cur_sub_sid,
+            cur_sub_sidecar: *cur_sub_sidecar,
             cur_sub_pref_lang: cur_sub_pref_lang.clone(),
             cur_part_id: *cur_part_id,
             sess: sess.clone(),
@@ -784,6 +793,7 @@ struct AppliedRouteProjection {
     auto_original: Option<AutoOriginalCandidate>,
     audio: Option<CarriedAudio>,
     subtitle_sid: i64,
+    subtitle_sidecar: bool,
     stream_vcodec: String,
     stream_acodec: String,
     stream_fps: f64,
@@ -803,6 +813,7 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         auto_original: s.auto_original.clone(),
         audio: s.cur_audio.clone(),
         subtitle_sid: s.cur_sub_sid,
+        subtitle_sidecar: s.cur_sub_sidecar,
         stream_vcodec: s.stream_vcodec.clone(),
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
@@ -822,6 +833,7 @@ fn install_route_projection(ps: &mut PlaybackSession, projection: &AppliedRouteP
         s.auto_original = projection.auto_original.clone();
         s.cur_audio = projection.audio.clone();
         s.cur_sub_sid = projection.subtitle_sid;
+        s.cur_sub_sidecar = projection.subtitle_sidecar;
         s.stream_vcodec = projection.stream_vcodec.clone();
         s.stream_acodec = projection.stream_acodec.clone();
         s.stream_fps = projection.stream_fps;
@@ -3416,8 +3428,8 @@ pub(super) enum RecoveryFlavour {
 /// family of the route being BUILT (`candidate.direct ? Direct : Remux`), never the live one —
 /// during an HLS recovery the live contract still says `FixedHls` (family `Other`, never offered)
 /// and is only overwritten once the replacement is published.
-fn recovery_want(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> crate::plex::AudioEnhancements {
-    // `pass`/`subtitle_shown`/`refused` are the live session's own facts, identical to `facts(ps)`;
+fn recovery_route(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> Option<EnhancementRoute> {
+    // `pass`/`subtitle_effect`/`refused` are the live session's own facts, identical to `facts(ps)`;
     // only `base`/`carried` differ, because this candidate is not yet `ps.auto_original`/`cur_audio`.
     let facts = EnhancementFacts {
         base: Some(candidate),
@@ -3429,7 +3441,11 @@ fn recovery_want(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> cra
     } else {
         RouteFamily::Remux
     };
-    desired_audio(crate::player::audio_enhancements(), enhancements_offered(&facts, family))
+    enhancement_route(&facts, family)
+}
+
+fn recovery_want(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> crate::plex::AudioEnhancements {
+    desired_audio(crate::player::audio_enhancements(), recovery_route(ps, candidate).is_some())
 }
 
 /// **Pure: Direct only when the candidate direct-plays AND no enhancement is wanted.** An enhanced
@@ -3477,6 +3493,10 @@ pub(crate) fn recover_auto_to_original_for(
     let watched = automatic
         || (cause == RecoveryCause::EnhancementReleased && applied_quality() == Quality::Auto);
     let candidate = ps.auto_original.clone()?;
+    let route = recovery_route(ps, &candidate);
+    let force_burn_for = |audio: crate::plex::AudioEnhancements| {
+        audio.any() && matches!(route, Some(EnhancementRoute::Burn))
+    };
     let flavour = recovery_flavour(&candidate, recovery_want(ps, &candidate));
     // The worker may have committed several HLS encoders since the main-thread plan was installed.
     // Snapshot the physical route before replacing it, otherwise the rollback pairs the newest
@@ -3532,6 +3552,7 @@ pub(crate) fn recover_auto_to_original_for(
         offset_secs,
         watched,
         audio,
+        force_burn_for(audio),
         false,
     )? {
         OriginalRemux::Prepared(replacement, _outcome) => replacement,
@@ -3552,7 +3573,7 @@ pub(crate) fn recover_auto_to_original_for(
             }
             AdmitOrPlainRemux::PlainRemux => {
                 let none = crate::plex::AudioEnhancements::NONE;
-                match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none, true)?
+                match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none, false, true)?
                 {
                     OriginalRemux::Prepared(replacement, _outcome) => replacement,
                     OriginalRemux::RefusedToDirect => return None,
@@ -4031,9 +4052,11 @@ pub(crate) fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<Ori
     // `subtitle_sid`/`auto_original` are not part of what a rollback undoes (see the doc comment
     // on `PendingOriginal::previous`): put back whatever the trial left there.
     let kept_subtitle_sid = ps.cur_sub_sid;
+    let kept_subtitle_sidecar = ps.cur_sub_sidecar;
     let kept_auto_original = ps.auto_original.clone();
     install_route_projection(ps, &pending.previous);
     ps.cur_sub_sid = kept_subtitle_sid;
+    ps.cur_sub_sidecar = kept_subtitle_sidecar;
     ps.auto_original = kept_auto_original;
     if let Some(rung) = restored_hls {
         install_active_hls(&pending.encoder, &pending.previous.url, rung);
@@ -5461,6 +5484,9 @@ pub(super) fn measure_remote_remux(
     // is the remux that plays (`build_stream`'s `pre_audio`); `NONE` without Plex Pass.
     audio: crate::plex::AudioEnhancements,
 ) -> RemuxProbe {
+    // Never samples the Burn shape (M7): the bandwidth this probe measures is the uncapped remux's,
+    // and `build_stream`'s own flavor decision (which reads `enhancement_route` directly) is what
+    // actually forces a re-encode when a subtitle is being burned — see its doc for why.
     let spec_for = |audio| {
         transcode_spec(
             rk,
@@ -5469,7 +5495,7 @@ pub(super) fn measure_remote_remux(
             crate::plex::TranscodeOffset::Fresh,
             audio_stream_id,
             subtitle_stream_id,
-            enhanced_remux_contract(audio),
+            enhanced_remux_contract(audio, false),
         )
     };
     let mut spec = spec_for(audio);
@@ -6084,6 +6110,7 @@ fn request_play_inner(
         }
         s.cur_audio = None;
         s.cur_sub_sid = 0;
+        s.cur_sub_sidecar = false;
         // The outgoing item's enhancement outcome is not this one's; the landing installs its own.
         s.cur_enhancement = EnhancementOutcome::Off;
         // Retire the OUTGOING item's queue before its successor resolves: this names the episode
@@ -6565,6 +6592,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
+            // Negative = an external sidecar the client draws itself (`sub_render_ordinal`'s own
+            // convention); `None` (Off) never sets `sub_sid` either, so this reads `false` for it.
+            cur_sub_sidecar: plan.sub_render_ordinal.is_some_and(|ord| ord < 0),
             cur_sub_pref_lang: plan.sub_pref_lang,
             cur_part_id: plan.part_id,
             sess: plan.sess,
@@ -6664,6 +6694,7 @@ fn prepare_original_remux(
     offset_secs: i64,
     watched: bool,
     audio: crate::plex::AudioEnhancements,
+    force_burn: bool,
     known_refused: bool,
 ) -> Option<OriginalRemux> {
     let c = cur_client(ps)?;
@@ -6685,7 +6716,7 @@ fn prepare_original_remux(
     let subtitle = cur_sub_sid(ps);
     let candidate_audio_sid = candidate.audio.as_ref().map_or(0, |a| a.sid);
     put_selection(cur_sid(ps), cur_part_id(ps), candidate_audio_sid, subtitle);
-    let spec_for = |audio| {
+    let spec_for = |audio, force_burn| {
         transcode_spec(
             &rk,
             &replacement,
@@ -6693,11 +6724,12 @@ fn prepare_original_remux(
             crate::plex::TranscodeOffset::from_seconds(offset_secs.max(0)),
             candidate_audio_sid,
             subtitle,
-            enhanced_remux_contract(audio),
+            enhanced_remux_contract(audio, force_burn),
         )
     };
     let mut audio = audio;
-    let mut spec = spec_for(audio);
+    let mut force_burn = force_burn;
+    let mut spec = spec_for(audio, force_burn);
     let mut decision = c.transcode_decision(&spec);
     let mut enhancement_refused = false;
     // A refused or ignored enhancement must not strand the recovery: the candidate's plain
@@ -6713,7 +6745,8 @@ fn prepare_original_remux(
         }
         enhancement_refused = true;
         audio = crate::plex::AudioEnhancements::NONE;
-        spec = spec_for(audio);
+        force_burn = false;
+        spec = spec_for(audio, force_burn);
         decision = c.transcode_decision(&spec);
     }
     if let Some(reason) = decision.as_ref().and_then(refusal) {
@@ -6754,7 +6787,7 @@ fn prepare_original_remux(
     { let s = &mut *ps; {
         s.url = url;
         s.tsession = replacement.clone();
-        s.cur_contract = enhanced_remux_contract(audio);
+        s.cur_contract = enhanced_remux_contract(audio, force_burn);
         s.cur_enhancement = enhancement;
         s.cur_auto_original_watched = watched;
         s.cur_audio = candidate.audio.clone();
@@ -6806,12 +6839,13 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
 fn retranscode_contract(ps: &PlaybackSession) -> crate::plex::EncodeContract {
     // A ceiling means a fixed rung was picked, and an enhanced remux is uncapped by definition:
     // keeping it would erase the cap the picker shows (I5).
-    let keep_enhanced = live_family(ps) == RouteFamily::Remux
+    let route = enhancement_route(&facts(ps), enhancement_family(ps));
+    let keep_enhanced = route.is_some()
         && ps.cur_contract.ceiling.is_none()
         && ps.cur_contract.audio.any()
         && want_live(ps).any();
     if keep_enhanced {
-        return enhanced_remux_contract(want_live(ps));
+        return enhanced_remux_contract(want_live(ps), matches!(route, Some(EnhancementRoute::Burn)));
     }
     crate::plex::EncodeContract {
         remux: false,
@@ -7012,8 +7046,51 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
         pass: crate::plex::serverinfo::subscription_of(cur_sid(ps)),
         base: ps.auto_original.as_ref(),
         carried: ps.cur_audio.as_ref(),
-        subtitle_shown: ps.cur_sub_sid != 0,
+        subtitle_effect: match ps.cur_sub_sid {
+            0 => SubtitleEffect::None,
+            _ if ps.cur_sub_sidecar => SubtitleEffect::Sidecar,
+            _ => SubtitleEffect::Embedded,
+        },
         refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+    }
+}
+
+/// The subtitle effect the Audio tab's NOTE reads (M7) — the same fact
+/// [`menu_enhancement_availability`] folded into its `Offered`/`Disabled` answer, exposed
+/// separately because the note's WORDING needs to tell "no subtitle" apart from "an unaffected
+/// sidecar" even though both share the same [`EnhancementRoute::Remux`].
+pub(crate) fn live_subtitle_effect(ps: &PlaybackSession) -> SubtitleEffect {
+    facts(ps).subtitle_effect
+}
+
+/// **Is the live route itself an applied Burn (M7)?** A Burn forces `remux: false` to get PMS to
+/// actually re-encode the video (burning text into pixels is not a codec copy), which is exactly
+/// the same contract shape as an ordinary `Other`-family re-encode picked for some unrelated
+/// reason (a fixed rung, HLS, a relay). The two are told apart by `cur_enhancement`: only the
+/// enhancement's own claim sets it to `Applied` while asking for a video-copying,
+/// no-ceiling, progressive-MKV re-encode with a non-empty `audio`.
+fn live_is_own_burn(ps: &PlaybackSession) -> bool {
+    ps.cur_enhancement == EnhancementOutcome::Applied
+        && ps.cur_contract.audio.any()
+        && !ps.cur_contract.remux
+        && !ps.cur_contract.no_video_copy
+        && ps.cur_contract.ceiling.is_none()
+        && ps.cur_contract.delivery == crate::plex::TranscodeDelivery::ProgressiveMkv
+}
+
+/// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
+/// [`live_family`] except a live Burn — which is wire-shaped `Other` (`remux: false`) — reads as
+/// `Remux`, because it IS the enhancement's own route. Every predicate that asks "is the
+/// enhancement's route still standing" must use this, not `live_family`, or an active Burn would
+/// appear "not offered" the instant it took effect and get silently released back to the plain
+/// candidate. Call sites that are about something else entirely (a track pick's own native/
+/// transcode split, an unrelated legacy reload) keep using `live_family`: a Burn genuinely needs
+/// re-encode-shaped handling there.
+fn enhancement_family(ps: &PlaybackSession) -> RouteFamily {
+    if live_is_own_burn(ps) {
+        RouteFamily::Remux
+    } else {
+        live_family(ps)
     }
 }
 
@@ -7029,17 +7106,35 @@ fn want_live(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
     desired_audio(crate::player::audio_enhancements(), audio_enhancements_offered_live(ps))
 }
 
+/// The [`EnhancementRoute`] a live `Retranscode` would ask for right now — `None` when the
+/// enhancement is not offered at all. `want_live`/`audio_enhancements_offered_live` collapse this
+/// to a bool for the menu's toggle; `enhancement_step` needs the flavour too, since a subtitle
+/// change can flip Remux↔Burn without changing the boost/loudness preference at all.
+fn want_route_live(ps: &PlaybackSession) -> Option<EnhancementRoute> {
+    if !enhancement_quality() {
+        return None;
+    }
+    enhancement_route(&facts(ps), enhancement_family(ps))
+}
+
 /// Whether the quality preference admits an Original-family route at all — Auto (which may run
 /// Original) or Original itself. A fixed rung is a bitrate cap, and the enhanced route is not.
 fn enhancement_quality() -> bool {
     matches!(quality(), Quality::Auto | Quality::Original)
 }
 
-/// The one shape an enhanced Original takes: a codec-preserving progressive-MKV remux, video
-/// copied (I7 keeps DV, the only `no_video_copy` source, out of the offer), no ceiling.
-fn enhanced_remux_contract(audio: crate::plex::AudioEnhancements) -> crate::plex::EncodeContract {
+/// The shape an enhanced Original takes: a codec-preserving progressive-MKV remux, video copied,
+/// no ceiling — or, when `force_burn` (M7's [`EnhancementRoute::Burn`]), the same delivery with
+/// `remux: false` so PMS actually re-encodes the video and burns the requested subtitle into it
+/// (a codec copy cannot alter pixels). `no_video_copy` stays `false` in both cases: I7 keeps a
+/// declared-DV source (the one `no_video_copy` reason) out of the offer entirely before this is
+/// ever reached.
+fn enhanced_remux_contract(
+    audio: crate::plex::AudioEnhancements,
+    force_burn: bool,
+) -> crate::plex::EncodeContract {
     crate::plex::EncodeContract {
-        remux: true,
+        remux: !force_burn,
         delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
         no_video_copy: false,
         ceiling: None,
@@ -7060,25 +7155,32 @@ pub(crate) enum EnhancementStep {
 }
 
 /// **Pure over session state.** See the table in the plan's §3: a wanted enhancement that differs
-/// from the applied one builds the enhanced remux; an applied one no longer wanted returns to the
-/// candidate (direct, or its plain remux); everything else — including no candidate at all — is
-/// not the enhancement's business.
+/// from the applied one (in preference OR in route flavour — M7's Remux↔Burn) builds the enhanced
+/// remux; an applied one no longer wanted returns to the candidate (direct, or its plain remux);
+/// everything else — including no candidate at all — is not the enhancement's business.
 pub(crate) fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     // Under a fixed rung the rebuild is the quality refresh's own (a capped re-encode, which
     // drops the params by family); a release to the uncapped candidate would erase that cap.
     if !enhancement_quality() {
         return EnhancementStep::NotInvolved;
     }
-    let want = want_live(ps);
+    let want_route = want_route_live(ps);
+    let want = desired_audio(crate::player::audio_enhancements(), want_route.is_some());
     let applied = ps.cur_contract.audio;
-    if want.any() && want != applied {
-        return EnhancementStep::Remux(enhanced_remux_contract(want));
+    let want_burn = matches!(want_route, Some(EnhancementRoute::Burn));
+    let applied_burn = live_is_own_burn(ps);
+    // A subtitle change while enhanced can leave the boost/loudness preference untouched and still
+    // need a rebuild: turning off a burned subtitle must drop the route from Burn back to a plain
+    // enhanced remux (M7), which `want == applied` alone would miss.
+    if want.any() && (want != applied || want_burn != applied_burn) {
+        return EnhancementStep::Remux(enhanced_remux_contract(want, want_burn));
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
             Some(candidate) if candidate.direct => EnhancementStep::ReleaseToDirect,
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
                 crate::plex::AudioEnhancements::NONE,
+                false,
             )),
             None => EnhancementStep::NotInvolved,
         };
@@ -7341,21 +7443,23 @@ pub(crate) fn displayed_audio_enhancements(ps: &PlaybackSession) -> crate::plex:
     }
 }
 
-/// Are the rows shown at all (I1/I2: absent, never greyed)? The same predicate the resolve and
-/// the reconcile use, against the live route: an applied enhancement keeps its rows even though
-/// its own route is a remux.
-pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
-    // `enhancements_offered` only distinguishes "Direct or Remux" from "Other" (`RouteFamily`'s
-    // own doc), so remapping Direct to Remux here changed nothing observable — `live_family`'s
-    // own answer already sorts into the same two buckets the predicate reads.
-    enhancements_offered(&facts(ps), live_family(ps))
+/// **The Audio tab's one question, answered once.** `Hidden` only for the one case that stays
+/// silent (no Plex Pass); every other reason the toggle cannot run right now comes back as
+/// `Disabled(reason)` so the row stays visible with a plain-language note (owner direction,
+/// 2026-09-29 — supersedes the earlier I1/I2 "absent, never greyed" reading of the enhancement
+/// row itself; I1/I2's Plex-Pass gate is the one part of that reading that stands). Uses
+/// [`enhancement_family`], not `live_family`, so an already-applied Burn reads as its own route
+/// rather than as an unrelated `Other`-family re-encode.
+pub(crate) fn menu_enhancement_availability(ps: &PlaybackSession) -> EnhancementAvailability {
+    enhancement_availability(&facts(ps), enhancement_family(ps))
 }
 
-/// **The Audio tab's one question, answered once.** `Some(displayed)` when the rows are offered at
-/// all, `None` when they are absent — the exact `offered.then(|| displayed(...))` every menu-side
-/// caller was computing for itself from the two predicates above.
-pub(crate) fn menu_enhancements(ps: &PlaybackSession) -> Option<crate::plex::AudioEnhancements> {
-    audio_enhancements_offered_live(ps).then(|| displayed_audio_enhancements(ps))
+/// Are the rows offered at all — the toggle itself actionable? `true` only for
+/// [`EnhancementAvailability::Offered`]; both `Hidden` and `Disabled` answer `false` here, since
+/// callers that need to draw a `Disabled` row with its reason use [`menu_enhancement_availability`]
+/// directly instead.
+pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
+    matches!(menu_enhancement_availability(ps), EnhancementAvailability::Offered(_))
 }
 
 /// **Test-only session builder for the Audio tab's enhancement rows (issue #266 PR 4).** Every
@@ -7379,12 +7483,17 @@ pub(crate) struct EnhTestFixture {
     pub(crate) base_present: bool,
     /// The base route's own Dolby Vision declaration (I7).
     pub(crate) dv_declared: bool,
+    /// The base route's own [`crate::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
+    /// enhancement layer) — a source the offer must refuse regardless of `dv_declared`, since a
+    /// declaration only ever accompanies a USABLE base layer.
+    pub(crate) dv_base_unusable: bool,
     /// `None` = server default audio, facts unknown (fails closed). `Some(capable)` = a known
     /// carried track with or without `canNormalizeLoudness`.
     pub(crate) carried_capable: Option<bool>,
-    /// A subtitle is on screen (I6) — the explicit pick and the restored sidecar are the same
-    /// live-session fact (`cur_sub_sid != 0`; see [`facts`]'s doc).
-    pub(crate) subtitle_shown: bool,
+    /// What is on screen (M7/I6): none, an external sidecar the client draws itself, or an
+    /// embedded track the server would have to burn to keep — the same [`SubtitleEffect`]
+    /// `facts(ps)` reads off `cur_sub_sid`/`cur_sub_sidecar`.
+    pub(crate) subtitle_effect: SubtitleEffect,
     /// This playback's server already refused or ignored the params once.
     pub(crate) refused: bool,
     /// The server never answered (an unreachable decision — `classify_outcome`'s `Unverified`).
@@ -7392,6 +7501,10 @@ pub(crate) struct EnhTestFixture {
     pub(crate) unverified: bool,
     /// The contract's own `audio` — what the live route has actually applied.
     pub(crate) applied: crate::plex::AudioEnhancements,
+    /// The applied route is a Burn (M7) — `cur_contract.remux` is `false` even though this is the
+    /// enhancement's OWN route, exactly as [`live_is_own_burn`] reads it. Ignored unless `applied`
+    /// carries a preference and `remux` is `Some(true)` (a Burn is still `ProgressiveMkv`).
+    pub(crate) applied_burn: bool,
     /// Force `displayed_audio_enhancements`'s in-flight branch (a user edit queued, not yet
     /// settled), so it reads `want_live` instead of `cur_contract.audio`.
     pub(crate) in_flight: bool,
@@ -7405,11 +7518,13 @@ impl Default for EnhTestFixture {
             remux: Some(true),
             base_present: true,
             dv_declared: false,
+            dv_base_unusable: false,
             carried_capable: Some(true),
-            subtitle_shown: false,
+            subtitle_effect: SubtitleEffect::None,
             refused: false,
             unverified: false,
             applied: crate::plex::AudioEnhancements::NONE,
+            applied_burn: false,
             in_flight: false,
         }
     }
@@ -7422,7 +7537,8 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
 
     let mut ps = PlaybackSession::IDLE;
     ps.cur_sid = sid;
-    ps.cur_sub_sid = if route.subtitle_shown { 999 } else { 0 };
+    ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
+    ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
     ps.cur_enhancement = if route.refused {
         EnhancementOutcome::Refused
     } else if route.unverified {
@@ -7433,7 +7549,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
         EnhancementOutcome::Off
     };
     ps.cur_contract = crate::plex::EncodeContract {
-        remux: matches!(route.remux, Some(true)),
+        remux: matches!(route.remux, Some(true)) && !(route.applied_burn && route.applied.any()),
         delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
         no_video_copy: false,
         ceiling: None,
@@ -7450,6 +7566,11 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
     });
     ps.auto_original = route.base_present.then(|| AutoOriginalCandidate {
         direct: route.remux.is_none(),
+        dovi: if route.dv_base_unusable {
+            crate::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..crate::metadata::Dovi::NONE }
+        } else {
+            crate::metadata::Dovi::NONE
+        },
         dv_decision: if route.dv_declared {
             crate::metadata::DvDecision {
                 capability: crate::webos::caps::DvCapability::Supported,
@@ -7624,6 +7745,11 @@ pub(crate) fn commit_subtitle_selection(
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
+    // `sub_idx` is `metadata::sub_render_ordinal`'s own convention: negative for an external
+    // sidecar (and for Off, where `stream_id == 0` disambiguates), non-negative for an embedded
+    // track. Issue #266 I6 reads this back through `facts` to tell a sidecar (unaffected by the
+    // audio enhancement) apart from an embedded pick (needs a forced burn, M7).
+    ps.cur_sub_sidecar = stream_id != 0 && sub_idx < 0;
     if !transcoding {
         // This is an immediate client-rendered change: unlike a burn/audio rebuild it is already
         // part of the applied stream contract. Publish projection + reporter tracks as one reducer
