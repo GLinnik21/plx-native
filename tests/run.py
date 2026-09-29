@@ -910,6 +910,71 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
+def pms_default_audio_stream(part):
+    """Pick the audio stream id a Part's declared default/first track names, from the `Stream`
+    list `pms_reset_streams` fetched. streamType 2 = audio (docs/pms-api.md). Prefers the
+    server's current pick (`selected`), then the file's own default flag, then whichever audio
+    stream sorts first -- the same fallback order a fresh (never-switched) play would land on.
+    Returns None if the part carries no audio stream at all (skip audioStreamID rather than send
+    a bogus one)."""
+    audio = [s for s in (part.get("Stream") or []) if int(s.get("streamType", 0) or 0) == 2]
+    for s in audio:
+        if int(s.get("selected", 0) or 0) == 1:
+            return int(s["id"])
+    for s in audio:
+        if int(s.get("default", 0) or 0) == 1:
+            return int(s["id"])
+    return int(audio[0]["id"]) if audio else None
+
+
+def pms_reset_streams(host, port, rk, token):
+    """Restore an item's PART-level audio/subtitle selection to its declared default -- subtitles
+    OFF (`subtitleStreamID=0`) and audio on its server-selected/default/first track -- via the
+    same `PUT /library/parts/<id>?...&allParts=1` shape the app itself sends from a live pick
+    (`Client::select_streams`, rust-modules/src/plex/library.rs; docs/pms-api.md "track
+    switching"). Selection is server state that PMS keeps until something else changes it: a
+    crashed run's live subtitle pick (or a case that deliberately switches one) otherwise
+    persists past that run and becomes the NEXT run's silent starting state, for the TEST
+    identity the harness token belongs to -- not just for the case that set it. Called only with
+    the harness's own (never the owner's) token. Returns True iff every Part on the item was
+    reset; failures are logged (never raised) so one bad rk does not abort the whole case."""
+    meta_url = f"http://{host}:{port}/library/metadata/{rk}?X-Plex-Token={token}"
+    req = urllib.request.Request(meta_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.load(resp)
+    except Exception as e:
+        print(f"    WARN: stream-reset metadata GET failed (rk={rk}): {e}")
+        return False
+    metas = data.get("MediaContainer", {}).get("Metadata") or []
+    if not metas:
+        print(f"    WARN: stream-reset: no metadata for rk={rk}")
+        return False
+    parts = [p for media in (metas[0].get("Media") or []) for p in (media.get("Part") or [])]
+    if not parts:
+        print(f"    WARN: stream-reset: rk={rk} has no Part to reset")
+        return False
+    ok = True
+    for part in parts:
+        part_id = part.get("id")
+        if part_id is None:
+            continue
+        q = {"allParts": "1", "subtitleStreamID": "0", "X-Plex-Token": token}
+        audio_id = pms_default_audio_stream(part)
+        if audio_id is not None:
+            q["audioStreamID"] = str(audio_id)
+        url = f"http://{host}:{port}/library/parts/{part_id}?{urllib.parse.urlencode(q)}"
+        redacted = url.replace(token, "<token>")
+        put_req = urllib.request.Request(url, method="PUT")
+        try:
+            with urllib.request.urlopen(put_req, timeout=15) as resp:
+                print(f"    stream reset: {redacted} -> {resp.status}")
+        except Exception as e:
+            print(f"    WARN: stream-reset PUT failed ({redacted}): {e}")
+            ok = False
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -4553,6 +4618,15 @@ def run_case(case, cfg, token, verbose, cond=None):
     # to kill. Declared per case rather than inferred, so the manifest still says what it starts from.
     for rk in setup.get("also_reset", []):
         pms_unscrobble(cfg["pms"]["host"], cfg["pms"]["port"], rk, token)
+
+    # A crashed run's live subtitle/audio PUT (`Client::select_streams`) is PART state on PMS,
+    # not viewOffset, so the unscrobble above does not touch it: it persists past that run and
+    # silently becomes the NEXT run's starting selection instead of the manifest's declared
+    # shape. Reset it to the item's default -- subtitles off, audio on its server-selected/first
+    # track -- for the TEST identity, unless the case's own precondition is what PMS currently has
+    # selected (`"stream_reset": false`; see audio_enhancement_burns_server_selected_subtitle).
+    if case.get("stream_reset", True):
+        pms_reset_streams(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
     # The token rides `extra=` rather than `files` so its value never reaches stdout — the only

@@ -1885,6 +1885,8 @@
         }
       ],
       "audio_enhancements_boot": "loudness",
+      "stream_reset": false,
+      "stream_reset_comment": "This case's whole premise is the SERVER's current pick (`sid=2698`), not a declared default -- run.py's per-case reset (subtitleStreamID=0 + the item's default/first audio track, added because a crashed run's live subtitle PUT otherwise persists into the next run) would erase exactly the precondition this case reads. Setting false makes that dependency explicit instead of accidental: it runs against whatever Guest's PMS currently has selected on movie_h264_ac3_1080p, which is expected to still be sid=2698 unless something else on the account changes it.",
       "expect": {
         "decision": "transcode",
         "codec": "h264",

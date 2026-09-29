@@ -5694,5 +5694,108 @@ class PosterGateCoverage(unittest.TestCase):
         self.assertIn('has 5', detail)
 
 
+class StreamSelectionReset(unittest.TestCase):
+    """`pms_reset_streams` / `pms_default_audio_stream` -- the fix for a crashed run's live
+    subtitle pick persisting into the next run's starting state (`run_case` used to reset
+    viewOffset only, never the part's audio/subtitle selection). No network: `urllib.request
+    .urlopen` is mocked, so these exercise the URL-building and parsing logic only."""
+
+    def _metadata_response(self, streams, part_id=999):
+        body = json.dumps({"MediaContainer": {"Metadata": [
+            {"Media": [{"Part": [{"id": part_id, "Stream": streams}]}]}
+        ]}}).encode()
+        return io.BytesIO(body)
+
+    def test_default_audio_prefers_selected_over_default_over_first(self):
+        # selected=1 wins even when a different stream carries default=1.
+        streams = [
+            {"id": 1, "streamType": 2, "default": 1},
+            {"id": 2, "streamType": 2, "selected": 1},
+            {"id": 3, "streamType": 2},
+        ]
+        self.assertEqual(run.pms_default_audio_stream({"Stream": streams}), 2)
+
+    def test_default_audio_falls_back_to_file_default_then_first(self):
+        self.assertEqual(run.pms_default_audio_stream(
+            {"Stream": [{"id": 5, "streamType": 2, "default": 1}, {"id": 6, "streamType": 2}]}), 5)
+        self.assertEqual(run.pms_default_audio_stream(
+            {"Stream": [{"id": 7, "streamType": 2}, {"id": 8, "streamType": 2}]}), 7)
+
+    def test_default_audio_none_when_part_has_no_audio_stream(self):
+        self.assertIsNone(run.pms_default_audio_stream({"Stream": [{"id": 1, "streamType": 3}]}))
+
+    def _urlopen_ctx(self, resp):
+        cm = mock.MagicMock()
+        cm.__enter__ = mock.Mock(return_value=resp)
+        cm.__exit__ = mock.Mock(return_value=False)
+        return cm
+
+    def test_reset_streams_puts_subtitle_off_and_default_audio(self):
+        streams = [
+            {"id": 10, "streamType": 1},
+            {"id": 11, "streamType": 2, "selected": 1},
+            {"id": 12, "streamType": 3},
+        ]
+        calls = []
+
+        def fake_urlopen(req, timeout=15):
+            calls.append(req.full_url)
+            resp = self._metadata_response(streams) if len(calls) == 1 else io.BytesIO(b"")
+            resp.status = 200
+            return self._urlopen_ctx(resp)
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2, calls)
+        meta_url, put_url = calls
+        self.assertIn("/library/metadata/72", meta_url)
+        self.assertIn("/library/parts/999", put_url)
+        self.assertIn("subtitleStreamID=0", put_url)
+        self.assertIn("audioStreamID=11", put_url)
+        self.assertIn("allParts=1", put_url)
+
+    def test_reset_streams_omits_audio_param_when_part_has_none(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=15):
+            calls.append(req.full_url)
+            resp = (self._metadata_response([{"id": 1, "streamType": 3}])
+                    if len(calls) == 1 else io.BytesIO(b""))
+            resp.status = 200
+            return self._urlopen_ctx(resp)
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertTrue(ok)
+        self.assertNotIn("audioStreamID", calls[1])
+
+    def test_reset_streams_reports_failure_without_raising(self):
+        def fake_urlopen(req, timeout=15):
+            raise OSError("refused")
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
+        self.assertFalse(ok)
+
+    def test_server_selected_subtitle_case_opts_out_of_the_reset(self):
+        """audio_enhancement_burns_server_selected_subtitle's whole premise is PMS's OWN current
+        pick, not the manifest's declared default -- an unconditional reset would erase exactly
+        the precondition this case reads, so it must declare stream_reset: false rather than get
+        it by accident."""
+        m = _manifest()
+        cases = {c["name"]: c for c in m["cases"]}
+        case = cases["audio_enhancement_burns_server_selected_subtitle"]
+        self.assertFalse(case.get("stream_reset", True))
+
+    def test_run_case_guards_the_reset_on_stream_reset_key(self):
+        """The manifest key is only a convention unless `run_case` actually reads it -- inspect
+        the source (same trick as `abr_shape_keys` above) rather than driving the whole
+        (TV-calling) function, so this stays a host-only, network-free assertion."""
+        src = inspect.getsource(run.run_case)
+        self.assertIn('case.get("stream_reset", True)', src)
+        self.assertIn("pms_reset_streams(", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
