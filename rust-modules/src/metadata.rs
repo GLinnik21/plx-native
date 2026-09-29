@@ -4220,7 +4220,15 @@ fn load_season_now(state: &mut MetadataState, adapter: &MetadataAdapter, idx: us
         // `open_rk_season`'s chained play of `episodes[0]` launches — the WRONG season's first
         // episode under the requested season's name — and that path has no host coverage and needs
         // the full on-device suite. Deferred deliberately.
-        let eps = fetch_episodes(sid, &season_rk).unwrap_or_default();
+        //
+        // This synchronous fetch is deliberate (see the doc above), and it runs on the frame
+        // thread from `menu_play_tick`; name it as the explicit user-action exception rather than
+        // tripping `assert_may_block` inside `http::request_with`. Only the fetch is wrapped.
+        let eps = {
+            let _block = crate::task::allow_blocking(const { &crate::task::BlockingLabel::new("menu-play season load") });
+            fetch_episodes(sid, &season_rk)
+        }
+        .unwrap_or_default();
         supersede_season(adapter); // drop any async fetch in flight; this synchronous list wins
         if let Some(d) = state.current.as_mut() {
             d.episodes = eps;

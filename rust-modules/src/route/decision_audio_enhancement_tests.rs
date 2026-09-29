@@ -2020,8 +2020,10 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let live = slow_live(std::time::Duration::from_millis(150));
-    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
-    assert!(toggle(&mut ps, PREF));
+    // A LIVE transcode (an enhanced remux): `transcode_seek` returns `None` early for a Direct route, which would
+    // make the assertion below pass without the `claim_in_flight()` refusal ever being consulted.
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF)); // enhance: a claim whose worker will hold `Applying`
     let action = claim_route_action().expect("a queued user action");
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
@@ -2048,4 +2050,132 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
     live.finish();
     cleanup(&mut ps);
 >>>>>>> 697e86caa (Fix Opus review findings on the claim PMS-I/O-off-main-thread split)
+}
+
+/// Finding 2's narrower race: `try_retranscode`'s own `replace_active_encoder_for` check runs
+/// (and commits) entirely inside the worker, before the landing ever reaches
+/// `RETRANSCODE_CLAIM_SLOT` — but a same-item route change (a concurrent ABR commit, modelled
+/// directly here with a second `replace_active_encoder_for` call) can still land in the window
+/// between that worker-side commit and `take_ready_retranscode_claim`'s later drain on the main
+/// thread. Unlike `claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pick_applies`
+/// (which invalidates the ticket BEFORE the worker's own commit, so `try_retranscode` itself
+/// refuses), this constructs a landing that already reflects a successful `Applied` outcome and
+/// checks the drain-time re-check at `take_ready_retranscode_claim`'s own `is_worker_ticket_current`
+/// arm: the stale landing must not install its session projection, and the encoder session it
+/// already started on the server (`qsess`) must be stopped rather than left running unowned.
+#[test]
+fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), None, 0);
+
+    // The worker's own commit inside `try_retranscode` (`replace_active_encoder_for`), captured
+    // directly rather than through a real worker so the race is deterministic instead of timing-
+    // dependent.
+    let starting_ticket = worker_ticket();
+    let leaked_ticket = replace_active_encoder_for(&starting_ticket, "leaked-worker-session")
+        .expect("the worker's own commit-time check must still pass against a fresh ticket");
+
+    // The concurrent route event that lands in the gap before the drain — an ABR commit or a
+    // fresh claim, anything that moves `control.active` again while this landing is still in
+    // flight to the mailbox.
+    replace_active_encoder_for(&leaked_ticket, "concurrent-abr-session")
+        .expect("the concurrent commit itself must succeed against the ticket the worker left");
+
+    let action = ClaimedRouteAction {
+        serial: 1,
+        ticket: starting_ticket,
+        intent: RouteIntent::User(UserRouteIntent::Retranscode),
+        displaced_pick: false,
+        claim_snapshot: None,
+    };
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(action.serial);
+    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(RetranscodeClaimLanding {
+        action: action.clone(),
+        pending_seek: -1,
+        user_target: 0,
+        result: RetranscodeClaimResult::Retranscode {
+            qsess: "leaked-worker-session".to_string(),
+            url: format!(
+                "http://127.0.0.1:{}/video/:/transcode/universal/start.mkv?session=leaked-worker-session",
+                live.port,
+            ),
+            vcodec: "hevc".into(),
+            acodec: "ac3".into(),
+            contract: crate::plex::EncodeContract::default(),
+            enhancement: EnhancementOutcome::Off,
+            ticket: leaked_ticket,
+            client: cur_client(&ps).expect("install() registered this session's server"),
+        },
+    });
+
+    let before_tsession = ps.tsession.clone();
+    let (_, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing posted above");
+    assert_eq!(
+        tail,
+        ClaimTail::Rejected(RETRANSCODE_REJECTED),
+        "a landing whose ticket went stale in the drain gap must be rejected, not installed",
+    );
+    assert_eq!(
+        ps.tsession, before_tsession,
+        "the stale landing must never write its session projection over the live route",
+    );
+
+    let requests = live.finish();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.contains("/video/:/transcode/universal/stop") && r.contains("session=leaked-worker-session")),
+        "the leaked encoder session must be stopped, not left running unowned on the server: {requests:?}",
+    );
+    cleanup(&mut ps);
+}
+
+/// `commit_audio_selection` is also reached off the frame thread's own `FrameScope` through
+/// [`settle_route_start`] → [`apply_deferred_original_effects`] (an audio pick made while a native
+/// Original trial or an ordinary route restart was still `Starting` gets deferred and replayed
+/// once the attempt settles — the same replay path `confirm_original_recovery` uses). Unlike
+/// `commit_track_inside_a_frame_does_not_trip_the_blocking_guard`, which calls
+/// `commit_audio_selection` directly, this drives it through the deferred-effects replay so the
+/// coverage is of the actual call site, not just the function it eventually reaches.
+#[test]
+fn a_deferred_audio_pick_replayed_from_settle_route_start_does_not_trip_the_blocking_guard() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+
+    let transaction = begin_route_start().expect("route start transaction");
+    assert!(prepare_route_start(transaction));
+    let attempt = claim_route_start_attempt(transaction).expect("Load attempt");
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).start_deferred = Some((
+        attempt.serial,
+        DeferredOriginalEffects {
+            quality: None,
+            audio: Some(a3()),
+            reconcile: false,
+        },
+    ));
+
+    let _frame = crate::task::FrameScope::enter();
+    assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
+    drop(_frame);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let idle = !SELECTION_WORKER_RUNNING.load(Ordering::Acquire)
+            && SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+        if idle {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "selection worker never drained");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let requests = live.finish();
+    assert!(
+        requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "audioStreamID") == Some("13")),
+        "the deferred pick's PUT must still reach PMS, off the frame thread: {requests:?}",
+    );
+    cleanup(&mut ps);
 }
