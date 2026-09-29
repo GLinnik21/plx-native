@@ -1,174 +1,13 @@
 {
- "anchor": true,
- "blobs": false,
- "build": "0.8.0-dev",
- "clock": {
-  "start": 0
- },
- "features": [
-  "devtools",
-  "devtriggers",
-  "hostsim"
- ],
- "init": {
-  "data": {
-   "automated": true,
-   "clock_start": 0,
-   "consent": {
-    "asked_version": 0,
-    "errors": false,
-    "errors_declined_scope": 0,
-    "errors_scope": 0,
-    "usage": false,
-    "usage_declined_scope": 0,
-    "usage_scope": 0
-   },
-   "content": {
-    "detail": "1001",
-    "detailok": true,
-    "detailsec": 1,
-    "filmography": true,
-    "nowan": true,
-    "personcredits": 9
-   },
-   "entropy": {
-    "Seeded": 1
-   },
-   "home": {
-    "catalog": {
-     "heroes": [],
-     "hubs": [],
-     "items": []
-    },
-    "catalog_generation": 0,
-    "generation": 0,
-    "next_request": 1,
-    "sections_generation": 0,
-    "seen": 18446744073709551615,
-    "seen_facts": 4294967295,
-    "sources": [],
-    "version": 1
-   },
-   "primary_client": 1,
-   "session": {
-    "active_profile": null,
-    "admitted_persistence": null,
-    "apply_pending": false,
-    "authority": {
-     "DevPms": {
-      "extras": [],
-      "primary": {
-       "address": "127.0.0.1",
-       "machine_id": "",
-       "name": "",
-       "origin": "http://127.0.0.1:32498",
-       "port": 32498,
-       "tier": "local",
-       "token": "s00000002"
-      }
-     }
-    },
-    "authorized_in_flow": false,
-    "code_replaced": false,
-    "commit_phase": {
-     "admitted": false,
-     "durable": false,
-     "proves_saved_login": false
-    },
-    "committed_credentials": {
-     "account_token": "",
-     "client_id": "s00000001",
-     "home_users": [],
-     "profiles": [],
-     "server": {
-      "address": "",
-      "machine_id": "",
-      "name": "",
-      "origin": "",
-      "port": 0,
-      "tier": null,
-      "token": ""
-     },
-     "sources": [],
-     "user": {
-      "id": 0,
-      "thumb": "",
-      "title": "",
-      "token": "",
-      "uuid": ""
-     }
-    },
-    "delete_leftovers": 0,
-    "disk_identity": {
-     "account_token": "",
-     "client_id": "s00000001",
-     "profile_uuid": ""
-    },
-    "epoch": 1,
-    "error": "",
-    "held_handoff": null,
-    "inbox": [],
-    "incident": null,
-    "incidents_seen": [],
-    "link_trouble": false,
-    "next_incident": 0,
-    "next_qr": 0,
-    "next_req": 0,
-    "pending": {},
-    "pending_commit": null,
-    "pending_erase": null,
-    "persisted": {
-     "account_token": "",
-     "auto_sign_in": false,
-     "client_id": "s00000001",
-     "direct_play_mode": "auto",
-     "home_pins": [],
-     "home_users": [],
-     "last_hero_blur": null,
-     "last_library": [],
-     "plaintext_consent": [],
-     "playback_quality": null,
-     "profiles": [],
-     "recent_searches": [],
-     "server": {
-      "address": "",
-      "machine_id": "",
-      "name": "",
-      "origin": "",
-      "port": 0,
-      "tier": null,
-      "token": ""
-     },
-     "sources": [],
-     "subtitle_tone": "white",
-     "trailer_autoplay": false,
-     "user": {
-      "id": 0,
-      "thumb": "",
-      "title": "",
-      "token": "",
-      "uuid": ""
-     }
-    },
-    "persistence_purpose": null,
-    "persistence_warning": null,
-    "persistence_warning_answered": false,
-    "phase": "Idle",
-    "picker": "Boot",
-    "pin_code": "",
-    "pin_denied": false,
-    "plaintext": null,
-    "profile_scope": 0,
-    "pump_pending": false,
-    "qr_gen": 0,
-    "qr_png": [],
-    "signin_active": false,
-    "switch_refused_for": null,
-    "unconfirmed_fresh_prior": null,
-    "users": []
-   },
-   "settings": null,
-   "triggers": [
+  "schema": 3,
+  "state_fp": 10638452537178981056,
+  "build": "0.8.0-dev",
+  "features": [
+    "devtools",
+    "devtriggers",
+    "hostsim"
+  ],
+  "triggers": [
     "plxnative-app-init",
     "plxnative-rec",
     "plxnative-focus",
@@ -179,24 +18,185 @@
     "plxnative-filmography",
     "plxnative-personcredits",
     "plxnative-nowan"
-   ],
-   "version": 1
+  ],
+  "init": {
+    "probe": "controlled=home version=1",
+    "hash": 494045107389955658,
+    "data": {
+      "automated": true,
+      "clock_start": 0,
+      "consent": {
+        "asked_version": 0,
+        "errors": false,
+        "errors_declined_scope": 0,
+        "errors_scope": 0,
+        "usage": false,
+        "usage_declined_scope": 0,
+        "usage_scope": 0
+      },
+      "content": {
+        "detail": "1001",
+        "detailok": true,
+        "detailsec": 1,
+        "filmography": true,
+        "nowan": true,
+        "personcredits": 9
+      },
+      "entropy": {
+        "Seeded": 1
+      },
+      "home": {
+        "catalog": {
+          "heroes": [],
+          "hubs": [],
+          "items": []
+        },
+        "catalog_generation": 0,
+        "generation": 0,
+        "next_request": 1,
+        "sections_generation": 0,
+        "seen": 18446744073709551615,
+        "seen_facts": 4294967295,
+        "sources": [],
+        "version": 1
+      },
+      "primary_client": 1,
+      "session": {
+        "active_profile": null,
+        "admitted_persistence": null,
+        "apply_pending": false,
+        "authority": {
+          "DevPms": {
+            "extras": [],
+            "primary": {
+              "address": "127.0.0.1",
+              "machine_id": "",
+              "name": "",
+              "origin": "http://127.0.0.1:32498",
+              "port": 32498,
+              "tier": "local",
+              "token": "s00000002"
+            }
+          }
+        },
+        "authorized_in_flow": false,
+        "code_replaced": false,
+        "commit_phase": {
+          "admitted": false,
+          "durable": false,
+          "proves_saved_login": false
+        },
+        "committed_credentials": {
+          "account_token": "",
+          "client_id": "s00000001",
+          "home_users": [],
+          "profiles": [],
+          "server": {
+            "address": "",
+            "machine_id": "",
+            "name": "",
+            "origin": "",
+            "port": 0,
+            "tier": null,
+            "token": ""
+          },
+          "sources": [],
+          "user": {
+            "id": 0,
+            "thumb": "",
+            "title": "",
+            "token": "",
+            "uuid": ""
+          }
+        },
+        "delete_leftovers": 0,
+        "disk_identity": {
+          "account_token": "",
+          "client_id": "s00000001",
+          "profile_uuid": ""
+        },
+        "epoch": 1,
+        "error": "",
+        "held_handoff": null,
+        "inbox": [],
+        "incident": null,
+        "incidents_seen": [],
+        "link_trouble": false,
+        "next_incident": 0,
+        "next_qr": 0,
+        "next_req": 0,
+        "pending": {},
+        "pending_commit": null,
+        "pending_erase": null,
+        "persisted": {
+          "account_token": "",
+          "auto_sign_in": false,
+          "client_id": "s00000001",
+          "direct_play_mode": "auto",
+          "home_pins": [],
+          "home_users": [],
+          "last_hero_blur": null,
+          "last_library": [],
+          "plaintext_consent": [],
+          "playback_quality": null,
+          "profiles": [],
+          "recent_searches": [],
+          "server": {
+            "address": "",
+            "machine_id": "",
+            "name": "",
+            "origin": "",
+            "port": 0,
+            "tier": null,
+            "token": ""
+          },
+          "sources": [],
+          "subtitle_tone": "white",
+          "trailer_autoplay": false,
+          "user": {
+            "id": 0,
+            "thumb": "",
+            "title": "",
+            "token": "",
+            "uuid": ""
+          }
+        },
+        "persistence_purpose": null,
+        "persistence_warning": null,
+        "persistence_warning_answered": false,
+        "phase": "Idle",
+        "picker": "Boot",
+        "pin_code": "",
+        "pin_denied": false,
+        "plaintext": null,
+        "profile_scope": 0,
+        "pump_pending": false,
+        "qr_gen": 0,
+        "qr_png": [],
+        "signin_active": false,
+        "switch_refused_for": null,
+        "unconfirmed_fresh_prior": null,
+        "users": []
+      },
+      "settings": null,
+      "triggers": [
+        "plxnative-app-init",
+        "plxnative-rec",
+        "plxnative-focus",
+        "plxnative-noidle",
+        "plxnative-detail",
+        "plxnative-detailsec",
+        "plxnative-detailok",
+        "plxnative-filmography",
+        "plxnative-personcredits",
+        "plxnative-nowan"
+      ],
+      "version": 1
+    }
   },
-  "hash": 494045107389955658,
-  "probe": "controlled=home version=1"
- },
- "schema": 3,
- "state_fp": 10638452537178981056,
- "triggers": [
-  "plxnative-app-init",
-  "plxnative-rec",
-  "plxnative-focus",
-  "plxnative-noidle",
-  "plxnative-detail",
-  "plxnative-detailsec",
-  "plxnative-detailok",
-  "plxnative-filmography",
-  "plxnative-personcredits",
-  "plxnative-nowan"
- ]
+  "clock": {
+    "start": 0
+  },
+  "blobs": false,
+  "anchor": true
 }
