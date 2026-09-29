@@ -495,7 +495,7 @@ fn stop<H: SearchLike>(
     f: &mut DrawFrame<'_, '_, H>,
     p: Painter,
 ) {
-    if crate::gfx::blur_source_pass() {
+    if !f.records_stops() {
         return;
     }
     use crate::ui::screen::{Activate, Hover, Stop};

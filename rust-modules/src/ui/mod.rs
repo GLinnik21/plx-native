@@ -463,6 +463,28 @@ pub struct Painter {
     /// cache misses. Kept on the value so the ordinary screen draw path needs no alternate tree.
     text_recorder: bool,
 }
+thread_local! {
+    static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// **Run `f` as an off-screen recording walk: EVERY painter records, not only the one handed in.**
+/// A recording walk used to be a property of the painter value alone, and a screen that makes its
+/// own `Painter::root()` — Settings' entrance cascade, every panel's `root().alpha(appear)` — cut
+/// the walk loose from it: a held Settings surface, handed `Painter::recording()`, still
+/// rasterised and uploaded all 21 of its strings live (the `modal-100` first-open spike). The
+/// scope is per thread, nests, and is restored on unwind.
+pub(crate) fn record_walk<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RECORD_WALK.with(|d| d.set(d.get() - 1));
+        }
+    }
+    RECORD_WALK.with(|d| d.set(d.get() + 1));
+    let _restore = Restore;
+    f()
+}
+
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
 /// folded card shadow ([`Painter::tex_carded`]) and the standalone one ([`Painter::focus_shadow`],
@@ -483,7 +505,7 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
-        if self.text_recorder {
+        if self.records() {
             #[cfg(test)]
             draw_census::note(tag, Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h));
             return true;
@@ -529,8 +551,15 @@ impl Painter {
     pub(crate) const fn recording() -> Self {
         Self { text_recorder: true, ..Self::root() }
     }
-    pub(crate) const fn is_recording(self) -> bool {
-        self.text_recorder
+    /// This painter records rather than paints: it was made by [`recording`](Self::recording), or
+    /// it is drawing inside a [`record_walk`] — which is what makes a screen that builds its own
+    /// `Painter::root()` (a surface's entrance cascade, a panel's slide) record too.
+    pub(crate) fn is_recording(self) -> bool {
+        self.records()
+    }
+    #[inline]
+    fn records(self) -> bool {
+        self.text_recorder || RECORD_WALK.with(|d| d.get() > 0)
     }
     /// Carry a focus pop on the cascade (multiplicative). See the `scale` field.
     pub fn scaled(self, s: f32) -> Self {
@@ -630,7 +659,7 @@ impl Painter {
             bot.record(data);
             focus.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         crate::gfx::draw_rect(
             r.x + self.dx,
@@ -652,7 +681,7 @@ impl Painter {
             rr.record(data);
             col.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
     }
@@ -697,7 +726,7 @@ impl Painter {
             w.record(data);
             col.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         crate::gfx::draw_rrect_sheened(
@@ -728,7 +757,7 @@ impl Painter {
             off_y.record(data);
             col.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
             r.x + self.dx,
@@ -758,7 +787,7 @@ impl Painter {
             off_y.record(data);
             col.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
             r.x + self.dx,
@@ -800,7 +829,7 @@ impl Painter {
             top.record(data);
             bot.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
         crate::gfx::draw_rect_sheened(
@@ -862,7 +891,7 @@ impl Painter {
             rim_top.record(data);
             rim_w.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
         crate::gfx::draw_rect_sheened(
@@ -912,7 +941,7 @@ impl Painter {
             rim_w.record(data);
             glow.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
         let args = pill.map(|p| p.args());
@@ -940,7 +969,7 @@ impl Painter {
             rad.record(data);
             col.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let c = self.c(col);
         let rim = self.sheen_rim();
         crate::gfx::draw_rrect_sheened(
@@ -970,7 +999,7 @@ impl Painter {
             rad.record(data);
             tint.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let t = self.c(tint);
         crate::gfx::draw_tex_uv(tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
     }
@@ -1008,7 +1037,7 @@ impl Painter {
         face: crate::gfx::GlassFace,
         deep: f32,
     ) -> bool {
-        if self.text_recorder { return false; }
+        if self.records() { return false; }
         if frame::backdrop::discovering() {
             frame::backdrop::surface(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h));
             self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
@@ -1047,7 +1076,7 @@ impl Painter {
             rad.record(data);
             tint.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let t = self.c(tint);
         crate::gfx::draw_tex_stroked(
             tex,
@@ -1077,7 +1106,7 @@ impl Painter {
             tint.record(data);
             f.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let t = self.c(tint);
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
         let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
@@ -1144,7 +1173,7 @@ impl Painter {
             ramp.record(data);
             wedge.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
         let ink = self.c(theme::scrim(1.0));
         crate::gfx::draw_hero_ground(
@@ -1181,7 +1210,7 @@ impl Painter {
             dim.record(data);
             k.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let k = self.wash_corners(k);
         crate::gfx::draw_ambient(
             r.x + self.dx,
@@ -1227,7 +1256,7 @@ impl Painter {
             ink.0.record(data);
             ink.1.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let t = self.c(tint);
         let (ink, inka) = self.ink(ink);
         crate::gfx::draw_art_wash(
@@ -1254,7 +1283,7 @@ impl Painter {
             ink.0.record(data);
             ink.1.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let k = self.wash_corners(k);
         let (ink, inka) = self.ink(ink);
         crate::gfx::draw_ambient_inked(
@@ -1302,7 +1331,7 @@ impl Painter {
             use frame::backdrop::Value;
             k.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         // bind the mapped array to a `let` first — pointers into a temporary would dangle
         let c = k.map(|q| self.c(q));
         crate::gfx::draw_grad4(
@@ -1336,7 +1365,7 @@ impl Painter {
             crate::gfx::tex_ledger::revision(tex).record(data);
             tint.record(data);
         }) { return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         let t = self.c(tint);
         crate::gfx::draw_field(r.x + self.dx, r.y + self.dy, r.w, r.h, tex, t.as_ptr());
     }
@@ -1384,7 +1413,7 @@ impl Painter {
             uv.record(data);
             tint.record(data);
         }) { return tex != 0; }
-        if self.text_recorder { return false; }
+        if self.records() { return false; }
         let t = self.c(tint);
         crate::gfx::draw_field_panel(
             r.x + self.dx,
@@ -1420,7 +1449,7 @@ impl Painter {
             });
             return width;
         }
-        if self.text_recorder {
+        if self.records() {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
@@ -1457,7 +1486,7 @@ impl Painter {
             });
             return width;
         }
-        if self.text_recorder {
+        if self.records() {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
@@ -1514,7 +1543,7 @@ impl Painter {
             });
             return width;
         }
-        if self.text_recorder {
+        if self.records() {
             crate::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(test)]
@@ -1545,13 +1574,13 @@ impl Painter {
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
         if frame::backdrop::discovering() { frame::backdrop::clip(Some(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h))); return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         crate::gfx::clip_set(r.x + self.dx, r.y + self.dy, r.w, r.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
         if frame::backdrop::discovering() { frame::backdrop::clip(None); return; }
-        if self.text_recorder { return; }
+        if self.records() { return; }
         crate::gfx::clip_clear();
     }
 }
@@ -1897,6 +1926,21 @@ mod tests {
             r.y < f.y && r.y + r.h > f.y + f.h,
             "the square must overflow the short axis both ways"
         );
+    }
+
+    /// A painter the walk never handed out — `Painter::root()` built inside the screen — records
+    /// inside a [`record_walk`], and the scope nests and survives an unwind.
+    #[test]
+    fn a_record_walk_reaches_a_painter_the_screen_made_itself() {
+        assert!(!Painter::root().is_recording());
+        record_walk(|| {
+            assert!(Painter::root().alpha(0.5).is_recording());
+            record_walk(|| assert!(Painter::root().is_recording()));
+            assert!(Painter::root().is_recording(), "the inner scope's exit kept the outer one");
+        });
+        assert!(!Painter::root().is_recording());
+        let _ = std::panic::catch_unwind(|| record_walk(|| panic!("walk failed")));
+        assert!(!Painter::root().is_recording(), "an unwinding walk restored the scope");
     }
 
     #[test]

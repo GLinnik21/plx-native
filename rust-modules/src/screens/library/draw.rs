@@ -204,6 +204,7 @@ impl LibraryScreen {
     }
 
     fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+        if !f.records_stops() { return; }
         for (index, (elem, _)) in self.libraries.iter().enumerate() {
             let rect = self.library_rect(index, f.cx);
             if on_axis(rect.y, rect.h, SCR_H, 0.0) { self.stop(*elem, f); }

@@ -2639,6 +2639,7 @@ impl DetailScreen {
     }
 
     fn record_stops<H: ContentLike + crate::screens::registry::MetadataLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+        if !f.records_stops() { return; }
         let meta = H::metadata(f.cx);
         // Two placements per episode, each reading the section flow: one validation for all.
         let _layout = self.pin_layout(meta, f.cx.measure);

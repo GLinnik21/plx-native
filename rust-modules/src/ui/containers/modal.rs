@@ -92,10 +92,24 @@ pub struct PopoverMotion {
     /// dismissed on its held frame still passes through `Closing` for a frame — the phase every
     /// dismissal is observed by — rather than being pruned before anything saw it go.
     holding: bool,
+    /// How long the current hold has lasted, for [`SURFACE_TEXT_HOLD_MAX_MS`].
+    held_ms: f32,
+    /// Ticks the current hold has lasted; the first is the capture frame.
+    held_ticks: u32,
 }
 
 /// The appear spring's stiffness (`popover.rs`'s number).
 pub const APPEAR_K: f32 = 300.0;
+
+/// **The longest a presented surface waits at appear 0 for its own text to be rasterised.**
+/// A held surface is walked with the recording painter (`dispatch.rs`, the surface loop), so its
+/// cold strings are queued and drained under the text prewarm budget instead of being rasterised
+/// in the frame that also renders the host snapshot — Settings' first open rasterised 21 strings
+/// inside that frame (a 44 ms frame on the television, 2026-09-29 bench). The hold continues while
+/// the queue is non-empty, so the first ramp frame draws only resident text; the bound keeps a
+/// queue that cannot drain (a string too large for the budget, a surface that keeps producing
+/// new text) from ever delaying the open by more than this — about six frames.
+pub const SURFACE_TEXT_HOLD_MAX_MS: f32 = 100.0;
 
 impl PopoverMotion {
     pub const fn at(v: f32) -> Self {
@@ -105,11 +119,26 @@ impl PopoverMotion {
             target: v,
             hold: false,
             holding: false,
+            held_ms: 0.0,
+            held_ticks: 0,
         }
     }
     /// Pin the spring where it is for the next [`tick`](Self::tick) — see [`hold`](Self::hold).
     pub fn hold_one_frame(&mut self) {
         self.hold = true;
+        self.held_ms = 0.0;
+        self.held_ticks = 0;
+    }
+    /// The surface is at its held appear-0 frame (or about to be): it is not visible, and its
+    /// walk only records the text the ramp will need.
+    pub fn held(&self) -> bool {
+        self.hold || self.holding
+    }
+    /// The held frame that renders the host snapshot — the presented frame, before any later tick
+    /// has extended the hold. A held surface's text is recorded here but not drained: this is the
+    /// heaviest GPU frame a modal has, and the drain's uploads belong to the frames after it.
+    pub fn capture_frame(&self) -> bool {
+        self.hold || (self.holding && self.held_ticks <= 1)
     }
     pub fn to(&mut self, target: f32) {
         self.target = target;
@@ -118,7 +147,8 @@ impl PopoverMotion {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
-        self.tick_gated(t, present, crate::gfx::snapshot_pending());
+        let text_pending = crate::text::prewarm_pending() && self.held_ms < SURFACE_TEXT_HOLD_MAX_MS;
+        self.tick_gated(t, present, crate::gfx::snapshot_pending() || text_pending);
     }
     /// [`tick`](Self::tick) with the host snapshot's GPU state passed in: a HELD surface stays
     /// held while the snapshot its hold frame rendered is still in flight, because those frames
@@ -127,6 +157,8 @@ impl PopoverMotion {
     pub fn tick_gated(&mut self, t: Tick, present: &mut PresentHandle<'_>, snapshot_in_flight: bool) {
         self.holding = std::mem::take(&mut self.hold) || (self.holding && snapshot_in_flight);
         if self.holding {
+            self.held_ms += t.dt() * 1000.0;
+            self.held_ticks += 1;
             // Still moving: the next frame must present and take the first real step.
             present.note(super::super::present::PresentEvent::Motion);
             return;
@@ -923,6 +955,40 @@ mod hide_tests {
             m.tick_gated(tick(80), &mut ph, true);
         }
         assert!(m.appear > a, "a ramping surface is not re-held by a later capture");
+    }
+
+    /// **A held surface stays held while its recorded text is warming, for a bounded time.** The
+    /// held frames walk the surface through the text recorder (`dispatch`); ramping while that
+    /// queue still holds its strings would rasterise the rest in the first visible frame, the
+    /// spike the hold exists to move. A warm open (nothing queued) ramps exactly as before, and a
+    /// queue that never drains cannot hold a panel shut past [`SURFACE_TEXT_HOLD_MAX_MS`].
+    #[test]
+    fn a_held_surface_waits_for_its_text_but_not_forever() {
+        let _g = crate::testlock::serial();
+        let held_for = |pending_frames: u32| {
+            crate::text::reset_prewarm_for_test();
+            let mut m = PopoverMotion::at(0.0);
+            m.to(1.0);
+            m.hold_one_frame();
+            let mut present = Present::new();
+            let mut frames = 0u32;
+            while m.appear == 0.0 && frames < 100 {
+                if frames < pending_frames {
+                    crate::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
+                } else {
+                    crate::text::reset_prewarm_for_test();
+                }
+                let mut ph = PresentHandle::of(&mut present);
+                m.tick(tick(16 * (frames + 1)), &mut ph);
+                frames += 1;
+            }
+            crate::text::reset_prewarm_for_test();
+            frames
+        };
+        assert_eq!(held_for(0), 2, "a warm open: the one held frame, then the ramp");
+        assert_eq!(held_for(3), 4, "held while text is pending on three ticks, then the ramp");
+        let bound = (SURFACE_TEXT_HOLD_MAX_MS / 16.0).ceil() as u32 + 2;
+        assert!(held_for(1000) <= bound, "a queue that never drains is released at the bound");
     }
 
     /// `hide` retires on the same frame — no spring runs at all — while `dismiss` over the same

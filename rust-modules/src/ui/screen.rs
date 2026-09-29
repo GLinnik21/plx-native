@@ -876,7 +876,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// folded in here (`Painter::to_screen`) and the stop is clipped to the cascade's clip
     /// intersected with `s.clip` (also in painter space).
     pub fn stop(&mut self, p: Painter, mut s: Stop<H::Elem>) {
-        if p.is_recording() {
+        if p.is_recording() || !self.records_stops() {
             return;
         }
         let (rect, _, cascade_clip) = p.to_screen(s.rect);
@@ -898,6 +898,17 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
         }
         let inner = p.clipped(r);
         ClipScope::open(inner.clip_rect())
+    }
+
+    /// **Does this walk feed the hit map?** Only the VISIBLE walk does (§7.6). A frame walks the
+    /// page closure up to four times — the text prewarm through a recording painter, backdrop
+    /// discovery, one replay per blur source (`app::run::draw`) and the visible pass — and the
+    /// dispatcher fills `Input`'s hit map from the visible pass alone. A stop placed in any other
+    /// walk is layout work thrown away, so every stop producer asks this before it places
+    /// anything (`if !f.records_stops() { return; }` at the top of each `record_stops`), and
+    /// [`Self::stop`] refuses outside it as the backstop for inline producers.
+    pub fn records_stops(&self) -> bool {
+        !self.painter.is_recording() && !crate::gfx::blur_source_pass()
     }
 
     pub fn stops(&self) -> &[Stop<H::Elem>] {
@@ -1012,6 +1023,41 @@ mod draw_frame_tests {
         let want = Rect::new(100.0, 50.0, 100.0, 100.0).scaled(1.1);
         assert_eq!((s.rect.x, s.rect.y, s.rect.w, s.rect.h), (want.x, want.y, want.w, want.h));
         assert_eq!((s.rest_rect.x, s.rest_rect.y, s.rest_rect.w, s.rest_rect.h), (100.0, 50.0, 100.0, 100.0));
+    }
+
+    /// **Only the visible walk records stops.** A frame walks the page closure up to four times:
+    /// the text prewarm (a recording painter), backdrop discovery, each blur source, and the
+    /// visible pass. The hit map is filled from the visible pass alone, so a stop placed by any
+    /// other walk is layout work thrown away — Detail's `record_stops` alone places two stops per
+    /// episode. `records_stops` is the one answer every stop producer asks before placing, and
+    /// `stop` itself refuses outside it.
+    #[test]
+    fn only_the_visible_walk_records_stops() {
+        use crate::ui::frame::backdrop::{self, Z};
+        let _guard = crate::testlock::serial();
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let record = |painter: Painter| {
+            let mut f = DrawFrame::new(&cx, painter);
+            f.stop(painter, stop(Rect::new(0.0, 0.0, 100.0, 100.0), Rect::FULL));
+            (f.records_stops(), f.stops().len())
+        };
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(backdrop::Sources::default()));
+        assert_eq!(record(Painter::root()), (true, 1), "the visible pass records");
+        assert_eq!(record(Painter::recording()), (false, 0), "the text prewarm walk records nothing");
+        {
+            let _walk = backdrop::discover(sources.clone());
+            assert_eq!(record(Painter::root()), (false, 0), "backdrop discovery records nothing");
+        }
+        {
+            let _walk = backdrop::enter(sources.clone(), Z::OPENER);
+            assert_eq!(record(Painter::root()), (false, 0), "a blur source walk records nothing");
+        }
+        {
+            let _walk = backdrop::enter(sources, Z::ALL);
+            assert_eq!(record(Painter::root()), (true, 1), "the visible walk records");
+        }
     }
 
     /// A stop under a clipped painter is clipped to the cascade's clip ∩ its own.

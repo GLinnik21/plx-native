@@ -427,6 +427,7 @@ impl GridPart {
     }
 
     pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+        if !f.records_stops() { return; }
         let (lo, hi) = self.visible_window();
         for index in lo..hi {
             let elem = self.elems[index];

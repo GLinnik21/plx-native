@@ -1717,6 +1717,7 @@ impl PersonScreen {
         person: &Person,
         cur: Option<u32>,
     ) {
+        if !f.records_stops() { return; }
         let hp = f.painter;
         f.stop(
             hp,

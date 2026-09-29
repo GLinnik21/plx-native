@@ -1323,9 +1323,9 @@ where
                     // the outgoing page while its destination only records text. The walk
                     // measures ahead of any frame that draws the page, so it is speculative to
                     // the recorder (`rec::speculative`).
-                    crate::gfx::without_frame_clear(|| {
-                        super::rec::speculative(|| inst.screen.draw(&mut f))
-                    });
+                    crate::diag::spans::span("warm", || crate::gfx::without_frame_clear(|| {
+                        super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
+                    }));
                 }
             }
         }
@@ -1430,11 +1430,12 @@ where
                 backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
+        // One prewarm budget per frame, shared by the page (here) and a held surface (below).
+        let mut warm_budget_us = super::containers::transition::TEXT_PREWARM_BUDGET_US;
         if warm.is_some() {
-            crate::text::drain_prewarm(
-                super::containers::transition::TEXT_PREWARM_BUDGET_US,
-                || rig.now_us(),
-            );
+            let start = rig.now_us();
+            crate::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
+            warm_budget_us = warm_budget_us.saturating_sub(rig.now_us().saturating_sub(start));
         } else if !crate::gfx::blur_source_pass() {
             crate::text::clear_prewarm();
         }
@@ -1448,6 +1449,7 @@ where
         // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
         let modals = &mut nav.modals;
         let field = modals.underlay.field();
+        let (mut drain_surface_text, mut capture_surface) = (false, false);
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
             if z >= ceiling { break; }
@@ -1463,10 +1465,28 @@ where
                 let mut surface_cx = parts.cx::<H>(views, measure);
                 surface_cx.owner = InputOwner::Entry(s.entry.id);
                 surface_cx.focus = input.engine.read(surface_cx.owner);
-                let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
+                // **A held surface records its text; it rasterises none of it.** It is at appear
+                // 0 on the frames it is held (`PopoverMotion::held`) — invisible — and the first
+                // of them also renders the host snapshot, the heaviest GPU frame a modal has.
+                // Drawn live there, a cold Settings rasterised and uploaded 21 strings into that
+                // frame. Walked through the recorder, the strings are queued, drained below under
+                // the prewarm budget, and the hold lasts until they are resident
+                // (`SURFACE_TEXT_HOLD_MAX_MS`), so the ramp's first frame draws only cached text.
+                let held = s.motion.held();
+                let painter = if held { Painter::recording() } else { Painter::root() };
+                let mut f = DrawFrame::with_navigation(&surface_cx, painter, navigation);
                 f.page_alpha = s.motion.appear;
                 f.underlay = Some(field);
-                backdrop::draw_span("surf", || inst.screen.draw(&mut f));
+                if held {
+                    // Recorded on the capture frame, drained only on the held frames after it.
+                    drain_surface_text |= !s.motion.capture_frame();
+                    capture_surface |= s.motion.capture_frame();
+                    backdrop::draw_span("surf", || crate::gfx::without_frame_clear(|| {
+                        super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
+                    }));
+                } else {
+                    backdrop::draw_span("surf", || inst.screen.draw(&mut f));
+                }
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
                 // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —
@@ -1479,6 +1499,9 @@ where
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
                 if !crate::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
+        }
+        if drain_surface_text && !capture_surface && !source_pass && warm_budget_us > 0 {
+            crate::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
