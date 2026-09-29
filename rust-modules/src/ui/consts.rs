@@ -76,7 +76,10 @@ pub const UNDER_LABEL_AIR: f32 = 22.0;
 pub const ROW_PITCH: f32 =
     TITLE_DY + CARD_DY + CARD_H + crate::ui::card_row::UNDER_LABEL_H + UNDER_LABEL_AIR;
 pub const CONTENT_Y: f32 = 200.0;
-pub const GLOW_PAD: f32 = 48.0;
+/// Off-screen cull/clip-edge slack for a focused card's glow AND its risen drop-shadow — big enough
+/// to cover the worst case, a large poster's `CARD_SHADOW_BLUR + CARD_SHADOW_DY` (44+18=62) plus a
+/// 1px AA margin, rounded up.
+pub const GLOW_PAD: f32 = 64.0;
 pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
 /// **The safe area itself** — the box every piece of REQUIRED content has to fit inside, as one
@@ -541,7 +544,7 @@ mod tests {
     ///
     /// **So tiles are entered at REST, and that is a decision rather than an oversight.** A focused
     /// card is drawn `RowStyle::HOME`'s 1.09 about its own centre, which puts the first column's
-    /// painted edge ~11px past the margin, and `GLOW_PAD` spills 48 further. Neither is new content:
+    /// painted edge ~11px past the margin, and `GLOW_PAD` spills 64 further. Neither is new content:
     /// the pop MAGNIFIES ink already inside the frame, strictly containing its resting rect
     /// (`widgets`' own note on the control pop), and the caption under it — the TEXT — does not
     /// scale at all. The line this draws is between decoration that overflows and *the thing
