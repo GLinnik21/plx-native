@@ -3768,20 +3768,13 @@ struct PendingOriginal {
     /// because `teardown(for_reload=true)` zeroes that on the way into the reload being graded, so
     /// by the time the failure is detected the playhead no longer remembers where the film was.
     offset_secs: i64,
-    url: String,
-    tsession: String,
-    cur_contract: crate::plex::EncodeContract,
-    /// Travels with `cur_contract`: an enhanced remux released to direct play and rolled back
-    /// must come back graded as it was, not as the `Off` the failed candidate wrote.
-    cur_enhancement: EnhancementOutcome,
-    cur_auto_original_watched: bool,
-    cur_audio: Option<CarriedAudio>,
-    stream_vcodec: String,
-    stream_acodec: String,
-    stream_fps: f64,
-    stream_dovi: crate::metadata::Dovi,
-    stream_dv_decision: crate::metadata::DvDecision,
-    stream_immersive: bool,
+    /// The route as it stood the instant before this recovery overwrote it. Restored verbatim
+    /// through [`install_route_projection`] on rollback, except `subtitle_sid`/`auto_original`:
+    /// a client-side edit made while the trial owned the route is not part of what rollback
+    /// undoes (it travels with `candidate_projection` instead — see
+    /// `commit_in_place_route_projection`), so the restore site puts those two fields back the
+    /// way it found them.
+    previous: AppliedRouteProjection,
     /// A manual Original pick can adopt an automatic trial without issuing a second Load. The
     /// first decoded frame then transfers the applied contract to Manual and invalidates the
     /// Auto worker ticket which was captured when the trial started.
@@ -3842,18 +3835,7 @@ fn snapshot_route(ps: &PlaybackSession, encoder: String, offset_secs: i64) -> Pe
         encoder,
         replacement_encoder: String::new(),
         offset_secs,
-        url: s.url.clone(),
-        tsession: s.tsession.clone(),
-        cur_contract: s.cur_contract,
-        cur_enhancement: s.cur_enhancement,
-        cur_auto_original_watched: s.cur_auto_original_watched,
-        cur_audio: s.cur_audio.clone(),
-        stream_vcodec: s.stream_vcodec.clone(),
-        stream_acodec: s.stream_acodec.clone(),
-        stream_fps: s.stream_fps,
-        stream_dovi: s.stream_dovi,
-        stream_dv_decision: s.stream_dv_decision,
-        stream_immersive: s.stream_immersive,
+        previous: route_projection(s),
         adopted_by_user: false,
         charge_visible_switch_on_commit: false,
         deferred_quality: None,
@@ -4001,31 +3983,25 @@ pub(crate) fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<Ori
     let deferred = DeferredOriginalEffects::from_pending(&mut pending);
     let failed_replacement = pending.replacement_encoder.clone();
     let restored_hls = match (
-        pending.cur_contract.delivery,
+        pending.previous.contract.delivery,
         pending
-            .cur_contract
+            .previous
+            .contract
             .ceiling
             .and_then(crate::abr::Rung::from_ceiling),
     ) {
         (crate::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) => Some(rung),
         _ => None,
     };
-    { let s = &mut *ps; {
-        s.url = pending.url.clone();
-        s.tsession = pending.tsession.clone();
-        s.cur_contract = pending.cur_contract;
-        s.cur_enhancement = pending.cur_enhancement;
-        s.cur_auto_original_watched = pending.cur_auto_original_watched;
-        s.cur_audio = pending.cur_audio.clone();
-        s.stream_vcodec = pending.stream_vcodec.clone();
-        s.stream_acodec = pending.stream_acodec.clone();
-        s.stream_fps = pending.stream_fps;
-        s.stream_dovi = pending.stream_dovi;
-        s.stream_dv_decision = pending.stream_dv_decision;
-        s.stream_immersive = pending.stream_immersive;
-    } };
+    // `subtitle_sid`/`auto_original` are not part of what a rollback undoes (see the doc comment
+    // on `PendingOriginal::previous`): put back whatever the trial left there.
+    let kept_subtitle_sid = ps.cur_sub_sid;
+    let kept_auto_original = ps.auto_original.clone();
+    install_route_projection(ps, &pending.previous);
+    ps.cur_sub_sid = kept_subtitle_sid;
+    ps.auto_original = kept_auto_original;
     if let Some(rung) = restored_hls {
-        install_active_hls(&pending.encoder, &pending.url, rung);
+        install_active_hls(&pending.encoder, &pending.previous.url, rung);
     } else {
         install_active_encoder(&pending.encoder);
     }
