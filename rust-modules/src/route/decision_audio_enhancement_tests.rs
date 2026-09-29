@@ -1322,3 +1322,161 @@ fn recovery_enhanced_remux_ignored_falls_back_to_plain_original_refused() {
     recovery_enhanced_remux_falls_back(EnhMode::Ignore, true);
     recovery_enhanced_remux_falls_back(EnhMode::Ignore, false);
 }
+
+// ---- device bug (PR #309): a live re-pick of an already-burning embedded subtitle -----------
+//
+// The device case `audio_enhancement_burns_embedded_subtitle` (rk 1804) boots straight onto the
+// enhancement's own Burn — PMS remembers the part's subtitle selection across runs, so a fresh
+// boot with an embedded default already lands on `enhancement_route == Burn` (M7), not on a plain
+// enhanced remux the way `subtitle_pick_while_enhanced_auto_burns_embedded` transitions INTO one.
+// The `install()` fixture used everywhere else in this file writes `ps.cur_contract` etc. by hand
+// and never exercises the real cold-start plan builder, so it cannot see whatever the resolve path
+// leaves behind that `commit_subtitle_selection` then reads differently than the synthetic fixture
+// does. This test goes through `build_stream`/`apply_plan` for the COLD START, exactly like
+// `plan_audio_enhancement_tests::embedded_default_subtitle_with_enhancement_is_burned`, then drives
+// the SAME live re-pick the device's menupick trigger made (the identical subtitle id already
+// burning) through the real `commit_subtitle_selection`/claim path.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn subtitle_repick_while_cold_start_burn_keeps_the_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+
+    let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
+    let sid = crate::plex::register_for_test("enh-repick", "127.0.0.1", port, "token", "enh-client");
+    let client = crate::plex::client_for(sid).unwrap();
+    client.set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+
+    let audio = crate::metadata::Stream {
+        id: 10976,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        channels: 2,
+        default: true,
+        selected: true,
+        can_normalize_loudness: true,
+        ..Default::default()
+    };
+    let sub = selected_sub(10980, "srt");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    env.quality = Quality::Auto;
+    env.pass = Subscription::Yes;
+    env.audio_enhancements = PREF;
+    env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
+    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    assert!(!plan.contract.remux, "cold start must be a real burn re-encode, not a plain remux");
+    assert_eq!(query_param(&plan.url, "subtitleStreamID"), Some("10980"), "{}", plan.url);
+    assert_eq!(query_param(&plan.url, "subtitles"), Some("burn"), "{}", plan.url);
+    apply_plan(&mut ps, plan, "1804");
+    assert!(is_transcoding(&ps), "cold start landed on a transcode");
+    assert!(live_is_own_burn(&ps), "the installed route must read as the enhancement's own Burn");
+
+    // The device's menupick trigger re-picks the SAME embedded subtitle already burning — the
+    // harness pressed OK on a track menu row that was already selected. `sub_idx` is arbitrary (a
+    // burn never fills `sub_render_ordinal`; the menu computes its own from metadata).
+    commit_subtitle_selection(&mut ps, 2, 10980, true);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved, "same route flavour, still a Burn");
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "must still be a real re-encode after the re-pick");
+    assert_eq!(ps.cur_contract.audio, PREF, "the DSP preference must survive the re-pick");
+
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 2, "{requests:?}");
+    assert_eq!(query_param(d[1], "normalizeLoudness"), Some("1"), "the re-pick keeps the enhancement: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitleStreamID"), Some("10980"), "the re-pick must still burn: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the re-pick must still burn: {}", d[1]);
+
+    cleanup(&mut ps);
+    crate::plex::reset_servers_for_test();
+}
+
+/// The FIRST device run's actual entry state (`/tmp/enh-burn-tv/logs/...log`, before its own PUT
+/// persisted `sub=10980` and contaminated the retry): cold start has NO subtitle selected
+/// (`select streams: ... sub=0`), so it lands on the ORDINARY enhanced remux — matching the
+/// manifest's own description of this case. The live pick that follows is the FIRST time this
+/// playback asks for the embedded subtitle at all, unlike the re-pick above.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn subtitle_first_pick_while_plain_enhanced_remux_burns_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+
+    let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0);
+    let sid = crate::plex::register_for_test("enh-firstpick", "127.0.0.1", port, "token", "enh-client");
+    let client = crate::plex::client_for(sid).unwrap();
+    client.set_link(crate::plex::probe::Location::Local);
+    crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
+
+    let audio = crate::metadata::Stream {
+        id: 10976,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        channels: 2,
+        default: true,
+        selected: true,
+        can_normalize_loudness: true,
+        ..Default::default()
+    };
+    // No track carries `selected: true` and no account/show subtitle preference is set, so
+    // `pick_dp_subtitle_account` returns `None` — the cold start's own `sub=0`, same as the
+    // device's first run.
+    let sub = crate::metadata::Stream {
+        id: 10980,
+        index: 0,
+        lang_code: "eng".into(),
+        codec: "srt".into(),
+        selected: false,
+        ..Default::default()
+    };
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "1804");
+    env.quality = Quality::Auto;
+    env.pass = Subscription::Yes;
+    env.audio_enhancements = PREF;
+    env.cached_item = Some(fourk_item_with_subs(sid, vec![audio], vec![sub]));
+    let plan = build_stream("1804", "/library/parts/3058/1/file.mkv", "hevc", "ac3", &env);
+    assert!(plan.contract.remux, "cold start must be the ORDINARY enhanced remux, no subtitle yet");
+    assert_eq!(query_param(&plan.url, "subtitleStreamID"), None, "{}", plan.url);
+    assert_eq!(query_param(&plan.url, "normalizeLoudness"), Some("1"), "{}", plan.url);
+    apply_plan(&mut ps, plan, "1804");
+    assert!(is_transcoding(&ps), "cold start landed on a transcode");
+    assert_eq!(ps.cur_sub_sid, 0);
+    assert!(!live_is_own_burn(&ps), "cold start is a plain enhanced remux, not yet a Burn");
+
+    // The FIRST-ever pick of the embedded subtitle (ordinal arbitrary; a burn never fills
+    // `sub_render_ordinal`, so the menu computes its own from metadata).
+    commit_subtitle_selection(&mut ps, 0, 10980, true);
+    assert_eq!(
+        enhancement_step(&ps),
+        EnhancementStep::Remux(enhanced_remux_contract(PREF, true)),
+        "an embedded pick while enhanced must force a Burn"
+    );
+    let (action, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    assert!(!ps.cur_contract.remux, "the pick must turn the plain remux into a real re-encode");
+    assert_eq!(ps.cur_contract.audio, PREF, "the DSP preference must survive the pick");
+
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 2, "{requests:?}");
+    assert_eq!(query_param(d[1], "normalizeLoudness"), Some("1"), "the pick keeps the enhancement: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitleStreamID"), Some("10980"), "the pick must burn: {}", d[1]);
+    assert_eq!(query_param(d[1], "subtitles"), Some("burn"), "the pick must burn: {}", d[1]);
+
+    cleanup(&mut ps);
+    crate::plex::reset_servers_for_test();
+}

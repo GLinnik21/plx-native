@@ -973,6 +973,18 @@ pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, p
     start_bufferfeed_for(ps, pa, route_start)
 }
 
+/// Builds the "stream: <origin> path=<path>" diagnostic line for the freshly opened
+/// transcode/direct-stream URL. `crate::log()` runs every line through
+/// `diag::scrub::scrub_local()`, which already redacts `X-Plex-Token=` (and other
+/// credential query params) by value only, stopping at the next `&` — so the token,
+/// which `Client::with_token` always appends last, never reaches the log. Truncating
+/// `path` here on top of that is redundant, and for a burn transcode URL it cuts the
+/// line off before `subtitleStreamID=`/`subtitles=burn`, which is exactly the evidence
+/// `tests/run.py`'s `op_audio_enhancement_burn` grader looks for.
+fn stream_open_log_line(origin_log_form: &str, path: &str) -> String {
+    format!("stream: {origin_log_form} path={path}")
+}
+
 fn start_bufferfeed_for(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1257,11 +1269,7 @@ fn start_bufferfeed_inner(
             return Err(crate::route::RouteStartResult::StartFailed);
         }
         let path = su.path;
-        log(&format!(
-            "stream: {} path={}",
-            su.origin.log_form(),
-            &path[..path.len().min(80)]
-        ));
+        log(&stream_open_log_line(&su.origin.log_form(), &path));
         let origin = su.origin;
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
@@ -2967,6 +2975,66 @@ mod payload_tests {
         assert_eq!(
             with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true)),
             PAYLOAD_AV
+        );
+    }
+}
+
+/// A cropped diagnostic line cannot report what it never wrote down. `op_audio_enhancement_burn`
+/// in `tests/run.py` proves a Burn actually happened by grepping the app's own
+/// `stream: <origin> path=...` line for `subtitleStreamID=` and `subtitles=burn` — the only
+/// on-device evidence of the query PMS actually received. Device runs of
+/// `audio_enhancement_burns_embedded_subtitle` (rk 1804, 2026-09) show the grader failing even
+/// though [`crate::route::decision`]'s own tests prove the Burn route is chosen correctly: the
+/// line was cut to 80 characters, which lands inside `mediaIndex=`/`partIndex=`/`protocol=...`
+/// for a realistic transcode URL, well before either marker.
+#[cfg(test)]
+mod stream_open_log_line_tests {
+    use super::stream_open_log_line;
+
+    /// A transcode URL shaped like the one PMS returns for this project's Burn route: video
+    /// re-encode params, then `audioStreamID`, then `boostDialog`/`normalizeLoudness`, then
+    /// `subtitleStreamID`/`subtitles=burn` last — matching `transcoder::transcode_query`'s actual
+    /// build order — followed by the `X-Plex-Token` `Client::with_token` always appends last.
+    fn burn_path() -> String {
+        "/video/:/transcode/universal/start.mkv?path=%2Flibrary%2Fmetadata%2F1804&mediaIndex=0&\
+         partIndex=0&protocol=http&directPlay=0&directStream=0&videoResolution=3840x2160&\
+         maxVideoBitrate=40000&videoCodec=hevc&audioCodec=eac3&audioStreamID=10976&\
+         boostDialog=0&normalizeLoudness=1&subtitleStreamID=10980&subtitleSize=100&\
+         subtitles=burn"
+            .to_string()
+    }
+
+    #[test]
+    fn logged_line_carries_the_burn_evidence_the_grader_looks_for() {
+        let path = burn_path();
+        let line = stream_open_log_line("plex.direct:32400", &path);
+        assert!(
+            line.contains("subtitleStreamID=10980"),
+            "log line dropped subtitleStreamID before the grader could see it: {line}"
+        );
+        assert!(
+            line.contains("subtitles=burn"),
+            "log line dropped subtitles=burn before the grader could see it: {line}"
+        );
+    }
+
+    /// The un-truncated path still passes through `crate::log`'s `scrub_local` pass, which is
+    /// the ONLY place a token may be redacted — so leaving the full path in is safe precisely
+    /// because `Client::with_token` always appends `X-Plex-Token=` last and `scrub_local` already
+    /// redacts it by value. This is the end-to-end check that removing the truncation did not
+    /// also remove the credential backstop.
+    #[test]
+    fn full_path_still_has_its_token_redacted_by_the_existing_scrub_pass() {
+        let path = format!("{}&X-Plex-Token=aBcD1234xyzQ", burn_path());
+        let line = stream_open_log_line("plex.direct:32400", &path);
+        let scrubbed = crate::diag::scrub::scrub_local(&line);
+        assert!(
+            !scrubbed.contains("aBcD1234xyzQ"),
+            "token leaked into the event log: {scrubbed}"
+        );
+        assert!(
+            scrubbed.contains("subtitleStreamID=10980") && scrubbed.contains("subtitles=burn"),
+            "scrub pass ate the burn evidence along with the token: {scrubbed}"
         );
     }
 }
