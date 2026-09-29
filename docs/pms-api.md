@@ -942,6 +942,7 @@ for the raw captures behind this table.
 | M4 | Enhanced remux plus `subtitleStreamID` for an embedded SRT | `subtitles=embedded` or `=sidecar`: video copy, subtitle decision `unavailable` — PMS refuses to carry a text subtitle into the progressive MKV the enhancement produces. `subtitles=auto`: the server instead re-encodes the video and burns it. Either way a subtitle and the enhancement cannot share a route, which is I6. |
 | M5 | Part GET (`Range: bytes=0-1023`) on a transcode session, after MDE, after MDE followed by an enhanced-remux decision on the same session, and after only an enhanced decision | 206 Partial Content in every case from a host, including with the remux encoder still live, stopped physically, stopped with `closeResourceSession=1`, or abandoned. PR 4's device run nonetheless met a **503** on the Part right after releasing an enhanced remux; what PMS keyed it on did not reproduce off the television, so a release asks for the Part before it trials it and falls to the plain remux on a refusal (`route::decision::admit_original_part`). |
 | M6 | MDE `/decision` on a session whose transcoder is live | The MDE ENDS that transcoder: an HLS session's later segments answer 404 (200 without the MDE) and its stop 404; a progressive session's `start.mkv` at an offset on the same id answers 400 until it is re-decided. Re-issuing MDE is harmless only when nothing is live — never before a Part GET whose rollback needs the encoder still running. |
+| M7 | Enhanced remux plus an explicit `subtitleStreamID=<id>&subtitles=burn` for an embedded subtitle, instead of the `=embedded`/`=sidecar`/`=auto` shapes M4 measured | **Not yet verified live against PMS — implemented against the loopback test harness only (`route::decision_audio_enhancement_tests`, `plan_audio_enhancement_tests`), pending a device run.** Official Plex clients ask for `subtitles=burn` explicitly rather than relying on `=auto`'s refuse-then-decide path M4 found; this app now does the same: an embedded subtitle forces `remux: false` (a real re-encode, `EnhancementRoute::Burn`) carrying both the DSP params and the burn request in the one decision, so the subtitle is never silently dropped (superseding I6's "cannot share a route" for the embedded case). An external sidecar stays on the ordinary enhanced remux — it is never sent as `subtitleStreamID` for the enhancement's OWN sake, though the pre-existing while-transcoding refresh (`app::playback::commit_track`) still burns any subtitle picked mid-transcode regardless of type, unrelated to this table. |
 
 **Known device-only gap on M5 (`audio_enhancement_normalize_reset`, `tests/manifest.json`, 2026-09-29).**
 Admitting the Part before the trial (`admit_original_part`) does not close the 503 in every case:
@@ -958,8 +959,10 @@ timeline post is a real watch-history write. The harness case is `known_gap` (XF
 understood or worked around; a release from a session that has posted playing timelines returns to
 Direct Play only when PMS admits the Part, otherwise it returns to the plain Original remux.
 
-**Client-side reading.** `route::plan::enhancements_offered` (I1-I7) gates the ASK; the wire params
-are never sent outside a Direct/Remux target even when the viewer's preference is on (M3, I5).
+**Client-side reading.** `route::plan::enhancement_availability` (I1-I7, M7) gates the ASK and its
+flavour (`EnhancementRoute::Remux` / `RemuxDropsDolbyVision` / `Burn`, or a `DisabledReason` for
+every gate but "no Plex Pass" — see M7); the wire params are never sent outside a Direct/Remux
+target even when the viewer's preference is on (M3, I5).
 `route::EnhancementOutcome` grades the ANSWER from the params' own observability in the table above:
 `Applied` (M1/M2 AC3: the transcode happened and the source codec is in the profile's copy list),
 `Unverified` (M2 AAC: transcoded regardless, so honoring the ask cannot be told apart from ignoring
