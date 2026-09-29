@@ -1173,7 +1173,7 @@ pub(crate) unsafe fn construct(
     let play_tried = false;
     let menu_tried = false;
     let menupick_tried = false;
-    let menupick_row = None;
+    let menupick_target = None;
     let pause_tried = false;
     // `/tmp/plxnative-autopause`: an authored Pause edge, plus the optional Resume edge which
     // owns the same script. External effects retry until the synchronized player state machine
@@ -1297,7 +1297,7 @@ pub(crate) unsafe fn construct(
             play_await: None,
             menu_tried,
             menupick_tried,
-            menupick_row,
+            menupick_target,
             subtiming: Default::default(),
             pause_tried,
             pause_script,

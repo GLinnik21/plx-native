@@ -2996,7 +2996,7 @@ mod lifecycle_regression_tests {
                 play_await: Default::default(),
                 menu_tried: Default::default(),
                 menupick_tried: Default::default(),
-                menupick_row: Default::default(),
+                menupick_target: Default::default(),
                 subtiming: Default::default(),
                 pause_tried: Default::default(),
                 pause_script: Default::default(),

@@ -387,6 +387,28 @@ fn activate_commits_the_bare_rows_directly() {
     );
 }
 
+/// `resolve_menupick_row` is the `/tmp/plxnative-menupick` trigger's own parser: a plain number
+/// always wins (the original "row N" contract, on either tab); a name is only ever tried on the
+/// Audio tab, and an unrecognized one — or a name asked of the Subtitles tab, which has no such
+/// map — resolves to nothing, which `menupick_arm` turns into its "unknown target" log rather than
+/// a commit.
+#[test]
+fn resolve_menupick_row_parses_a_number_or_an_audio_tab_name() {
+    let ps = crate::route::PlaybackSession::IDLE;
+    let audio_page =
+        PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+    assert_eq!(audio_page.resolve_menupick_row("3"), Some(3), "a plain row number always resolves");
+    // no enhancement offered on an idle session with no playing item: the names resolve to nothing
+    assert_eq!(audio_page.resolve_menupick_row("boost"), None);
+    assert_eq!(audio_page.resolve_menupick_row("loudness"), None);
+    assert_eq!(audio_page.resolve_menupick_row("not-a-thing"), None);
+
+    let sub_page =
+        PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    assert_eq!(sub_page.resolve_menupick_row("2"), Some(2), "a plain row number still resolves on Subtitles");
+    assert_eq!(sub_page.resolve_menupick_row("boost"), None, "names are an Audio-tab-only contract");
+}
+
 /// **A Color press commits and leaves the Subtitles panel UP.** The tone is found by cycling and
 /// watching the caption change; every other Tracks row (including Off) still commits and closes.
 /// Timing itself no longer steps in this panel at all — OK on it hands off to the Timing capsule

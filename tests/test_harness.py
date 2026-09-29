@@ -3171,34 +3171,22 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertFalse(run.op_audio_transcode([h264, "reload_transcode: fresh Load at offset 5s"])[0],
                          "a transcode reload with no switch line is not an audio switch")
 
-    def test_audio_enhancement_op_derives_its_row_from_n_audio(self):
-        """issue #266 PR4 review: `audio_enhancement` reuses `plxnative-menupick` at tab 0, but the
-        row is DERIVED from `case["n_audio"]` (the audio-track count `run_case` fetches live from
-        the server via `pms_audio_track_count`, written onto the case before `triggers_for_case`
-        runs) rather than a manifest literal -- the bug this review caught was exactly a
-        hand-derived row going stale against the real server's track count. Boost Dialog sits at
-        row `n_audio`; Normalize Loudness (this suite's only consumer so far) at `n_audio + 1`,
-        for every track count a real item can carry."""
-        for n_audio in (1, 2, 3):
-            case = {
-                "rk": "1", "n_audio": n_audio,
-                "operations": [{"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"}],
-            }
-            files = run.triggers_for_case(case)
-            self.assertIn(("plxnative-menupick", f"0,{n_audio + 1}"), files, f"n_audio={n_audio}")
-            case["operations"][1] = {"op": "audio_enhancement", "which": "boost_dialog"}
-            files = run.triggers_for_case(case)
-            self.assertIn(("plxnative-menupick", f"0,{n_audio}"), files, f"n_audio={n_audio}")
-
-    def test_audio_enhancement_op_without_n_audio_resolved_dies_with_a_clear_reason(self):
-        """A hand-built case (or a manifest bug that skips the resolve step in `run_case`) must
-        fail loudly rather than write a wrong row silently."""
-        case = {"name": "x", "rk": "1", "operations": [
-            {"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"},
-        ]}
-        with self.assertRaises(SystemExit) as ctx:
-            run.triggers_for_case(case)
-        self.assertIn("n_audio", str(ctx.exception))
+    def test_audio_enhancement_op_writes_a_named_target_not_a_row(self):
+        """issue #266 PR4 review: `audio_enhancement` reuses `plxnative-menupick` at tab 0, but
+        writes a NAMED target (`AudioRowTarget`/`TrackMenuState::row_for_audio_target` resolve it
+        against the panel's own row map) rather than a row number derived from the item's track
+        count -- the bug this review caught was exactly a hand-derived row going stale against the
+        real server's track count. There is no track count to fetch or get wrong any more: the
+        same two triggers are correct for every item, whatever it carries."""
+        case = {
+            "rk": "1",
+            "operations": [{"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"}],
+        }
+        files = run.triggers_for_case(case)
+        self.assertIn(("plxnative-menupick", "0,loudness"), files)
+        case["operations"][1] = {"op": "audio_enhancement", "which": "boost_dialog"}
+        files = run.triggers_for_case(case)
+        self.assertIn(("plxnative-menupick", "0,boost"), files)
 
     def test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable(self):
         """issue #266 PR4 review: EVERY case forces the persisted preference at boot (default
@@ -3320,7 +3308,7 @@ class AbrTraceMetrics(unittest.TestCase):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""
         case = {
-            "rk": "1", "n_audio": 1,
+            "rk": "1",
             "operations": [{"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"}],
             "expect": {},
         }

@@ -910,27 +910,6 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
-def pms_audio_track_count(host, port, rk, token):
-    """The number of audio streams (`streamType == 2`) on an item's first `Part`, straight from
-    `/library/metadata/<rk>` — never assumed from the manifest's symbolic item key.
-
-    Issue #266 PR4 review: this harness once hardcoded the Normalize Loudness row as an absolute
-    `TableView` index derived from a WRONG audio-track count (`movie_h264_ac3_1080p` was assumed
-    to carry one audio track; the real server item behind that symbolic key has three). Reading
-    the count from the server the case is actually about to run against is what makes the derived
-    row correct regardless of which library filled in `manifest.local.json`'s symbolic mapping.
-    Token never printed.
-    """
-    q = urllib.parse.urlencode({"X-Plex-Token": token})
-    url = f"http://{host}:{port}/library/metadata/{rk}?{q}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        doc = json.load(resp)
-    meta = doc["MediaContainer"]["Metadata"][0]
-    part = meta["Media"][0]["Part"][0]
-    return sum(1 for s in part.get("Stream", []) if s.get("streamType") == 2)
-
-
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -1077,18 +1056,15 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "audio_enhancement":
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
-            # appended after the audio tracks (`track_menu.rs`'s `build_audio`'s `enhance_base`)
-            # — an ABSOLUTE `TableView` row, exactly what `menupick` already expects (headers do
-            # not count). `n_audio` is `run_case`'s `pms_audio_track_count` reading, whose
-            # docstring has the PR4 history of why this is derived rather than hardcoded.
-            n_audio = case.get("n_audio")
-            if n_audio is None:
-                sys.exit(f"case {case.get('name')!r}: an `audio_enhancement` op needs "
-                          f"case['n_audio'] resolved first (run_case does this before calling "
-                          f"triggers_for_case; a hand-built case must set it directly)")
+            # appended after the audio tracks (`track_menu.rs`'s `build_audio`). `menupick` names
+            # them rather than stating a row: `AudioRowTarget`/`TrackMenuState::row_for_audio_target`
+            # resolve "boost"/"loudness" through the SAME row map `on_ok` dispatches on, so the
+            # trigger is correct regardless of the item's own track count — the derived-row-number
+            # dance this replaced (PR4's fix for a row hardcoded against a wrong track count) is
+            # gone; there is no track count to get wrong any more.
             which = op.get("which", "normalize_loudness")
-            row = n_audio if which == "boost_dialog" else n_audio + 1
-            files.append(("plxnative-menupick", f'0,{row}'))
+            name = "boost" if which == "boost_dialog" else "loudness"
+            files.append(("plxnative-menupick", f'0,{name}'))
         elif kind == "pause_resume":
             files.append((
                 "plxnative-autopause",
@@ -4548,12 +4524,6 @@ def run_case(case, cfg, token, verbose, cond=None):
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
-    # issue #266: resolve the audio-track count (`pms_audio_track_count`'s docstring has the PR4
-    # history) before `triggers_for_case` needs it to derive the enhancement row. Only cases that
-    # actually carry an `audio_enhancement` op pay for the extra round-trip.
-    if any(op.get("op") == "audio_enhancement" for op in case.get("operations", [])):
-        case["n_audio"] = pms_audio_track_count(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
-        print(f"    n_audio: {case['n_audio']} (from /library/metadata/{case['rk']})")
     files = triggers_for_case(case)
     # `session: stored` — boot from the install's own signed-in session instead of the injected
     # identity. The injected token installs the compiled PMS_HOST as a PLAINTEXT origin, which
