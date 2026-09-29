@@ -3614,19 +3614,48 @@ def op_audio_transcode(lines):
     return True, f"transcode switch OK (video copied, {cs[-1][0] if cs else '?'}) :: {rl_t.strip()}"
 
 
+# LG's buffer-feed audio vocabulary (`player::engine::audio_payload_codec`) back to the PMS codec
+# names a `decision output:` line uses, so the two can be compared.
+LOAD_AUDIO_TO_PMS = {"ac3": "ac3", "ac3 plus": "eac3", "aac": "aac", "dts": "dts"}
+# The Load vocabulary's video names back to the demuxer's (`ff: v=#0 codec=..`).
+LOAD_VIDEO_TO_FF = {"h264": "h264", "h265": "hevc", "hevc": "hevc"}
+
+
+def _video_codec(line):
+    """The video codec a `load: v=..` or `ff: v=#0 codec=..` line states, in the demuxer's names;
+    None for any other line."""
+    m = RE_CODEC.search(line)
+    if m:
+        return m.group(1).lower()
+    m = RE_LOAD.search(line)
+    if m:
+        v = m.group(1).lower()
+        return LOAD_VIDEO_TO_FF.get(v, v)
+    return None
+
+
 def op_audio_enhancement(lines):
     """A live Boost Dialog / Normalize Loudness toggle (issue #266), asked for mid-play through
     the SAME single-shot `plxnative-menupick` mechanism `op_audio_switch`/`op_subtitle` use.
 
-    Proves three things, in order: the ask actually reached the server and TOOK EFFECT — the
-    app's own `enhancement: applied boost=.. loudness=..` line, printed only when
-    `EnhancementOutcome::Applied` (`route/decision.rs`'s `retranscode_as`), so a request the
-    server merely accepted (or silently ignored) does not pass here; the route it produced is a
-    REMUX and not a full re-encode — the video codec is unchanged across the switch, the same
-    copy-proof `op_audio_transcode` uses; and the resulting stream is `start.mkv`
-    (`TranscodeDelivery::ProgressiveMkv`), the one delivery PMS 1.43.4 answers a DSP param with —
-    an HLS re-encode under a fixed rung would be `start.m3u8` and is a different, non-enhanced
-    contract by design (`enhancement_step`'s `NotInvolved` under a capped rung).
+    Graded in order:
+    1. The ask reached the server and TOOK EFFECT: the app's own `enhancement: applied boost=..
+       loudness=1` line, printed only on `EnhancementOutcome::Applied` (`route/decision.rs`'s
+       `retranscode_as`), so a request the server merely accepted (or silently ignored) fails.
+    2. The Load was declared with the audio the server actually negotiated: the `decision output:`
+       audio codec at/before the applied line (`retranscode_as` logs its own codecs first) equals
+       the post-toggle `load: .. a=".."` codec. Invariant I4: the payload follows /decision's
+       OUTPUT, never the source or a literal — PMS 1.43.4 answers a DSP param over an AAC source
+       with `a=aac`, over AC-3 with `ac3`.
+    3. The route is a REMUX, not a re-encode: the video codec after the toggle (`ff: v=`, else the
+       post-toggle `load: v=`) equals the codec before it (the last `ff: v=`/`load: v=` before the
+       applied line — a direct-play start may be torn down before it ever logged `ff: v=`).
+    4. The post-toggle stream is `start.mkv` (`TranscodeDelivery::ProgressiveMkv`), the one
+       delivery PMS answers a DSP param with; an HLS re-encode under a fixed rung would be
+       `start.m3u8`, a different, non-enhanced contract by design.
+    5. No `ff: open_input failed` after the applied line. The demuxer the reload tears down logs
+       `ff: aborted during open_input` instead (`ff::open_input_failure_note`), so this line is
+       only ever a source that really would not open.
     """
     hit = find(lines, "enhancement: applied boost=")
     if hit is None:
@@ -3641,26 +3670,40 @@ def op_audio_enhancement(lines):
     if not m or m.group(2) != "1":
         return False, f"applied line does not show loudness=1 :: {hit.strip()}"
     hit_i = lines.index(hit)
-    cs = codec_ids(lines)
-    if len(cs) < 2:
-        return False, f"no codec line after the switch to check video copy :: {hit.strip()}"
-    if cs[-1][0] != cs[0][0]:
-        return False, (f"video was RE-ENCODED across the enhancement toggle "
-                       f"({cs[0][0]} -> {cs[-1][0]}); expected a copy (remux) :: {cs[-1][3].strip()}")
-    # `decision output:` precedes `enhancement: applied` in the same call (retranscode_as logs its
-    # own negotiated codecs first) — search backward from the applied line, not forward from it.
-    dec = next((ln for ln in reversed(lines[:hit_i + 1]) if RE_DECISION_OUTPUT.search(ln)), None)
+    before, after = lines[:hit_i + 1], lines[hit_i + 1:]
+
+    dec = next((ln for ln in reversed(before) if RE_DECISION_OUTPUT.search(ln)), None)
     if dec is None:
         return False, f"no `decision output:` line at/before the toggle :: {hit.strip()}"
-    dm = RE_DECISION_OUTPUT.search(dec)
-    if dm.group(2) != "ac3":
-        return False, f"audio payload is {dm.group(2)}, not ac3 :: {dec.strip()}"
-    stream = next((ln for ln in lines[hit_i:] if RE_STREAM_PATH.search(ln)), None)
-    if stream is None or "start.mkv" not in stream:
-        return False, (f"no post-toggle `stream: .. path=..start.mkv` line (not a remux) :: "
+    negotiated = RE_DECISION_OUTPUT.search(dec).group(2).lower()
+    load = next((ln for ln in after if RE_LOAD.search(ln)), None)
+    if load is None:
+        return False, f"no post-toggle `load: v=.. a=\"..\"` line :: {hit.strip()}"
+    declared_raw = RE_LOAD.search(load).group(2).lower()
+    declared = LOAD_AUDIO_TO_PMS.get(declared_raw, declared_raw)
+    if declared != negotiated:
+        return False, (f"Load declared audio {declared_raw!r} but the server negotiated "
+                       f"{negotiated!r} :: {dec.strip()} / {load.strip()}")
+
+    pre = next((c for c in map(_video_codec, reversed(before)) if c), None)
+    if pre is None:
+        return False, f"no pre-toggle `load: v=`/`ff: v=` line to compare the video against :: {hit.strip()}"
+    post_line = (next((ln for ln in after if RE_CODEC.search(ln)), None)
+                 or next((ln for ln in after if RE_LOAD.search(ln)), None))
+    post = _video_codec(post_line) if post_line else None
+    if post != pre:
+        return False, (f"video was RE-ENCODED across the enhancement toggle ({pre} -> {post}); "
+                       f"expected a copy (remux) :: {(post_line or hit).strip()}")
+
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None or "start.mkv" not in RE_STREAM_PATH.search(stream).group(1):
+        return False, (f"the post-toggle stream is not start.mkv (not a remux) :: "
                        f"{redact((stream or hit).strip())}")
-    return True, (f"enhancement applied and running as a remux with ac3 audio :: "
-                  f"{hit.strip()} / {redact(stream.strip())}")
+    failed = next((ln for ln in after if "ff: open_input failed" in ln), None)
+    if failed is not None:
+        return False, f"a source failed to open after the toggle :: {failed.strip()}"
+    return True, (f"enhancement applied as a {post} remux declaring {declared_raw} audio "
+                  f"(negotiated {negotiated}) :: {hit.strip()} / {redact(stream.strip())}")
 
 
 def op_audio_enhancement_release(lines):
@@ -3672,11 +3715,17 @@ def op_audio_enhancement_release(lines):
     ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
     ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
     playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
-    -> `recover_auto_to_original_for(.. EnhancementReleased)`), logging one of two lines depending
-    on whether the candidate itself direct-plays or only remuxes; both share the `enhancement:
-    released to Original` prefix this greps for. Because the toggle goes through the ordinary
-    commit path (not a second boot trigger), it also re-persists the preference as OFF for real —
-    the case ends idempotent with no second op needed.
+    -> `recover_auto_to_original_for(.. EnhancementReleased)`). Because the toggle goes through the
+    ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
+    real — the case ends idempotent with no second op needed.
+
+    Graded on where the release actually LANDED, not on the line announcing it: `enhancement:
+    released to Original direct play`, then the next `stream: .. path=` is the item's
+    `/library/parts/` Part, no later `start.mkv`/`start.m3u8` stream line (a failed trial rolls
+    back to the enhanced remux the release was leaving), and no `status=503` stream line after the
+    release (the refusal PR 4's first device run met). The Part is admitted before the trial
+    (`route::decision::admit_original_part`); a server that refuses it gets the plain remux, logged
+    `enhancement: released to Original remux`, which this case — whose item direct-plays — fails.
     """
     hit = find(lines, "enhancement: released to Original")
     if hit is None:
@@ -3684,7 +3733,27 @@ def op_audio_enhancement_release(lines):
         if no_commit is not None:
             return False, f"no `enhancement: released` line :: {no_commit.strip()}"
         return False, "no `enhancement: released to Original ..` line (release never took effect)"
-    return True, f"enhancement released back to Original :: {hit.strip()}"
+    after = lines[lines.index(hit) + 1:]
+    refused = find(lines, "server refused the Original Part")
+    if refused is not None:
+        return False, f"the server refused the Original Part :: {redact(refused.strip())}"
+    if "released to Original direct play" not in hit:
+        return False, f"the release did not land on direct play :: {hit.strip()}"
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None:
+        return False, f"no `stream: .. path=` line after the release :: {hit.strip()}"
+    if not RE_STREAM_PATH.search(stream).group(1).startswith("/library/parts/"):
+        return False, f"the release's stream is not the Original Part :: {redact(stream.strip())}"
+    later = next((ln for ln in after if RE_STREAM_PATH.search(ln)
+                  and re.search(r"start\.(mkv|m3u8)", RE_STREAM_PATH.search(ln).group(1))), None)
+    if later is not None:
+        return False, (f"a transcode stream followed the release (the trial rolled back) :: "
+                       f"{redact(later.strip())}")
+    refusal = next((ln for ln in after if "stream:" in ln and "status=503" in ln), None)
+    if refusal is not None:
+        return False, f"the server answered 503 after the release :: {redact(refusal.strip())}"
+    return True, (f"enhancement released to Original direct play on the Part :: "
+                  f"{hit.strip()} / {redact(stream.strip())}")
 
 
 def op_audio_enhancement_withheld(lines):

@@ -3213,18 +3213,31 @@ class AbrTraceMetrics(unittest.TestCase):
 
     def test_audio_enhancement_op_grades_applied_remux_and_ac3(self):
         """A live Normalize Loudness pick that took effect: the server ran the DSP params
-        (`enhancement: applied ..`, printed only for `EnhancementOutcome::Applied`), the video
-        codec is unchanged across the switch (a copy, i.e. a remux and not a full re-encode), the
-        negotiated audio is ac3, and the resulting stream is `start.mkv` (ProgressiveMkv)."""
+        (`enhancement: applied ..`, printed only for `EnhancementOutcome::Applied`), the Load
+        declares the audio the decision NEGOTIATED (never a literal: PMS answers an AAC source's
+        DSP ask with a=aac, an AC-3 source's with ac3), the video codec is unchanged across the
+        switch (a copy, i.e. a remux and not a full re-encode), the resulting stream is
+        `start.mkv` (ProgressiveMkv), and no source failed to open after the toggle."""
         h264 = "ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
-        good = [
-            h264,
-            "decision output: v=h264 a=ac3",
-            "enhancement: applied boost=0 loudness=1",
-            "stream: example.com path=/video/:/transcode/universal/start.mkv?a=1",
-            h264,
-        ]
+        dp_load = 'load: v=H264 a="AAC" fps=25.000 dv=present:0 P0/0 el:0 atmos:0 max=1920x1080@25'
+        aac_load = 'load: v=H264 a="AAC" fps=0.000 dv=present:0 P0/0 el:0 atmos:0 max=1920x1080@60'
+        ac3_load = 'load: v=H264 a="AC3" fps=0.000 dv=present:0 P0/0 el:0 atmos:0 max=1920x1080@60'
+        remux = "stream: example.com path=/video/:/transcode/universal/start.mkv?a=1"
+        applied = "enhancement: applied boost=0 loudness=1"
+        # PR4's device shape: the direct play was torn down before it logged `ff: v=`, so the
+        # pre-toggle video evidence is its `load: v=` line; the source is AAC and so is the output.
+        good = [dp_load, "decision output: v=h264 a=aac", applied,
+                "ff: aborted during open_input r=-1094995529", aac_load, remux, h264]
         ok, why = run.op_audio_enhancement(good)
+        self.assertTrue(ok, why)
+        # The same with an AC-3 source: whatever the decision says, the Load must say it too.
+        ok, why = run.op_audio_enhancement(
+            [h264, "decision output: v=h264 a=ac3", applied, ac3_load, remux, h264])
+        self.assertTrue(ok, why)
+        # E-AC3 is "AC3 PLUS" in LG's Load vocabulary.
+        eac3_load = ac3_load.replace('a="AC3"', 'a="AC3 PLUS"')
+        ok, why = run.op_audio_enhancement(
+            [h264, "decision output: v=h264 a=eac3", applied, eac3_load, remux, h264])
         self.assertTrue(ok, why)
         # No `enhancement: applied` line at all -- the pick never took effect.
         no_commit = [h264, "menupick: row 2 already active — no commit"]
@@ -3241,36 +3254,62 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement(wrong_field)
         self.assertFalse(ok, why)
         self.assertIn("loudness=1", why)
+        # The Load declared a codec the decision did not negotiate (the old hard-coded ac3).
+        mislabeled = [dp_load, "decision output: v=h264 a=aac", applied, ac3_load, remux, h264]
+        ok, why = run.op_audio_enhancement(mislabeled)
+        self.assertFalse(ok, why)
+        self.assertIn("negotiated", why)
         # Applied, but the video was RE-ENCODED across the switch -- not a remux.
         hevc = "ff: v=#0 codec=hevc codec_id=173 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
-        reencoded = [h264, "decision output: v=hevc a=ac3", "enhancement: applied boost=0 loudness=1", hevc]
+        reencoded = [h264, "decision output: v=hevc a=ac3", applied,
+                     ac3_load.replace("v=H264", "v=H265"), remux, hevc]
         ok, why = run.op_audio_enhancement(reencoded)
         self.assertFalse(ok, why)
         self.assertIn("RE-ENCODED", why)
-        # Applied and copied, but the negotiated audio is not ac3.
-        not_ac3 = [h264, "decision output: v=h264 a=aac", "enhancement: applied boost=0 loudness=1", h264]
-        ok, why = run.op_audio_enhancement(not_ac3)
-        self.assertFalse(ok, why)
-        self.assertIn("not ac3", why)
-        # Applied, copied, ac3 -- but no post-toggle stream line naming start.mkv (e.g. it stayed
-        # on start.m3u8, a capped-rung re-encode rather than a remux).
-        no_remux = [h264, "decision output: v=h264 a=ac3", "enhancement: applied boost=0 loudness=1",
+        # Applied and copied -- but the post-toggle stream is start.m3u8, a capped-rung re-encode
+        # rather than a remux.
+        no_remux = [h264, "decision output: v=h264 a=ac3", applied, ac3_load,
                     "stream: example.com path=/video/:/transcode/universal/start.m3u8?a=1", h264]
         ok, why = run.op_audio_enhancement(no_remux)
         self.assertFalse(ok, why)
         self.assertIn("not a remux", why)
+        # A source that really failed to open after the toggle.
+        failed = [dp_load, "decision output: v=h264 a=aac", applied,
+                  "ff: open_input failed r=-1094995529", aac_load, remux, h264]
+        ok, why = run.op_audio_enhancement(failed)
+        self.assertFalse(ok, why)
+        self.assertIn("open_input failed", why)
 
     def test_audio_enhancement_release_op_grades_the_cleanup_leg(self):
         """`audio_enhancement_normalize_reset`'s own assertion: a second pick of the same row,
         from a fresh boot that inherited the persisted preference, must release the route back to
-        Original (`enhancement: released to Original ..`, either the direct-play or the remux
-        spelling — `route/decision.rs`'s two `RecoveryCause::EnhancementReleased` arms)."""
+        Original direct play and STAY there: the next stream is the item's `/library/parts/` Part,
+        no transcode stream follows (a failed trial rolls back to the enhanced remux), and no 503
+        answers it (PR4's first device run)."""
+        released = "enhancement: released to Original direct play; remux encoder held pending frames"
+        part = "stream: example.com path=/library/parts/1/2/file.mkv?a=1"
+        remux = "stream: example.com path=/video/:/transcode/universal/start.mkv?a=1"
         ok, why = run.op_audio_enhancement_release(
-            ["enhancement: released to Original direct play; remux encoder held pending frames"])
+            [remux, released, part, "ff: open status=206 clen=1"])
         self.assertTrue(ok, why)
+        # PR4's device run: the Part answered 503 and the rollback restored the enhanced remux.
         ok, why = run.op_audio_enhancement_release(
-            ["enhancement: released to Original remux; previous encoder held pending frames"])
-        self.assertTrue(ok, why)
+            [remux, released, part, "stream: GET /library/parts/1/2/file.mkv status=503", remux])
+        self.assertFalse(ok, why)
+        self.assertIn("rolled back", why)
+        ok, why = run.op_audio_enhancement_release(
+            [remux, released, part, "stream: GET /library/parts/1/2/file.mkv status=503"])
+        self.assertFalse(ok, why)
+        self.assertIn("503", why)
+        # The admission found the Part refused and the release became the plain remux.
+        ok, why = run.op_audio_enhancement_release(
+            ["enhancement: server refused the Original Part (HTTP 503); restoring Original as a remux",
+             "enhancement: released to Original remux; previous encoder held pending frames", remux])
+        self.assertFalse(ok, why)
+        self.assertIn("refused the Original Part", why)
+        ok, why = run.op_audio_enhancement_release([released])
+        self.assertFalse(ok, why)
+        self.assertIn("no `stream: .. path=` line after the release", why)
         ok, why = run.op_audio_enhancement_release(["menupick: row 2 already active — no commit"])
         self.assertFalse(ok, why)
         self.assertIn("no `enhancement: released` line", why)

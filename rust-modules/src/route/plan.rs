@@ -1836,7 +1836,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     );
     // The enhanced decision rides the MDE's own `session`, as every remux here always has: M5
     // measured that a Part GET on a session that has seen MDE and then an enhanced remux decision
-    // still answers 206, so re-registering the same id is not a hazard to either route.
+    // still answers 206 from a host, so re-registering the same id is not a hazard to either
+    // route there. PR 4's device run nonetheless met a 503 on that Part after the release, which
+    // is why a release asks before it trials the Part (`decision::admit_original_part`).
     let mut decision = client.transcode_decision(&sp);
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         // Refused outright, or ignored (audio `copy` despite the params): rebuild once without
