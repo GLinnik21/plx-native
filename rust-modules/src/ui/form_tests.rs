@@ -302,3 +302,109 @@ fn lookups_are_linear_in_the_row_count() {
     assert!(CMP.with(|c| c.get()) <= N as usize);
     let _ = (Act::A, Act::B, Act::C, Act::D); // keep the sample enum fully used
 }
+
+/// **A Nav item carries the drill-in chevron without a separate call**, and only a Nav item does;
+/// an icon the caller chose explicitly is kept.
+#[test]
+fn a_nav_item_gets_the_chevron_from_its_kind() {
+    use crate::ui::icons::Icon;
+    let t = table(
+        F::new().section(
+            S::new("")
+                .item(Id::A, nav(), Act::A, Row::new("Alpha"))
+                .item(Id::B, RowKind::Toggle, Act::B, Row::new("Beta"))
+                .item(Id::C, nav(), Act::C, Row::new("Gamma").ticon(Icon::Check)),
+        ),
+    );
+    let icon = |i: usize| t.table.sections[0].rows[i].ticon;
+    assert_eq!(icon(0), Some(Icon::Chevron));
+    assert_eq!(icon(1), None);
+    assert_eq!(icon(2), Some(Icon::Check));
+    assert!(t.table.row_opens(0), "the table reads the chevron as 'this row opens a page'");
+}
+
+/// **A Choice row's checkmark comes from the current-value predicate** given at build.
+#[test]
+fn choice_rows_derive_checked_from_the_current_value() {
+    let current = Id::B;
+    let t = table(F::new().section(
+        [(Id::A, Act::A), (Id::B, Act::B), (Id::C, Act::C)]
+            .into_iter()
+            .fold(S::new(""), |s, (id, act)| s.choice(id, act, Row::new("row"), |i| *i == current)),
+    ));
+    let checked: Vec<bool> = t.table.sections[0].rows.iter().map(|r| r.checked).collect();
+    assert_eq!(checked, [false, true, false]);
+    assert_eq!(t.binding_at(1).map(|b| b.kind.clone()), Some(RowKind::Choice));
+}
+
+/// **A disabled item is dim, still focusable, and never activates** (the `activate` is what OK and
+/// RIGHT both go through).
+#[test]
+fn a_disabled_item_is_dim_focusable_and_inert() {
+    let mut t = table(F::new().section(
+        S::new("")
+            .item(Id::A, RowKind::Button, Act::A, Row::new("Alpha"))
+            .disabled(true)
+            .item(Id::B, nav(), Act::B, Row::new("Beta"))
+            .disabled(true)
+            .item(Id::C, RowKind::Button, Act::C, Row::new("Gamma"))
+            .disabled(false),
+    ));
+    assert!(t.table.sections[0].rows[0].dim && t.table.sections[0].rows[1].dim);
+    assert!(!t.table.sections[0].rows[2].dim);
+    assert_eq!(t.table.next_selectable(0, 1), Some(1), "focus can land on a disabled row");
+    t.table.sel = 1;
+    assert_eq!(t.selected_id(), Some(&Id::B));
+    assert_eq!(t.activate(0), None);
+    assert_eq!(t.activate(1), None, "a disabled Nav row does not push");
+    assert_eq!(t.activate(2), Some(Activation::Action(Act::C)));
+}
+
+fn tall_page(ids: &[Id]) -> F {
+    F::new().section(ids.iter().cloned().fold(S::new(""), |s, id| {
+        s.item(id, RowKind::Button, Act::A, Row::new("row"))
+    }))
+}
+
+/// **`open` focuses the given id with the scroll at the top**, falling back to the opening row.
+#[test]
+fn open_snaps_to_the_initial_id_at_scroll_zero() {
+    let mut t = table(sample(true));
+    t.restore(sample(true), Some(&Id::A), 90.0);
+    t.open(sample(true), Some(&Id::C));
+    assert_eq!(t.selected_id(), Some(&Id::C));
+    assert_eq!(t.table.scroll_pos(), 0.0);
+    t.open(sample(true), Some(&Id::Dup)); // not on the page
+    assert_eq!(t.table.sel, t.table.opening_row(), "a missing initial id falls back to the opening row");
+    t.open(sample(true), None);
+    assert_eq!(t.table.sel, 0);
+}
+
+/// **`refresh` keeps the scroll and the selected id** when the page's data changes under the viewer,
+/// and a vanished selection falls to its neighbour.
+#[test]
+fn refresh_keeps_scroll_and_restores_selection_by_id() {
+    let mut t = table(tall_page(&[Id::B, Id::C, Id::D]));
+    t.restore(tall_page(&[Id::B, Id::C, Id::D]), Some(&Id::C), 60.0);
+    // a row appears above the selection
+    t.refresh(tall_page(&[Id::A, Id::B, Id::C, Id::D]));
+    assert_eq!(t.selected_id(), Some(&Id::C), "selection follows its id");
+    assert_eq!(t.table.sel, 2);
+    assert_eq!(t.table.scroll_pos(), 60.0, "refresh does not jump the scroll");
+    // the selected row vanishes: the next survivor takes it
+    t.refresh(tall_page(&[Id::A, Id::B, Id::D]));
+    assert_eq!(t.selected_id(), Some(&Id::D));
+    assert_eq!(t.table.scroll_pos(), 60.0);
+}
+
+/// **`restore` reinstates a saved selection and scroll** (the pop back to a scrolled page).
+#[test]
+fn restore_reinstates_the_saved_selection_and_scroll() {
+    let mut t = table(sample(true));
+    t.restore(sample(true), Some(&Id::D), 75.0);
+    assert_eq!(t.selected_id(), Some(&Id::D));
+    assert_eq!(t.table.scroll_pos(), 75.0);
+    t.restore(sample(true), Some(&Id::Dup), 10.0);
+    assert_eq!(t.table.sel, t.table.opening_row(), "a saved id that is gone falls back to the opening row");
+    assert_eq!(t.table.scroll_pos(), 10.0);
+}

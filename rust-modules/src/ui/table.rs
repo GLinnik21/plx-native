@@ -432,6 +432,8 @@ pub(crate) enum FitRole {
     Header,
     Accessory,
     Note,
+    /// The page title band ([`TableView::set_title`]).
+    Title,
 }
 
 /// One text slot [`TableView::fit_report`] found would end in an ellipsis at its resolved column.
@@ -527,17 +529,24 @@ pub struct TableView {
     hl_top: Spring,
     hl_bot: Spring,
     scroll: Spring,
+    /// A drill-in page's title band, see [`TableView::set_title`].
+    title: Option<String>,
 }
 /// [`TableView::walk`]'s event index for the hairline that divides a section from the one above
 /// it (`-1` is a header, `>= 0` a row). Emitted for EVERY section after the first, headed or not.
 const WALK_DIVIDER: i32 = -2;
+/// [`TableView::walk`]'s event index for the page title band ([`TableView::set_title`]); it is
+/// followed by a [`WALK_DIVIDER`] event, so the title reads as the page's own heading.
+const WALK_TITLE: i32 = -3;
+/// The glyph that opens a page title: the drill-in's "back" mark, the mirror of a row's chevron.
+const TITLE_BACK_GLYPH: &str = "\u{2039}";
 impl TableView {
     pub(crate) const MOTION_SHAPE: &'static str = "TableViewMotion{sel:i32,list_focused:bool,compact:bool,tall:bool,header_ink:[f32;4],hl_top:Spring{pos:f32,vel:f32},hl_bot:Spring{pos:f32,vel:f32},scroll:Spring{pos:f32,vel:f32}}";
 
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -570,6 +579,7 @@ impl TableView {
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
+            title: None,
         }
     }
 
@@ -646,6 +656,49 @@ impl TableView {
             }
         });
         hit
+    }
+
+    /// **A drill-in page's title band**, drawn as "‹ TITLE" in the section-header caps caption at
+    /// the very top of the content and followed by the same boundary gap a section divider has
+    /// ([`DIV_H`] around a hairline), so it reads as the page's own heading rather than as a
+    /// section caption glued to the first row. `None` (the default) draws nothing. The band is
+    /// part of [`Self::measured_height`], [`Self::measured_width`] and [`Self::fit_report`]; it is
+    /// not a hit target here (the owner that pops on it registers its own stop). Design record:
+    /// `docs/player-submenus.md`.
+    pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title;
+    }
+
+    /// The title set by [`Self::set_title`].
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// The title band's own run, upper-cased, and the x offset it starts at from the content's
+    /// left edge: past the back glyph and the check-column→label [`GAP`].
+    fn title_run(&self, measure: &dyn crate::ui::machine::Measure) -> Option<(String, f32)> {
+        let title = self.title.as_ref()?;
+        let glyph = measure.width_str(TITLE_BACK_GLYPH, theme::size::CAPTION, false);
+        Some((title.to_uppercase(), glyph + GAP))
+    }
+
+    /// Replace the contents and reinstate a SAVED view: the selection (`None`: the
+    /// [`Self::opening_row`]) snaps with no pill slide and the scroll is put back at `scroll` (read
+    /// it with [`Self::scroll_pos`]; clamped by the next [`Self::update`]). The pop half of a
+    /// drill-in: the page below comes back exactly where it was left.
+    pub fn restore_sections(&mut self, sections: Vec<Section>, sel: Option<i32>, scroll: f32) {
+        self.set_sections_or_open(sections, sel, false);
+        self.scroll.jump(scroll);
+    }
+
+    /// [`Self::set_sections`] with an optional selection: `None` lands on [`Self::opening_row`]
+    /// of the NEW sections. Unlike [`Self::open_sections`] it takes `slide`, and with `slide ==
+    /// true` it keeps the scroll, which is what a same-page refresh wants.
+    pub fn set_sections_or_open(&mut self, sections: Vec<Section>, sel: Option<i32>, slide: bool) {
+        self.sections = sections;
+        let sel = sel.unwrap_or_else(|| self.opening_row());
+        let sections = std::mem::take(&mut self.sections);
+        self.set_sections(sections, sel, slide);
     }
 
     /// replace the contents and re-anchor selection. `slide=false` snaps the pill to the new
@@ -735,6 +788,9 @@ impl TableView {
     pub(crate) fn measured_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let h = fit::HEADROOM;
         let mut width: f32 = 0.0;
+        if let Some((title, x0)) = self.title_run(measure) {
+            width = 2.0 * CONTENT_X + x0 + measure.width_str(&title, theme::size::CAPTION, false) / h;
+        }
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header = measure.width_str(&section.header.to_uppercase(), theme::size::CAPTION, false);
@@ -800,6 +856,13 @@ impl TableView {
         let (size, bold) = self.label_style();
         let mut out = Vec::new();
         self.fit_notes(frame_w, measure);
+        if let Some((title, x0)) = self.title_run(measure) {
+            let natural = measure.width_str(&title, theme::size::CAPTION, false);
+            let budget = (frame_w - 2.0 * CONTENT_X - x0).max(0.0);
+            if budget + FIT_EPS < natural / headroom {
+                out.push(FitIssue { role: FitRole::Title, origin: Origin::App, text: title, natural, budget });
+            }
+        }
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header_text = section.header.to_uppercase();
@@ -1089,6 +1152,11 @@ impl TableView {
     fn walk(&self, mut f: impl FnMut(f32, i32, usize)) {
         let mut y = 0.0f32;
         let mut gi = 0i32;
+        if self.title.is_some() {
+            f(y, WALK_TITLE, 0);
+            y += HDR_H + DIV_H;
+            f(y, WALK_DIVIDER, 0);
+        }
         for (si, sec) in self.sections.iter().enumerate() {
             if si > 0 {
                 y += DIV_H;
@@ -1201,8 +1269,9 @@ impl TableView {
         // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
         // cut cleanly at the frame instead of poking over the video / control buttons — and, unlike the
         // old fade masks, a tall two-line edge row is cut uniformly (the fade left its title bright but
-        // faded its detail line, which read as a broken clip). Released at the end of this fn.
-        p.clip(frame);
+        // faded its detail line, which read as a broken clip). A `ClipScope`, so it intersects with an
+        // enclosing panel clip and restores it when this fn returns.
+        let _clip = crate::ui::screen::ClipScope::open_in(p, frame);
         let top0 = frame.y + TOP_PAD;
         let scroll = self.scroll.pos;
         let vis_top = frame.y;
@@ -1252,6 +1321,24 @@ impl TableView {
                         theme::HAIRLINE,
                         0.0,
                     );
+                }
+                return;
+            }
+            if gi == WALK_TITLE {
+                if sy + HDR_H > vis_top && sy < vis_bot {
+                    let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
+                    let hsz = theme::size::CAPTION;
+                    let (cap_top, baseline) = crate::text::text_cap_band(hsz, 0);
+                    let band = Rect::new(content_x, sy + HEADER_CAP_INSET, (text_right - content_x).max(0.0), baseline - cap_top);
+                    if let Some((title, x0)) = self.title_run(measure) {
+                        let glyph = CString::new(TITLE_BACK_GLYPH).unwrap_or_default();
+                        Label::new(glyph.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, band);
+                        let text_band = Rect::new(band.x + x0, band.y, (band.w - x0).max(0.0), band.h);
+                        let text = crate::text::elide_by(&title, text_band.w, false, |t| measure.width_str(t, hsz, false));
+                        if let Ok(cs) = CString::new(text) {
+                            Label::new(cs.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, text_band);
+                        }
+                    }
                 }
                 return;
             }
@@ -1520,8 +1607,6 @@ impl TableView {
                 }
             }
         });
-
-        p.clip_clear();
     }
 
     /// `p`, dimmed if section `si` is — the ONE place [`Section::dim`] becomes an alpha.
@@ -2055,5 +2140,40 @@ mod tests {
         let above = DIV_H * 0.5 + HEADER_CAP_INSET;
         assert!(HDR_INK_PAD < above, "space under the caps ({HDR_INK_PAD}) must be under the space above ({above})");
         assert!(HDR_INK_PAD >= PILL_INSET * 2.0, "the focused pill of the first row must clear the caps");
+    }
+
+    /// **A title band adds the header band plus a section-boundary gap** to the content, and is
+    /// part of neither the rows nor the selection.
+    #[test]
+    fn a_title_adds_a_header_band_and_a_divider_gap() {
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("").row(Row::new("a")).row(Row::new("b"))], 0, false);
+        let bare = t.measured_height();
+        t.set_title(Some("Style".into()));
+        assert_eq!(t.measured_height(), bare + HDR_H + DIV_H);
+        let (mut titles, mut dividers, mut first_row_y) = (0, 0, None);
+        t.walk(|y, gi, _| match gi {
+            WALK_TITLE => titles += 1,
+            WALK_DIVIDER => dividers += 1,
+            0 => first_row_y = Some(y),
+            _ => {}
+        });
+        assert_eq!((titles, dividers), (1, 1), "the title is followed by the hairline a section boundary has");
+        assert_eq!(first_row_y, Some(HDR_H + DIV_H));
+        t.set_title(None);
+        assert_eq!(t.measured_height(), bare);
+    }
+
+    /// **The fit gate reports a title that cannot fit**, at the width the localized text needs.
+    #[test]
+    fn fit_report_covers_the_title_band() {
+        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("").row(Row::new("a"))], 0, false);
+        t.set_title(Some("Idioma de los subtitulos disponibles en otros idiomas".into()));
+        let narrow = t.fit_report(300.0, &M, HEADROOM);
+        assert!(narrow.iter().any(|i| i.role == FitRole::Title), "a long title must be reported: {narrow:?}");
+        let wide = t.fit_report(t.menu_panel_width(&M).max(t.measured_width(&M)), &M, HEADROOM);
+        assert!(wide.iter().all(|i| i.role != FitRole::Title), "a panel sized from measured_width fits its title: {wide:?}");
     }
 }

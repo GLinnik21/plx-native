@@ -891,13 +891,10 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// Open a GL scissor for `r` (painter space) for the rest of the returned scope: the
     /// cascade's clip narrows to it and the scissor is restored when the scope drops — the RAII
     /// replacement for the bare `Painter::clip`/`clip_clear` pair (spec §7.6). Draw the clipped
-    /// content through the painter the scope hands back.
+    /// content through the painter the scope hands back. A scope opened inside another
+    /// INTERSECTS with it ([`ClipScope::open_in`]).
     pub fn clip(&mut self, p: Painter, r: Rect) -> ClipScope {
-        if p.is_recording() {
-            return ClipScope::inert();
-        }
-        let inner = p.clipped(r);
-        ClipScope::open(inner.clip_rect())
+        ClipScope::open_in(p, r)
     }
 
     /// **Does this walk feed the hit map?** Only the VISIBLE walk does (§7.6). A frame walks the
@@ -920,8 +917,12 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     }
 }
 
-/// A live GL scissor, restored on drop to what was set before it (nesting-safe). Pure
-/// bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
+/// A live GL scissor, restored on drop to what was set before it. Scopes NEST by intersection: an
+/// inner scope can only narrow the enclosing one, never widen past it, so a widget that clips its
+/// own viewport (`TableView::draw`) composes inside an outer panel clip with no knowledge of it.
+/// This is the ONE scissor stack — the painter's carried clip (`Painter::clipped`, what the hit
+/// map reads) is the same rectangle by construction, so painting and hit-testing cannot drift.
+/// Pure bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
 pub struct ClipScope {
     prev: Option<Rect>,
     active: bool,
@@ -933,9 +934,22 @@ thread_local! {
 }
 
 impl ClipScope {
+    /// Open a scissor for `r` (in `p`'s space) for the life of the returned scope, for a caller
+    /// that holds only a [`Painter`] (every `TableView`-style widget draw; [`DrawFrame::clip`]
+    /// delegates here). The box is `r` placed by the cascade, intersected with the cascade's own
+    /// carried clip AND with the scope already open, if any; a recording painter opens nothing.
+    pub fn open_in(p: Painter, r: Rect) -> Self {
+        if p.is_recording() {
+            return Self::inert();
+        }
+        Self::open(p.clipped(r).clip_rect())
+    }
+
     fn open(screen: Rect) -> Self {
-        let prev = CLIP_STACK.with(|c| c.replace(Some(screen)));
-        apply_scissor(Some(screen));
+        let prev = CLIP_STACK.with(|c| c.get());
+        let narrowed = prev.map_or(screen, |outer| outer.intersect(screen));
+        CLIP_STACK.with(|c| c.set(Some(narrowed)));
+        apply_scissor(Some(narrowed));
         Self { prev, active: true }
     }
 
@@ -1097,6 +1111,32 @@ mod draw_frame_tests {
             let back = ClipScope::current().unwrap();
             assert_eq!((back.x, back.y), (0.0, 100.0));
         }
+        assert!(ClipScope::current().is_none());
+    }
+
+    /// **A scope opened without the enclosing painter still intersects**: two sibling widgets
+    /// drawing through a bare `Painter` (as `TableView::draw` does) inside an outer panel scope
+    /// each get their own viewport narrowed to the panel, and the panel is back in force after
+    /// each closes.
+    #[test]
+    fn a_nested_scope_intersects_the_enclosing_one_and_restores_it() {
+        let _g = crate::testlock::serial();
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let mut f = DrawFrame::new(&cx, Painter::root());
+        let panel = Rect::new(100.0, 100.0, 400.0, 300.0);
+        let rect = |r: Option<Rect>| r.map(|r| (r.x, r.y, r.w, r.h));
+        let outer = f.clip(Painter::root(), panel);
+        for viewport in [Rect::new(0.0, 0.0, 300.0, 200.0), Rect::new(450.0, 350.0, 500.0, 500.0)] {
+            // a BARE root painter: it does not know about `panel`
+            let inner = ClipScope::open_in(Painter::root(), viewport);
+            let want = panel.intersect(viewport);
+            assert_eq!(rect(ClipScope::current()), Some((want.x, want.y, want.w, want.h)));
+            drop(inner);
+            assert_eq!(rect(ClipScope::current()), Some((100.0, 100.0, 400.0, 300.0)), "the panel clip is restored");
+        }
+        drop(outer);
         assert!(ClipScope::current().is_none());
     }
 
