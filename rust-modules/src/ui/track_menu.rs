@@ -799,13 +799,17 @@ impl TrackMenuState {
         // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
         // the bottom edge steady.
         let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
-        let ph = self.panel_h();
+        let ph = self.panel_h(measure, pw);
         let py = bottom - ph; // ≥ top_min by construction
         Rect::new(px, py, pw, ph)
     }
 
-    /// The panel's height alone — what `update` needs, with no measure in hand.
-    fn panel_h(&self) -> f32 {
+    /// The panel's height at width `pw`. A note row wraps, so its line count depends on the
+    /// width: it is resolved HERE, against the same `measure` and `pw` the panel is sized with,
+    /// so no caller (`update`, hit-testing, `draw`) can read the count a rebuild left stale.
+    /// Idempotent and a few short strings per call.
+    fn panel_h(&self, measure: &dyn crate::ui::machine::Measure, pw: f32) -> f32 {
+        self.table.fit_notes(pw, measure);
         let (bottom, top_min) = (SCR_H - 316.0, 60.0);
         self.table.measured_height().clamp(160.0, bottom - top_min)
     }
@@ -818,7 +822,13 @@ impl TrackMenuState {
     /// on. `rebuild`'s own recomputation of `enhance_shown` is the single source of truth here
     /// too, so this only ever asks "did that answer change since last frame", never rebuilds it a
     /// second, divergent way.
-    pub(crate) fn update(&mut self, dt: f32, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub(crate) fn update(
+        &mut self,
+        dt: f32,
+        measure: &dyn crate::ui::machine::Measure,
+        ps: &crate::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+    ) {
         if self.tab == 0 {
             let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
             if shown != self.enhance_shown
@@ -832,7 +842,7 @@ impl TrackMenuState {
             self.poll_subtitle_state(ps, meta);
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_h();
+        let h = self.panel_h(measure, self.table.menu_panel_width(measure));
         self.table.update(dt, h);
     }
 
@@ -2238,7 +2248,7 @@ mod enhancement_menu_tests {
         // the panel triggers itself.
         let (ps_refused, _sid2) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
         let store = one_track_store();
-        menu.update(0.0, &ps_refused, store.view());
+        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_refused, store.view());
         assert_eq!(
             menu.enhance_shown, None,
             "a settled refusal must drop the optimistic On reading, not leave a row reading On"
@@ -2250,6 +2260,32 @@ mod enhancement_menu_tests {
         assert_eq!(menu.table.sections[1].rows[1].toggle, Some(false));
         assert!(menu.table.sections[1].rows[1].dim);
 
+        teardown(&ps_ok);
+    }
+
+    /// **A note that appears in a rebuild is sized on that same `update`.** A note's line count
+    /// depends on the panel width, so it is resolved against the measure `update` now carries;
+    /// before, the count a rebuild left was read by the panel height until the NEXT draw measured
+    /// it, so a wrapped note's panel was one frame short.
+    #[test]
+    fn a_note_added_by_a_live_rebuild_sizes_the_panel_on_the_same_update() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            ..Default::default()
+        });
+        assert!(!menu.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "premise: no note yet");
+        let (ps_refused, _sid) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
+        let store = one_track_store();
+        menu.update(0.0, &M, &ps_refused, store.view());
+        // no draw, no panel_rect in between: read the table as `update` left it
+        let after_update = menu.table.measured_height();
+        let pw = menu.table.menu_panel_width(&M);
+        menu.table.fit_notes(pw, &M);
+        let note = menu.table.sections.iter().flat_map(|s| s.rows.iter()).find(|r| r.is_note()).expect("the refusal note");
+        assert!(note.note_lines.get() >= 2, "premise: the note wraps at {pw}");
+        assert_eq!(after_update, menu.table.measured_height(), "update left the note at a stale line count");
         teardown(&ps_ok);
     }
 
@@ -2284,7 +2320,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store = one_track_store();
-        menu.update(0.0, &ps_after, store.view());
+        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(
             menu.sel(),
@@ -2345,7 +2381,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store_hidden = two_tracks();
-        menu.update(0.0, &ps_hidden, store_hidden.view());
+        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_hidden, store_hidden.view());
         assert_eq!(menu.enhance_shown, None, "fixture shape: no Plex Pass withdraws the offer entirely (I1/I2)");
 
         // The ENGINE's own reconcile runs the same frame right after this poll (§7.3 step 6): its
@@ -2359,7 +2395,7 @@ mod enhancement_menu_tests {
         // triggered itself.
         let (ps_shown, _sid_shown) = enhancement_test_session(EnhTestFixture::default());
         let store_shown = two_tracks();
-        menu.update(0.0, &ps_shown, store_shown.view());
+        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_shown, store_shown.view());
 
         assert!(menu.enhance_shown.is_some(), "fixture shape: the offer is back");
         assert_eq!(
@@ -2620,7 +2656,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        menu.update(0.016, &ps_after, store.view());
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
         assert!(menu.sub_style_locked, "Color/Timing must lock once the live route is really a Burn");
@@ -2655,6 +2691,32 @@ mod enhancement_menu_tests {
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The Spanish locked-style note WRAPS instead of running off the panel**: the fit gate now
+    /// judges the note row, and its row is as tall as its wrapped lines.
+    #[test]
+    fn spanish_locked_note_wraps_within_the_subtitles_panel() {
+        use crate::ui::machine::Measure;
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let _g = crate::testlock::serial();
+        let _guard = language_on_this_thread_for_test(Preference::Es);
+        let (menu, ps) = subtitles_tab(EnhTestFixture {
+            subtitle_effect: crate::route::SubtitleEffect::Embedded,
+            applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..Default::default()
+        });
+        let note = crate::i18n::msg::widgets_tracks_style_locked_note();
+        let line = ShippedMeasure.width_str(&note, crate::ui::theme::size::CAPTION, false);
+        let before = menu.table.measured_height();
+        let pw = menu.table.menu_panel_width(&ShippedMeasure);
+        let issues = menu.table.fit_report(pw, &ShippedMeasure, HEADROOM);
+        assert!(issues.iter().all(|i| i.origin != crate::ui::table::Origin::App), "{issues:?}");
+        assert!(line > pw, "the premise: one line of it is wider than the panel");
+        assert!(menu.table.measured_height() > before, "the panel grows by the wrapped note's extra lines");
+        teardown(&ps);
     }
 }
 

@@ -699,7 +699,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             ScreenEvent::Tick(tick) => {
                 let dt = tick.dt();
                 match &mut self.panel {
-                    Panel::Tracks(p) => p.update(dt, ps, H::metadata(cx)),
+                    Panel::Tracks(p) => p.update(dt, cx.measure, ps, H::metadata(cx)),
                     Panel::Info(p) => p.update(dt),
                     Panel::Chapters(p) => p.update(dt, H::metadata(cx)),
                     Panel::More(p) => p.update(dt),

@@ -77,14 +77,19 @@ pub struct Row {
     /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
     /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
     /// [`TableView::set_sections`] never lands the selection on one — so a caller can never focus
-    /// a line that does nothing. (A second `Section` cannot do this job: a headerless section adds
-    /// vertical air but draws no rule, because the hairline rides the section HEADER.)
+    /// a line that does nothing. (A second `Section` does the same job for a group boundary: every
+    /// section after the first is preceded by a gap and a hairline, headed or not, so a
+    /// `Row::separator` beside a section boundary would draw two rules.)
     pub sep: bool,
     /// The row's action is **destructive** — it ends or removes something (Sign out, Remove from
     /// Deck). Semantics only, never drawn: it exists so a menu never OPENS with its focus on one
     /// ([`TableView::opening_row`]). A stray OK on a freshly opened menu must be harmless; the row
     /// stays one press away, it is simply never where focus starts.
     pub destructive: bool,
+    /// How many CAPTION lines a [`Row::note`] wraps to in the table's text column (`1` until
+    /// [`TableView::fit_notes`] has measured it). A cache of a pure function of (text, width,
+    /// measure), so it lives in a `Cell` and draw may refresh it through `&self`.
+    pub(crate) note_lines: std::cell::Cell<u8>,
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
@@ -104,7 +109,12 @@ impl Row {
             dim: false,
             sep: false,
             destructive: false,
+            note_lines: std::cell::Cell::new(1),
         }
+    }
+    /// A [`Row::note`]: `sep` with text (a bare `sep` is the hairline).
+    pub(crate) fn is_note(&self) -> bool {
+        self.sep && !self.label.is_empty()
     }
     /// The grouping hairline — a row that draws a rule and cannot be focused.
     pub fn separator() -> Self {
@@ -115,9 +125,11 @@ impl Row {
     }
     /// **A non-selectable INFORMATIONAL line** — the same "cannot be focused" contract as
     /// [`Row::separator`] (skipped by every selection/hit walk that checks [`Self::sep`]), but it
-    /// carries a label and draws quiet CAPTION text instead of a hairline. For a one-line reason
-    /// attached to the rows above it (e.g. "Not available with subtitles on.") — never a hairline's
-    /// own job of dividing two groups, and never a focusable row a stray OK could land on.
+    /// carries a label and draws quiet CAPTION text instead of a hairline. For a reason attached to
+    /// the rows above it (e.g. "Not available with subtitles on."), left-aligned with their labels
+    /// and WRAPPED to as many lines as the column needs ([`TableView::fit_notes`] sets the row's
+    /// height) — never a hairline's own job of dividing two groups, and never a focusable row a
+    /// stray OK could land on.
     pub fn note(text: impl Into<String>) -> Self {
         Self {
             sep: true,
@@ -211,8 +223,11 @@ impl Row {
     fn height_in(&self, tall: f32) -> f32 {
         if self.sep && self.label.is_empty() {
             SEP_H // the hairline
-        } else if self.sep || self.detail.is_empty() {
-            ROW_H // a `note` row (one line of CAPTION text) or a plain row with no detail line
+        } else if self.is_note() {
+            // a `note`: its wrapped CAPTION lines plus air, never shorter than a plain row
+            (f32::from(self.note_lines.get()) * NOTE_LEADING + 2.0 * NOTE_PAD).max(ROW_H)
+        } else if self.detail.is_empty() {
+            ROW_H // a plain row with no detail line
         } else {
             tall
         }
@@ -328,10 +343,12 @@ const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEA
 /// `CAPTION` sub-line wants when the list IS the screen.
 pub const ROW_H_ART: f32 = 98.0;
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
-/// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
+/// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 40px in BOTH size classes and
 /// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
+/// Tight under the caps on purpose: the header belongs to the rows below it, so the band under its
+/// caps ([`HDR_INK_PAD`]) is shorter than the air above them (half [`DIV_H`] + the cap inset).
 /// `pub` for the [`ROW_H`] caller shape.
-pub const HDR_H: f32 = 58.0;
+pub const HDR_H: f32 = 40.0;
 /// Measure a [`Section::accessory`] is elided to. It is the LAST run on the header line, so it is
 /// the one that gives way: a 34-character plex.tv handle truncates on a character and the library
 /// names underneath keep their full width.
@@ -339,6 +356,9 @@ const ACCESSORY_W: f32 = 320.0;
 /// The alpha a [`Section::dim`]med group is drawn at — the same weight an unreachable tab pill
 /// takes, applied once over header and rows together.
 const GROUP_DIM_A: f32 = 0.52;
+/// A note's line pitch and its air above/below the block: one line is exactly [`ROW_H`].
+const NOTE_LEADING: f32 = 32.0;
+const NOTE_PAD: f32 = 14.0;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
 /// The list's own air above its first row. `pub` because a panel that stacks something ABOVE the
 /// list (the Sources panel's level band) has to subtract it to put the SEAM on the space scale —
@@ -411,6 +431,7 @@ pub(crate) enum FitRole {
     Value,
     Header,
     Accessory,
+    Note,
 }
 
 /// One text slot [`TableView::fit_report`] found would end in an ellipsis at its resolved column.
@@ -507,6 +528,9 @@ pub struct TableView {
     hl_bot: Spring,
     scroll: Spring,
 }
+/// [`TableView::walk`]'s event index for the hairline that divides a section from the one above
+/// it (`-1` is a header, `>= 0` a row). Emitted for EVERY section after the first, headed or not.
+const WALK_DIVIDER: i32 = -2;
 impl TableView {
     pub(crate) const MOTION_SHAPE: &'static str = "TableViewMotion{sel:i32,list_focused:bool,compact:bool,tall:bool,header_ink:[f32;4],hl_top:Spring{pos:f32,vel:f32},hl_bot:Spring{pos:f32,vel:f32},scroll:Spring{pos:f32,vel:f32}}";
 
@@ -775,6 +799,7 @@ impl TableView {
     pub(crate) fn fit_report(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<FitIssue> {
         let (size, bold) = self.label_style();
         let mut out = Vec::new();
+        self.fit_notes(frame_w, measure);
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header_text = section.header.to_uppercase();
@@ -794,6 +819,19 @@ impl TableView {
                             out.push(FitIssue { role: FitRole::Accessory, origin: Origin::App, text: section.accessory_app_prefix.clone(), natural: prefix_nat, budget: accessory_w });
                         }
                     }
+                }
+            }
+            for row in section.rows.iter().filter(|r| r.is_note()) {
+                // a note WRAPS, so it fits unless one unbreakable word is wider than its column
+                let budget = Self::note_column_w(frame_w) * headroom;
+                let widest = row
+                    .label
+                    .split(|c: char| c.is_whitespace() && c != '\u{a0}')
+                    .filter(|w| !w.is_empty())
+                    .map(|w| (measure.width_str(w, theme::size::CAPTION, false), w))
+                    .fold((0.0f32, ""), |a, b| if b.0 > a.0 { b } else { a });
+                if widest.0 > budget {
+                    out.push(FitIssue { role: FitRole::Note, origin: row.label_origin, text: widest.1.to_string(), natural: widest.0, budget });
                 }
             }
             for row in section.rows.iter().filter(|r| !r.sep) {
@@ -850,6 +888,26 @@ impl TableView {
                 + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
         }
         frame_w - SIDE - CONTENT_PAD - trailing
+    }
+
+    /// The text column a [`Row::note`] wraps in: the ROW-LABEL column (past the check column), so
+    /// the note reads as attached to the rows above it rather than as a second header.
+    fn note_column_w(frame_w: f32) -> f32 {
+        (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP).max(0.0)
+    }
+
+    /// **Measure every [`Row::note`] against a `frame_w`-wide table**, storing the wrapped line
+    /// count [`Row::height_in`] reads back. `Row::height_in` has no measure, so this is the one
+    /// place a note's height is decided; [`Self::draw`] runs it before it walks, and an owner that
+    /// sizes its panel from [`Self::measured_height`] (the track menu) runs it first. Idempotent.
+    pub(crate) fn fit_notes(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure) {
+        let w = Self::note_column_w(frame_w);
+        for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| r.is_note()) {
+            let lines = crate::ui::text_view::TextView::new(&row.label, theme::size::CAPTION, theme::TEXT_TERTIARY)
+                .with_measure(measure)
+                .line_count(w);
+            row.note_lines.set(lines.clamp(1, u8::MAX as usize) as u8);
+        }
     }
 
     fn label_style(&self) -> (std::os::raw::c_int, bool) {
@@ -1034,6 +1092,7 @@ impl TableView {
         for (si, sec) in self.sections.iter().enumerate() {
             if si > 0 {
                 y += DIV_H;
+                f(y, WALK_DIVIDER, si);
             }
             if !sec.header.is_empty() {
                 f(y, -1, si);
@@ -1138,6 +1197,7 @@ impl TableView {
             .draw(p, frame);
             return;
         }
+        self.fit_notes(frame.w, measure);
         // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
         // cut cleanly at the frame instead of poking over the video / control buttons — and, unlike the
         // old fade masks, a tall two-line edge row is cut uniformly (the fade left its title bright but
@@ -1180,26 +1240,27 @@ impl TableView {
             // walk, so header, accessory, rows, marks and read-outs can never dim out of step.
             let p = self.group_painter(p, si);
             let sy = top0 + cy - scroll;
+            if gi == WALK_DIVIDER {
+                // the hairline between this section and the one above, headed or not, centred in
+                // the `DIV_H` gap; it fades with the group like everything else in it
+                let y = sy - DIV_H * 0.5;
+                if y + 2.0 > vis_top && y < vis_bot {
+                    p.rect(
+                        Rect::new(content_x, y, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
+                        0.0,
+                        theme::HAIRLINE,
+                        theme::HAIRLINE,
+                        0.0,
+                    );
+                }
+                return;
+            }
             if gi == -1 {
-                // panel/section header (+ hairline divider above later sections); scissor-clipped to `frame`
+                // panel/section header; scissor-clipped to `frame`
                 if sy + HDR_H > vis_top && sy < vis_bot {
                     // fades out at the bottom edge before its caps are cut (`bottom_edge_alpha`)
                     let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
                     let sec = &self.sections[si];
-                    if si > 0 {
-                        p.rect(
-                            Rect::new(
-                                content_x,
-                                sy - DIV_H * 0.5,
-                                frame.w - 2.0 * (SIDE + CONTENT_PAD),
-                                2.0,
-                            ),
-                            0.0,
-                            theme::HAIRLINE,
-                            theme::HAIRLINE,
-                            0.0,
-                        );
-                    }
                     // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
                     // header read as a label rather than as a row, which is why the size stops
                     // varying: at HEADLINE — what the non-compact class used to draw — a header
@@ -1277,15 +1338,19 @@ impl TableView {
                 return;
             }
             if row.sep {
-                // a `note` row: one line of quiet CAPTION text, never a mark or a pill — it cannot
-                // be focused (skipped by every `sep` check above), so it never draws over the
-                // sliding highlight either.
-                if let Ok(cs) = CString::new(row.label.clone()) {
-                    let nsz = theme::size::CAPTION;
-                    Label::new(cs.as_ptr(), nsz, dimc)
-                        .v(VAlign::Middle)
-                        .draw(p, Rect::new(content_x, sy, (text_right - content_x).max(0.0), h));
-                }
+                // a `note` row: quiet CAPTION text WRAPPED in the row-label column, never a mark or
+                // a pill — it cannot be focused (skipped by every `sep` check above), so it never
+                // draws over the sliding highlight either. Its height is `Row::height_in`'s.
+                let nsz = theme::size::CAPTION;
+                let x = content_x + CHECK_W + GAP;
+                let view = crate::ui::text_view::TextView::new(&row.label, nsz, dimc)
+                    .with_measure(measure)
+                    .leading(NOTE_LEADING);
+                let w = (text_right - x).max(0.0);
+                let lines = view.line_count(w);
+                // centre the INK (first cap-top to last baseline), as the one-line note was
+                let ink_h = (lines.saturating_sub(1)) as f32 * NOTE_LEADING + measure.cap_h(nsz);
+                view.draw(p, Rect::new(x, sy + (h - ink_h) * 0.5, w, ink_h));
                 return;
             }
             // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
@@ -1916,5 +1981,79 @@ mod tests {
             let gap = span - M.width_str(&row.label, size, bold) - M.width_str(value, theme::size::LABEL, VALUE_BOLD != 0);
             assert!(gap >= theme::space::MD - 0.01, "{}: label to value air {gap} < the MD rung", row.label);
         }
+    }
+
+    const ES_NOTE: &str = "No se puede cambiar mientras Realzar diálogos o Normalizar volumen esté activado.";
+
+    fn note_table(note: &str) -> TableView {
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![Section::new("S").row(Row::new("Color").value("Blanco")).row(Row::note(note))],
+            0,
+            false,
+        );
+        t
+    }
+
+    /// **A note wraps inside the row-label column and its row grows to the wrapped lines** — the
+    /// Spanish Subtitles note ran off the panel as one clipped line at a fixed `ROW_H`.
+    #[test]
+    fn a_long_note_wraps_and_its_row_grows_with_the_lines() {
+        use crate::fontcov::advances::ShippedMeasure as M;
+        let t = note_table(ES_NOTE);
+        let before = t.measured_height();
+        t.fit_notes(620.0, &M);
+        let note = &t.sections[0].rows[1];
+        assert!(note.note_lines.get() >= 2, "the premise: it does not fit one line of the column");
+        let h = note.height_in(t.tall_row_h());
+        assert!(h > ROW_H, "note height {h} must grow past ROW_H");
+        assert!((t.measured_height() - before - (h - ROW_H)).abs() < 0.01, "layout routes through the same height");
+        let short = note_table("Nope.");
+        short.fit_notes(620.0, &M);
+        assert_eq!(short.sections[0].rows[1].height_in(short.tall_row_h()), ROW_H, "one line keeps the ROW_H measure");
+    }
+
+    /// **`fit_report` judges notes**: a wrapped note fits, one unbreakable word wider than the
+    /// column does not.
+    #[test]
+    fn fit_report_covers_note_rows() {
+        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        let ok = note_table(ES_NOTE).fit_report(620.0, &M, HEADROOM);
+        assert!(ok.iter().all(|i| i.role != FitRole::Note), "a wrappable note fits: {ok:?}");
+        let word = "Superextraordinariamente".repeat(4);
+        let bad = note_table(&word).fit_report(620.0, &M, HEADROOM);
+        assert!(bad.iter().any(|i| i.role == FitRole::Note), "an unbreakable overlong word must be reported: {bad:?}");
+    }
+
+    /// **Every section after the first is divided from the one above, headed or not.**
+    #[test]
+    fn a_headerless_section_after_the_first_gets_a_divider() {
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![
+                Section::new("A").row(Row::new("a")),
+                Section::new("").row(Row::new("b")),
+                Section::new("C").row(Row::new("c")),
+            ],
+            0,
+            false,
+        );
+        let (mut dividers, mut headers) = (0, 0);
+        t.walk(|_, gi, _| match gi {
+            WALK_DIVIDER => dividers += 1,
+            -1 => headers += 1,
+            _ => {}
+        });
+        assert_eq!(headers, 2);
+        assert_eq!(dividers, 2, "one hairline per section boundary, headed or not");
+    }
+
+    /// **A header sits closer to its rows than to the divider above it**: the dead band under the
+    /// caps is shorter than the band above them (half the divider gap plus the cap inset).
+    #[test]
+    fn a_header_reads_as_belonging_to_its_rows() {
+        let above = DIV_H * 0.5 + HEADER_CAP_INSET;
+        assert!(HDR_INK_PAD < above, "space under the caps ({HDR_INK_PAD}) must be under the space above ({above})");
+        assert!(HDR_INK_PAD >= PILL_INSET * 2.0, "the focused pill of the first row must clear the caps");
     }
 }
