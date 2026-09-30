@@ -300,9 +300,16 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
     // a bare units-per-second. The decision itself is taken just above `glViewport`.
     crate::ui::idle::frame_begin(fr.dt);
-    // Is a page capture still in flight on the GPU? Latched once, before the springs step, so
-    // the held appear spring and the present gate below read the same answer.
-    crate::gfx::snapshot_frame_begin(|pending| app.rec.snapshot_pending(pending));
+    // Is a page capture still in flight on the GPU, and is recorded text still warming? Latched
+    // once, before the springs step, so the held appear spring and the present gate below read
+    // the same answer — and, being the machine's speed rather than the inputs, recorded or
+    // supplied by the recorder like any other environmental observation.
+    let text = crate::text::prewarm_pending();
+    crate::gfx::snapshot_frame_begin(|snapshot| {
+        let seen = app.rec.capture_readiness(crate::ui::rec::Readiness { snapshot, text });
+        crate::text::latch_surface_text_pending(seen.text);
+        seen.snapshot
+    });
     // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
     // commits (the spring-back bounce has played), run it for whichever CARD view armed the
     // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):

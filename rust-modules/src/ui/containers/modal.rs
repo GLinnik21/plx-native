@@ -106,9 +106,11 @@ pub const APPEAR_K: f32 = 300.0;
 /// cold strings are queued and drained under the text prewarm budget instead of being rasterised
 /// in the frame that also renders the host snapshot — Settings' first open rasterised 21 strings
 /// inside that frame (a 44 ms frame on the television, 2026-09-29 bench). The hold continues while
-/// the queue is non-empty, so the first ramp frame draws only resident text; the bound keeps a
-/// queue that cannot drain (a string too large for the budget, a surface that keeps producing
-/// new text) from ever delaying the open by more than this — about six frames.
+/// the queue is non-empty (as latched for the iteration, `text::surface_text_pending`, since the
+/// drain's pace is the CPU's and a recording must replay it), so the first ramp frame draws only
+/// resident text; the bound keeps a queue that cannot drain (a string too large for the budget, a
+/// surface that keeps producing new text) from ever delaying the open by more than this — about
+/// six frames.
 pub const SURFACE_TEXT_HOLD_MAX_MS: f32 = 100.0;
 
 impl PopoverMotion {
@@ -147,7 +149,7 @@ impl PopoverMotion {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
-        let text_pending = crate::text::prewarm_pending() && self.held_ms < SURFACE_TEXT_HOLD_MAX_MS;
+        let text_pending = crate::text::surface_text_pending() && self.held_ms < SURFACE_TEXT_HOLD_MAX_MS;
         self.tick_gated(t, present, crate::gfx::snapshot_pending() || text_pending);
     }
     /// [`tick`](Self::tick) with the host snapshot's GPU state passed in: a HELD surface stays
@@ -989,6 +991,38 @@ mod hide_tests {
         assert_eq!(held_for(3), 4, "held while text is pending on three ticks, then the ramp");
         let bound = (SURFACE_TEXT_HOLD_MAX_MS / 16.0).ceil() as u32 + 2;
         assert!(held_for(1000) <= bound, "a queue that never drains is released at the bound");
+    }
+
+    /// **The hold follows the iteration's latched text readiness, not the live queue.** The queue
+    /// drains under a wall-clock budget, so its length on a given frame is the CPU's speed; the
+    /// product loop latches one observation per iteration, which the recorder records or supplies.
+    /// A replay on a slower machine (Flow 12 on a CI runner: its Filmography modal turned `Open`
+    /// two frames late) must open the surface on the recorded frame whatever its own queue holds.
+    #[test]
+    fn a_held_surface_waits_on_the_latched_text_readiness() {
+        let _g = crate::testlock::serial();
+        let held_for = |latched: &dyn Fn(u32) -> bool, queued: bool| {
+            crate::text::reset_prewarm_for_test();
+            let mut m = PopoverMotion::at(0.0);
+            m.to(1.0);
+            m.hold_one_frame();
+            let mut present = Present::new();
+            let mut frames = 0u32;
+            while m.appear == 0.0 && frames < 100 {
+                if queued {
+                    crate::text::queue_prewarm(c"surface text".as_ptr(), 24, 0);
+                }
+                crate::text::latch_surface_text_pending(latched(frames));
+                let mut ph = PresentHandle::of(&mut present);
+                m.tick(tick(16 * (frames + 1)), &mut ph);
+                frames += 1;
+            }
+            crate::text::reset_prewarm_for_test();
+            frames
+        };
+        assert_eq!(held_for(&|_| false, true), 2, "a live queue the latch calls ready does not hold");
+        assert_eq!(held_for(&|f| f < 3, false), 4, "an empty queue the latch calls warming still holds");
+        assert_eq!(held_for(&|f| f < 3, true), 4, "the latch, not the queue, decides the open frame");
     }
 
     /// `hide` retires on the same frame — no spring runs at all — while `dismiss` over the same

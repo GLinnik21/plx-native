@@ -57,6 +57,15 @@ transition early. Missing, duplicate, late or unconsumed readiness fails closed;
 physical window gate still blocks drawing while backgrounded. Recordings predating this input
 are refused at the product shape boundary and must be recorded afresh.
 
+The same pre-dispatch record carries **text readiness** (`CaptureReadinessV2`, the capture row's
+`text` field): whether recorded text is still warming. A presented surface stays held at appear 0
+while it is (`text::surface_text_pending`, bounded by `SURFACE_TEXT_HOLD_MAX_MS`), and the queue
+drains under a wall-clock budget, so a slower CPU held the panel shut for more frames and turned
+it `Open` later. Before it was recorded, Flow 12's Filmography modal opened on frame 78 instead of
+the recorded 76 on GitHub's macOS runners and on a Mac's efficiency cores (`taskpolicy -c
+background`), with every named difference counter at zero and only `diverged=2`. Replay now
+supplies the recorded answer; the live queue still drains, which changes only what is drawn.
+
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
 retry/backoff; it is not turned into an admitted worker or an asynchronous failure. Natural
@@ -109,7 +118,9 @@ and compact-row change in #258 subsequently moved the screen census; all three a
 recorded again on that combined shape and replayed in both modes with every difference counter
 at zero. The `CaptureReadinessV1` input subsequently moved the product wire shape; all three
 anchors were freshly recorded again, and both modes graded every frame with every difference
-counter at zero. The controlled effect encoder now covers preview
+counter at zero. `CaptureReadinessV2` (text readiness, above) moved it again, and all three
+anchors were recorded afresh after the old ones were observed being refused. The controlled
+effect encoder now covers preview
 start/stop/transport/seek, item-menu requests, and every content-panel payload with exhaustive
 matches. Replay regenerates those typed requests and compares their complete JSON payloads;
 it does not decode recorded effects into executable requests. Full playback remains outside
