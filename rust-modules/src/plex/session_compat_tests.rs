@@ -419,6 +419,57 @@ fn remembered_library_sorts_survive_the_canonical_split() {
     assert_eq!(joined.sorts_for("u-sorter").map(|sorts| sorts.libs.len()), Some(1));
 }
 
+/// Remembered per-item subtitle offsets survive the canonical split the same way library sorts
+/// do, and for the same reason: they live in the PUBLIC preferences half, so DB8 must carry them
+/// too, and a session that never tuned one must not grow the key at all.
+#[test]
+fn remembered_subtitle_offsets_survive_the_canonical_split() {
+    let mut session = Session::default();
+    assert!(split_public(&session).unwrap().preferences.get("subtitle_offsets").is_none());
+    session.set_subtitle_offset_for("u-tuner", "machine", "rk-1", Some(1_500));
+    let public = split_public(&session).unwrap();
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    for restored in [&joined, &public_session(&public)] {
+        assert_eq!(restored.subtitle_offset_for("u-tuner", "machine", "rk-1"), Some(1_500));
+        assert!(restored.subtitle_offset_for("", "machine", "rk-1").is_none(), "another profile's record is its own");
+        assert!(restored.subtitle_offset_for("u-tuner", "machine", "rk-2").is_none(), "another item's record is its own");
+    }
+    // a malformed entry costs itself, never the preferences beside it
+    let mut public = public;
+    public.preferences["subtitle_offsets"][0]["items"].as_array_mut().unwrap()
+        .push(serde_json::json!({"machine_id": 7}));
+    public.preferences["subtitle_offsets"].as_array_mut().unwrap().push(serde_json::json!("bad"));
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.subtitle_offsets.len(), 1);
+    assert_eq!(joined.subtitle_offsets[0].items.len(), 1);
+}
+
+/// The per-profile list is bounded (oldest evicted first), and setting the offset back to
+/// Original (0) forgets the entry instead of recording a no-op correction.
+#[test]
+fn subtitle_offsets_are_capped_and_zero_forgets_the_entry() {
+    use crate::plex::session::SubtitleOffsets;
+    let mut offsets = SubtitleOffsets::default();
+    for i in 0..(SubtitleOffsets::CAP + 5) {
+        offsets.set("m", &format!("rk-{i}"), Some(1_000 + i as i64));
+    }
+    assert_eq!(offsets.items.len(), SubtitleOffsets::CAP);
+    assert!(offsets.get("m", "rk-0").is_none(), "the oldest entries are evicted");
+    assert!(offsets.get("m", &format!("rk-{}", SubtitleOffsets::CAP + 4)).is_some());
+    // re-tuning the same item refreshes it rather than duplicating it
+    offsets.set("m", "rk-10", Some(-300));
+    assert_eq!(offsets.items.len(), SubtitleOffsets::CAP);
+    assert_eq!(offsets.items.last().map(|e| (e.rating_key.as_str(), e.offset_ms)), Some(("rk-10", -300)));
+    // Original (0) forgets rather than recording a no-op
+    offsets.set("m", "rk-10", Some(0));
+    assert!(offsets.get("m", "rk-10").is_none());
+    // no machine id or ratingKey is ever recorded
+    offsets.set("", "rk-x", Some(500));
+    offsets.set("m", "", Some(500));
+    assert!(offsets.get("", "rk-x").is_none());
+    assert!(offsets.get("m", "").is_none());
+}
+
 /// **A session written before household evidence existed reads as TODAY's behaviour, not worse.**
 ///
 /// `SourceRef::home`/`owner_id` are absent from every file on every television right now, and the

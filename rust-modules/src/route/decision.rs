@@ -6385,7 +6385,7 @@ fn request_play_inner(
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
         meta.run(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
-        reset_track_selection(retry);
+        reset_track_selection(request.sid, &request.rk, retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
@@ -6464,16 +6464,61 @@ fn request_play_inner(
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
 /// resolved again with the subtitle it had (`RetryContext::sub_sid`, applied to the resolve env
-/// below), so the timing offset tuned against that subtitle is carried with it; a new item starts at
-/// 0. The landing re-clamps it once the subtitle is re-selected
-/// (`player::reclamp_subtitle_offset`), since the reset has just deselected the sidecar whose
-/// range allows an advance.
-fn reset_track_selection(retry: Option<RetryContext>) {
+/// below), so the timing offset tuned against that subtitle is carried with it. A genuinely NEW
+/// request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
+/// (`Session::subtitle_offset_for`, keyed by machine id + ratingKey, never by track — a track
+/// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
+/// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
+/// since the reset has just deselected the sidecar whose range allows an advance.
+fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
-    if let Some(retry) = retry {
-        crate::player::restore_subtitle_offset(retry.sub_offset_ms);
+    match retry {
+        Some(retry) => crate::player::restore_subtitle_offset(retry.sub_offset_ms),
+        None => {
+            if let Some(offset_ms) = remembered_subtitle_offset(sid, rk) {
+                crate::player::restore_subtitle_offset(offset_ms);
+            }
+        }
     }
+}
+
+/// This profile's remembered subtitle sync-timing correction for `rk` on `sid`'s server, if this
+/// television has ever tuned one — the read half of [`persist_subtitle_offset`]. `None` when the
+/// server is not (yet) registered, which a resolve about to fail for the same reason would find
+/// out anyway.
+fn remembered_subtitle_offset(sid: ServerId, rk: &str) -> Option<i64> {
+    let machine_id = crate::plex::client_for(sid)?.machine_id();
+    if machine_id.is_empty() {
+        return None;
+    }
+    crate::plex::session::peek().subtitle_offset_for(&crate::plex::session::current_profile_key(), machine_id, rk)
+}
+
+/// Persist the viewer's subtitle sync-timing correction for the CURRENTLY PLAYING item, so the
+/// next resume of this exact file starts from where they left it (`remembered_subtitle_offset`'s
+/// own doc). Fire-and-forget on the storage worker, like every other in-player preference edit
+/// (`player::set_subtitle_tone`) — the live atomic ([`crate::player::set_subtitle_offset`]) is
+/// already applied by the time this queues, so a slow or lost write costs only the NEXT resume,
+/// never this one.
+pub(crate) fn persist_subtitle_offset(ps: &PlaybackSession, offset_ms: i64) {
+    let Some(machine_id) = crate::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
+        return;
+    };
+    if machine_id.is_empty() {
+        return;
+    }
+    let rk = cur_rk(ps);
+    let user = crate::plex::session::current_profile_key();
+    let wanted = (offset_ms != 0).then_some(offset_ms);
+    crate::plex::session::queue_update(move |current| {
+        if current.subtitle_offset_for(&user, &machine_id, &rk) == wanted {
+            return None;
+        }
+        let mut next = current.clone();
+        next.set_subtitle_offset_for(&user, &machine_id, &rk, wanted);
+        Some(next)
+    });
 }
 
 /// Start a fresh resolve for the item whose terminal error is still on screen.
@@ -6907,8 +6952,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         ));
         crate::player::request_subtitle(ord);
     }
-    // A retry carried its subtitle offset through the reset (`reset_track_selection`); hold it to
-    // the range of the subtitle that actually landed, so an advance never outlives its sidecar.
+    // A retry or a remembered per-item correction carried its subtitle offset through the reset
+    // (`reset_track_selection`); hold it to the range of the subtitle that actually landed, so an
+    // advance never outlives its sidecar.
     crate::player::reclamp_subtitle_offset();
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
