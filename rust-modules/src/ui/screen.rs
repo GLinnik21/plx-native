@@ -939,7 +939,10 @@ impl ClipScope {
     /// delegates here). The box is `r` placed by the cascade, intersected with the cascade's own
     /// carried clip AND with the scope already open, if any; a recording painter opens nothing.
     pub fn open_in(p: Painter, r: Rect) -> Self {
-        if p.is_recording() {
+        // Backdrop DISCOVERY first, as `Painter::clip` does: a discovery painter records, and the
+        // backdrop walk keeps its own clip that culls what a scissor would hide. Without the
+        // forward, a row scrolled outside a table's frame would be recorded unclipped.
+        if !crate::ui::frame::backdrop::discovering() && p.is_recording() {
             return Self::inert();
         }
         Self::open(p.clipped(r).clip_rect())
@@ -973,8 +976,18 @@ impl Drop for ClipScope {
     }
 }
 
-#[cfg(not(test))]
+/// Set (or clear) the scissor for the current pass: the backdrop walk's own clip while discovery
+/// runs (mirroring `Painter::clip`/`clip_clear`), GL otherwise.
 fn apply_scissor(r: Option<Rect>) {
+    if crate::ui::frame::backdrop::discovering() {
+        crate::ui::frame::backdrop::clip(r);
+    } else {
+        gl_scissor(r);
+    }
+}
+
+#[cfg(not(test))]
+fn gl_scissor(r: Option<Rect>) {
     match r {
         Some(r) => crate::gfx::clip_set(r.x, r.y, r.w, r.h),
         None => crate::gfx::clip_clear(),
@@ -982,7 +995,7 @@ fn apply_scissor(r: Option<Rect>) {
 }
 
 #[cfg(test)]
-fn apply_scissor(_r: Option<Rect>) {}
+fn gl_scissor(_r: Option<Rect>) {}
 
 impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
     type Target = Cx<'views, H>;

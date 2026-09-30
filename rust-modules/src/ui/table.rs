@@ -665,8 +665,31 @@ impl TableView {
     /// part of [`Self::measured_height`], [`Self::measured_width`] and [`Self::fit_report`]; it is
     /// not a hit target here (the owner that pops on it registers its own stop). Design record:
     /// `docs/player-submenus.md`.
+    ///
+    /// The band moves every row down (or up) by [`HDR_H`] + [`DIV_H`], so when it appears or goes
+    /// the pill springs are re-jumped to the selected row's new place: installing the title after
+    /// the sections must not leave the pill a band off until the spring catches up. The scroll is
+    /// left alone (a [`Self::restore_sections`] puts its own back after).
     pub fn set_title(&mut self, title: Option<String>) {
+        let moved = self.title.is_some() != title.is_some();
         self.title = title;
+        if moved && self.n_rows() > 0 {
+            let top = self.row_top(self.sel);
+            self.hl_top.jump(top + PILL_INSET);
+            self.hl_bot.jump(top + self.row_height(self.sel) - PILL_INSET);
+        }
+    }
+
+    /// The title band's rect in screen space for a table drawn into `frame`: under the current
+    /// scroll, exactly where [`Self::draw`] puts it, and clipped to `frame` as the draw is. The
+    /// strip spans the pill's width ([`SIDE`] inset) across [`HDR_H`], for a pointer-only "back"
+    /// target. `None` without a title, or once it has scrolled fully out of the viewport. (A
+    /// section-0 dim never touches it: the title is the page's, not the section's.)
+    pub fn title_rect(&self, frame: Rect) -> Option<Rect> {
+        self.title.as_ref()?;
+        let band = Rect::new(frame.x + SIDE, frame.y + TOP_PAD - self.scroll.pos, frame.w - 2.0 * SIDE, HDR_H);
+        let seen = band.intersect(frame);
+        (seen.w > 0.0 && seen.h > 0.0).then_some(seen)
     }
 
     /// The title set by [`Self::set_title`].
@@ -1158,7 +1181,9 @@ impl TableView {
             f(y, WALK_DIVIDER, 0);
         }
         for (si, sec) in self.sections.iter().enumerate() {
-            if si > 0 {
+            // an EMPTY section (a `Form` whose items all fell through) has nothing to divide from
+            // the one above: no hairline, no gap, and it must not lengthen the content
+            if si > 0 && !sec.rows.is_empty() {
                 y += DIV_H;
                 f(y, WALK_DIVIDER, si);
             }
@@ -1196,9 +1221,14 @@ impl TableView {
         ROW_H
     }
     fn content_h(&self) -> f32 {
+        // the LAST ROW's bottom, not the last walk event's: a trailing header or divider event
+        // (an empty section) is not content
         let mut h = 0.0;
-        self.walk(|y, _, _| h = y); // last item's top
-                                    // add the last row's height
+        self.walk(|y, gi, _| {
+            if gi >= 0 {
+                h = y;
+            }
+        });
         h + self.row_height(self.n_rows() - 1)
     }
 
@@ -1307,8 +1337,8 @@ impl TableView {
         self.walk(|cy, gi, si| {
             // ONE alpha over the whole group (see `Section::dim`) — pushed here, at the top of the
             // walk, so header, accessory, rows, marks and read-outs can never dim out of step.
-            let p = self.group_painter(p, si);
             let sy = top0 + cy - scroll;
+            let p = self.event_painter(p, gi, si);
             if gi == WALK_DIVIDER {
                 // the hairline between this section and the one above, headed or not, centred in
                 // the `DIV_H` gap; it fades with the group like everything else in it
@@ -1607,6 +1637,18 @@ impl TableView {
                 }
             }
         });
+    }
+
+    /// The painter for one walk event: its section's ([`Self::group_painter`]), except the page
+    /// title band and ITS hairline (the walk's first two events, the only divider tagged section 0
+    /// since a section never divides from nothing above it), which belong to the page and so must
+    /// never be dimmed by a dimmed first section.
+    fn event_painter(&self, p: Painter, gi: i32, si: usize) -> Painter {
+        if gi == WALK_TITLE || (gi == WALK_DIVIDER && si == 0) {
+            p
+        } else {
+            self.group_painter(p, si)
+        }
     }
 
     /// `p`, dimmed if section `si` is — the ONE place [`Section::dim`] becomes an alpha.
@@ -2162,6 +2204,65 @@ mod tests {
         assert_eq!(first_row_y, Some(HDR_H + DIV_H));
         t.set_title(None);
         assert_eq!(t.measured_height(), bare);
+    }
+
+    /// **A trailing empty headerless section is nothing**: no divider, no height, no over-scroll
+    /// (a `Form` section whose items all fell through stays visible but empty).
+    #[test]
+    fn a_trailing_empty_section_adds_nothing() {
+        let rows = || vec![Section::new("A").row(Row::new("a")), Section::new("B").row(Row::new("b"))];
+        let count = |t: &TableView| {
+            let mut d = 0;
+            t.walk(|_, gi, _| d += (gi == WALK_DIVIDER) as i32);
+            d
+        };
+        let mut bare = TableView::new();
+        bare.set_sections(rows(), 0, false);
+        let mut t = TableView::new();
+        let mut with = rows();
+        with.push(Section::new(""));
+        t.set_sections(with, 0, false);
+        assert_eq!(t.measured_height(), bare.measured_height());
+        assert_eq!(count(&t), count(&bare));
+        assert_eq!(t.content_h(), bare.content_h());
+    }
+
+    /// **A title installed AFTER the sections still finds the pill on its row**: the band moves
+    /// every row, so the springs re-snap instead of gliding from the old place.
+    #[test]
+    fn set_title_after_the_sections_resnaps_the_pill() {
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("").row(Row::new("a")).row(Row::new("b"))], 1, false);
+        t.set_title(Some("Style".into()));
+        let top = t.row_top(1);
+        assert_eq!(t.hl_top.pos, top + PILL_INSET);
+        assert_eq!(t.hl_bot.pos, top + t.row_height(1) - PILL_INSET);
+        t.set_title(None);
+        assert_eq!(t.hl_top.pos, t.row_top(1) + PILL_INSET);
+    }
+
+    /// **The title band has a rect that follows the scroll, and no section dims it.**
+    #[test]
+    fn title_rect_follows_scroll_and_the_title_is_never_dimmed() {
+        let frame = Rect::new(10.0, 20.0, 400.0, 300.0);
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("").row(Row::new("a")).dim(true)], 0, false);
+        assert_eq!(t.title_rect(frame), None);
+        t.set_title(Some("Style".into()));
+        let r = t.title_rect(frame).expect("band");
+        assert_eq!((r.x, r.y, r.h), (frame.x + SIDE, frame.y + TOP_PAD, HDR_H));
+        t.scroll.jump(10.0);
+        assert_eq!(t.title_rect(frame).map(|r| r.y), Some(frame.y + TOP_PAD - 10.0));
+        t.scroll.jump(HDR_H + 50.0);
+        assert_eq!(t.title_rect(frame), None, "scrolled out of the viewport");
+        // the dim is the section's alone: title and its hairline keep the page's painter
+        let (mut page, mut rows) = (Vec::new(), Vec::new());
+        t.walk(|_, gi, si| {
+            let o = t.event_painter(Painter::root(), gi, si).opacity();
+            if gi == WALK_TITLE || gi == WALK_DIVIDER { page.push(o) } else { rows.push(o) }
+        });
+        assert_eq!(page, [1.0, 1.0], "title and its hairline");
+        assert_eq!(rows, [GROUP_DIM_A], "the dimmed section's row");
     }
 
     /// **The fit gate reports a title that cannot fit**, at the width the localized text needs.

@@ -360,6 +360,30 @@ fn a_disabled_item_is_dim_focusable_and_inert() {
     assert_eq!(t.activate(2), Some(Activation::Action(Act::C)));
 }
 
+/// **`disabled` after a skipped `_if` disables nothing**: the "Style omitted during a server burn,
+/// dim during the app's own burn" shape must not dim the row declared before the skipped one.
+#[test]
+fn disabled_after_a_skipped_item_does_not_reach_the_previous_row() {
+    let t = table(F::new().section(
+        S::new("")
+            .item(Id::A, RowKind::Button, Act::A, Row::new("Alpha"))
+            .item_if(false, Id::B, RowKind::Button, Act::B, Row::new("Beta"))
+            .disabled(true)
+            .item_keyed_if(false, Id::C, RowKey(9), RowKind::Button, Act::C, Row::new("Gamma"))
+            .disabled(true),
+    ));
+    assert!(!t.table.sections[0].rows[0].dim, "Alpha is not the skipped row");
+    assert_eq!(t.activate(0), Some(Activation::Action(Act::A)));
+    // and a later real item is still disableable
+    let t = table(F::new().section(
+        S::new("")
+            .item_if(false, Id::A, RowKind::Button, Act::A, Row::new("Alpha"))
+            .item(Id::B, RowKind::Button, Act::B, Row::new("Beta"))
+            .disabled(true),
+    ));
+    assert!(t.table.sections[0].rows[0].dim);
+}
+
 fn tall_page(ids: &[Id]) -> F {
     F::new().section(ids.iter().cloned().fold(S::new(""), |s, id| {
         s.item(id, RowKind::Button, Act::A, Row::new("row"))

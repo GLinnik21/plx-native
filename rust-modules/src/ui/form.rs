@@ -100,6 +100,9 @@ pub struct FormSection<Id, A, Dest> {
     head: Section,
     visible: bool,
     slots: Vec<Slot<Id, A, Dest>>,
+    /// The last declaration was an `_if` that held nothing back: a trailing [`Self::disabled`]
+    /// then refers to an item that does not exist and must not fall onto the one before it.
+    skipped: bool,
 }
 impl<Id, A, Dest> FormSection<Id, A, Dest> {
     pub fn new(header: impl Into<String>) -> Self {
@@ -112,7 +115,13 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
             head,
             visible: true,
             slots: Vec::new(),
+            skipped: false,
         }
+    }
+    /// The one place a slot is appended, so `skipped` cannot outlive the declaration it describes.
+    fn push(&mut self, slot: Slot<Id, A, Dest>) {
+        self.skipped = false;
+        self.slots.push(slot);
     }
     /// `false` drops the whole section (header included) from the built table.
     pub fn visible(mut self, v: bool) -> Self {
@@ -134,7 +143,7 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
             (RowKind::Nav(_), None) => row.chevron(true),
             _ => row,
         };
-        self.slots.push(Slot::Item(
+        self.push(Slot::Item(
             Binding {
                 id,
                 key,
@@ -148,16 +157,19 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
     }
     /// Mark the item just declared DISABLED when `cond` holds: drawn dim ([`Row::dim`]), still
     /// focusable, and never activated ([`FormTable::activate`] answers `None` for OK and RIGHT
-    /// alike). A no-op when the last slot is not an item.
+    /// alike). A no-op when the last slot is not an item, and when the last declaration was an
+    /// [`Self::item_if`] / [`Self::item_keyed_if`] that was skipped: `.item_if(false, …)
+    /// .disabled(true)` ("dim it during this state") must not dim the row BEFORE the one that was
+    /// never declared.
     pub fn disabled(mut self, cond: bool) -> Self {
-        if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond) {
+        if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
             b.disabled = true;
             row.dim = true;
         }
         self
     }
     pub fn item_keyed_if(
-        self,
+        mut self,
         cond: bool,
         id: Id,
         key: RowKey,
@@ -168,17 +180,18 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         if cond {
             self.item_keyed(id, key, kind, action, row)
         } else {
+            self.skipped = true;
             self
         }
     }
     /// The grouping hairline: consumes a layout index, never focusable, never bound.
     pub fn separator(mut self) -> Self {
-        self.slots.push(Slot::Inert(Row::separator()));
+        self.push(Slot::Inert(Row::separator()));
         self
     }
     /// A one-line informational note: consumes a layout index, never focusable, never bound.
     pub fn note(mut self, text: impl Into<String>) -> Self {
-        self.slots.push(Slot::Inert(Row::note(text)));
+        self.push(Slot::Inert(Row::note(text)));
         self
     }
 }
@@ -196,10 +209,11 @@ impl<Id: FormId, A, Dest> FormSection<Id, A, Dest> {
         self.item(id, RowKind::Choice, action, row)
     }
     /// [`Self::item`] when `cond` holds, else nothing.
-    pub fn item_if(self, cond: bool, id: Id, kind: RowKind<Dest>, action: A, row: Row) -> Self {
+    pub fn item_if(mut self, cond: bool, id: Id, kind: RowKind<Dest>, action: A, row: Row) -> Self {
         if cond {
             self.item(id, kind, action, row)
         } else {
+            self.skipped = true;
             self
         }
     }
