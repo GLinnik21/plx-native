@@ -4910,6 +4910,7 @@ mod tests {
     /// resident art must survive the whole commit.
     #[test]
     fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
+        const ROTATED_GRANT: &str = "plex-tv-grant-for-the-same-owner";
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
         crate::plex::grant::reset_for_test();
@@ -4925,7 +4926,7 @@ mod tests {
 
         // Discovery reaches the same server, same address, same user — under plex.tv's grant.
         let mut reached = stored[0].clone();
-        reached.token = "plex-tv-grant-for-the-same-owner".into();
+        reached.token = ROTATED_GRANT.into();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         let epoch = owner.state.epoch;
@@ -4958,7 +4959,7 @@ mod tests {
         });
         assert!(kept, "a same-profile roster refresh revoked the stored server's art");
         let c = crate::plex::client_for(sid).unwrap();
-        assert!(c.image_transcode_path("/t", 2, 2, false).ends_with("X-Plex-Token=plex-tv-grant-for-the-same-owner"),
+        assert!(c.image_transcode_path("/t", 2, 2, false).ends_with(&format!("X-Plex-Token={ROTATED_GRANT}")),
             "the refresh must still install plex.tv's current grant");
         crate::plex::grant::reset_for_test();
         crate::plex::reset_servers_for_test();
