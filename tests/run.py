@@ -866,6 +866,27 @@ def resolve_flavour(args, manifest):
     return FLAVOUR
 
 
+def _pms_request(url, token, ok_label, fail_label, method=None):
+    """Send one harness request to PMS and log the outcome with the token redacted from `url`
+    (`X-Plex-Token` rides the query string). True iff PMS answered without an HTTP error; failures
+    are logged, never raised. `method` None is urllib's default (GET). The single place a PMS URL
+    is printed, so no caller can log it unredacted."""
+    redacted = url.replace(token, "<token>")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method=method), timeout=15) as resp:
+            print(f"    {ok_label}: {redacted} -> {resp.status}")
+            return True
+    except Exception as e:
+        print(f"    WARN: {fail_label} ({redacted}): {e}")
+        return False
+
+
+def _streams_of(part, stream_type):
+    """A Part's streams of one `streamType` (1 video, 2 audio, 3 subtitle -- docs/pms-api.md), in
+    server order."""
+    return [s for s in (part.get("Stream") or []) if int(s.get("streamType", 0) or 0) == stream_type]
+
+
 def pms_unscrobble(host, port, rk, token):
     """Clear an item's resume point (and watched flag) via /:/unscrobble. Token never printed.
 
@@ -879,14 +900,7 @@ def pms_unscrobble(host, port, rk, token):
         "X-Plex-Token": token,
     })
     url = f"http://{host}:{port}/:/unscrobble?{q}"
-    redacted = url.replace(token, "<token>")
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
-            print(f"    progress reset: {redacted} -> {resp.status}")
-            return True
-    except Exception as e:
-        print(f"    WARN: unscrobble failed ({redacted}): {e}")
-        return False
+    return _pms_request(url, token, "progress reset", "unscrobble failed")
 
 
 def pms_put_progress(host, port, rk, time_ms, token):
@@ -899,15 +913,7 @@ def pms_put_progress(host, port, rk, time_ms, token):
         "X-Plex-Token": token,
     })
     url = f"http://{host}:{port}/:/progress?{q}"
-    redacted = url.replace(token, "<token>")
-    req = urllib.request.Request(url, method="PUT")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            print(f"    progress set: {redacted} -> {resp.status}")
-            return True
-    except Exception as e:
-        print(f"    WARN: progress PUT failed ({redacted}): {e}")
-        return False
+    return _pms_request(url, token, "progress set", "progress PUT failed", method="PUT")
 
 
 def pms_default_audio_stream(part):
@@ -917,7 +923,7 @@ def pms_default_audio_stream(part):
     stream sorts first -- the same fallback order a fresh (never-switched) play would land on.
     Returns None if the part carries no audio stream at all (skip audioStreamID rather than send
     a bogus one)."""
-    audio = [s for s in (part.get("Stream") or []) if int(s.get("streamType", 0) or 0) == 2]
+    audio = _streams_of(part, 2)
     for s in audio:
         if int(s.get("selected", 0) or 0) == 1:
             return int(s["id"])
@@ -954,7 +960,7 @@ def pms_resolve_subtitle_stream(part, spec):
     the Nth subtitle stream in server order, `{"language": "en"}` the first whose languageCode
     or language tag starts with that code (case-insensitive; "en" matches "eng"). None if it
     resolves to nothing."""
-    subs = [s for s in (part.get("Stream") or []) if int(s.get("streamType", 0) or 0) == 3]
+    subs = _streams_of(part, 3)
     if "track" in spec:
         n = int(spec["track"])
         return int(subs[n]["id"]) if 0 <= n < len(subs) else None
@@ -971,22 +977,18 @@ def pms_resolve_subtitle_stream(part, spec):
 def _pms_put_streams(host, port, part_id, token, params, label):
     q = {"allParts": "1", "X-Plex-Token": token, **params}
     url = f"http://{host}:{port}/library/parts/{part_id}?{urllib.parse.urlencode(q)}"
-    redacted = url.replace(token, "<token>")
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, method="PUT"), timeout=15) as resp:
-            print(f"    {label}: {redacted} -> {resp.status}")
-        return True
-    except Exception as e:
-        print(f"    WARN: {label} PUT failed ({redacted}): {e}")
-        return False
+    return _pms_request(url, token, label, f"{label} PUT failed", method="PUT")
 
 
-def pms_seed_subtitle(host, port, rk, token, spec):
+def pms_seed_subtitle(host, port, rk, token, spec, parts=None):
     """Select a subtitle stream on the item's Part(s) as the harness identity, resolved from live
     metadata (`pms_resolve_subtitle_stream`). Establishes a case's own precondition (e.g. a
     "server-selected subtitle") so it does not depend on what an earlier case left behind. Same
-    PUT shape as `pms_reset_streams`; True iff every Part was seeded."""
-    parts = _pms_item_parts(host, port, rk, token, "subtitle-seed")
+    PUT shape as `pms_reset_streams`; True iff every Part was seeded. `parts` is the item's Parts
+    when the caller already fetched them (stream ids do not change under a selection PUT), else
+    fetched here."""
+    if parts is None:
+        parts = _pms_item_parts(host, port, rk, token, "subtitle-seed")
     if not parts:
         return False
     ok = True
@@ -1006,14 +1008,20 @@ def pms_seed_subtitle(host, port, rk, token, spec):
 def apply_stream_setup(host, port, case, token):
     """A case's PART-level stream state, in the only order that is order-independent: reset to
     the declared default (unless `stream_reset` is false), THEN seed `setup.seed_subtitle`."""
-    if case.get("stream_reset", True):
-        pms_reset_streams(host, port, case["rk"], token)
+    reset = case.get("stream_reset", True)
     spec = case.get("setup", {}).get("seed_subtitle")
+    if not reset and not spec:
+        return
+    # One metadata GET serves both steps: the reset PUT changes which stream is selected, never
+    # which streams the Part has.
+    parts = _pms_item_parts(host, port, case["rk"], token, "stream setup")
+    if reset:
+        pms_reset_streams(host, port, case["rk"], token, parts=parts)
     if spec:
-        pms_seed_subtitle(host, port, case["rk"], token, spec)
+        pms_seed_subtitle(host, port, case["rk"], token, spec, parts=parts)
 
 
-def pms_reset_streams(host, port, rk, token):
+def pms_reset_streams(host, port, rk, token, parts=None):
     """Restore an item's PART-level audio/subtitle selection to its declared default -- subtitles
     OFF (`subtitleStreamID=0`) and audio on its server-selected/default/first track -- via the
     same `PUT /library/parts/<id>?...&allParts=1` shape the app itself sends from a live pick
@@ -1023,8 +1031,10 @@ def pms_reset_streams(host, port, rk, token):
     persists past that run and becomes the NEXT run's silent starting state, for the TEST
     identity the harness token belongs to -- not just for the case that set it. Called only with
     the harness's own (never the owner's) token. Returns True iff every Part on the item was
-    reset; failures are logged (never raised) so one bad rk does not abort the whole case."""
-    parts = _pms_item_parts(host, port, rk, token, "stream-reset")
+    reset; failures are logged (never raised) so one bad rk does not abort the whole case. `parts` is
+    the item's Parts when the caller already fetched them, else fetched here."""
+    if parts is None:
+        parts = _pms_item_parts(host, port, rk, token, "stream-reset")
     if not parts:
         return False
     ok = True
