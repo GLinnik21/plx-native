@@ -2425,3 +2425,286 @@ fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge()
     s.grid.shelves[0].base_y = SCR_H + TITLE_DY + 4.0;
     assert!(!drawn(&s), "a shelf entirely below the screen draws nothing");
 }
+
+thread_local! {
+    /// What [`HeroArtSpy`] was asked, and which backdrops it has "decoded". Thread-local, like the
+    /// source slot and the render cache it stands in front of.
+    static HERO_ART: std::cell::RefCell<HeroArtState> = std::cell::RefCell::new(HeroArtState::default());
+}
+
+#[derive(Default)]
+struct HeroArtState {
+    /// Every DRAW probe (`resolve_tex_wh_on`) — demand, LRU-touched and evict-protected.
+    probed: Vec<String>,
+    /// Every speculative warm (`warm_tex_on`).
+    warmed: Vec<String>,
+    /// Paths whose pixels were handed to the render cache; a path's index is its `PosterKey`.
+    delivered: Vec<String>,
+    /// Shelf posters still in flight — Home's ordinary state for its first seconds on screen.
+    busy: bool,
+}
+
+/// A poster source that answers READY only for what the test delivered, and records the rest.
+struct HeroArtSpy;
+impl crate::ui::tex::Source for HeroArtSpy {
+    fn probe(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> Option<crate::ui::machine::PosterKey> {
+        HERO_ART.with(|a| {
+            let mut a = a.borrow_mut();
+            a.probed.push(path.into());
+            a.delivered
+                .iter()
+                .position(|p| p == path)
+                .map(|i| crate::ui::machine::PosterKey(i as u32))
+        })
+    }
+    fn warm(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> crate::ui::tex::Warm {
+        HERO_ART.with(|a| a.borrow_mut().warmed.push(path.into()));
+        crate::ui::tex::Warm::Claimed
+    }
+    fn logo(&self, _: u16, _: &str) -> Option<crate::ui::machine::PosterKey> {
+        None
+    }
+    fn logo_warm(&self, _: u16, _: &str) -> crate::ui::tex::Warm {
+        crate::ui::tex::Warm::Known
+    }
+    fn unresident(&self, _: crate::ui::machine::PosterKey, _: bool) {}
+    fn idle(&self) -> bool {
+        HERO_ART.with(|a| !a.borrow().busy)
+    }
+}
+
+fn hero_tick(ms: u32) -> ScreenEvent<TestHost> {
+    ScreenEvent::Tick(Tick { ms, dt_us: 16_000 })
+}
+
+/// Right at the edge of the hero's controls: the press that flips the billboard by hand.
+fn hero_edge_right() -> ScreenEvent<TestHost> {
+    ScreenEvent::Input(InputEvent {
+        at: Tick::default(),
+        source: Source::Sdl,
+        kind: InputKind::Key { key: Key::Right, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true },
+    })
+}
+
+/// Decode and upload `path` through the real render cache, as the poster workers and the frame's
+/// PREPARE step would: from here on a draw probe of it resolves to a resident texture.
+fn deliver_hero_art(path: &str) {
+    struct StubUp(u32);
+    impl crate::ui::tex::Uploader for StubUp {
+        fn upload(&mut self, d: &crate::ui::tex::Decoded) -> crate::ui::tex::Tex {
+            self.0 += 1;
+            crate::ui::tex::Tex { id: 100 + self.0, w: d.w, h: d.h }
+        }
+        fn warm(&mut self, _: crate::ui::tex::Tex) {}
+        fn free(&mut self, _: crate::ui::tex::Tex) {}
+    }
+    let key = HERO_ART.with(|a| {
+        let mut a = a.borrow_mut();
+        if let Some(i) = a.delivered.iter().position(|p| p == path) {
+            return i;
+        }
+        a.delivered.push(path.into());
+        a.delivered.len() - 1
+    });
+    crate::ui::tex::accept(crate::ui::tex::PosterReady {
+        key: crate::ui::machine::PosterKey(key as u32),
+        result: Ok(crate::ui::tex::Decoded { w: 16, h: 9, rgba: vec![0; 16 * 9 * 4].into_boxed_slice() }),
+    });
+    let mut budget = crate::ui::frame::Budget::new();
+    budget.begin_frame(0);
+    let mut present = crate::ui::present::Present::new();
+    let mut handle = crate::ui::machine::PresentHandle::of(&mut present);
+    let mut up = StubUp(key as u32 * 10);
+    crate::ui::tex::prepare(&mut budget, &mut up, &mut handle, || 0);
+}
+
+/// **Owner field report (2026-09-30): a MANUAL hero flip blinks; the 8 s auto-advance never does.**
+/// A phone capture showed the outgoing backdrop sliding off over the flat ground and the new one
+/// fading in only afterwards: the incoming backdrop was not resident when the flip began.
+///
+/// Both paths call the same `flip`, so the difference was purely WHEN the neighbour's backdrop had
+/// been asked for. The ±1 prefetch was a speculative `warm` that ran only on a settled billboard
+/// AND a completely idle poster pipeline — never while a shelf was still loading, never during the
+/// slide — and a warmed slot is the source's first LRU victim, which a warm never revives. Eight
+/// seconds of idling hid all of that from the auto-advance; a press a second after the previous
+/// flip found nothing requested.
+///
+/// The billboard now holds both neighbours' backdrops as DRAW demand (the one request path the
+/// source LRU-protects and re-arms) from the moment an index is shown, busy pipeline or not, and
+/// re-arms the new neighbours on the flip itself — the same mechanism for both paths.
+#[test]
+fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
+    let _guard = crate::testlock::serial();
+    crate::ui::tex::install(&HeroArtSpy);
+    crate::ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState { busy: true, ..Default::default() });
+
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 4, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let n = view.hero_count();
+    assert!(n >= 3, "the test needs two distinct neighbours, got {n} hero slots");
+    let art = |i: usize| view.hero(i % n).unwrap().item.art.clone();
+    let tick = hero_tick;
+
+    let mut s = screen(view);
+    assert_eq!(s.carousel_index(view), 0);
+    let _ = step(&mut s, view, None, &tick(16));
+    let probed = HERO_ART.with(|a| a.borrow().probed.clone());
+    for (which, i) in [("next", 1), ("previous (wrapped)", n - 1)] {
+        assert!(
+            probed.contains(&art(i)),
+            "showing hero 0 with shelf posters still loading must already request the {which} \
+             backdrop {} as demand; draw probes were {probed:?}",
+            art(i)
+        );
+    }
+
+    // The workers finish what was asked for.
+    for path in probed.iter().collect::<std::collections::BTreeSet<_>>() {
+        deliver_hero_art(path);
+    }
+    // Two seconds on hero 0: its own backdrop fades fully in, well inside the 8 s countdown.
+    for frame in 2..=125u32 {
+        let _ = step(&mut s, view, None, &tick(frame * 16));
+    }
+    assert!(s.outgoing.is_none(), "no flip yet");
+    assert!(reveal(s.backdrop.tex.0, &s.backdrop.art) > 0.999, "hero 0's backdrop is up");
+
+    // A MANUAL flip: Right at the edge of the hero's controls.
+    let play = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let right = hero_edge_right();
+    let (handled, _, _) = step(&mut s, view, Some(play), &right);
+    assert_eq!(handled, Handled::Yes, "Right at the hero's edge flips the billboard");
+    HERO_ART.with(|a| a.borrow_mut().probed.clear());
+    let _ = step(&mut s, view, Some(play), &tick(126 * 16));
+
+    assert!(s.outgoing.is_some(), "the slide is running");
+    assert_eq!(s.carousel_index(view), 1);
+    let incoming_a = reveal(s.backdrop.tex.0, &s.backdrop.art);
+    let outgoing_a = reveal(s.backdrop.outgoing_tex.0, &s.backdrop.outgoing_art);
+    assert!(
+        s.backdrop.tex.0 != 0 && incoming_a > 0.999,
+        "the incoming backdrop must slide in fully revealed (tex {}, alpha {incoming_a}), not \
+         fade in over the ground after the slide",
+        s.backdrop.tex.0
+    );
+    assert!(
+        wash_hidden(s.snap.pos, incoming_a, Some(outgoing_a)),
+        "no frame of the flip may show the flat ground (incoming {incoming_a}, outgoing {outgoing_a})"
+    );
+
+    // …and the new neighbours are asked for on the flip itself, not after the slide settles.
+    let probed = HERO_ART.with(|a| a.borrow().probed.clone());
+    assert!(
+        probed.contains(&art(2)),
+        "mid-slide, hero 1's next backdrop {} must already be requested; probes were {probed:?}",
+        art(2)
+    );
+    assert!(probed.contains(&art(0)), "…and its previous one, the outgoing hero");
+}
+
+/// **Owner field report (2026-09-30, after 4fbeacfd6): the FIRST frame of a manual flip draws the
+/// wrong backdrop.** Phone frames at 30 fps: pressing Right on Top Gear while the previous flip's
+/// slide was still settling showed Top Gear's logo and text over FAMILY GUY's backdrop — the hero
+/// from two flips ago — full-bright for one frame; pressing on a settled billboard showed one
+/// frame of the outgoing hero's text over the bare wash.
+///
+/// The mechanism is frame ORDER, not texture residency. A manual flip is the hero's at-edge
+/// Right/Left, which the dispatcher re-delivers to the page only after the focus engine reports
+/// the edge — behind the frame's `Tick` in the queue (`ui::dispatch`, `Outcome::Edge`). So the
+/// press frame ran `Backdrop::update` BEFORE `flip`: the art layers were resolved for the old
+/// (outgoing, selected) pair, and the draw then read the NEW pair's slide offsets. The outgoing
+/// slot at x = 0 drew whatever the previous tick had called outgoing — the hero two flips back
+/// mid-slide, nothing at all on a settled billboard — and the real outgoing art was bound to the
+/// incoming slot, a full screen off to the side. The auto-advance flips inside `tick`, before
+/// `update`, which is why it never showed this.
+///
+/// The test drives the dispatcher's order: tick, THEN the at-edge press, then the draw, and reads
+/// which textures the recording painter was handed.
+#[test]
+fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdrops() {
+    let _guard = crate::testlock::serial();
+    crate::ui::tex::install(&HeroArtSpy);
+    crate::ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 4, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let n = view.hero_count();
+    assert!(n >= 3, "the test needs three distinct heroes, got {n}");
+    let hero = |i: usize| view.hero(i % n).unwrap();
+    for i in 0..n {
+        deliver_hero_art(&hero(i).item.art);
+    }
+    let tex_of = |i: usize| {
+        let h = hero(i);
+        crate::ui::widgets::resolve_tex_wh_on(h.item.sid, &h.item.art, 1280, 720, 0).0
+    };
+    let who = |tex: u32| (0..n).find(|&i| tex_of(i) == tex);
+    let tick = hero_tick;
+    let play = |s: &HomeScreen| FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let right = hero_edge_right();
+    // What the frame puts on screen: every backdrop-sized textured quad that reaches the panel.
+    let backdrops = |s: &mut HomeScreen| {
+        let context = cx(view, Some(play(s)));
+        crate::ui::draw_census::capture_tex(|| {
+            let mut f = DrawFrame::new(&context, Painter::recording());
+            crate::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
+        })
+        .into_iter()
+        .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01 && r.x < SCR_W && r.x + r.w > 0.0)
+        .collect::<Vec<_>>()
+    };
+
+    let mut s = screen(view);
+    let mut ms = 0u32;
+    let mut frames = |s: &mut HomeScreen, count: u32| {
+        for _ in 0..count {
+            ms += 16;
+            let key = play(s);
+            let _ = step(s, view, Some(key), &tick(ms));
+        }
+        ms
+    };
+    // Two seconds on hero 0: its backdrop is fully up.
+    frames(&mut s, 125);
+    assert!(s.outgoing.is_none());
+
+    // Press 1 on a settled billboard, then press 2 while slide 1 is still settling (past the
+    // flip cooldown, short of the rest threshold) — the owner's rhythm.
+    for (press, settle) in [(1usize, 30u32), (2, 0)] {
+        frames(&mut s, 1);
+        let key = play(&s);
+        let (handled, _, _) = step(&mut s, view, Some(key), &right);
+        assert_eq!(handled, Handled::Yes, "press {press}: Right at the hero's edge flips");
+        assert_eq!(s.carousel_index(view), press % n);
+        let drawn = backdrops(&mut s);
+        let (outgoing, incoming) = (press - 1, press);
+        for &(tex, r, a) in &drawn {
+            assert!(
+                who(tex) == Some(outgoing % n) || who(tex) == Some(incoming % n),
+                "press {press}: the first flip frame drew hero {:?}'s backdrop (tex {tex} at x \
+                 {}, alpha {a}); only the outgoing hero {outgoing} and the incoming hero \
+                 {incoming} may be on screen",
+                who(tex),
+                r.x
+            );
+        }
+        assert!(
+            drawn.iter().any(|&(tex, r, a)| who(tex) == Some(outgoing % n) && r.x.abs() < 1.0 && a > 0.99),
+            "press {press}: the outgoing hero {outgoing}'s backdrop must still fill the panel on \
+             the flip's first frame, not the bare ground; drew {drawn:?}"
+        );
+        frames(&mut s, settle);
+        if settle > 0 {
+            assert!(s.outgoing.is_some(), "press 2 must land while slide 1 is still running");
+            assert_eq!(s.hero_flip_cd, 0.0, "…and past the flip cooldown");
+        }
+    }
+}

@@ -435,6 +435,26 @@ pub(crate) mod draw_census {
         f();
         LOG.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
+
+    thread_local! {
+        static TEX: RefCell<Option<Vec<(u32, Rect, f32)>>> = const { RefCell::new(None) };
+    }
+    /// A recorded textured quad: WHICH texture, where, at what cascaded alpha.
+    pub(crate) fn note_tex(tex: u32, r: Rect, a: f32) {
+        TEX.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((tex, r, a));
+            }
+        });
+    }
+    /// Every textured quad a recording painter is handed while `f` runs, as
+    /// `(texture id, screen rect, alpha)` — the census for a test that asks which PICTURE a frame
+    /// drew, not only that it drew one.
+    pub(crate) fn capture_tex(f: impl FnOnce()) -> Vec<(u32, Rect, f32)> {
+        TEX.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        TEX.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
 }
 
 /// A uniform scale `s` about the fixed point `(ox, oy)` — the [`Painter`]'s visual zoom, and the
@@ -1093,6 +1113,10 @@ impl Painter {
     /// [`tex`](Self::tex) sampling only the `uv` window of the texture — [`Rect::cover_uv`]'s
     /// answer for a picture whose aspect is not `r`'s, so it is cropped rather than squashed.
     pub fn tex_uv(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4]) {
+        #[cfg(test)]
+        if self.records() {
+            draw_census::note_tex(tex, self.place(r), self.c(tint)[3]);
+        }
         if self.declare(r, 12, |data| {
             use frame::backdrop::Value;
             tex.record(data);

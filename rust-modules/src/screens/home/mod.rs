@@ -188,14 +188,26 @@ impl Backdrop {
         }
     }
 
-    fn update(
+    /// **Bind both art layers to the heroes the page names NOW**: resolve the selected and the
+    /// outgoing backdrop, and re-key the reveal springs when the selection changed. Idempotent —
+    /// a second call with the same heroes changes nothing — so it runs twice a frame: from
+    /// [`Self::update`] on the `Tick`, and again from `draw_page` immediately before the draw.
+    ///
+    /// The second call is the correctness half. A MANUAL flip is the hero's at-edge Left/Right,
+    /// which the dispatcher re-delivers to the page only once the focus engine reports the edge —
+    /// BEHIND the frame's `Tick` (`ui::dispatch`, `Outcome::Edge(EdgeRule::Screen)`). Layers bound
+    /// only on the tick were therefore the PREVIOUS pair on the press frame, drawn at the new
+    /// pair's slide offsets: the x = 0 slot showed whatever the last tick had called outgoing —
+    /// the hero two flips back while the previous slide was still settling, nothing (the bare
+    /// wash) on a settled billboard — for exactly one frame (owner report 2026-09-30). The
+    /// auto-advance flips inside `tick`, before `update`, and never showed it. Binding at the draw
+    /// makes the layers a function of the state the draw reads, whatever event changed it.
+    fn bind(
         &mut self,
         hero: Option<HeroRef<'_>>,
         outgoing: Option<HeroRef<'_>>,
-        grid_item: Option<&PmsMovie>,
         selected: Option<&(crate::plex::ServerId, String)>,
         snap: f32,
-        dt: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
             h.map(|h| crate::ui::widgets::resolve_tex_wh_on(h.item.sid, &h.item.art, 1280, 720, 0))
@@ -224,6 +236,18 @@ impl Backdrop {
             }
             self.keyed = selected.cloned();
         }
+    }
+
+    fn update(
+        &mut self,
+        hero: Option<HeroRef<'_>>,
+        outgoing: Option<HeroRef<'_>>,
+        grid_item: Option<&PmsMovie>,
+        selected: Option<&(crate::plex::ServerId, String)>,
+        snap: f32,
+        dt: f32,
+    ) {
+        self.bind(hero, outgoing, selected, snap);
         if self.tex.0 != 0 {
             self.art.step(1.0, AmbientWash::K, dt);
         }
@@ -908,11 +932,28 @@ impl HomeScreen {
         fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
     }
 
+    /// **The billboard's neighbours are HELD, not hoped for.** Both backdrops a flip can land on
+    /// (the carousel's ±[`HERO_PREFETCH`] slots, wrapping) are asked for through the DRAW path every
+    /// frame the billboard is up — from the moment an index is shown, busy pipeline or not, and
+    /// through the slide, so a flip re-arms its new neighbours on the flip itself. One mechanism
+    /// for the manual flip and the auto-advance alike: both call [`Self::flip`], and both land on
+    /// whatever this made resident.
+    ///
+    /// Why a draw probe and not a `warm`: a warm is speculation the source may drop — it runs only
+    /// into an idle pipeline, takes LRU age 0 (the FIRST victim of the next miss, so the two
+    /// neighbours and their logos evicted one another in a full store), and a warm never revives a
+    /// slot the render cache released. That was the manual-flip blink (owner report 2026-09-30):
+    /// a press within a second or so of the last flip found its backdrop not even requested, the
+    /// outgoing art slid off over the flat ground and the new one faded in afterwards, while the
+    /// 8 s countdown always gave the warm time to land. A probe is demand — LRU-touched,
+    /// evict-protected, re-armed after a release — and still goes through the source's queue and
+    /// the frame's upload [`Budget`] like every other picture. Its cost is the two neighbours'
+    /// residency (≈7.4 MB of the 44 MB ceiling) while Home's billboard is up.
+    ///
+    /// The neighbours' clearLogos stay speculative: a late logo is a small pop, not a blank panel.
     fn prefetch(&self, view: HubsView<'_>) {
         use crate::ui::tex::Warm;
-        if !(prefetch_armed(self.snap.pos, self.outgoing.is_some())
-            && crate::ui::tex::source_idle())
-        {
+        if !neighbours_armed(self.snap.pos) {
             return;
         }
         let mut order = [0i32; 2 * HERO_PREFETCH];
@@ -921,15 +962,16 @@ impl HomeScreen {
             view.hero_count() as i32,
             &mut order,
         );
-        for &index in &order[..count] {
-            let Some(hero) = view.hero(index as usize) else {
-                continue;
-            };
-            if crate::ui::widgets::warm_tex_on(hero.item.sid, &hero.item.art, 1280, 720, 0)
-                == Warm::Claimed
-            {
-                return;
-            }
+        let neighbours = || order[..count].iter().filter_map(|&i| view.hero(i as usize));
+        for hero in neighbours() {
+            crate::ui::widgets::resolve_tex_wh_on(hero.item.sid, &hero.item.art, 1280, 720, 0);
+        }
+        if !(prefetch_armed(self.snap.pos, self.outgoing.is_some())
+            && crate::ui::tex::source_idle())
+        {
+            return;
+        }
+        for hero in neighbours() {
             if crate::ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_rk(hero.item))
                 == Warm::Claimed
             {
@@ -1160,6 +1202,14 @@ impl HomeScreen {
         let grid_focus = self.focused_grid(visible_focus);
         let p = f.painter.alpha(f.page_alpha);
         let slide = self.slide_offsets();
+        // Re-bind the art to the heroes `slide` is about: an event delivered after this frame's
+        // `Tick` (a manual flip) has changed them since `update` ran (`Backdrop::bind`).
+        self.backdrop.bind(
+            self.selected_hero(view),
+            self.outgoing_hero(view),
+            self.carousel.as_ref(),
+            self.snap.pos,
+        );
         crate::ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide));
         if env.hero_a > 0.01 {
             crate::ui::profile::phase("hm.hero", || {
@@ -2490,8 +2540,13 @@ fn prefetch_order(cur: i32, n: i32, out: &mut [i32; 2 * HERO_PREFETCH]) -> usize
     }
     count
 }
+/// Is the billboard up, so its neighbours' backdrops are held ([`HomeScreen::prefetch`])?
+fn neighbours_armed(snap: f32) -> bool {
+    snap < 0.05
+}
+/// …and is it also settled, so the neighbours' logos may be warmed?
 fn prefetch_armed(snap: f32, sliding: bool) -> bool {
-    snap < 0.05 && !sliding
+    neighbours_armed(snap) && !sliding
 }
 
 fn display_source(real: &str) -> &str {
