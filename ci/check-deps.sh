@@ -536,7 +536,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
 gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
-if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
+if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
 

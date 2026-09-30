@@ -99,7 +99,7 @@ extern "C" {
 
 // Desktop-only window management. Apart for the mirror-image reason: a television owns the whole
 // panel and never asks how big a display is, so on that build these would be dead code — which
-// `[lints.rust] warnings = "deny"` makes a build failure, not a warning.
+// `[workspace.lints.rust] warnings = "deny"` makes a build failure, not a warning.
 #[cfg(feature = "hostsim")]
 extern "C" {
     /// `SDL_GetDisplayUsableBounds` — the display minus the menu bar and the Dock, which is what

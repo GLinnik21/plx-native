@@ -67,7 +67,7 @@ class StorageServicePackage(unittest.TestCase):
                     result = subprocess.run(
                         ["cargo", "+" + (os.environ.get("RUST_NIGHTLY") or "nightly"), "test", "--manifest-path",
                          str(Path(__file__).resolve().parent.parent / "rust-modules/Cargo.toml"),
-                         "--bin", "plxnative-storage", "runtime::tests::packaged_app_identity",
+                         "-p", "plxnative-storage", "--bin", "plxnative-storage", "runtime::tests::packaged_app_identity",
                          "--", "--exact"],
                         env={**os.environ, "CARGO_INCREMENTAL": "0",
                              "PATH": str(Path.home() / ".cargo" / "bin") + os.pathsep + os.environ.get("PATH", ""),

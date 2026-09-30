@@ -4,7 +4,7 @@
 `rust-modules/Cargo.toml` declares `crate-type = ["rlib"]`: the simulator bin and the host tests
 only need the rlib, and the ARM archive `make` links is produced separately by
 `cargo rustc --crate-type staticlib`. A `staticlib` crate type on the crate makes EVERY cargo
-build of it (host `cargo test`, `make check`, the simulator, the storage helper) also write a
+build of it (`cargo build`, the simulator, anything that depends on the library) also write a
 ~200 MB archive that bundles every upstream crate, and makes the ARM build write an rlib nobody
 links.
 
@@ -24,11 +24,12 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 # `cargo test --lib` compiles the crate only as a test harness and never asks for its library
-# crate types, so it cannot show the offence. The storage helper's unit tests depend on the crate
-# as a LIBRARY, which is exactly what `make check` (and the simulator, and any bin) does, so that
-# build is the one that writes whatever `[lib] crate-type` declares. It is also a build `make
-# check` already runs, in the same environment, so this adds no compile once the tree is built.
-CONFIGS = (("lib as a dependency", ["test", "--bin", "plxnative-storage", "--no-run"]),)
+# crate types, so it cannot show the offence. A plain `cargo build --lib` builds the library unit
+# itself, the same unit the simulator bin (and any other dependent) links, and writes whatever
+# `[lib] crate-type` declares. This used to ride on `cargo test --bin plxnative-storage --no-run`,
+# which built the library as a dependency of the storage helper; the helper is its own package now
+# and depends on no part of this crate, so the library is built directly.
+CONFIGS = (("lib unit", ["build", "--lib"]),)
 
 
 def staticlib_artifacts(stdout):

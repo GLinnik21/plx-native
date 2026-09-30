@@ -585,6 +585,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "plxnative-storage"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

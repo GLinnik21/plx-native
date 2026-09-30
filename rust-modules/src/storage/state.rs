@@ -13,7 +13,8 @@ pub(crate) const MAX_LOGICAL_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_ENCODED_BYTES: usize = 512 * 1024;
 pub(crate) const LEDGER_CAPACITY: usize = 16;
 
-// Install identities come from the packaging manifest via build.rs, shared by both binaries.
+// Install identities come from the packaging manifest via `build_support/install_identities.rs`,
+// called from each package's build.rs (app and storage helper).
 // Compatibility: plxstate.stable/debug are live DB8 keys and must never change. The allowlist
 // landed in 6f78842e (2026-09-17), before nightly in 1c96bb7e (2026-09-19). Nightly now uses
 // plxstate.night (14 bytes): on webOS 4.10.2, the earlier 16-byte ID failed get with -995

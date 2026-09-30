@@ -241,7 +241,7 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 #
 # -Werror is safe to pin HERE in a way it would not be on a moving toolchain: the NDK is a fixed
 # GCC 12 installed by `make setup-env`, so no compiler upgrade can invent a new diagnostic under
-# us. The Rust half of the same rule lives in rust-modules/Cargo.toml's `[lints]`. Both gates have
+# us. The Rust half of the same rule lives in rust-modules/Cargo.toml's `[workspace.lints.rust]`. Both gates have
 # been verified to actually FAIL on a planted warning — the lesson of ci/check-package.py's
 # release witness, which never once fired in any configuration.
 #
@@ -344,7 +344,7 @@ RUSTUP_HOME ?= $(HOME)/.rustup
 RUST_REMAP   = --remap-path-prefix=$(HOME)=/build \
                --remap-path-prefix=$(CARGO_HOME)=/cargo \
                --remap-path-prefix=$(RUSTUP_HOME)=/rustup
-# CAPLINTS=1 relaxes rust-modules/Cargo.toml's `[lints] warnings = "deny"` for ONE invocation:
+# CAPLINTS=1 relaxes rust-modules/Cargo.toml's `[workspace.lints.rust] warnings = "deny"` for ONE invocation:
 # --cap-lints puts a ceiling on every lint level, so a deny comes back out as a warning that still
 # prints. It goes through this variable rather than the caller exporting RUSTFLAGS, because that
 # environment variable REPLACES the list below wholesale — dropping target-cpu, and with it the
@@ -768,11 +768,10 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 # The helper is an independent executable: it has its own auxv implementation and must never
 # link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
 #
-# ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc --bin ... --no-default-
-# -features` and $(RUST_LIB)'s `cargo rustc --lib` (default features) are two DIFFERENTLY-
-# CONFIGURED invocations of the SAME package (plxnative-modules), and `make -j` runs them
-# concurrently — exactly the hazard rust-modules/.cargo/config.toml's own comment already
-# documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
+# ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc -p plxnative-storage` and
+# $(RUST_LIB)'s `cargo rustc --lib` are two cargo invocations in ONE workspace (two packages, two
+# feature configurations), and `make -j` runs them concurrently — exactly the hazard
+# rust-modules/.cargo/config.toml's own comment already documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
 # make links... give a hand-run one its own --target-dir"). Sharing one target dir let the two
 # invocations race on the shared build-std sysroot units (std/core/alloc are never cached by
 # CI's rust-cache and so are rebuilt fresh by BOTH processes every run), which could leave
@@ -782,12 +781,19 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 # even by its content-hash fallback (`04801c22`). A dedicated target dir makes the two cargo
 # invocations share nothing, so neither can observe the other's fingerprint state.
 STORAGE_TDIR = $(RUST_TDIR)-storage
+# The helper is its own cargo package (rust-modules/storage) that does NOT depend on the app crate,
+# so the `cargo rustc -p plxnative-storage` below compiles only it, not the application library. What
+# it does read of the app tree is the handful of files it shares by `#[path]` (storage_service/ and
+# storage/state.rs) and the install-identity generator in build_support/; that is all it names here,
+# so an edit to the UI no longer relinks it. `ci/test_storage_package_isolated.py` holds the
+# "no app library" line.
+STORAGE_INPUTS := $(shell find rust-modules/storage rust-modules/build_support rust-modules/src/storage_service -type f 2>/dev/null) rust-modules/src/storage/state.rs rust-modules/.cargo/config.toml
 STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
-pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
+pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
 	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
-	    --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
+	    -p plxnative-storage --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
 	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
 	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
 	cp $(STORAGE_BIN) $@
@@ -1373,10 +1379,13 @@ check-unlocked: lint check-localization
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
+	@# The helper is its own package, so building it compiles no copy of the app library; this reads
+	@# cargo's artifact records for both invocations the repo uses for it and fails if one does.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_package_isolated.py
 	@# The crate builds as an rlib only (the ARM archive is `cargo rustc --crate-type staticlib`, see
-	@# $(RUST_LIB)); this reads cargo's own artifact records for the build just above, so it adds no
-	@# compile, and fails if a host build ever writes a ~200 MB archive again.
+	@# $(RUST_LIB)); this builds the library directly (`cargo build --lib`), reads cargo's own
+	@# artifact records, and fails if a host build ever writes a ~200 MB archive again.
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
@@ -1408,7 +1417,7 @@ check-unlocked: lint check-localization
 # is full of. The escape hatch is this repo's own habit: clippy suppresses it when each arm carries
 # its own comment. Comment the arms, do not reach for an `#[allow]`.
 lint:
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) clippy --all-targets -- \
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) clippy --workspace --all-targets -- \
 	  -A clippy::all \
 	  -D clippy::ifs_same_cond -D clippy::same_functions_in_if_condition -D clippy::if_same_then_else
 

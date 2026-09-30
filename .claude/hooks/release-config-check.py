@@ -29,7 +29,7 @@ docstring, and Python 3.12 turns an invalid escape into a SyntaxWarning printed 
     grep -rho 'cfg(feature = "[a-z]*"' rust-modules/src --include='*.rs' | sort | uniq -c
     grep -rho 'cfg(not(feature = "[a-z]*"' rust-modules/src --include='*.rs' | sort | uniq -c
 
-And `[lints.rust] warnings = "deny"` makes the gap sharper, not softer: an import that only the
+And `[workspace.lints.rust] warnings = "deny"` makes the gap sharper, not softer: an import that only the
 `devtriggers` arm consumed does not warn in the release configuration, it FAILS it.
 
 WHY A HOOK AND NOT A CONVENTION. Because the convention exists, is written down, and did not fire.

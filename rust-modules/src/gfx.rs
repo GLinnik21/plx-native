@@ -1729,7 +1729,7 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
 //
 // The counter's ONLY caller is `app.rs`'s `#[cfg(feature = "devtools")]` draw site, so these three
 // items carry the same gate. Without it `--no-default-features` (i.e. `make RELEASE=1`, and the
-// macOS app bundle) fails the build outright rather than merely warning: `[lints.rust] warnings =
+// macOS app bundle) fails the build outright rather than merely warning: `[workspace.lints.rust] warnings =
 // "deny"` in Cargo.toml turns the three `dead_code` findings into errors, and nothing in the dev
 // configuration can see that — the feature is on in every ordinary `make`, `make check` and
 // harness run.
