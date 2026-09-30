@@ -44,6 +44,7 @@
 //! cheaper half of the per-frame identity scan, so it goes first.
 mod fan;
 mod refresh;
+mod trace;
 
 use crate::img;
 use crate::plex::ServerId;
@@ -846,6 +847,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                         crate::ui::card_motion::deferred();
                         #[cfg(feature = "devtriggers")]
                         crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
+                        trace::outcome("declined_retry");
                         return (None, Warm::Known);
                     }
                     #[cfg(feature = "devtriggers")]
@@ -853,7 +855,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
+                    let gen = g.slots[i].gen;
                     drop(g);
+                    trace::claim(trace::current(), i, gen);
                     CV.notify_one();
                     return (None, Warm::Known);
                 }
@@ -886,6 +890,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     // enforce. It does not stop the cycle: under sustained pressure the key can be
                     // evicted and cooled down again the moment it lands, indefinitely — it only
                     // paces how often that cycle is allowed to turn.
+                    trace::outcome("evict_cooldown");
                     return (None, Warm::Known);
                 }
                 if decline {
@@ -894,6 +899,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
+                    trace::outcome("declined_evicted");
                     return (None, Warm::Known);
                 }
                 #[cfg(feature = "devtriggers")]
@@ -903,13 +909,16 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
+                let gen = g.slots[i].gen;
                 drop(g);
+                trace::claim(trace::current(), i, gen);
                 RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
                 log_residency();
                 CV.notify_one();
                 return (None, Warm::Known);
             }
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
+            trace::outcome(match g.slots[i].state { P_READY => "ready", P_WANT => "queued", P_LOADING => "loading", P_DECODED => "decoded", P_RETRY => "retry_wait", P_FAILED => "failed", _ => "other" });
             return (hit, Warm::Known);
         }
     }
@@ -947,14 +956,25 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         crate::ui::card_motion::deferred();
         #[cfg(feature = "devtriggers")]
         crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
+        trace::outcome("declined_new");
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
-        None => return (None, Warm::Full), // all visible: skip
+        None => { trace::outcome("store_full"); return (None, Warm::Full) } // all visible: skip
     };
     let (was_ready, old_px) = (g.slots[idx].state == P_READY, g.slots[idx].px);
+    if trace::armed() {
+        if g.slots[idx].state != P_EMPTY {
+            trace::lost(idx, g.slots[idx].gen, "recycled");
+        }
+        // The same request held under an older account epoch or grant: the hit loop above could
+        // not match it, so this claim is that picture's replacement.
+        if let Some(s) = g.slots.iter().find(|s| s.state != P_EMPTY && slot_matches(s, srv, key_s.as_bytes())) {
+            trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "token_gen" });
+        }
+    }
     let (use_, frame) = match touch {
         Touch::Draw => {
             g.clock = g.clock.wrapping_add(1);
@@ -990,7 +1010,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.evict_cooldown_until = None;
         s.evict_wake_sent = false;
     }
+    let claimed_gen = g.slots[idx].gen;
     drop(g);
+    trace::claim(trace::current(), idx, claimed_gen);
     // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
     // the recycled slot, and pixels a worker decoded that nobody drained
     if was_ready {
@@ -1011,8 +1033,23 @@ static SOURCE: PosterSource = PosterSource;
 
 impl tex::Source for PosterSource {
     fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey> {
-        let srv = ServerId::from_raw(srv);
-        lookup(srv, built_key(srv, path, w, h, png)?, Touch::Draw).0
+        let sid = ServerId::from_raw(srv);
+        let key = built_key(sid, path, w, h, png)?;
+        if !trace::armed() {
+            return lookup(sid, key, Touch::Draw).0;
+        }
+        let id = trace::draw_id(srv, path, w, h, png);
+        let kid = trace::key_id(srv, key.as_bytes());
+        trace::set_current(id);
+        let hit = lookup(sid, key, Touch::Draw).0;
+        let gate = match crate::ui::card_motion::verdict() {
+            Some(crate::ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
+            Some(crate::ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
+            _ => trace::Gate::Open,
+        };
+        trace::probe(id, kid, hit.is_some_and(tex::resident), gate);
+        trace::set_current(0);
+        hit
     }
     /// The prefetch: start the fetch, take no key, take no LRU protection. Two deliberate
     /// differences from a draw's probe, and together they are why a prefetch can share a 64-slot
@@ -1023,7 +1060,12 @@ impl tex::Source for PosterSource {
     fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         let srv = ServerId::from_raw(srv);
         match built_key(srv, path, w, h, png) {
-            Some(k) => lookup(srv, k, Touch::Warm).1,
+            Some(k) => {
+                if trace::armed() { trace::set_current(trace::draw_id(srv.raw(), path, w, h, png)); }
+                let r = lookup(srv, k, Touch::Warm).1;
+                if trace::armed() { trace::set_current(0); }
+                r
+            }
             None => Warm::Known,
         }
     }
@@ -1045,6 +1087,7 @@ impl tex::Source for PosterSource {
             if matches!(s.state, P_READY | P_DECODED) {
                 s.state = P_EVICTED;
                 transitioned = true;
+                trace::lost(key.0 as usize, s.gen, if refused { "refused" } else { "evicted" });
                 // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
                 // (this key was evicted before, inside the thrash window) escalates the backoff
                 // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
@@ -1141,6 +1184,7 @@ fn store_idle() -> bool {
 /// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
 /// once-a-frame, screen-agnostic read of whether it is quiet.
 pub(crate) fn begin_frame() {
+    trace::begin_frame();
     let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
@@ -1166,6 +1210,7 @@ pub(crate) fn drain_decoded() {
             let s = &mut g.slots[i];
             let (px, w, h) = (s.px, s.pw, s.ph);
             s.px = 0;
+            trace::handoff(i, s.gen);
             let current = s.cache_gen == crate::imgcache::generation();
             // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
             // A brief double charge is safe; a gap would let both workers over-admit decodes.
@@ -1380,6 +1425,8 @@ pub(crate) fn log_cache_stats() {
 /// was stale, and whether a failure is one that can change.
 struct Loaded<T> {
     art: Option<T>,
+    /// The art came from the disk tier (a hit that decoded), not the network.
+    from_disk: bool,
     stale: Option<crate::imgcache::DiskKey>,
     transient: bool,
 }
@@ -1394,7 +1441,7 @@ fn load_art<T>(
     cache_gen: u64,
     mut decode: impl FnMut(&[u8]) -> Option<T>,
 ) -> Loaded<T> {
-    let mut out = Loaded { art: None, stale: None, transient: false };
+    let mut out = Loaded { art: None, from_disk: false, stale: None, transient: false };
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
@@ -1405,6 +1452,7 @@ fn load_art<T>(
             match decode(&cached.bytes) {
                 Some(art) => {
                     out.art = Some(art);
+                    out.from_disk = true;
                     if cached.stale {
                         out.stale = Some(k.clone());
                     }
@@ -1554,6 +1602,7 @@ fn poster_worker() {
             s.state = P_LOADING;
             (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen)
         };
+        trace::worker_start(idx, gen);
         let (mut w, mut h) = (0, 0);
         let mut px = std::ptr::null_mut();
         let mut stale = None;
@@ -1583,6 +1632,7 @@ fn poster_worker() {
                 if let Some((p, dw, dh)) = loaded.art {
                     (px, w, h) = (p, dw, dh);
                 }
+                trace::disk(idx, gen, if loaded.from_disk { "hit" } else { "net" });
                 stale = loaded.stale.map(|k| (client, k));
                 transient = loaded.transient;
             }
@@ -1601,10 +1651,12 @@ fn poster_worker() {
                     s.pw = w;
                     s.ph = h;
                     s.state = P_DECODED;
+                    trace::decoded(idx, gen);
                     true
                 } else {
                     if transient && cache_gen == crate::imgcache::generation() { park_retry(s); }
                     else { s.state = P_FAILED; }
+                    trace::lost(idx, gen, "failed");
                     false
                 }
             } else { false }

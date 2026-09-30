@@ -254,6 +254,11 @@ fn resolve_key(key: PosterKey) -> (u32, f32, f32) {
     })
 }
 
+/// Is `key`'s texture resident right now? A peek for diagnostics: no LRU touch, no draw stamp.
+pub fn resident(key: PosterKey) -> bool {
+    CACHE.with(|c| c.borrow().resident.contains_key(&key))
+}
+
 /// The prefetch twin of [`resolve_on`]: same arguments on purpose, so a screen warms EXACTLY the
 /// key it will later resolve.
 pub fn warm_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
