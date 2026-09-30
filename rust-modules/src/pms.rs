@@ -1988,7 +1988,9 @@ fn build_test(n: usize) -> SourceBuild {
             items: (0..n)
                 .map(|i| PmsMovie {
                     rk: (i + 1).to_string(),
-                    art: "/art".into(),
+                    // One backdrop per item, as a real catalog has: a test that asks WHICH
+                    // backdrop was requested (Home's neighbour preload) needs them told apart.
+                    art: format!("/art/{}", i + 1),
                     ..PmsMovie::default()
                 })
                 .collect(),
