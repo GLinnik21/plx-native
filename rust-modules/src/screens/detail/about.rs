@@ -7,6 +7,7 @@ use std::ffi::CString;
 
 use crate::metadata::Detail;
 use crate::ui::machine::{GroupId, Measure};
+use crate::ui::text_lift::{draw_focused, TextLift, CENTRE};
 use crate::ui::text_view::TextView;
 use crate::ui::{theme, Painter, Rect};
 
@@ -19,6 +20,8 @@ pub(crate) const LANGUAGES_ELEM: u32 = ABOUT_ELEM_RANGE_START + 1;
 const CARD_W: f32 = 640.0;
 const CARD_Y: f32 = 50.0;
 const CARD_PAD: f32 = 30.0;
+/// The `ui::text_lift` corner radius of the About card and the Languages column (the mockup's 14).
+const LIFT_RADIUS: f32 = 14.0;
 const COL_Y: f32 = 430.0;
 const LANG_X: f32 = 760.0;
 /// The Languages column's text measure — the width the audio list wraps to, and what the focus
@@ -204,13 +207,15 @@ impl Rows {
     /// (`DetailScreen::tracks_available`), passed in rather than asked of the sheet: it decides
     /// whether the Languages column carries a MORE affordance, and it has to be the same bit
     /// `about::locate` gates the element on or the column reads as pressable and is not.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &self,
         p: Painter,
         d: &Detail,
         top: f32,
-        focused: Option<u32>,
         tracks: bool,
+        card_lift: &TextLift,
+        lang_lift: &TextLift,
         measure: &dyn crate::ui::machine::Measure,
     ) {
         let x = crate::ui::consts::MARGIN_X;
@@ -224,48 +229,49 @@ impl Rows {
             1,
         );
         let card = self.card_rect(d, top, measure);
-        if focused == Some(CARD_ELEM) {
-            crate::ui::widgets::text_block_highlight(p, card);
-        }
-        let ix = card.x + CARD_PAD;
-        text_at(
-            p,
-            ix,
-            card.y + CARD_PAD,
-            theme::size::HEADLINE,
-            theme::TEXT_PRIMARY,
-            1,
-            &crate::text::elide_by(&d.title, card.w - 2.0 * CARD_PAD, false, |t| {
-                measure.width_str(t, theme::size::HEADLINE, true)
-            }),
-        );
-        if !d.genres.is_empty() {
+        // The card's content grows with its plate inside `draw_focused`'s closure only; the
+        // columns drawn after it use the caller's own `p` and cannot inherit the lift.
+        draw_focused(p, card, LIFT_RADIUS, card_lift, CENTRE, |p| {
+            let ix = card.x + CARD_PAD;
             text_at(
                 p,
                 ix,
-                card.y + CARD_PAD + 44.0,
-                theme::size::CAPTION,
-                theme::TEXT_TERTIARY,
-                0,
-                &crate::text::elide_by(&d.genres.join(", "), card.w - 2.0 * CARD_PAD, false, |t| {
-                    measure.width_str(t, theme::size::CAPTION, false)
+                card.y + CARD_PAD,
+                theme::size::HEADLINE,
+                theme::TEXT_PRIMARY,
+                1,
+                &crate::text::elide_by(&d.title, card.w - 2.0 * CARD_PAD, false, |t| {
+                    measure.width_str(t, theme::size::HEADLINE, true)
                 }),
             );
-        }
-        synopsis(&d.summary, measure)
-            .draw(p, Rect::new(ix, card.y + CARD_PAD + 100.0, SYNOPSIS_W, 0.0));
-        p.text(
-            crate::ui::text_view::more_mark().as_ptr(),
-            card.x + card.w - CARD_PAD,
-            card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
-            theme::size::CAPTION,
-            theme::TEXT_TERTIARY,
-            2,
-            1,
-        );
+            if !d.genres.is_empty() {
+                text_at(
+                    p,
+                    ix,
+                    card.y + CARD_PAD + 44.0,
+                    theme::size::CAPTION,
+                    theme::TEXT_TERTIARY,
+                    0,
+                    &crate::text::elide_by(&d.genres.join(", "), card.w - 2.0 * CARD_PAD, false, |t| {
+                        measure.width_str(t, theme::size::CAPTION, false)
+                    }),
+                );
+            }
+            synopsis(&d.summary, measure)
+                .draw(p, Rect::new(ix, card.y + CARD_PAD + 100.0, SYNOPSIS_W, 0.0));
+            p.text(
+                crate::ui::text_view::more_mark().as_ptr(),
+                card.x + card.w - CARD_PAD,
+                card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
+                theme::size::CAPTION,
+                theme::TEXT_TERTIARY,
+                2,
+                1,
+            );
+        });
 
         self.draw_information(p, x, top + COL_Y, measure);
-        self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM), tracks, measure);
+        self.draw_languages(p, top + COL_Y, tracks, lang_lift, measure);
         self.draw_accessibility(p, 1360.0, top + COL_Y, measure);
     }
 
@@ -285,48 +291,54 @@ impl Rows {
         }
     }
 
-    fn draw_languages(&self, p: Painter, y: f32, focused: bool, tracks: bool, measure: &dyn Measure) {
-        if focused {
-            crate::ui::widgets::text_block_highlight(p, self.languages_rect(y - COL_Y, measure));
-        }
-        text_at(
-            p,
-            LANG_X,
-            y,
-            theme::size::HEADLINE,
-            theme::TEXT_PRIMARY,
-            1,
-            crate::i18n::msg::browse_detail_languages(),
-        );
-        let mut yy = y + 68.0;
-        if let Some(orig) = &self.orig_audio {
-            yy += draw_pair(p, LANG_X, yy, crate::i18n::msg::browse_detail_original_audio(), orig, measure);
-        }
-        if !self.audio_list.is_empty() {
+    fn draw_languages(
+        &self,
+        p: Painter,
+        y: f32,
+        tracks: bool,
+        lift: &TextLift,
+        measure: &dyn Measure,
+    ) {
+        let plate = self.languages_rect(y - COL_Y, measure);
+        draw_focused(p, plate, LIFT_RADIUS, lift, CENTRE, |p| {
             text_at(
                 p,
                 LANG_X,
-                yy,
-                theme::size::CAPTION,
-                theme::TEXT_TERTIARY,
-                0,
-                crate::i18n::msg::browse_detail_audio(),
-            );
-            audio_view(&self.audio_list, measure)
-                .draw(p, Rect::new(LANG_X, yy + 34.0, LANG_W, 0.0));
-        }
-        if tracks {
-            let plate = self.languages_rect(y - COL_Y, measure);
-            p.text(
-                crate::ui::text_view::more_mark().as_ptr(),
-                plate.x + plate.w - CARD_PAD,
-                languages_more_y(plate),
-                theme::size::CAPTION,
-                theme::TEXT_TERTIARY,
-                2,
+                y,
+                theme::size::HEADLINE,
+                theme::TEXT_PRIMARY,
                 1,
+                crate::i18n::msg::browse_detail_languages(),
             );
-        }
+            let mut yy = y + 68.0;
+            if let Some(orig) = &self.orig_audio {
+                yy += draw_pair(p, LANG_X, yy, crate::i18n::msg::browse_detail_original_audio(), orig, measure);
+            }
+            if !self.audio_list.is_empty() {
+                text_at(
+                    p,
+                    LANG_X,
+                    yy,
+                    theme::size::CAPTION,
+                    theme::TEXT_TERTIARY,
+                    0,
+                    crate::i18n::msg::browse_detail_audio(),
+                );
+                audio_view(&self.audio_list, measure)
+                    .draw(p, Rect::new(LANG_X, yy + 34.0, LANG_W, 0.0));
+            }
+            if tracks {
+                p.text(
+                    crate::ui::text_view::more_mark().as_ptr(),
+                    plate.x + plate.w - CARD_PAD,
+                    languages_more_y(plate),
+                    theme::size::CAPTION,
+                    theme::TEXT_TERTIARY,
+                    2,
+                    1,
+                );
+            }
+        });
     }
 
     fn draw_accessibility(
@@ -521,5 +533,80 @@ mod tests {
             .info
             .iter()
             .any(|(label, value)| *label == "Run Time" && value == "2 min"));
+    }
+
+    fn movie_with_audio() -> Detail {
+        Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "movie".into(),
+            rating: "PG".into(),
+            summary: "word ".repeat(40),
+            audio: vec![crate::metadata::Stream {
+                lang: "en".into(),
+                codec: "ac3".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn focused(elem_card: bool) -> (TextLift, TextLift) {
+        let (mut card, mut lang) = (TextLift::new(), TextLift::new());
+        for _ in 0..240 {
+            card.step(elem_card, 1.0 / 60.0);
+            lang.step(!elem_card, 1.0 / 60.0);
+        }
+        (card, lang)
+    }
+
+    fn census(rows: &Rows, d: &Detail, card: &TextLift, lang: &TextLift) -> Vec<(u64, Rect)> {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        crate::ui::draw_census::capture(|| rows.draw(Painter::recording(), d, 0.0, true, card, lang, &measure))
+    }
+
+    /// A focused About card grows its own content and nothing else: the Information column, drawn
+    /// after it, stays exactly where it does at rest.
+    #[test]
+    fn a_focused_about_card_does_not_scale_its_siblings() {
+        let _g = crate::testlock::serial();
+        let mut rows = Rows::new();
+        let d = movie_with_audio();
+        rows.update(&d);
+        let at_rest = census(&rows, &d, &TextLift::new(), &TextLift::new());
+        let (card, lang) = focused(true);
+        assert!(card.scale() > 1.0, "precondition: the card is lifted");
+        let lifted = census(&rows, &d, &card, &lang);
+
+        let info_y = COL_Y; // `draw_information`'s heading
+        let at = |c: &[(u64, Rect)]| {
+            c.iter()
+                .find(|(tag, r)| *tag == 100 && r.x == crate::ui::consts::MARGIN_X && r.y == info_y)
+                .map(|(_, r)| *r)
+        };
+        assert!(at(&at_rest).is_some(), "precondition: the Information heading is in the census");
+        assert_eq!(at(&lifted), at(&at_rest), "a sibling must not inherit the card's scale");
+        // And the card's own content did move, so the test above is not vacuous.
+        assert_ne!(lifted, at_rest);
+    }
+
+    /// Focus moving off a lifted block leaves nothing behind once it settles: the draw is exactly
+    /// the never-focused draw, for either block.
+    #[test]
+    fn leaving_a_lifted_block_leaves_no_plate_or_shadow_once_settled() {
+        let _g = crate::testlock::serial();
+        let mut rows = Rows::new();
+        let d = movie_with_audio();
+        rows.update(&d);
+        let at_rest = census(&rows, &d, &TextLift::new(), &TextLift::new());
+
+        for on_card in [true, false] {
+            let (mut card, mut lang) = focused(on_card);
+            assert_ne!(census(&rows, &d, &card, &lang), at_rest, "precondition: focus draws something");
+            for _ in 0..240 {
+                card.step(false, 1.0 / 60.0);
+                lang.step(false, 1.0 / 60.0);
+            }
+            assert_eq!(census(&rows, &d, &card, &lang), at_rest);
+        }
     }
 }

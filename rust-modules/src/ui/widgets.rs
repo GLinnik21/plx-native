@@ -1125,12 +1125,27 @@ pub(crate) fn draw_card(
     focused: bool,
     scale: f32,
 ) {
+    draw_card_peaked(p, frame, sid, thumb, res, radius, focused, scale, CARD_FOCUS_SCALE);
+}
+
+/// [`draw_card`] for a caller whose scale spring targets a peak OTHER than [`CARD_FOCUS_SCALE`] —
+/// the episode filmstrip's own [`crate::ui::theme::EP_CARD_FOCUS_SCALE`] pop, currently 1.04 against
+/// the shared 1.07. The pop factor is taken against the caller's own peak so the folded shadow
+/// still reaches full strength there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_card_peaked(
+    p: Painter,
+    frame: Rect,
+    sid: ServerId,
+    thumb: &str,
+    res: (c_int, c_int),
+    radius: f32,
+    focused: bool,
+    scale: f32,
+    peak_scale: f32,
+) {
     // pop factor from the caller's scale spring (0 at rest → 1 at full focus scale) drives the folded shadow
-    let f = if focused {
-        ((scale - 1.0) / (CARD_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let f = if focused { pop_factor(scale, peak_scale) } else { 0.0 };
     card(
         p,
         frame,
@@ -1144,6 +1159,12 @@ pub(crate) fn draw_card(
         scale,
         f,
     );
+}
+
+/// A pop spring's scale as a 0..1 focus factor against the `peak` it targets — what drives a
+/// card's folded shadow and an episode still's lift.
+pub(crate) fn pop_factor(scale: f32, peak: f32) -> f32 {
+    ((scale - 1.0) / (peak - 1.0)).clamp(0.0, 1.0)
 }
 
 /// How many flat bands [`art_scrim`]'s shader-failure fallback uses for its corner region. 3 is
@@ -1194,48 +1215,8 @@ pub(crate) fn progress_bar(p: Painter, card: Rect, rad: f32, h: f32, frac: f32) 
     p.clip_clear();
 }
 
-/// The corner radius of [`text_block_highlight`] — the detail page's About columns and its episode
-/// filmstrip both drew an 18 here, independently, and it is one object doing one job.
+/// The corner radius of the Person bio and Collection summary `ui::text_lift` blocks.
 pub(crate) const TEXT_BLOCK_HL_RAD: f32 = 18.0;
-
-/// **THE "this block of text is the thing you are on" panel** — the focus mark for a run of prose
-/// that is not a card: the detail page's four About columns and its episode filmstrip's metadata
-/// row. One function, because `ui/CLAUDE.md` names those two call sites as one idiom and they had
-/// already drifted once (the About footer wrote a bare `18.0` while the filmstrip named a const).
-///
-/// It is a very quiet wash ([`theme::OVERLAY_FOCUS_SOFT`], 7% white) and that is the whole reason
-/// it needs the **shadow** rather than a heavier fill: over the detail page's ambient ground a 7%
-/// panel has almost no edge of its own, so it reads as a smudge rather than as a raised surface,
-/// and lifting the wash instead would put a bright rectangle over the prose it exists to point at.
-/// **No stroke, no rim, no glass** — the mark is a wash plus a lift, and nothing else. (The owner
-/// ruled all three out for a selection on 2026-08-21, on seeing what the previous shadow drew.)
-///
-/// **Both halves of the shadow are here because the panel is SEE-THROUGH, and neither of them can
-/// be borrowed from the card family.**
-/// - [`Painter::shadow_outside`], not [`Painter::shadow`]: the tile path throws away a BOX-shaped
-///   interior inset by `radius + 1` px, which leaves a full-strength band of ink under the
-///   occluder's own rim ending in a hard step. A card hides that band; a 7% wash shows it, and it
-///   reads as a dark rounded FRAME with the wash inset inside it — which is exactly what was
-///   shipping. The `_outside` cut is the panel's own rounded shape, so no ink lands under it.
-/// - [`theme::TEXT_BLOCK_SHADOW_BLUR`]/`_DY`/`_A`, not the `CARD_SHADOW_REST_*` triple: a contact
-///   shadow tuned to be seen only where it escapes past an opaque poster is fully visible here, and
-///   at 11px/0.34 its falloff has a readable boundary on a wide straight edge. That token block
-///   carries the reasoning.
-pub(crate) fn text_block_highlight(p: Painter, r: Rect) {
-    p.shadow_outside(
-        r,
-        TEXT_BLOCK_HL_RAD,
-        theme::TEXT_BLOCK_SHADOW_BLUR,
-        theme::TEXT_BLOCK_SHADOW_DY,
-        theme::with_a(theme::CARD_SHADOW, theme::TEXT_BLOCK_SHADOW_A),
-    );
-    p.rrect(
-        r,
-        TEXT_BLOCK_HL_RAD,
-        TEXT_BLOCK_HL_RAD,
-        theme::OVERLAY_FOCUS_SOFT,
-    );
-}
 
 // ---- Keyline chip: the FINE-PRINT outlined chip — a hairline box round a very short label, sized to
 // hug it. Its one job is the content rating beside an episode's air date (`18+` / `TV-MA`).

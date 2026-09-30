@@ -1855,7 +1855,72 @@ unsafe fn drawn_tex(
     (logical.0, logical.1 as f32, logical.2 as f32)
 }
 
-/// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
+/// A string's texture, laid out and placed for drawing: everything [`draw_text`] and
+/// [`draw_text_fade`] share before they bind their own program.
+struct Placed {
+    tex: c_uint,
+    /// The destination quad on screen, after the caller's zoom.
+    quad: crate::ui::Rect,
+    /// The texture's unzoomed width — the fade program's px→uv divisor.
+    dw: f32,
+    /// The layout width the caller gets back (independent of zoom).
+    w: f32,
+}
+
+impl Placed {
+    /// Glyphs are 1:1 texel:pixel only unzoomed, so only then is the origin snapped (see
+    /// `gfx::snap`); a zoomed run is meant to resample smoothly as it grows.
+    fn origin(&self, zoom: crate::ui::Zoom) -> (f32, f32) {
+        if zoom.is_none() {
+            (crate::gfx::snap(self.quad.x), crate::gfx::snap(self.quad.y))
+        } else {
+            (self.quad.x, self.quad.y)
+        }
+    }
+}
+
+/// Look up `s`'s glyph texture (the SAME entry at any zoom — an animation never re-rasterizes) and
+/// place its quad, grown by `zoom`. `Err(w)` is the width to return when nothing is drawn: 0 for
+/// an empty/unavailable string, the layout width for a run outside the blur-source crop (the
+/// texture stays warm, the driver state changes are skipped).
+unsafe fn place_text(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    align: c_int,
+    bold: c_int,
+    zoom: crate::ui::Zoom,
+) -> Result<Placed, f32> {
+    if TEXT_OK == 0 || s.is_null() {
+        return Err(0.0);
+    }
+    let cs = CStr::from_ptr(s);
+    let s_bytes = cs.to_bytes();
+    if s_bytes.is_empty() {
+        return Err(0.0);
+    }
+    let (tex, w, h, _it, _ib) = text_tex(s_bytes, s, sz, bold);
+    if tex == 0 {
+        return Err(0.0);
+    }
+    let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
+    let dx = match align {
+        1 => x - dw * 0.5,
+        2 => x - dw,
+        _ => x,
+    };
+    let quad = zoom.map(crate::ui::Rect::new(dx, y, dw, dh));
+    if crate::gfx::culled(quad.x, quad.y, quad.w, quad.h)
+        || gate(Class::Text, quad.x, quad.y, quad.w, quad.h)
+    {
+        return Err(w as f32);
+    }
+    Ok(Placed { tex, quad, dw, w: w as f32 })
+}
+
+/// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width. `zoom` (in the
+/// same space as `x`/`y`) grows the drawn quad about its origin; layout width is unaffected.
 pub(crate) fn draw_text(
     s: *const c_char,
     x: f32,
@@ -1864,46 +1929,20 @@ pub(crate) fn draw_text(
     col: *const f32,
     align: c_int,
     bold: c_int,
+    zoom: crate::ui::Zoom,
 ) -> f32 {
     unsafe {
-        if TEXT_OK == 0 || s.is_null() {
-            return 0.0;
-        }
-        let cs = CStr::from_ptr(s);
-        let s_bytes = cs.to_bytes();
-        if s_bytes.is_empty() {
-            return 0.0;
-        }
-        let (tex, w, h, _it, _ib) = text_tex(s_bytes, s, sz, bold);
-        if tex == 0 {
-            return 0.0;
-        }
-        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
-        let dx = match align {
-            1 => x - dw * 0.5,
-            2 => x - dw,
-            _ => x,
+        let p = match place_text(s, x, y, sz, align, bold, zoom) {
+            Ok(p) => p,
+            Err(w) => return w,
         };
-        // Keep the texture warm and return its layout width, but skip driver state changes for
-        // runs outside the blur-source crop as well as the draw itself.
-        if crate::gfx::culled(dx, y, dw, dh)
-            || gate(Class::Text, dx, y, dw, dh)
-        {
-            return w as f32;
-        }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        // glyphs are 1:1 texel:pixel — snap the origin (see gfx::snap for the contract)
-        glUniform4f(
-            TL_RECT,
-            crate::gfx::snap(dx),
-            crate::gfx::snap(y),
-            dw,
-            dh,
-        );
+        glBindTexture(GL_TEXTURE_2D, p.tex);
+        let (ox, oy) = p.origin(zoom);
+        glUniform4f(TL_RECT, ox, oy, p.quad.w, p.quad.h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        w as f32
+        p.w
     }
 }
 
@@ -1917,6 +1956,10 @@ pub(crate) fn draw_text(
 /// nothing extra to skip (a uniform compare, not a texture sample). Falls back to plain
 /// [`draw_text`] if the fade program failed to link — a device with no working fade shader still
 /// shows every word, just without the dissolve.
+///
+/// `zoom` is [`draw_text`]'s: a dissolving line inside a lifted block grows with the lines above
+/// it. The horizontal band is a fraction of the string's own texture, so it needs no mapping; the
+/// vertical bands are screen y and go through the same zoom as the quad.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_text_fade(
     s: *const c_char,
@@ -1929,56 +1972,35 @@ pub(crate) fn draw_text_fade(
     hfade: Option<(f32, f32)>,
     vfade_top: Option<(f32, f32)>,
     vfade_bot: Option<(f32, f32)>,
+    zoom: crate::ui::Zoom,
 ) -> f32 {
     unsafe {
         if TPROGF == 0 {
-            return draw_text(s, x, y, sz, col, align, bold);
+            return draw_text(s, x, y, sz, col, align, bold, zoom);
         }
-        if TEXT_OK == 0 || s.is_null() {
-            return 0.0;
-        }
-        let cs = CStr::from_ptr(s);
-        let s_bytes = cs.to_bytes();
-        if s_bytes.is_empty() {
-            return 0.0;
-        }
-        let (tex, w, h, _it, _ib) = text_tex(s_bytes, s, sz, bold);
-        if tex == 0 {
-            return 0.0;
-        }
-        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
-        let dx = match align {
-            1 => x - dw * 0.5,
-            2 => x - dw,
-            _ => x,
+        let p = match place_text(s, x, y, sz, align, bold, zoom) {
+            Ok(p) => p,
+            Err(w) => return w,
         };
-        if crate::gfx::culled(dx, y, dw, dh)
-            || gate(Class::Text, dx, y, dw, dh)
-        {
-            return w as f32;
-        }
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
         // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
         // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
         // against the string's own width.
-        let wf = dw;
         let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
-        glUniform2f(TLF_FADE, hf0 / wf, hf1 / wf);
-        let (vt0, vt1) = vfade_top.unwrap_or((0.0, 0.0));
+        glUniform2f(TLF_FADE, hf0 / p.dw, hf1 / p.dw);
+        let band = |b: Option<(f32, f32)>| {
+            b.map_or((0.0, 0.0), |(a, z)| (zoom.map_y(a), zoom.map_y(z)))
+        };
+        let (vt0, vt1) = band(vfade_top);
         glUniform2f(TLF_VTOP, vt0, vt1);
-        let (vb0, vb1) = vfade_bot.unwrap_or((0.0, 0.0));
+        let (vb0, vb1) = band(vfade_bot);
         glUniform2f(TLF_VBOT, vb0, vb1);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(
-            TLF_RECT,
-            crate::gfx::snap(dx),
-            crate::gfx::snap(y),
-            dw,
-            dh,
-        );
+        glBindTexture(GL_TEXTURE_2D, p.tex);
+        let (ox, oy) = p.origin(zoom);
+        glUniform4f(TLF_RECT, ox, oy, p.quad.w, p.quad.h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        w as f32
+        p.w
     }
 }
 

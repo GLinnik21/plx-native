@@ -561,6 +561,8 @@ pub(crate) struct PersonScreen {
     header_dirty: bool,
     links_c: Vec<Link>,
     covered_ready_c: bool,
+    /// The biography's focus lift ([`Self::bio_marked`]). Presentation, not logical state.
+    bio_lift: crate::ui::text_lift::TextLift,
 }
 
 impl LogicalState for PersonScreen {
@@ -633,6 +635,7 @@ impl PersonScreen {
             header_dirty: true,
             links_c: Vec::new(),
             covered_ready_c: false,
+            bio_lift: crate::ui::text_lift::TextLift::new(),
         }
     }
 
@@ -987,6 +990,7 @@ impl PersonScreen {
         if settling {
             fx.note(PresentEvent::Motion);
         }
+        self.bio_lift.step(self.bio_marked(cur), dt);
     }
 
     /// OK on the header: opens the biography panel when the bio is truncated. Mirrors
@@ -1029,6 +1033,12 @@ impl PersonScreen {
     /// ask this. A header awaiting its remeasure answers `false` until it has one.
     fn bio_more(&self) -> bool {
         !self.header_dirty && self.header.bio_truncated
+    }
+
+    /// The bio earns its marked/lifted treatment when the header holds focus, is marked open, and
+    /// the bio truncates.
+    fn bio_marked(&self, focus: Option<u32>) -> bool {
+        focus == Some(HEADER_ELEM) && self.header_marked && self.bio_more()
     }
 
     fn activate_entry<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -1133,24 +1143,39 @@ impl PersonScreen {
 
         let col_x_ = col_x(d);
         let truncated = self.bio_more();
-        let marked = focus_elem == Some(HEADER_ELEM) && self.header_marked && truncated;
-        let mark = flow
-            .bio_y
-            .filter(|_| marked && !person.bio.is_empty())
-            .map(|by| {
-                let bio = bio_view(&person.bio, 1.0, measure);
-                let bh = bio.measure_h(BIO_W);
-                let ink =
-                    bio.last_line_cap_y(by, bh) - by + measure.cap_h(theme::size::BODY);
-                Rect::new(
+        let marked = self.bio_marked(focus_elem);
+        let pending = crate::person::facts_pending(person);
+        // The bio block (plate, shadow and text) is drawn FIRST so its plate sits under the name,
+        // roles and life lines above it, as the old fixed highlight did. A resting bio never
+        // measures for a plate: the lift block is skipped until the lift has a factor.
+        if let Some(by) = flow.bio_y.filter(|_| !pending) {
+            let bio = bio_view(&person.bio, 1.0, measure);
+            let bh = bio.measure_h(BIO_W);
+            let draw_bio = |p: Painter| {
+                bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
+                if truncated {
+                    bio.draw_more(p, col_x_, by, BIO_W, bh, marked);
+                }
+            };
+            if self.bio_lift.factor() > 0.0 {
+                let ink = bio.last_line_cap_y(by, bh) - by + measure.cap_h(theme::size::BODY);
+                let plate = Rect::new(
                     col_x_ - HL_PAD_X,
                     by - HL_PAD_Y,
                     BIO_W + 2.0 * HL_PAD_X,
                     ink + 2.0 * HL_PAD_Y,
-                )
-            });
-        if let Some(r) = mark {
-            crate::ui::widgets::text_block_highlight(p, r);
+                );
+                crate::ui::text_lift::draw_focused(
+                    p,
+                    plate,
+                    crate::ui::widgets::TEXT_BLOCK_HL_RAD,
+                    &self.bio_lift,
+                    crate::ui::text_lift::CENTRE,
+                    draw_bio,
+                );
+            } else {
+                draw_bio(p);
+            }
         }
 
         Label::new(
@@ -1162,7 +1187,6 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(col_x_, flow.name_y, 0.0, 0.0));
 
-        let pending = crate::person::facts_pending(person);
         let phase = crate::ui::widgets::skeleton_phase(self.spin_ms as u32);
         // Roles and life-facts both draw through `widgets::dotted_run` — words in
         // `TEXT_SECONDARY`, the `·` in `TEXT_SEPARATOR` — rather than one pre-joined `Label`, so
@@ -1198,13 +1222,6 @@ impl PersonScreen {
                     let ly = by + i as f32 * BIO_LEAD;
                     crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, ly, BIO_W * w, h), phase);
                 }
-            }
-        } else if let Some(by) = flow.bio_y {
-            let bio = bio_view(&person.bio, 1.0, measure);
-            let bh = bio.measure_h(BIO_W);
-            bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
-            if truncated {
-                bio.draw_more(p, col_x_, by, BIO_W, bh, mark.is_some());
             }
         }
         if let Some(y) = flow.entry_y {
