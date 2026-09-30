@@ -8,14 +8,15 @@ use std::borrow::Cow;
 
 use crate::ui::document_reader::DocumentReader;
 use crate::ui::frame::Budget;
-use crate::ui::machine::{Canon, Cx, Effects, EntryId, Fx, GroupId, Handled, Key, LogicalState, Machine, NavOp};
+use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::machine::{Canon, Cx, Effects, EntryId, GroupId, Handled, Key, LogicalState, Machine};
 use crate::ui::route_screen::RouteLayout;
 use crate::ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table::Row;
 use crate::ui::table_screen::{DocumentFocus, DocumentScreen, Header, TableScreen};
 use crate::ui::{theme, Rect};
 
-use super::family::{table_focus, InnerHost, SettingsPage};
+use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage};
 use super::registry::word;
 
 
@@ -122,40 +123,76 @@ static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| crate::i
 // the index
 // ---------------------------------------------------------------------------------------------
 
+/// A Legal index row's identity is the document it opens. Its key is hand-assigned, never the
+/// enum's discriminant or its position, so reordering [`legal_form`] moves no focus key.
+impl FormId for Page {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            Page::Privacy => 0,
+            Page::OpenSource => 1,
+            Page::Ffmpeg => 2,
+            Page::Source => 3,
+            Page::Trademarks => 4,
+            Page::Contact => 5,
+        })
+    }
+}
+
+impl Page {
+    /// The `SettingsPage::Document` argument that opens this page. `Document(i)` indexes
+    /// [`Page::ALL`], so the byte is the page's place in that list.
+    fn document(self) -> SettingsPage {
+        let at = Self::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        SettingsPage::Document(at as u8)
+    }
+}
+
+/// The Legal index as a [`Form`]: every document is a `Nav` row pushing its `Document` page.
+fn legal_form() -> Form<Page, (), SettingsPage> {
+    let mut docs = FormSection::new(crate::i18n::msg::settings_legal_section());
+    for page in Page::ALL {
+        docs = docs.item(
+            page,
+            RowKind::Nav(page.document()),
+            (),
+            Row::new(page.title()).detail(page.subtitle()).chevron(true),
+        );
+    }
+    Form::new().section(docs)
+}
+
 pub(crate) struct LegalIndex {
     entry: EntryId,
-    table: TableView,
+    form: FormTable<Page, (), SettingsPage>,
     state: IndexState,
 }
 
 struct IndexState {
-    sel: i32,
+    /// The focused row's key — an identity, not a position.
+    sel: RowKey,
 }
 
 impl LogicalState for IndexState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32);
+        w.u32(self.sel.0);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("legal sel={}", self.sel));
+        out.push_str(&format!("legal sel={}", self.sel.0));
     }
 }
 
 impl LegalIndex {
     pub(crate) fn new(entry: EntryId) -> Self {
-        let mut s = Section::new(crate::i18n::msg::settings_legal_section());
-        for page in Page::ALL {
-            s = s.row(Row::new(page.title()).detail(page.subtitle()).chevron(true));
-        }
-        let mut table = TableView::new();
-        table.compact = false;
-        table.header_ink = theme::TEXT_READING;
-        table.set_sections(vec![s], 0, false);
-        table.list_focused = true;
+        let mut form = FormTable::new(super::registry::BAND);
+        form.table.compact = false;
+        form.table.header_ink = theme::TEXT_READING;
+        form.set(legal_form(), None);
+        form.table.list_focused = true;
+        let sel = form.key_at(form.table.sel.max(0) as usize).unwrap_or(RowKey(0));
         Self {
             entry,
-            table,
-            state: IndexState { sel: 0 },
+            form,
+            state: IndexState { sel },
         }
     }
 
@@ -167,18 +204,11 @@ impl LegalIndex {
                 crate::i18n::msg::settings_legal_title(),
                 crate::i18n::msg::settings_legal_copy(),
             ),
-            &self.table,
+            &self.form.table,
             GroupId(0),
             self.entry,
         )
-    }
-
-    fn open(&self, row: i32, fx: &mut Effects<'_, InnerHost>) {
-        if let Ok(i) = u8::try_from(row) {
-            if (i as usize) < Page::ALL.len() {
-                fx.push(Fx::Nav(NavOp::Push(SettingsPage::Document(i))));
-            }
-        }
+        .keyed(&self.form)
     }
 }
 
@@ -187,24 +217,26 @@ impl Machine<InnerHost> for LegalIndex {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                table_focus(&mut self.table, to.elem);
-                self.state.sel = self.table.sel;
+                form_focus(&mut self.form, to.elem);
+                if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
+                    self.state.sel = key;
+                }
                 Handled::Yes
             }
-            ScreenEvent::Activate(e) => {
-                self.open(*e as i32, fx);
+            ScreenEvent::Activate(key) => {
+                form_activate(&self.form, *key, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(crate::ui::machine::InputEvent {
                 kind: crate::ui::machine::InputKind::Key { key: Key::Right, at_edge: true, .. },
                 ..
             }) => {
-                if let Some(k) = cx.focus.current {
-                    self.open(k.elem as i32, fx);
+                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
+                    form_activate(&self.form, key, fx);
                 }
                 Handled::Yes
             }
@@ -462,6 +494,20 @@ fn contribution_address() -> String {
     crate::i18n::CONTRIBUTE_URL.trim_start_matches("https://").replace("/blob/", "\n/blob/")
 }
 
+/// The `(focus key, destination)` of every `Nav` row the index lists — the structural navigation
+/// test's expectation, built by the page's own form builder.
+#[cfg(test)]
+pub(super) fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
+    let mut form: FormTable<Page, (), SettingsPage> = FormTable::new(super::registry::BAND);
+    form.set(legal_form(), None);
+    (0..form.table.n_rows() as usize)
+        .filter_map(|i| match form.binding_at(i)?.kind.clone() {
+            RowKind::Nav(dest) => Some((form.key_at(i)?.0, dest)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,7 +515,7 @@ mod tests {
     use crate::ui::fixture::FixtureMeasure;
     use crate::ui::hit::{HitMap, PointerKind};
     use crate::ui::machine::{
-        Edge, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, MachineId, NavOpKind,
+        Edge, FocusKey, FocusRead, Fx, InputEvent, InputKind, InputOwner, MachineId, NavOp, NavOpKind,
         PressRead, Source, Stamped, Tick,
     };
     use crate::ui::present::Present;
@@ -638,8 +684,8 @@ mod tests {
     #[test]
     fn the_index_lists_every_document_in_order_with_a_chevron() {
         let idx = LegalIndex::new(EntryId(3));
-        assert_eq!(idx.table.sections.len(), 1, "the index is one flat list, not grouped");
-        let rows = &idx.table.sections[0].rows;
+        assert_eq!(idx.form.table.sections.len(), 1, "the index is one flat list, not grouped");
+        let rows = &idx.form.table.sections[0].rows;
         assert_eq!(rows.len(), Page::ALL.len());
         for (row, page) in rows.iter().zip(Page::ALL) {
             assert_eq!(row.label, page.title());
@@ -652,41 +698,53 @@ mod tests {
         }
     }
 
-    /// **New for phase 5b: "every index row opens a document that is non-empty."** Exercised
-    /// through the real `LegalIndex::open` rather than by reading `Page::ALL` a second time — a
-    /// transposed row/page mapping (row 2 opening `Page::ALL[3]`, say) would still pass a test that
-    /// only asked `Page::ALL[i]` whether ITS OWN body is non-empty. A row past the end of the list
-    /// — a stale focus key surviving a document being removed, for instance — must open nothing at
-    /// all rather than panicking on the index or silently opening the wrong page (the `open`
-    /// bounds check this pins).
-    #[test]
-    fn every_index_row_opens_its_own_non_empty_document() {
-        let idx = LegalIndex::new(EntryId(1));
-        let mut present = Present::default();
-        for i in 0..Page::ALL.len() {
-            let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
-            {
-                let mut fx = Effects::new(&mut buf, MachineId::Input, &mut present);
-                idx.open(i as i32, &mut fx);
-            }
-            assert_eq!(buf.len(), 1, "row {i} must push exactly one navigation effect");
-            match &buf[0].fx {
-                Fx::Nav(NavOp::Push(SettingsPage::Document(d))) => {
-                    assert_eq!(*d as usize, i, "row {i} opened document {d} instead of its own");
-                }
-                _ => panic!("row {i} did not push its own document"),
-            }
-            let page = DocumentPage::legal(EntryId(2), i as u8);
-            assert!(!page.body.is_empty(), "{:?} has an empty document", Page::ALL[i]);
-            assert_eq!(page.title, Page::ALL[i].title());
-            assert_eq!(page.subtitle, Page::ALL[i].subtitle());
-        }
+    /// Activate the row whose focus element is `elem` on a fresh index, and return what it pushed.
+    fn activate_row(elem: u32) -> Vec<Stamped<InnerHost>> {
+        let mut idx = LegalIndex::new(EntryId(1));
+        let m = FixtureMeasure;
+        let cx = fixture_cx(&m, None);
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        let mut present = Present::default();
         {
             let mut fx = Effects::new(&mut buf, MachineId::Input, &mut present);
-            idx.open(Page::ALL.len() as i32, &mut fx);
+            idx.step(&ScreenEvent::Activate(elem), &cx, &mut fx);
         }
-        assert!(buf.is_empty(), "a row past the list must not open a document");
+        buf
+    }
+
+    /// **New for phase 5b: "every index row opens a document that is non-empty."** Exercised
+    /// through the real `LegalIndex` dispatch, addressing each row by its `Page` identity, rather
+    /// than by reading `Page::ALL` a second time — a transposed row/page mapping would still pass
+    /// a test that only asked `Page::ALL[i]` whether ITS OWN body is non-empty. A key that names
+    /// no row — a stale focus key surviving a document being removed, for instance — must open
+    /// nothing at all rather than silently opening the wrong page.
+    #[test]
+    fn every_index_row_opens_its_own_non_empty_document() {
+        for (i, page) in Page::ALL.into_iter().enumerate() {
+            let buf = activate_row(page.key().0);
+            assert_eq!(buf.len(), 1, "{page:?} must push exactly one navigation effect");
+            match &buf[0].fx {
+                Fx::Nav(NavOp::Push(SettingsPage::Document(d))) => {
+                    assert_eq!(*d as usize, i, "{page:?} opened document {d} instead of its own");
+                }
+                _ => panic!("{page:?} did not push its own document"),
+            }
+            let doc = DocumentPage::legal(EntryId(2), i as u8);
+            assert!(!doc.body.is_empty(), "{page:?} has an empty document");
+            assert_eq!(doc.title, page.title());
+            assert_eq!(doc.subtitle, page.subtitle());
+        }
+        assert!(activate_row(0xdead).is_empty(), "a key naming no row must not open a document");
+    }
+
+    /// The keys are hand-assigned identities: distinct, and below the screen's band.
+    #[test]
+    fn every_page_has_its_own_key_below_the_band() {
+        let mut keys: Vec<u32> = Page::ALL.iter().map(|p| p.key().0).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), Page::ALL.len());
+        assert!(keys.iter().all(|k| *k < crate::screens::registry::BAND));
     }
 
     /// A `Cx<InnerHost>` with an explicit empty directory fixture for asking a `Focusable` query
@@ -767,7 +825,7 @@ mod tests {
     fn a_re_delivered_right_opens_the_currently_focused_row() {
         let mut idx = LegalIndex::new(EntryId(6));
         let m = FixtureMeasure;
-        let focus = FocusKey { entry: EntryId(6), elem: 4u32 };
+        let focus = FocusKey { entry: EntryId(6), elem: Page::Trademarks.key().0 };
         let cx = fixture_cx(&m, Some(focus));
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
         let mut present = Present::default();
@@ -777,7 +835,7 @@ mod tests {
             assert_eq!(idx.step(&ev, &cx, &mut fx), Handled::Yes);
         }
         match &buf[0].fx {
-            Fx::Nav(NavOp::Push(SettingsPage::Document(d))) => assert_eq!(*d, 4),
+            Fx::Nav(NavOp::Push(SettingsPage::Document(d))) => assert_eq!(Page::ALL[*d as usize], Page::Trademarks),
             _ => panic!("a re-delivered RIGHT must open the FOCUSED row, not a fixed one"),
         }
     }
@@ -792,14 +850,14 @@ mod tests {
         let cx = fixture_cx(&m, None);
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
         let mut present = Present::default();
-        let to = FocusKey { entry: EntryId(7), elem: 3u32 };
+        let to = FocusKey { entry: EntryId(7), elem: Page::Source.key().0 };
         let ev = ScreenEvent::FocusMoved { from: None, to, by: By::Dir };
         {
             let mut fx = Effects::new(&mut buf, MachineId::Input, &mut present);
             assert_eq!(idx.step(&ev, &cx, &mut fx), Handled::Yes);
         }
-        assert_eq!(idx.table.sel, 3, "the drawn selection follows the engine's own focus key");
-        assert!(idx.table.list_focused);
+        assert_eq!(idx.form.table.sel, 3, "the drawn selection follows the engine's own focus key");
+        assert!(idx.form.table.list_focused);
     }
 
     /// **A document scrolls INSIDE on UP/DOWN and leaves only at its ends (spec §7.3 step 2).**
@@ -957,8 +1015,8 @@ mod tests {
         let frame = RouteLayout::screen().sectioned_table();
         // Two rows chosen apart from each other (not neighbours), so a geometry bug that merges
         // adjacent rows into one band would still be caught.
-        let r0 = idx.table.row_frame(frame, 0).expect("row 0 is drawn");
-        let r4 = idx.table.row_frame(frame, 4).expect("row 4 is drawn");
+        let r0 = idx.form.table.row_frame(frame, 0).expect("row 0 is drawn");
+        let r4 = idx.form.table.row_frame(frame, 4).expect("row 4 is drawn");
         assert!(
             r0.y + r0.h <= r4.y,
             "two different rows must occupy two non-overlapping bands, or a hover could never \
@@ -1103,7 +1161,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            let table = &LegalIndex::new(EntryId(0)).table;
+            let table = &LegalIndex::new(EntryId(0)).form.table;
             out.extend(table.app_fit_failures(frame_w, tag));
         }
         crate::ui::table::assert_no_fit_failures(&out);

@@ -47,7 +47,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views).form.table, &mut out);
-        overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).table, &mut out);
+        overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
         for signed_in in [true, false] {

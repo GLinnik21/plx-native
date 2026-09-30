@@ -18,7 +18,7 @@ use crate::screens::registry;
 use crate::ui::dispatch::Dispatcher;
 use crate::ui::fixture::{key, tick};
 use crate::ui::form::{FormTable, RowKind};
-use crate::ui::machine::{InputEvent, InputKind, Source};
+use crate::ui::machine::{Edge, InputEvent, InputKind, Source, Tick};
 use crate::ui::screen::{Activate, Hover, Stop};
 
 #[derive(Clone, Copy, Debug)]
@@ -151,6 +151,55 @@ fn every_audio_and_subtitles_field_pushes_its_picker() {
         frame(&mut d, &mut rig, 48, vec![]);
         (d, rig, id)
     });
+}
+
+/// The Language page's Nav rows, driven through the real `RouteSurface` by OK (`Activate`) and
+/// RIGHT. Not through the dispatcher like the other pages: the pushed `Contribute` page draws a QR
+/// code, which the host test build has no GL context for.
+#[test]
+fn every_language_nav_item_pushes_exactly_its_dest() {
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("nav-structure-language");
+    let items = nav_items(&LanguagePage::new(EntryId(0)).form);
+    assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
+    for &(elem, dest) in &items {
+        for method in [Method::Ok, Method::Right] {
+            let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Language,
+                crate::pms::HubsSnapshot::empty_for_test().view());
+            step(&mut surface, ScreenEvent::Mount, None);
+            let focus = FocusKey { entry: EntryId(0), elem };
+            let ev = match method {
+                Method::Ok => ScreenEvent::Activate(elem),
+                _ => ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
+                    kind: InputKind::Key { key: Key::Right, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true } }),
+            };
+            assert_eq!(surface.inner.top().unwrap().arg, SettingsPage::Language);
+            step(&mut surface, ev, Some(focus));
+            assert_eq!(surface.inner.top().unwrap().arg, dest,
+                "language: {method:?} on key {elem} must push exactly {dest:?}");
+            assert_eq!(surface.inner.depth(), 2, "language: {method:?} pushed exactly one page");
+        }
+    }
+}
+
+#[test]
+fn every_legal_index_row_pushes_its_own_document() {
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("nav-structure-legal");
+    let items = super::super::legal::nav_items_for_test();
+    assert_eq!(items.len(), 6, "{items:?}");
+    assert!(items.iter().all(|(_, d)| matches!(d, SettingsPage::Document(_))), "{items:?}");
+    assert_every_nav_item_pushes_exactly_its_dest("legal index", &items, &|| consent_opened(SettingsPage::Legal));
+}
+
+#[test]
+fn every_consent_settings_preview_row_pushes_its_preview() {
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("nav-structure-consent");
+    let items = super::super::consent::nav_items_for_test(None);
+    assert_eq!(items.len(), 5, "{items:?}");
+    assert!(items.iter().all(|(_, d)| matches!(d, SettingsPage::Preview(_))), "{items:?}");
+    assert_every_nav_item_pushes_exactly_its_dest("consent (settings)", &items, &|| consent_opened(SettingsPage::Privacy));
 }
 
 /// **No page in the family owns a `RoutePush` but the family itself.** A picker (or any future

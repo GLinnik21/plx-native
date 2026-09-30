@@ -46,11 +46,11 @@ use crate::ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
 };
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table::Row;
 use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::{theme, Painter, Rect};
 
-use super::family::{form_activate, form_focus, form_right_target, inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -1590,34 +1590,87 @@ const LANGUAGES: [crate::i18n::Preference; 4] = [
     crate::i18n::Preference::Es, crate::i18n::Preference::Be,
 ];
 
+/// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum LangId {
+    Choice(crate::i18n::Preference),
+    Contribute,
+}
+
+impl FormId for LangId {
+    fn key(&self) -> RowKey {
+        use crate::i18n::Preference as P;
+        RowKey(match self {
+            LangId::Choice(P::System) => 0,
+            LangId::Choice(P::En) => 1,
+            LangId::Choice(P::Es) => 2,
+            LangId::Choice(P::Be) => 3,
+            LangId::Contribute => 4,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum LangAction {
+    /// Save this preference (a `Choice` row).
+    Pick(crate::i18n::Preference),
+    /// The contribution row's slot: opening its page is [`RowKind::Nav`]'s job, so nothing
+    /// dispatches this.
+    Open,
+}
+
+/// The Language page's rows from plain inputs: one checked `Choice` per language, then the
+/// contribution guide as a `Nav` row in its own section.
+fn language_form(selected: crate::i18n::Preference, busy: bool) -> Form<LangId, LangAction, SettingsPage> {
+    let mut choices = FormSection::new("");
+    for language in LANGUAGES {
+        choices = choices.item(
+            LangId::Choice(language),
+            RowKind::Choice,
+            LangAction::Pick(language),
+            Row::new(preference_name(language)).checked(language == selected).dim(busy),
+        );
+    }
+    let contribution = FormSection::new("").item(
+        LangId::Contribute,
+        RowKind::Nav(SettingsPage::Contribute),
+        LangAction::Open,
+        Row::new(crate::i18n::msg::settings_language_contribute())
+            .detail(crate::i18n::msg::settings_language_help())
+            .chevron(true),
+    );
+    Form::new().section(choices).section(contribution)
+}
+
 struct LanguagePage {
     entry: EntryId,
-    table: TableView,
+    form: FormTable<LangId, LangAction, SettingsPage>,
     state: LanguageState,
     save: Option<(crate::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
 }
 
 struct LanguageState {
     selected: crate::i18n::Preference,
-    sel: i32,
+    /// The focused row's key — an identity, not a position.
+    sel: RowKey,
     failed: bool,
     busy: bool,
 }
 
 impl LogicalState for LanguageState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32).u8(LANGUAGES.iter().position(|p| *p == self.selected).unwrap_or(0) as u8).bool(self.failed).bool(self.busy);
+        w.u32(self.sel.0).u8(LANGUAGES.iter().position(|p| *p == self.selected).unwrap_or(0) as u8).bool(self.failed).bool(self.busy);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("language selected={} sel={} failed={} busy={}", self.selected.tag(), self.sel, self.failed, self.busy));
+        out.push_str(&format!("language selected={} sel={} failed={} busy={}", self.selected.tag(), self.sel.0, self.failed, self.busy));
     }
 }
 
 impl LanguagePage {
     fn new(entry: EntryId) -> Self {
         let selected = crate::i18n::saved_preference();
-        let sel = LANGUAGES.iter().position(|language| *language == selected).unwrap_or(0) as i32;
-        let mut page = Self { entry, table: TableView::new(), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
+        let sel = LangId::Choice(selected).key();
+        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
         page.rebuild();
         page
     }
@@ -1626,17 +1679,13 @@ impl LanguagePage {
         self.state.selected != crate::i18n::current().preference()
     }
 
+    /// Re-derive the rows, keeping the cursor on its row by identity (the saved language on the
+    /// first build).
     fn rebuild(&mut self) {
-        let mut choices = Section::new("");
-        for language in LANGUAGES {
-            choices = choices.row(Row::new(preference_name(language)).checked(language == self.state.selected).dim(self.state.busy));
-        }
-        let contribution = Section::new("").row(
-            Row::new(crate::i18n::msg::settings_language_contribute())
-                .detail(crate::i18n::msg::settings_language_help()).chevron(true));
-        self.table.compact = false;
-        self.table.set_sections(vec![choices, contribution], self.state.sel, false);
-        self.table.list_focused = true;
+        let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
+        self.form.table.compact = false;
+        self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
+        self.form.table.list_focused = true;
     }
 
     fn view(&self) -> TableScreen<'_> {
@@ -1650,13 +1699,11 @@ impl LanguagePage {
             crate::i18n::msg::settings_language_copy()
         };
         TableScreen::new(Header::new(RouteLayout::screen(), Some(crate::i18n::msg::settings_title()),
-            crate::i18n::msg::settings_language_title(), copy), &self.table, GroupId(0), self.entry)
+            crate::i18n::msg::settings_language_title(), copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
 
-    fn activate(&mut self, row: u32, fx: &mut Effects<'_, InnerHost>) {
-        if row == LANGUAGES.len() as u32 {
-            fx.push(Fx::Nav(NavOp::Push(SettingsPage::Contribute)));
-        } else if let Some(&preference) = LANGUAGES.get(row as usize) {
+    fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
+        if let Some(LangAction::Pick(preference)) = form_activate(&self.form, key, fx) {
             if self.state.busy || preference == self.state.selected { return; }
             let (reply, receipt) = std::sync::mpsc::channel();
             self.save = Some((preference, receipt));
@@ -1699,7 +1746,7 @@ impl Machine<InnerHost> for LanguagePage {
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                         focus: FocusTarget::Elem(FocusKey {
                             entry: self.entry,
-                            elem: self.state.sel as u32,
+                            elem: self.state.sel.0,
                         }),
                     })),
                 ));
@@ -1707,17 +1754,19 @@ impl Machine<InnerHost> for LanguagePage {
             }
             ScreenEvent::Tick(t) => {
                 if self.poll_save() { fx.invalidate(crate::ui::present::Provenance::Input); }
-                self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                table_focus(&mut self.table, to.elem); self.state.sel = self.table.sel; Handled::Yes
+                form_focus(&mut self.form, to.elem);
+                if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) { self.state.sel = key; }
+                Handled::Yes
             }
-            ScreenEvent::Activate(row) => { self.activate(*row, fx); Handled::Yes }
+            ScreenEvent::Activate(key) => { self.activate(*key, fx); Handled::Yes }
             ScreenEvent::Input(crate::ui::machine::InputEvent { kind: crate::ui::machine::InputKind::Key {
                 key: Key::Right, at_edge: true, .. }, .. }) => {
-                if let Some(k) = cx.focus.current {
-                    if self.table.row_opens(k.elem as i32) { self.activate(k.elem, fx); }
+                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
+                    self.activate(key, fx);
                 }
                 Handled::Yes
             }

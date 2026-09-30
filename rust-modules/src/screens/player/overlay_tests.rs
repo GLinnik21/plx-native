@@ -756,7 +756,12 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         Focusable::<TestHost>::groups(&page, &cx, &mut groups);
         let mut rows = Vec::new();
         for g in &groups {
-            for elem in 0..g.len as u32 {
+            // the More menu's elements are row identities; every other panel's are positions
+            let elems: Vec<u32> = match page.panel() {
+                Panel::More(p) => p.keys(),
+                _ => (0..g.len as u32).collect(),
+            };
+            for elem in elems {
                 let p = Focusable::<TestHost>::place(&page, &elem, &cx, At::Drawn)
                     .unwrap_or_else(|| panic!("{kind:?}: row {elem} is declared but does not place"));
                 let visible = p.rect.intersect(p.clip);

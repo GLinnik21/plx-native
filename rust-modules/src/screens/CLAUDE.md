@@ -79,11 +79,13 @@ Text that comes from a server or a user is marked with the `server_*` builders s
 never mark the app's own fallback strings. See `ui/CLAUDE.md`, "Localization and shared reading
 layout", for what to do when a string does not fit.
 
-A page on a `ui::form::FormTable` (the Settings root and the Playback / Audio & Subtitles field list; the other pages migrate per `docs/settings-form.md`)
+A page on a `ui::form::FormTable` (the Settings root, Playback / Audio & Subtitles, Language, the Legal index, Privacy & data and the item / account / more menus; the track menu and source list migrate per `docs/settings-form.md`)
 focuses by IDENTITY: the element the engine holds, the `Fx::Remember` seat and the page's canon are
 the row's `RowKey`, never its table index, so reordering the form moves no focus key. Such a page
 answers `FocusMoved` with `family::form_focus` and draws through `TableScreen::keyed`; a page not yet
-on a form keeps `table_focus` and index elements.
+on a form keeps `table_focus` and index elements. A menu outside the Settings family has no `Dest` (an
+uninhabited `Infallible`) and activates with `FormTable::activate`; it rebuilds with `set_or_open`, so a
+vanished focused row reopens on the safe opening row instead of sliding onto a destructive neighbour.
 
 Every Settings drill-down is a family-stack push through `family::form_activate` (a `Nav` row emits
 `NavOp::Push`); a page never owns a private submenu or a `RoutePush` (grep-gated in

@@ -70,8 +70,10 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::table::Row;
 use crate::ui::{theme, Painter, Rect};
+use std::convert::Infallible;
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -95,41 +97,60 @@ pub enum Action {
 /// (`every_row_fits_the_panel_in_every_language`).
 
 pub(crate) struct MoreMenuState {
-    table: TableView, // main-thread only
-    /// The ordered rows captured at construction — the ONE place row order lives, so [`on_ok`]'s
-    /// index mapping cannot drift from what was drawn. (`account_menu`'s rationale, and its bug.)
-    ///
-    /// An owned `Vec` rather than a `&'static [Action]`, because the Quality section's rows are
-    /// BUILT from `route::available_quality_ladder` rather than written out here.
-    rows: Vec<Action>,
+    /// The rows AND the action each one commits, declared together ([`more_form`]) — the row SET
+    /// varies (the Quality ladder is built from `route::available_quality_ladder`, and Force
+    /// Direct Play drops it), so a row is found by its identity ([`Action`]'s [`FormId`] key),
+    /// never by a position. The table is main-thread-only, like every other panel's.
+    form: FormTable<Action, Action, Infallible>,
+}
+
+/// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
+/// rung cannot compile without claiming a key; none of these is a discriminant, a position or a
+/// hash, so reordering the menu moves no key.
+impl FormId for Action {
+    fn key(&self) -> RowKey {
+        use crate::route::Quality;
+        RowKey(match self {
+            Action::None => 0,
+            Action::ToggleStats => 1,
+            Action::SendDiagnostics => 2,
+            Action::SetQuality(Quality::Auto) => 10,
+            Action::SetQuality(Quality::Original) => 11,
+            Action::SetQuality(Quality::P1080High) => 12,
+            Action::SetQuality(Quality::P1080) => 13,
+            Action::SetQuality(Quality::P720) => 14,
+            Action::SetQuality(Quality::P720Low) => 15,
+            Action::SetQuality(Quality::P480) => 16,
+        })
+    }
+}
+
+/// The menu as a pure form: Quality (one checked-rung row per `rows` entry that is a rung), then
+/// Options. An empty Quality section is not drawn at all — a heading over nothing would read as a
+/// menu that failed to load — and Force Direct Play (`forced`) never offers one.
+fn more_form(ps: &crate::route::PlaybackSession, rows: &[Action], forced: bool) -> Form<Action, Action, Infallible> {
+    let mut quality = FormSection::new(crate::i18n::msg::widgets_menu_quality());
+    let mut options = FormSection::new(crate::i18n::msg::widgets_menu_options());
+    for a in rows.iter().copied() {
+        match a {
+            Action::SetQuality(_) => quality = quality.item(a, RowKind::Button, a, row_for(ps, a)),
+            _ => options = options.item(a, RowKind::Button, a, row_for(ps, a)),
+        }
+    }
+    Form::new().section(quality.visible(!forced)).section(options)
 }
 
 impl MoreMenuState {
     fn open_focused(ps: &crate::route::PlaybackSession, quality: Option<crate::route::Quality>) -> Self {
         let forced = crate::route::forced_direct_play(ps);
         let rows = rows_for(forced);
-        // Under Force Direct Play there is no ladder to focus (see `rows_for`), so a quality
-        // entry lands on the first Options row like an ordinary open.
-        let initial = initial_selection(&rows, quality);
-        // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
-        // both, so the split here is presentational and the ORDER is the contract.
-        let mut options = Section::new(crate::i18n::msg::widgets_menu_options());
-        let mut quality_sec = Section::new(crate::i18n::msg::widgets_menu_quality());
-        for a in &rows {
-            match a {
-                Action::SetQuality(_) => quality_sec = quality_sec.row(row_for(ps, *a)),
-                _ => options = options.row(row_for(ps, *a)),
-            }
-        }
-        let mut table = TableView::new();
-        table.compact = true; // a short action list — BODY labels, like the profile menu
-        // An empty Quality section is not drawn at all — a heading over nothing would read as a
-        // menu that failed to load.
-        let sections = if forced { vec![options] } else { vec![quality_sec, options] };
-        table.set_sections(sections, initial, false);
-        // `rows` *is* the index→action map, so it must stay one-to-one with what was built above.
-        debug_assert_eq!(rows.len() as i32, table.n_rows());
-        MoreMenuState { table, rows }
+        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        form.table.compact = true; // a short action list — BODY labels, like the profile menu
+        // A quality entry focuses the active rung; under Force Direct Play there is no ladder to
+        // focus, so the rung has vanished and the menu opens on its first row like an ordinary open.
+        let keep = quality.map(Action::SetQuality);
+        form.set_or_open(more_form(ps, &rows, forced), keep.as_ref());
+        MoreMenuState { form }
     }
 
     pub(crate) fn new(ps: &crate::route::PlaybackSession) -> Self {
@@ -151,12 +172,18 @@ impl MoreMenuState {
         Self::open_focused(ps, Some(crate::route::quality()))
     }
 
+    /// Every row's focus key, in drawn order (for a test that walks the rows).
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> Vec<u32> {
+        (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)).collect()
+    }
+
     /// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the
     /// key ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes
     /// nothing else, so without this the fingerprint records the panel opening and closing and
     /// nothing between.
     pub(crate) fn sel(&self) -> i32 {
-        self.table.sel
+        self.form.table.sel
     }
 
     /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
@@ -165,15 +192,23 @@ impl MoreMenuState {
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
     /// Both a D-pad move AND a pointer hover reach here now — hover parks focus THROUGH the engine
     /// (§7.5), replacing this menu's own `pointer_focus`.
-    pub(crate) fn set_sel(&mut self, i: i32) {
-        self.table.sel = i;
+    pub(crate) fn focus_key(&mut self, elem: u32) {
+        if let Some(i) = self.form.index_of_key(RowKey(elem)) {
+            self.form.table.sel = i as i32;
+        }
     }
 
     /// Commit the highlighted row — dismissing the panel afterward is the container's job now, not
     /// this method's.
     pub(crate) fn on_ok(&self) -> Action {
-        let sel = self.table.sel;
-        action_at(&self.rows, sel)
+        self.form
+            .selected_id()
+            .and_then(|id| self.form.index_of(id))
+            .and_then(|i| self.form.activate(i))
+            .map_or(Action::None, |a| match a {
+                Activation::Action(act) => act,
+                Activation::Push(never) => match never {},
+            })
     }
 
     /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
@@ -181,7 +216,7 @@ impl MoreMenuState {
     /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
     /// other does not make the panel hop.
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
-        let pw = self.table.menu_panel_width(measure);
+        let pw = self.form.table.menu_panel_width(measure);
         let px = crate::ui::player_hud::CTRL_RIGHT - pw;
         let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
                                     // The ceiling was 320 while this menu held one row, and it was invisible then. With the
@@ -204,13 +239,13 @@ impl MoreMenuState {
     /// The panel's height alone — what `update` needs, with no measure in hand.
     fn panel_h(&self) -> f32 {
         let bottom = SCR_H - 316.0;
-        self.table.measured_height().clamp(120.0, bottom * 0.86)
+        self.form.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
     pub(crate) fn update(&mut self, dt: f32) {
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let h = self.panel_h();
-        self.table.update(dt, h);
+        self.form.table.update(dt, h);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -222,7 +257,7 @@ impl MoreMenuState {
             .translate(0.0, 16.0 * (1.0 - appear));
         let r = self.panel_rect(measure);
         p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-        self.table.draw(p, r, measure);
+        self.form.table.draw(p, r, measure);
     }
 }
 
@@ -258,15 +293,15 @@ where
             reachable: AxisMask::VERTICAL,
             edge: [EdgeRule::Stop; 4],
             extent: self.state.panel_rect(_cx.measure),
-            len: self.state.rows.len(),
+            len: self.state.form.focusable_len(),
             elem: ElemKind::Bare,
         });
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as usize) < self.state.rows.len()).then_some(self.group)
+        self.state.form.index_of_key(RowKey(key.index()?)).map(|_| self.group)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        let Some(i) = key.elem.index() else {
+        let Some(from) = key.elem.index() else {
             return Step::Edge;
         };
         let delta = match dir {
@@ -274,14 +309,14 @@ where
             Dir::Down => 1,
             _ => return Step::Edge,
         };
-        match self.state.table.next_selectable(i as i32, delta) {
-            Some(j) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(j as u32) }),
+        match self.state.form.step_key(RowKey(from), delta) {
+            Some(k) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(k.0) }),
             None => Step::Edge,
         }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let i = key.index()?;
-        let r = self.state.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
+        let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
+        let r = self.state.form.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
@@ -290,16 +325,20 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let i = want.elem.index().unwrap_or(0) as i32;
+        let kept = want
+            .elem
+            .index()
+            .filter(|k| self.state.form.index_of_key(RowKey(*k)).is_some());
         FocusKey {
             entry: self.entry,
-            elem: H::Elem::of_index(self.state.table.settle(i).max(0) as u32),
+            elem: H::Elem::of_index(kept.or_else(|| self.state.form.opening_key().map(|k| k.0)).unwrap_or(0)),
         }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let key = self.state.form.selected_key().or_else(|| self.state.form.opening_key());
         FocusKey {
             entry: self.entry,
-            elem: H::Elem::of_index(self.state.table.sel.max(0) as u32),
+            elem: H::Elem::of_index(key.map_or(0, |k| k.0)),
         }
     }
 }
@@ -315,17 +354,17 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
         let r = self.state.panel_rect(f.measure);
-        for i in 0..self.state.table.n_rows() {
-            if self.state.table.next_selectable(i, 0) != Some(i) {
+        for i in 0..self.state.form.table.n_rows() {
+            let Some(key) = self.state.form.key_at(i as usize) else {
                 continue;
-            }
-            if let Some(row) = self.state.table.row_frame(r, i) {
+            };
+            if let Some(row) = self.state.form.table.row_frame(r, i) {
                 f.stop(
                     p,
                     Stop {
                         key: FocusKey {
                             entry: self.entry,
-                            elem: H::Elem::of_index(i as u32),
+                            elem: H::Elem::of_index(key.0),
                         },
                         rect: row,
                         rest_rect: row,
@@ -435,26 +474,6 @@ fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
     }
 }
 
-fn initial_selection(rows: &[Action], quality: Option<crate::route::Quality>) -> i32 {
-    quality
-        .and_then(|q| {
-            rows.iter()
-                .position(|a| *a == Action::SetQuality(q))
-                .and_then(|i| i32::try_from(i).ok())
-        })
-        .unwrap_or(0)
-}
-
-/// The row list IS the mapping — a selection outside it is `None` rather than whatever action
-/// happens to sit at that index in some other row set.
-fn action_at(rows: &[Action], sel: i32) -> Action {
-    usize::try_from(sel)
-        .ok()
-        .and_then(|i| rows.get(i))
-        .copied()
-        .unwrap_or(Action::None)
-}
-
 /// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
@@ -536,36 +555,76 @@ mod tests {
         }
     }
 
+    /// The actions in table order, read back off a built menu by identity.
+    fn order(st: &MoreMenuState) -> Vec<Action> {
+        (0..st.form.table.n_rows() as usize).filter_map(|i| st.form.id_at(i).copied()).collect()
+    }
+
+    /// A menu built from a row list, without a `PlaybackSession` beyond the default one.
+    fn menu(forced: bool, focus: Option<crate::route::Quality>) -> MoreMenuState {
+        let ps = crate::route::PlaybackSession::default();
+        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        form.table.compact = true;
+        let keep = focus.map(Action::SetQuality);
+        form.set_or_open(more_form(&ps, &rows_for(forced), forced), keep.as_ref());
+        MoreMenuState { form }
+    }
+
+    /// Pressing each row commits ITS action, addressed by identity — never by a position.
     #[test]
-    fn a_selection_maps_to_its_row() {
-        let rows = rows_for(false);
-        // Quality leads Options — see this module's doc — so row 0 is the ladder's head, not the
-        // Stats toggle. `sel` is ONE flat index over both sections, so this is the join that a
-        // section split could quietly break: get either side's push order wrong and a press
-        // commits its neighbour.
-        for (i, q) in crate::route::available_quality_ladder().iter().enumerate() {
-            assert_eq!(action_at(&rows, i as i32), Action::SetQuality(*q));
+    fn a_focused_row_commits_its_own_action() {
+        let mut st = menu(false, None);
+        for a in rows_for(false) {
+            st.focus_key(a.key().0);
+            assert_eq!(st.on_ok(), a);
         }
-        let n = crate::route::available_quality_ladder().len() as i32;
-        assert_eq!(action_at(&rows, n), Action::ToggleStats);
+    }
+
+    /// Quality leads Options — see this module's doc — so the ladder's head is the first row and
+    /// the toggle follows the last rung. The two sections are declared as sections, so the join
+    /// that a flat index could quietly break is one the form owns.
+    #[test]
+    fn the_quality_ladder_leads_and_the_toggle_follows_it() {
+        let st = menu(false, None);
+        let ladder: Vec<Action> =
+            crate::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)).collect();
+        assert_eq!(&order(&st)[..ladder.len()], &ladder[..]);
+        assert_eq!(order(&st)[ladder.len()], Action::ToggleStats);
     }
 
     #[test]
     fn failure_entry_can_focus_the_active_quality_in_the_shared_menu() {
-        let rows = rows_for(false);
         for q in crate::route::available_quality_ladder() {
-            let i = rows
-                .iter()
-                .position(|a| *a == Action::SetQuality(*q))
-                .expect("every available quality has a row");
-            assert_eq!(initial_selection(&rows, Some(*q)), i as i32);
+            let st = menu(false, Some(*q));
+            assert_eq!(st.on_ok(), Action::SetQuality(*q));
         }
+        let st = menu(false, None);
         assert_eq!(
-            initial_selection(&rows, None),
-            0,
+            st.on_ok(),
+            order(&st)[0],
             "ordinary … starts at the top row — which is now the ladder's head, since Quality \
              leads Options"
         );
+    }
+
+    /// Reordering the rows moves no key: every row keeps the key (and so the action) it had, and
+    /// the press still commits the row's own action.
+    #[test]
+    fn a_reordered_menu_resolves_every_key_to_the_same_action() {
+        let ps = crate::route::PlaybackSession::default();
+        let mut rows = rows_for(false);
+        rows.reverse();
+        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        form.set(more_form(&ps, &rows, false), None);
+        let st = MoreMenuState { form };
+        for a in rows_for(false) {
+            let i = st.form.index_of_key(a.key()).expect("every row keeps its key");
+            assert_eq!(st.form.id_at(i), Some(&a));
+            match st.form.activate(i) {
+                Some(Activation::Action(got)) => assert_eq!(got, a),
+                _ => panic!("{a:?} must commit its own action"),
+            }
+        }
     }
 
     /// **Quality must stay entirely ahead of Options in the flat row order.** The two `TableView`
@@ -602,8 +661,9 @@ mod tests {
         );
         assert_eq!(forced.first(), Some(&Action::ToggleStats));
         for q in crate::route::QUALITY_LADDER {
-            assert_eq!(initial_selection(&forced, Some(q)), 0);
-            assert_eq!(action_at(&forced, initial_selection(&forced, Some(q))), Action::ToggleStats);
+            let st = menu(true, Some(q));
+            assert_eq!(st.on_ok(), Action::ToggleStats, "a vanished rung opens on the first option");
+            assert_eq!(st.sel(), 0);
         }
         // not forced: the ladder is unchanged, in order, ahead of Options
         let open = rows_for(false);
@@ -620,14 +680,25 @@ mod tests {
         assert_eq!(&open[ladder.len()..], &forced[..]);
     }
 
-    /// Out-of-range must be `None`, never a neighbouring action: `sel` survives a rebuild, so a
-    /// shorter row set can be asked for an index the previous one had.
+    /// A key that names no row commits nothing, never a neighbour's action.
     #[test]
-    fn an_out_of_range_selection_is_none_not_a_neighbour() {
-        let rows = rows_for(false);
-        assert_eq!(action_at(&rows, rows.len() as i32), Action::None);
-        assert_eq!(action_at(&rows, -1), Action::None);
-        assert_eq!(action_at(&[], 0), Action::None);
+    fn an_unknown_key_is_none_not_a_neighbour() {
+        let mut st = menu(false, None);
+        let before = st.sel();
+        st.focus_key(0xdead);
+        assert_eq!(st.sel(), before, "an unknown key moves nothing");
+    }
+
+    /// Every row's key is distinct and below the band.
+    #[test]
+    fn every_key_is_distinct_and_below_the_band() {
+        let mut all: Vec<Action> = crate::route::QUALITY_LADDER.iter().map(|q| Action::SetQuality(*q)).collect();
+        all.extend([Action::ToggleStats, Action::SendDiagnostics]);
+        let mut keys: Vec<u32> = all.iter().map(|a| a.key().0).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), all.len());
+        assert!(keys.iter().all(|k| *k < crate::ui::table_screen::BAND_BASE));
     }
 }
 
@@ -665,21 +736,23 @@ mod focus_tests {
     /// it, built the same way [`MoreMenuState::open_focused`] does but without a `PlaybackSession`
     /// — no row here reads one.
     fn three_row_menu() -> MoreMenuState {
-        let mut sec = Section::new("Quality");
-        for label in ["Rung A", "Rung B", "Stats for nerds"] {
-            sec = sec.row(Row::new(label));
+        let mut sec = FormSection::new("Quality");
+        for (a, label) in [
+            (Action::SetQuality(crate::route::Quality::Original), "Rung A"),
+            (Action::SetQuality(crate::route::Quality::Auto), "Rung B"),
+            (Action::ToggleStats, "Stats for nerds"),
+        ] {
+            sec = sec.item(a, RowKind::Button, a, Row::new(label));
         }
-        let mut table = TableView::new();
-        table.compact = true;
-        table.set_sections(vec![sec], 0, false);
-        MoreMenuState {
-            table,
-            rows: vec![
-                Action::SetQuality(crate::route::Quality::Original),
-                Action::SetQuality(crate::route::Quality::Auto),
-                Action::ToggleStats,
-            ],
-        }
+        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        form.table.compact = true;
+        form.set(Form::new().section(sec), None);
+        MoreMenuState { form }
+    }
+
+    /// The focus element of the row at `index` — the keys are identities, not positions.
+    fn elem(st: &MoreMenuState, index: usize) -> u32 {
+        st.form.key_at(index).expect("a bound row").0
     }
 
     /// **UP/DOWN step by one row and clamp at both ends**, over `TableView::next_selectable`,
@@ -701,14 +774,15 @@ mod focus_tests {
                     Step::Edge => None,
                 }
             };
-            assert_eq!(step(0, Dir::Down), Some(1));
-            assert_eq!(step(1, Dir::Down), Some(2));
-            assert_eq!(step(2, Dir::Down), None, "the last row does not wrap");
-            assert_eq!(step(0, Dir::Up), None, "the first row does not wrap");
-            assert_eq!(step(1, Dir::Up), Some(0));
+            let (r0, r1, r2) = (elem(&st, 0), elem(&st, 1), elem(&st, 2));
+            assert_eq!(step(r0, Dir::Down), Some(r1));
+            assert_eq!(step(r1, Dir::Down), Some(r2));
+            assert_eq!(step(r2, Dir::Down), None, "the last row does not wrap");
+            assert_eq!(step(r0, Dir::Up), None, "the first row does not wrap");
+            assert_eq!(step(r1, Dir::Up), Some(r0));
             // LEFT/RIGHT are swallowed — this popover is ONE column, matching the old ladder's
             // `Key::Up | Key::Down => …` arm with no Left/Right case at all.
-            assert!(matches!(step(1, Dir::Left), None));
+            assert!(matches!(step(elem(&st, 1), Dir::Left), None));
         });
     }
 
@@ -719,18 +793,18 @@ mod focus_tests {
         let e = EntryId(4);
         let st = three_row_menu();
         let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
-        let want = st.table.row_frame(r, 1);
+        let want = st.form.table.row_frame(r, 1);
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
-            let placed = <MoreMenuPart as Focusable<HostFixture>>::place(&part, &1u32, cx, At::Drawn);
+            let placed = <MoreMenuPart as Focusable<HostFixture>>::place(&part, &elem(&st, 1), cx, At::Drawn);
             assert_eq!(placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)), want.map(|r| (r.x, r.y, r.w, r.h)));
         });
     }
 
-    /// A stale cursor from a shorter previous row set settles onto the last real row —
-    /// `TableView::settle`'s own contract, reached here through `Focusable::reconcile`.
+    /// A cursor whose key names no row (a shorter previous row set) settles onto the menu's
+    /// OPENING row — a key has no neighbour to slide to — reached through `Focusable::reconcile`.
     #[test]
-    fn a_stale_cursor_settles_onto_a_real_row() {
+    fn a_stale_cursor_settles_onto_the_opening_row() {
         let e = EntryId(4);
         let st = three_row_menu();
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
@@ -740,7 +814,13 @@ mod focus_tests {
                 FocusKey { entry: e, elem: 99 },
                 cx,
             );
-            assert_eq!(got.elem, 2);
+            assert_eq!(got.elem, elem(&st, 0));
+            let kept = <MoreMenuPart as Focusable<HostFixture>>::reconcile(
+                &part,
+                FocusKey { entry: e, elem: elem(&st, 2) },
+                cx,
+            );
+            assert_eq!(kept.elem, elem(&st, 2), "a live key is left where it is");
         });
     }
 
@@ -756,9 +836,9 @@ mod focus_tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let menu = MoreMenuState::new(&ps);
-            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
+            out.extend(menu.form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
         }
         crate::ui::table::assert_no_fit_failures(&out);
     }

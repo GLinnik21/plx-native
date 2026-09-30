@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use crate::telemetry::consent::{self, Consent};
 use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use crate::ui::document_reader::DocumentReader;
+use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind,
@@ -30,12 +31,12 @@ use crate::ui::screen::{
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Part, Placed, RenderStrategy, Screen,
     ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table::{Row, TableView};
 use crate::ui::table_screen::{BandPart, DocumentFocus, DocumentScreen, Header, TableScreen};
 use crate::ui::widgets::CtlPop;
 use crate::ui::{theme, Rect};
 
-use super::family::{palette, table_focus, InnerHost, SettingsPage, ALERT_GROUP, BAND_GROUP, TABLE_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, palette, InnerHost, SettingsPage, ALERT_GROUP, BAND_GROUP, TABLE_GROUP};
 use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq, ALERT};
 
 // ---- the words -------------------------------------------------------------------------------
@@ -75,6 +76,9 @@ const FIRST_RUN_PRODUCT: u8 = 0x20;
 const STAGE_PRODUCT: u8 = 0x01;
 const ERRORS_SHARED: u8 = 0x10;
 
+/// A consent row's identity: what selection survives a rebuild by, and what a test addresses a
+/// row by. Its focus key ([`FormId::key`]) is hand-assigned below — the Privacy & data page's
+/// order — and unrelated to the enum's layout; every key stays below `registry::BAND`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RowId {
     Errors,
@@ -84,6 +88,33 @@ enum RowId {
     Policy,
     ErrorsId,
     AnalyticsId,
+    Delete,
+}
+
+impl FormId for RowId {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            RowId::Errors => 0,
+            RowId::Usage => 1,
+            RowId::PreviewCrash => 2,
+            RowId::PreviewUsage => 3,
+            RowId::Policy => 4,
+            RowId::ErrorsId => 5,
+            RowId::AnalyticsId => 6,
+            RowId::Delete => 7,
+        })
+    }
+}
+
+/// What a consent row does beyond opening a preview (a `Nav` row never reaches it — see
+/// [`FormTable::activate`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Act {
+    /// A `Nav` row's slot: opening its preview is [`RowKind::Nav`]'s job, so nothing dispatches this.
+    Open,
+    FlipErrors,
+    FlipUsage,
+    /// Ask "Delete all local data?" (the alert).
     Delete,
 }
 
@@ -98,8 +129,7 @@ enum Mode {
 pub(crate) struct ConsentPage {
     entry: EntryId,
     mode: Mode,
-    table: TableView,
-    rows: Vec<RowId>,
+    form: FormTable<RowId, Act, SettingsPage>,
     /// The Settings draft (`errors`, `usage`) and what was stored when the page opened.
     draft: (bool, bool),
     base: (bool, bool),
@@ -131,13 +161,75 @@ impl LogicalState for ConsentState {
     }
 }
 
+/// The page's rows as a [`Form`], from plain inputs. First run lists the stage's own example and
+/// the policy (two `Nav` rows, keyed 0 and 1 as the two-row list always was); Privacy & data lists
+/// the two switches, the five documents and Delete. Every preview row is a `Nav` row onto its
+/// `SettingsPage::Preview`, whose byte carries the kind and the ceremony's crumb flag.
+fn consent_form(mode: Mode, draft: (bool, bool)) -> Form<RowId, Act, SettingsPage> {
+    let flag = match mode {
+        Mode::Settings => 0,
+        Mode::FirstRun { product: false, .. } => FIRST_RUN_CRASH,
+        Mode::FirstRun { product: true, .. } => FIRST_RUN_PRODUCT,
+    };
+    let preview = |kind: PreviewKind| {
+        let at = PreviewKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u8;
+        RowKind::Nav(SettingsPage::Preview(at | flag))
+    };
+    match mode {
+        Mode::FirstRun { product, .. } => {
+            let (first, label) = if product {
+                (RowId::PreviewUsage, PreviewKind::Usage)
+            } else {
+                (RowId::PreviewCrash, PreviewKind::Crash)
+            };
+            Form::new().section(
+                FormSection::new("")
+                    .item_keyed(first, RowKey(0), preview(label), Act::Open,
+                        Row::new(crate::i18n::msg::settings_consent_example()).chevron(true))
+                    .item_keyed(RowId::Policy, RowKey(1), preview(PreviewKind::Policy), Act::Open,
+                        Row::new(crate::i18n::msg::settings_consent_policy()).chevron(true)),
+            )
+        }
+        Mode::Settings => {
+            let (errors, usage) = draft;
+            Form::new()
+                .section(
+                    FormSection::new(crate::i18n::msg::settings_consent_reporting())
+                        .item(RowId::Errors, RowKind::Toggle, Act::FlipErrors,
+                            Row::new(crate::i18n::msg::settings_consent_crash_row()).detail(crate::i18n::msg::settings_consent_crash_detail()).toggle(errors))
+                        .item(RowId::Usage, RowKind::Toggle, Act::FlipUsage,
+                            Row::new(crate::i18n::msg::settings_consent_usage_row()).detail(crate::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
+                )
+                .section(
+                    FormSection::new(crate::i18n::msg::settings_consent_information())
+                        .item(RowId::PreviewCrash, preview(PreviewKind::Crash), Act::Open,
+                            Row::new(crate::i18n::msg::settings_consent_crash_document()).detail(crate::i18n::msg::settings_consent_preview_crash()).chevron(true))
+                        .item(RowId::PreviewUsage, preview(PreviewKind::Usage), Act::Open,
+                            Row::new(crate::i18n::msg::settings_consent_usage_document()).detail(crate::i18n::msg::settings_consent_preview_usage()).chevron(true))
+                        .item(RowId::Policy, preview(PreviewKind::Policy), Act::Open,
+                            Row::new(crate::i18n::msg::settings_consent_policy()).detail(crate::i18n::msg::settings_consent_preview_policy()).chevron(true))
+                        .item(RowId::ErrorsId, preview(PreviewKind::ErrorsId), Act::Open,
+                            Row::new(crate::i18n::msg::settings_consent_crash_id()).detail(crate::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
+                        .item(RowId::AnalyticsId, preview(PreviewKind::AnalyticsId), Act::Open,
+                            Row::new(crate::i18n::msg::settings_consent_analytics_id()).detail(crate::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
+                )
+                .section(
+                    FormSection::new(crate::i18n::msg::settings_consent_on_tv()).item(
+                        RowId::Delete, RowKind::Button, Act::Delete,
+                        Row::new(crate::i18n::msg::settings_consent_delete()).detail(crate::i18n::msg::settings_consent_delete_detail()).chevron(true),
+                    ),
+                )
+        }
+    }
+}
+
 impl ConsentPage {
     /// Privacy & data, seeded from the published decision.
     pub(crate) fn settings(entry: EntryId, _cx: &Cx<'_, InnerHost>, _fx: &mut Effects<'_, InnerHost>) -> Self {
         let prev = consent::current().unwrap_or_default();
         let mut s = Self::bare(entry, Mode::Settings, (prev.errors, prev.usage));
-        s.rebuild(0);
-        s.table.list_focused = true;
+        s.rebuild(None);
+        s.form.table.list_focused = true;
         s
     }
 
@@ -148,10 +240,10 @@ impl ConsentPage {
             errors: stage & ERRORS_SHARED != 0,
         };
         let mut s = Self::bare(entry, mode, (false, false));
-        s.rebuild(0);
+        s.rebuild(None);
         s.layout = Self::first_run_layout(s.title(), s.body(), s.crumb().is_some(),
-            &s.table, &s.band_labels(), cx.measure);
-        s.table.list_focused = false;
+            &s.form.table, &s.band_labels(), cx.measure);
+        s.form.table.list_focused = false;
         // First run's whole point (the legacy module's doc, and this page's own
         // `first_run_answers_are_the_action_row_and_not_table_rows`) is that the two answers ARE
         // the interaction and the reading list beside them is only what you may read FIRST — so
@@ -186,8 +278,7 @@ impl ConsentPage {
         Self {
             entry,
             mode,
-            table: TableView::new(),
-            rows: Vec::new(),
+            form: FormTable::new(super::registry::BAND),
             draft: base,
             base,
             alert: DecisionAlert::new(),
@@ -209,54 +300,17 @@ impl ConsentPage {
         }
     }
 
-    fn row_ids(&self) -> Vec<RowId> {
-        match self.mode {
-            Mode::FirstRun { product, .. } => vec![
-                if product { RowId::PreviewUsage } else { RowId::PreviewCrash },
-                RowId::Policy,
-            ],
-            Mode::Settings => vec![
-                RowId::Errors,
-                RowId::Usage,
-                RowId::PreviewCrash,
-                RowId::PreviewUsage,
-                RowId::Policy,
-                RowId::ErrorsId,
-                RowId::AnalyticsId,
-                RowId::Delete,
-            ],
+    /// Re-derive the rows. `keep` is the row whose cursor survives (a flipped switch keeps focus
+    /// on the row that was flipped, and the pill and scroll slide from where they are); `None`
+    /// opens afresh on the first row.
+    fn rebuild(&mut self, keep: Option<RowId>) {
+        self.form.table.header_ink = theme::TEXT_READING;
+        let form = consent_form(self.mode, self.draft);
+        match keep {
+            Some(id) if self.form.table.n_rows() > 0 => self.form.set_sliding(form, Some(&id)),
+            _ => self.form.set(form, None),
         }
-    }
-
-    fn rebuild(&mut self, sel: i32) {
-        self.rows = self.row_ids();
-        self.table.header_ink = theme::TEXT_READING;
-        let sections = match self.mode {
-            Mode::FirstRun { .. } => vec![Section::new("")
-                .row(Row::new(crate::i18n::msg::settings_consent_example()).chevron(true))
-                .row(Row::new(crate::i18n::msg::settings_consent_policy()).chevron(true))],
-            Mode::Settings => {
-                let (errors, usage) = self.draft;
-                vec![
-                    Section::new(crate::i18n::msg::settings_consent_reporting())
-                        .row(Row::new(crate::i18n::msg::settings_consent_crash_row()).detail(crate::i18n::msg::settings_consent_crash_detail()).toggle(errors))
-                        .row(Row::new(crate::i18n::msg::settings_consent_usage_row()).detail(crate::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
-                    Section::new(crate::i18n::msg::settings_consent_information())
-                        .row(Row::new(crate::i18n::msg::settings_consent_crash_document()).detail(crate::i18n::msg::settings_consent_preview_crash()).chevron(true))
-                        .row(Row::new(crate::i18n::msg::settings_consent_usage_document()).detail(crate::i18n::msg::settings_consent_preview_usage()).chevron(true))
-                        .row(Row::new(crate::i18n::msg::settings_consent_policy()).detail(crate::i18n::msg::settings_consent_preview_policy()).chevron(true))
-                        .row(Row::new(crate::i18n::msg::settings_consent_crash_id()).detail(crate::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
-                        .row(Row::new(crate::i18n::msg::settings_consent_analytics_id()).detail(crate::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
-                    Section::new(crate::i18n::msg::settings_consent_on_tv()).row(
-                        Row::new(crate::i18n::msg::settings_consent_delete()).detail(crate::i18n::msg::settings_consent_delete_detail()).chevron(true),
-                    ),
-                ]
-            }
-        };
-        let keep = sel >= 0 && self.table.n_rows() > 0;
-        self.table.set_sections(sections, sel.max(0), keep);
         self.state.draft = self.draft;
-        debug_assert_eq!(self.rows.len() as i32, self.table.n_rows());
     }
 
     fn title(&self) -> &'static str {
@@ -335,7 +389,8 @@ impl ConsentPage {
         let labels = self.band_labels();
         ConsentView {
             layout,
-            table: &self.table,
+            table: &self.form.table,
+            keys: &self.form,
             frame: self.list_frame(),
             title: self.title(),
             has_crumb: self.crumb().is_some(),
@@ -392,41 +447,41 @@ impl ConsentPage {
         }
     }
 
-    fn open_preview(&self, kind: PreviewKind, fx: &mut Effects<'_, InnerHost>) {
-        let idx = PreviewKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u8;
-        let flag = match self.mode {
-            Mode::Settings => 0,
-            Mode::FirstRun { product: false, .. } => FIRST_RUN_CRASH,
-            Mode::FirstRun { product: true, .. } => FIRST_RUN_PRODUCT,
-        };
-        fx.push(Fx::Nav(NavOp::Push(SettingsPage::Preview(idx | flag))));
+    /// The rows in table order, by identity — what a test reads instead of a position.
+    #[cfg(test)]
+    fn row_ids(&self) -> Vec<RowId> {
+        (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.id_at(i).copied()).collect()
     }
 
-    fn row_commit(&mut self, row: i32, fx: &mut Effects<'_, InnerHost>) {
-        let Some(id) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)).copied() else {
+    /// The focus key of a row, by identity (first-run keys differ from the Settings ones).
+    #[cfg(test)]
+    fn key_of(&self, id: RowId) -> u32 {
+        self.form.index_of(&id).and_then(|i| self.form.key_at(i)).expect("the row is on this page").0
+    }
+
+    /// Commit the row whose focus key is `key`: a `Nav` row pushes its preview (through
+    /// [`form_activate`], the one path), a switch flips its draft, Delete asks.
+    fn row_commit(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
+        let Some(id) = self.form.index_of_key(RowKey(key)).and_then(|i| self.form.id_at(i)).copied() else {
             return;
         };
-        match id {
+        match form_activate(&self.form, key, fx) {
             // **A flipped switch keeps focus on the row that was flipped.** This never needs to
             // ask the engine for anything: `row_commit` only runs on the row the OK was pressed
             // on, so focus was already on the table when the switch changed, never on Done — the
             // one case this file DOES have to correct by hand (`request_band_focus`, above) is a
             // fresh mount landing on the wrong group entirely, not an existing focus outliving
             // the control it was on.
-            RowId::Errors => {
+            Some(Act::FlipErrors) => {
                 self.draft.0 = !self.draft.0;
-                self.rebuild(row);
+                self.rebuild(Some(id));
             }
-            RowId::Usage => {
+            Some(Act::FlipUsage) => {
                 self.draft.1 = !self.draft.1;
-                self.rebuild(row);
+                self.rebuild(Some(id));
             }
-            RowId::PreviewCrash => self.open_preview(PreviewKind::Crash, fx),
-            RowId::PreviewUsage => self.open_preview(PreviewKind::Usage, fx),
-            RowId::Policy => self.open_preview(PreviewKind::Policy, fx),
-            RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
-            RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
-            RowId::Delete => {
+            None | Some(Act::Open) => {}
+            Some(Act::Delete) => {
                 self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
                 self.state.alert_scroll = 0;
                 self.state.alert = true;
@@ -465,6 +520,8 @@ impl ConsentPage {
 struct ConsentView<'a> {
     layout: RouteLayout,
     table: &'a TableView,
+    /// The table's row-key map: the page's focus elements are [`RowKey`]s, not row indices.
+    keys: &'a dyn RowKeys,
     frame: Rect,
     entry: EntryId,
     labels: Vec<&'static std::ffi::CStr>,
@@ -488,6 +545,7 @@ impl<'a> ConsentView<'a> {
             TABLE_GROUP,
             self.entry,
         )
+        .keyed(self.keys)
         .uncommitted(self.uncommitted);
         ts.with_frame(self.frame).with_band(BandPart {
             layout: self.layout,
@@ -597,7 +655,7 @@ impl Focusable<InnerHost> for ConsentView<'_> {
         if alert_index(want.elem).is_some() {
             return FocusKey {
                 entry: self.entry,
-                elem: self.table.sel.max(0) as u32,
+                elem: self.keys.key_at(self.table.sel.max(0) as usize).map_or(0, |k| k.0),
             };
         }
         Focusable::<InnerHost>::reconcile(&self.screen(), want, cx)
@@ -618,7 +676,7 @@ impl Machine<InnerHost> for ConsentPage {
         match ev {
             ScreenEvent::Tick(t) => {
                 let dt = t.dt();
-                self.table.update(dt, self.list_frame().h);
+                self.form.table.update(dt, self.list_frame().h);
                 self.alert.update(dt);
                 self.disclosure.update(dt);
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
@@ -629,7 +687,7 @@ impl Machine<InnerHost> for ConsentPage {
                 if let Some(i) = alert_index(to.elem) {
                     self.alert.set_choice(if i == 1 { AlertChoice::Destructive } else { AlertChoice::Cancel });
                 } else {
-                    table_focus(&mut self.table, to.elem);
+                    form_focus(&mut self.form, to.elem);
                 }
                 Handled::Yes
             }
@@ -664,7 +722,7 @@ impl Machine<InnerHost> for ConsentPage {
                     return Handled::Yes;
                 }
                 if alert_index(*e).is_none() && band_index(*e).is_none() {
-                    self.row_commit(*e as i32, fx);
+                    self.row_commit(*e, fx);
                 }
                 Handled::Yes
             }
@@ -797,8 +855,8 @@ impl Machine<InnerHost> for ConsentPage {
                     },
                     Key::Right if *at_edge => {
                         if let Some(k) = cx.focus.current {
-                            if self.table.row_opens(k.elem as i32) {
-                                self.row_commit(k.elem as i32, fx);
+                            if let Some(key) = form_right_target(&self.form, k.elem) {
+                                self.row_commit(key, fx);
                             }
                         }
                         Handled::Yes
@@ -848,7 +906,8 @@ impl Screen<InnerHost> for ConsentPage {
         // two call sites computing one fact independently is the shape that drifts.
         let uncommitted = self.uncommitted();
         {
-            let mut ts = TableScreen::new(Header::new(layout, None, "", ""), &self.table, TABLE_GROUP, self.entry)
+            let mut ts = TableScreen::new(Header::new(layout, None, "", ""), &self.form.table, TABLE_GROUP, self.entry)
+                .keyed(&self.form)
                 .uncommitted(uncommitted)
                 .with_frame(self.list_frame())
                 .with_band(BandPart {
@@ -1377,6 +1436,22 @@ fn errors_id_document() -> String {
 /// both the same way now; kept so the type stays named where the family's docs point).
 #[allow(dead_code)]
 fn press_from_named(_p: PressFrom) {}
+
+/// The `(focus key, destination)` of every `Nav` row the page lists — the structural navigation
+/// test's expectation, built by the page's own form builder. `first_run`: `Some(product)` for the
+/// sign-in question's stage, `None` for Privacy & data under Settings.
+#[cfg(test)]
+pub(super) fn nav_items_for_test(first_run: Option<bool>) -> Vec<(u32, SettingsPage)> {
+    let mode = first_run.map_or(Mode::Settings, |product| Mode::FirstRun { product, errors: false });
+    let mut form: FormTable<RowId, Act, SettingsPage> = FormTable::new(super::registry::BAND);
+    form.set(consent_form(mode, (false, false)), None);
+    (0..form.table.n_rows() as usize)
+        .filter_map(|i| match form.binding_at(i)?.kind.clone() {
+            RowKind::Nav(dest) => Some((form.key_at(i)?.0, dest)),
+            _ => None,
+        })
+        .collect()
+}
 
 #[cfg(test)]
 #[path = "consent_test_support.rs"]

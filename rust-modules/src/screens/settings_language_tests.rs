@@ -2,6 +2,7 @@
 use super::*;
 use super::test_support::*;
 use crate::i18n::Preference;
+use crate::ui::form::FormId;
 use crate::ui::machine::{Edge, InputEvent, InputKind, Source};
 use crate::ui::present::Present;
 
@@ -12,6 +13,10 @@ fn activate(page: &mut LanguagePage, row: u32) -> Vec<Stamped<InnerHost>> {
     page.activate(row, &mut fx);
     out
 }
+
+/// The focus element of a language's row — an identity, never its position.
+fn lang(preference: Preference) -> u32 { LangId::Choice(preference).key().0 }
+fn contribute() -> u32 { LangId::Contribute.key().0 }
 
 struct SavedLanguage(Preference);
 impl SavedLanguage {
@@ -38,13 +43,13 @@ fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
     let running = crate::i18n::current().language().tag();
     let mut page = LanguagePage::new(EntryId(0));
     let before = page.state.hash();
-    let (requested, reply) = save_request(activate(&mut page, 3));
+    let (requested, reply) = save_request(activate(&mut page, lang(Preference::Be)));
     assert_eq!(requested, Preference::Be);
     assert!(page.state.busy);
     assert_eq!(page.state.selected, Preference::System, "queue admission is not durable success");
     assert_ne!(page.state.hash(), before, "pending saves belong to replay state");
     assert!(!page.poll_save(), "waiting never blocks the frame thread");
-    assert!(activate(&mut page, 2).is_empty(), "repeated saves are suppressed until the receipt");
+    assert!(activate(&mut page, lang(Preference::Es)).is_empty(), "repeated saves are suppressed until the receipt");
     reply.send(true).unwrap();
     assert!(page.poll_save());
     assert_eq!(page.state.selected, Preference::Be);
@@ -58,7 +63,7 @@ fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
     let _guard = crate::testlock::serial();
     let _saved = SavedLanguage::new(Preference::Be);
     let mut page = LanguagePage::new(EntryId(0));
-    let (requested, reply) = save_request(activate(&mut page, 0));
+    let (requested, reply) = save_request(activate(&mut page, lang(Preference::System)));
     assert_eq!(requested, Preference::System);
     assert_eq!(page.state.selected, Preference::Be);
     reply.send(true).unwrap();
@@ -70,7 +75,7 @@ fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
 fn language_entry_seats_the_engine_on_the_saved_preference() {
     let _guard = crate::testlock::serial();
     let _session = scratch_session("language-saved-seat");
-    for (index, preference) in LANGUAGES.iter().copied().enumerate() {
+    for preference in LANGUAGES.iter().copied() {
         let _saved = SavedLanguage::new(preference);
         let entry = EntryId(7);
         let mut surface = RouteSurface::new(
@@ -91,7 +96,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
                 _ => {}
             }
         }
-        assert_eq!(engine.read(owner).current.map(|key| key.elem), Some(index as u32),
+        assert_eq!(engine.read(owner).current.map(|key| key.elem), Some(lang(preference)),
             "the first OK must address the saved language, {preference:?}");
     }
 }
@@ -102,13 +107,13 @@ fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry(
     let _saved = SavedLanguage::new(Preference::En);
     for disconnected in [false, true] {
         let mut page = LanguagePage::new(EntryId(0));
-        let (_, reply) = save_request(activate(&mut page, 2));
+        let (_, reply) = save_request(activate(&mut page, lang(Preference::Es)));
         if !disconnected { reply.send(false).unwrap(); }
         drop(reply);
         assert!(page.poll_save());
         assert_eq!(page.state.selected, Preference::En);
         assert!(page.state.failed && !page.state.busy);
-        let (preference, reply) = save_request(activate(&mut page, 2));
+        let (preference, reply) = save_request(activate(&mut page, lang(Preference::Es)));
         assert_eq!(preference, Preference::Es);
         assert!(page.state.busy && !page.state.failed);
         reply.send(true).unwrap();
@@ -122,11 +127,11 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
     let _guard = crate::testlock::serial();
     let _session = scratch_session("language-contribution");
     let mut page = LanguagePage::new(EntryId(0));
-    let key = FocusKey { entry: EntryId(0), elem: 4 };
+    let key = FocusKey { entry: EntryId(0), elem: contribute() };
     let cx = cx(Some(key));
     assert!(<LanguagePage as Focusable<InnerHost>>::place(&page, &key.elem, &cx, At::SpringTarget).is_some());
     assert!(matches!(<LanguagePage as Focusable<InnerHost>>::neighbour(&page,
-        FocusKey { entry: key.entry, elem: 3 }, Dir::Down, &cx), Step::Move(next) if next == key));
+        FocusKey { entry: key.entry, elem: lang(Preference::Be) }, Dir::Down, &cx), Step::Move(next) if next == key));
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
@@ -145,8 +150,8 @@ fn signed_out_settings_reaches_language_and_back_restores_it_after_contribution(
     step(&mut surface, ScreenEvent::Activate(root_key(RootId::Language)), None);
     assert_eq!(surface.inner.top().unwrap().arg, SettingsPage::Language);
     settle(&mut surface);
-    let contribution = FocusKey { entry: EntryId(0), elem: 4 };
-    step(&mut surface, ScreenEvent::Activate(4), Some(contribution));
+    let contribution = FocusKey { entry: EntryId(0), elem: contribute() };
+    step(&mut surface, ScreenEvent::Activate(contribute()), Some(contribution));
     assert_eq!(surface.inner.top().unwrap().arg, SettingsPage::Contribute);
     settle(&mut surface);
     let effects = step(&mut surface, back_key(), None);

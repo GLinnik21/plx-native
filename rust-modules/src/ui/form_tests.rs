@@ -432,3 +432,63 @@ fn restore_reinstates_the_saved_selection_and_scroll() {
     assert_eq!(t.table.sel, t.table.opening_row(), "a saved id that is gone falls back to the opening row");
     assert_eq!(t.table.scroll_pos(), 10.0);
 }
+
+/// Change profile / Sign out (destructive) / Settings: the destructive row is the vanished row's
+/// NEXT neighbour, and the safe row comes after it.
+fn menu(change: bool) -> F {
+    let mut out = Row::new("Sign out");
+    out.destructive = true;
+    F::new().section(
+        S::new("")
+            .item_if(change, Id::A, RowKind::Button, Act::A, Row::new("Change profile"))
+            .item(Id::C, RowKind::Button, Act::C, out)
+            .item(Id::B, RowKind::Button, Act::B, Row::new("Settings")),
+    )
+}
+
+#[test]
+fn a_menu_rebuild_never_slides_onto_a_destructive_neighbour() {
+    let mut t = table(menu(true));
+    t.set(menu(false), Some(&Id::A));
+    assert_eq!(t.selected_id(), Some(&Id::C), "rig: the neighbour rule lands on the destructive row");
+
+    let mut t = table(menu(true));
+    t.set_or_open(menu(false), Some(&Id::A));
+    assert_eq!(t.selected_id(), Some(&Id::B), "a vanished keep opens on the opening row instead");
+
+    let mut t = table(menu(true));
+    t.set_or_open(menu(true), Some(&Id::C));
+    assert_eq!(t.selected_id(), Some(&Id::C), "a surviving keep is kept, destructive or not");
+}
+
+#[test]
+fn set_sliding_keeps_the_pill_gliding_where_set_snaps() {
+    let mut t = table(sample(true));
+    t.table.sel = 5;
+    t.table.move_sel(-1);
+    t.table.update(1.0 / 60.0, 600.0);
+    let moving = t.table.highlight_motion();
+    t.set_sliding(sample(true), Some(&Id::D));
+    assert_eq!(t.table.highlight_motion(), moving, "a sliding rebuild leaves the pill in flight");
+
+    let mut t = table(sample(true));
+    t.table.sel = 5;
+    t.table.move_sel(-1);
+    t.table.update(1.0 / 60.0, 600.0);
+    let moving = t.table.highlight_motion();
+    t.set(sample(true), Some(&Id::D));
+    assert_ne!(t.table.highlight_motion(), moving, "set snaps the pill to its landing");
+}
+
+#[test]
+fn key_helpers_resolve_by_identity_and_step_over_inert_rows() {
+    let t = table(sample(true));
+    assert_eq!(t.focusable_len(), 4, "A, B, C, D — the separator and the note are not rows");
+    assert_eq!(t.selected_key(), Some(Id::A.key()));
+    assert_eq!(t.opening_key(), Some(Id::A.key()));
+    assert_eq!(t.step_key(Id::B.key(), 1), Some(Id::C.key()), "the separator is stepped over");
+    assert_eq!(t.step_key(Id::C.key(), 1), Some(Id::D.key()), "…and so is the note");
+    assert_eq!(t.step_key(Id::D.key(), 1), None, "a menu never wraps");
+    assert_eq!(t.step_key(Id::A.key(), -1), None);
+    assert_eq!(t.step_key(RowKey(999), 1), None, "an unknown key has no neighbour");
+}

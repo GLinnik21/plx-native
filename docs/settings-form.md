@@ -7,7 +7,8 @@ agreed result.
 
 **Status:** PR 1 (`ui/form.rs`) and PR 2 (keyed focus: `TablePart::keys`, `family::form_focus`; the Settings
 root on `root_form` / `FormTable`) and PR 3 (one navigation path: `family::form_activate`, `SettingsPage::Picker`, `preferences::PickerPage`; the
-Playback / Audio & Subtitles field list on a `FormTable`) have landed; PRs 4-5 are open. The remaining pages still use index focus.
+Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Legal index, Consent controls and the Item / Account / More menus on a
+`FormTable`; `FormTable::set_or_open` / `set_sliding` for the menus and the Consent toggles) have landed; PR 5 is open. The track menu and source list still use index focus.
 
 ## Goals (owner)
 

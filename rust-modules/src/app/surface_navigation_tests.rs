@@ -591,9 +591,10 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
     let menu = d.nav.modals.top().unwrap().entry.id;
 
-    // A movie's rows are [Go to Movie, —, Mark as Watched, Play from Start], so the SEPARATOR
-    // is index 1 and the row this test commits is index 3. Two DOWNs reach it, and the first
-    // of them is what proves the separator is not a stop: it lands on 2, not on 1.
+    // A movie's rows are [Go to Movie, —, Mark as Watched, Play from Start]; the focus elements
+    // are the rows' identities (`ItemRow`), not their positions. Two DOWNs reach the row this test
+    // commits, and the first of them is what proves the separator is not a stop: it lands on
+    // Mark as Watched, not on the rule above it.
     let mut t = 2;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
         let ev = script_key(key, tick(t));
@@ -603,11 +604,11 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu, 2)),
-        "the engine steps OVER the separator at index 1, which carries no action"
+        Some((menu, crate::screens::item_menu::ItemRow::MarkWatched.focus_key())),
+        "the engine steps OVER the separator, which carries no action"
     );
     press(&mut d, &mut rig, Key::Down);
-    assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, 3)));
+    assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, crate::screens::item_menu::ItemRow::PlayFromStart.focus_key())));
     press(&mut d, &mut rig, Key::Ok);
 
     let reqs = rig.take_item_menu_reqs();
@@ -676,7 +677,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu_entry, crate::screens::account_menu::Action::Settings as u32)),
+        Some((menu_entry, crate::screens::account_menu::Action::Settings.focus_key())),
         "the engine walked the menu's own rows"
     );
     press(&mut d, &mut rig, Key::Ok);

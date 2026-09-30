@@ -40,12 +40,14 @@
 //! It never mutates playback or PMS state itself.
 
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::os::raw::c_int;
 
 use crate::pms::PmsMovie;
 use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use crate::ui::consts::*;
+use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::icons::Icon;
 use crate::ui::machine::{
@@ -56,7 +58,7 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, Section, TableView, MENU_MAX_W, MENU_MIN_W};
+use crate::ui::table::{Row, MENU_MAX_W, MENU_MIN_W};
 use crate::ui::widgets::PosterMark;
 use crate::ui::{theme, Rect};
 
@@ -65,7 +67,6 @@ use crate::ui::{theme, Rect};
 /// here is an index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
-    None,
     /// open this leaf's own detail page (an episode's page, a movie's page)
     GoToItem(String),
     /// open the SHOW page with that season selected (`season <= 0` = no season to select)
@@ -111,7 +112,7 @@ impl Action {
         }
     }
 
-    /// The ratingKey this action acts on — empty for [`Action::None`].
+    /// The ratingKey this action acts on.
     pub(crate) fn rk(&self) -> &str {
         match self {
             Action::GoToItem(rk)
@@ -121,13 +122,12 @@ impl Action {
             | Action::PlayFromStart(rk)
             | Action::RemoveFromDeck(rk) => rk,
             Action::PlayTrailer { rk, .. } => rk,
-            Action::None => "",
         }
     }
 
     fn write(&self, c: &mut Canon) {
+        // The tags are the recorded shape's (`SHAPE`); 0 was the retired `None` sentinel.
         let tag = match self {
-            Action::None => 0,
             Action::GoToItem(_) => 1,
             Action::GoToShow(..) => 2,
             Action::MarkWatched(_) => 3,
@@ -175,79 +175,95 @@ pub(crate) fn has_actions(m: &PmsMovie) -> bool {
     m.kind != crate::pms::KIND_COLLECTION && !m.rk.is_empty()
 }
 
-/// Why [`build`], [`build_episode`] and [`build_season`] all end in a length assertion.
-///
-/// `acts` is the index→action map — the pressed row is resolved by its index into it — so a
-/// `sec.row` added without its `acts.push` cannot panic. It shifts every action below it by one,
-/// and the press performs its neighbour's. This is the menu where that is easiest to do, because
-/// it is the only one of the four whose row set is CONDITIONAL: three item kinds, an optional
-/// `Go to Show`, an optional deck row, and a state group shared with two other entry points.
-const ACTS_PARALLEL: &str = "acts must stay one-to-one with the rows: a row without its action \
-                             shifts every action below it, and the press performs its neighbour's";
+/// A menu row's identity: which of the seven rows it is. Hand-assigned keys, never a position —
+/// the row SET varies by item kind (three item kinds, an optional `Go to Show`, an optional deck
+/// row, a state group shared with two other entry points), so a position would name a different
+/// row in every menu, and reordering a menu would move focus keys. A row is declared once, with
+/// its action, so a row cannot exist without one and a press cannot perform its neighbour's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ItemRow {
+    GoToItem,
+    GoToShow,
+    MarkWatched,
+    MarkUnwatched,
+    PlayFromStart,
+    PlayTrailer,
+    RemoveFromDeck,
+}
+
+impl ItemRow {
+    /// The focus element of this row (for a test, or a probe, that addresses it by identity).
+    #[cfg(test)]
+    pub(crate) fn focus_key(self) -> u32 {
+        self.key().0
+    }
+}
+
+impl FormId for ItemRow {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            ItemRow::GoToItem => 1,
+            ItemRow::GoToShow => 2,
+            ItemRow::MarkWatched => 3,
+            ItemRow::MarkUnwatched => 4,
+            ItemRow::PlayFromStart => 5,
+            ItemRow::PlayTrailer => 6,
+            ItemRow::RemoveFromDeck => 7,
+        })
+    }
+}
+
+/// What every item-menu builder returns: a one-section form of button rows whose action is the
+/// whole of what a press means (no row pushes a page — `Dest` is uninhabited).
+type ItemForm = Form<ItemRow, Action, Infallible>;
 
 /// The rows, and the action each one commits. Order is the pinned design's:
 /// navigation (`Go to Episode` · `Go to Show`) — separator — state (the watch row or ROWS ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
 /// 3 episode; 4 collection is refused by [`has_actions`], which every caller asks first). The
-/// state group is one row or two off [`state_rows`], so this list has no fixed length and every
-/// index into it is resolved through `acts` — see [`ACTS_PARALLEL`].
+/// state group is one row or two off [`state_rows`], so this list has no fixed length.
 #[cfg(test)]
-fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
+fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
     build_with(m, from_deck, None)
 }
 
-fn build_with(
-    m: &PmsMovie,
-    from_deck: bool,
-    trailer: Option<&crate::metadata::Extra>,
-) -> (Section, Vec<Option<Action>>) {
-    let mut sec = Section::new(""); // no header: the card behind the panel IS the title
-    let mut acts: Vec<Option<Action>> = Vec::new();
+fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::Extra>) -> ItemForm {
     let leaf = m.kind == 0 || m.kind == 3;
+    let mut sec = FormSection::new(""); // no header: the card behind the panel IS the title
 
     // ---- navigation: this tile's own page, then the show it belongs to ----
-    // Built as a list first so a row whose TARGET is missing is simply absent: a hub row can arrive
-    // without a grandparentRatingKey, and a "Go to Show" that resolves to an empty rk would fire a
-    // blocking fetch for nothing and land the user on a blank page.
-    let mut nav: Vec<(&str, Icon, Action)> = Vec::new();
+    // A row whose TARGET is missing is simply absent: a hub row can arrive without a
+    // grandparentRatingKey, and a "Go to Show" that resolves to an empty rk would fire a blocking
+    // fetch for nothing and land the user on a blank page.
+    let has_show = !m.show_rk.is_empty();
+    let go_item = |label: &'static str| {
+        (ItemRow::GoToItem, Action::GoToItem(m.rk.clone()), Row::new(label).licon(Icon::Episode))
+    };
+    let go_show = |label: &'static str, rk: &str, season: c_int| {
+        (ItemRow::GoToShow, Action::GoToShow(rk.to_string(), season), Row::new(label).licon(Icon::Show))
+    };
+    let mut nav = Vec::new();
     match m.kind {
         3 => {
-            nav.push((
-                crate::i18n::msg::browse_menu_go_episode(),
-                Icon::Episode,
-                Action::GoToItem(m.rk.clone()),
-            ));
-            if !m.show_rk.is_empty() {
-                nav.push((
-                    crate::i18n::msg::browse_menu_go_show(),
-                    Icon::Show,
-                    Action::GoToShow(m.show_rk.clone(), m.season_index),
-                ));
+            nav.push(go_item(crate::i18n::msg::browse_menu_go_episode()));
+            if has_show {
+                nav.push(go_show(crate::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index));
             }
         }
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
-        2 if !m.show_rk.is_empty() => {
-            nav.push((
-                crate::i18n::msg::browse_menu_go_season(),
-                Icon::Show,
-                Action::GoToShow(m.show_rk.clone(), m.season_index),
-            ));
-        }
+        2 if has_show => nav.push(go_show(crate::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
         2 => {}
-        1 => nav.push((crate::i18n::msg::browse_menu_go_show(), Icon::Show, Action::GoToShow(m.rk.clone(), 0))),
-        _ => nav.push((crate::i18n::msg::browse_menu_go_movie(), Icon::Episode, Action::GoToItem(m.rk.clone()))),
+        1 => nav.push(go_show(crate::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
+        _ => nav.push(go_item(crate::i18n::msg::browse_menu_go_movie())),
     }
+    // the divider the design groups on — only when there IS a group above it
     let had_nav = !nav.is_empty();
-    for (label, icon, act) in nav {
-        sec = sec.row(Row::new(label).licon(icon));
-        acts.push(Some(act));
+    for (id, action, row) in nav {
+        sec = sec.item(id, RowKind::Button, action, row);
     }
-
-    // ---- the divider the design groups on (only when there IS a group above it) ----
     if had_nav {
-        sec = sec.row(Row::separator());
-        acts.push(None);
+        sec = sec.separator();
     }
 
     // ---- state ----
@@ -258,7 +274,6 @@ fn build_with(
     // while some of its leaves are viewed and some are not).
     let mut sec = state_rows(
         sec,
-        &mut acts,
         &m.rk,
         crate::ui::widgets::row_watch_state(m),
         leaf,
@@ -273,14 +288,17 @@ fn build_with(
     //
     // Last, after the watched toggle, because it is the only row here that removes something from
     // view — the destructive-ish end of the group, where a mis-hit is least likely.
-    if from_deck {
-        // This hides the item from the deck and leaves its resume point intact. Panel sizing
-        // follows the translated action, so the destination remains readable before confirming.
-        sec = sec.row(Row::new(crate::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true));
-        acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
-    }
-    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
-    (sec, acts)
+    //
+    // This hides the item from the deck and leaves its resume point intact. Panel sizing follows
+    // the translated action, so the destination remains readable before confirming.
+    sec = sec.item_if(
+        from_deck,
+        ItemRow::RemoveFromDeck,
+        RowKind::Button,
+        Action::RemoveFromDeck(m.rk.clone()),
+        Row::new(crate::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
+    );
+    Form::new().section(sec)
 }
 
 /// The state group every menu ends with: the watch-state row (or ROWS), then (for a leaf) Play from
@@ -306,44 +324,57 @@ fn build_with(
 /// Unwatched" states the outcome backwards, which is the one thing a destructive-ish row must not do
 /// — and filled is what separates an ACTION from a STATE.
 fn state_rows(
-    sec: Section,
-    acts: &mut Vec<Option<Action>>,
+    sec: FormSection<ItemRow, Action, Infallible>,
     rk: &str,
     mark: PosterMark,
     leaf: bool,
     trailer: Option<&crate::metadata::Extra>,
     parent_title: &str,
-) -> Section {
-    let mut sec = sec;
-    if mark != PosterMark::Watched {
-        sec = sec.row(Row::new(crate::ui::widgets::mark_watched_verb()).licon(Icon::CheckCircleFill));
-        acts.push(Some(Action::MarkWatched(rk.to_string())));
-    }
-    if mark != PosterMark::None {
-        // Destructive: it throws the watch record away, so a menu never OPENS on it
-        // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
-        sec = sec.row(
-            Row::new(crate::ui::widgets::mark_unwatched_verb())
-                .licon(Icon::MinusCircleFill)
-                .destructive(true),
-        );
-        acts.push(Some(Action::MarkUnwatched(rk.to_string())));
-    }
-    if leaf {
-        sec = sec.row(Row::new(crate::ui::widgets::play_from_start_verb()).licon(Icon::PlayStart));
-        acts.push(Some(Action::PlayFromStart(rk.to_string())));
-    }
-    if let Some(extra) = trailer.filter(|e| e.playable()) {
-        sec = sec.row(Row::new(crate::ui::widgets::play_trailer_verb()).licon(Icon::Trailer));
-        acts.push(Some(Action::PlayTrailer {
-            rk: extra.rk.clone(),
-            part: extra.part.clone(),
-            vcodec: extra.vcodec.clone(),
-            acodec: extra.acodec.clone(),
-            title: extra.hud_title(parent_title).to_string(),
-        }));
-    }
-    sec
+) -> FormSection<ItemRow, Action, Infallible> {
+    let playable = trailer.filter(|e| e.playable());
+    sec.item_if(
+        mark != PosterMark::Watched,
+        ItemRow::MarkWatched,
+        RowKind::Button,
+        Action::MarkWatched(rk.to_string()),
+        Row::new(crate::ui::widgets::mark_watched_verb()).licon(Icon::CheckCircleFill),
+    )
+    // Destructive: it throws the watch record away, so a menu never OPENS on it
+    // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
+    .item_if(
+        mark != PosterMark::None,
+        ItemRow::MarkUnwatched,
+        RowKind::Button,
+        Action::MarkUnwatched(rk.to_string()),
+        Row::new(crate::ui::widgets::mark_unwatched_verb())
+            .licon(Icon::MinusCircleFill)
+            .destructive(true),
+    )
+    .item_if(
+        leaf,
+        ItemRow::PlayFromStart,
+        RowKind::Button,
+        Action::PlayFromStart(rk.to_string()),
+        Row::new(crate::ui::widgets::play_from_start_verb()).licon(Icon::PlayStart),
+    )
+    .item_if(
+        playable.is_some(),
+        ItemRow::PlayTrailer,
+        RowKind::Button,
+        playable.map_or_else(
+            || Action::PlayTrailer {
+                rk: String::new(), part: String::new(), vcodec: String::new(), acodec: String::new(), title: String::new(),
+            },
+            |extra| Action::PlayTrailer {
+                rk: extra.rk.clone(),
+                part: extra.part.clone(),
+                vcodec: extra.vcodec.clone(),
+                acodec: extra.acodec.clone(),
+                title: extra.hud_title(parent_title).to_string(),
+            },
+        ),
+        Row::new(crate::ui::widgets::play_trailer_verb()).licon(Icon::Trailer),
+    )
 }
 
 /// The DETAIL page's episode filmstrip: the same panel and the same state rows, with **no
@@ -358,13 +389,10 @@ fn state_rows(
 /// `mark` is exact here — `detail::focused_episode` resolves it through the same `ep_state` that
 /// draws the still's own state line, so the tile and the menu opened on it cannot describe one
 /// episode two ways — and with no nav group there is no separator either ([`build`]'s rule: the
-/// divider only exists when there is a group above it). An episode is a LEAF, so all three states
-/// are reachable and a part-watched one gets the pair, exactly as a shelf card does.
-fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
-    let mut acts: Vec<Option<Action>> = Vec::new();
-    let sec = state_rows(Section::new(""), &mut acts, rk, mark, true, None, "");
-    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
-    (sec, acts)
+/// divider only exists when there is a group above it). An episode is a LEAF, so all three states are
+/// reachable and a part-watched one gets the pair, exactly as a shelf card does.
+fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
+    Form::new().section(state_rows(FormSection::new(""), rk, mark, true, None, ""))
 }
 
 /// The DETAIL page's season strip: [`build_episode`]'s row set with the one difference a season
@@ -374,11 +402,8 @@ fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
 /// would have to pick a leaf, which is a second decision the row does not state. Starting a season
 /// from its beginning is what the first episode's own tile does, exactly and visibly. So
 /// `leaf: false` — the same flag [`build`] passes for a show, for the same reason.
-fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
-    let mut acts: Vec<Option<Action>> = Vec::new();
-    let sec = state_rows(Section::new(""), &mut acts, rk, mark, false, None, "");
-    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
-    (sec, acts)
+fn build_season(rk: &str, mark: PosterMark) -> ItemForm {
+    Form::new().section(state_rows(FormSection::new(""), rk, mark, false, None, ""))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
@@ -417,11 +442,9 @@ pub(crate) fn fallback_anchor() -> Rect {
 pub(crate) struct ItemMenuScreen {
     entry: EntryId,
     arg: ItemMenuArg,
-    /// The chosen action per global row index (`None` for the separator, which is unfocusable
-    /// anyway). Parallel to the table's rows because the row SET varies by item kind — see
-    /// [`ACTS_PARALLEL`].
-    acts: Vec<Option<Action>>,
-    table: TableView,
+    /// The rows and the action each one commits, declared together ([`ItemForm`]) — the row SET
+    /// varies by item kind, so a row is found by its identity ([`ItemRow`]), never by a position.
+    form: FormTable<ItemRow, Action, Infallible>,
     /// The cadence a HELD direction walks this panel's list at. `app/run.rs`'s client-side repeat
     /// timer (`App::held_key`) did this at 110 ms for exactly this menu and, before phase 9, for
     /// the player's four panels; the dispatcher delivers the hardware's ~50 ms `Edge::Repeat`
@@ -453,8 +476,7 @@ impl ItemMenuScreen {
         Self {
             entry,
             arg,
-            acts: Vec::new(),
-            table: TableView::new(),
+            form: FormTable::new(crate::screens::registry::BAND),
             repeat: RepeatGate::IDLE,
             built: false,
         }
@@ -468,7 +490,7 @@ impl ItemMenuScreen {
             return;
         }
         self.built = true;
-        let (sec, acts) = match &self.arg.kind {
+        let form = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
                 build_with(row, *from_deck, trailer.as_ref())
@@ -476,39 +498,31 @@ impl ItemMenuScreen {
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),
         };
-        self.acts = acts;
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
-        self.table.compact = true;
-        self.table.open_sections(vec![sec]);
+        self.form.table.compact = true;
+        self.form.set(form, None);
     }
 
     /// Where focus starts, and where it falls back to when the key it had is gone — the table's
     /// opening row, which skips the separator and never lands on a destructive row while any other
     /// is on offer.
     fn opening(&self) -> u32 {
-        u32::try_from(self.table.opening_row()).unwrap_or(0)
+        self.form.opening_key().map_or(0, |k| k.0)
     }
 
     fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
-        panel_at(Rect::new(x, y, w, h), self.table.measured_width(measure), self.table.measured_height())
+        panel_at(Rect::new(x, y, w, h), self.form.table.measured_width(measure), self.form.table.measured_height())
     }
 
-    /// The rows a focus stop exists for — every index whose action is `Some`. The separator is
-    /// unfocusable, exactly as `TableView::move_sel` used to skip it.
+    /// The rows a focus stop exists for — every bound row. The separator is unfocusable, exactly
+    /// as `TableView::move_sel` skips it.
     fn focusable(&self) -> impl Iterator<Item = u32> + '_ {
-        self.acts
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.is_some())
-            .map(|(i, _)| i as u32)
+        (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0))
     }
 
     fn step_focus(&self, from: u32, delta: i32) -> Option<u32> {
-        let rows: Vec<u32> = self.focusable().collect();
-        let at = rows.iter().position(|r| *r == from)?;
-        let next = if delta < 0 { at.checked_sub(1)? } else { at + 1 };
-        rows.get(next).copied()
+        self.form.step_key(RowKey(from), delta).map(|k| k.0)
     }
 
     /// Commit the focused row: report the action, then dismiss. The legacy `on_ok` closed first and
@@ -516,16 +530,18 @@ impl ItemMenuScreen {
     /// loop's dispatch reading a REQUEST rather than a static a frame after the close.
     fn activate<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
         let act = self
-            .acts
-            .get(elem as usize)
-            .cloned()
-            .flatten()
-            .unwrap_or(Action::None);
+            .form
+            .index_of_key(RowKey(elem))
+            .and_then(|i| self.form.activate(i))
+            .map(|a| match a {
+                Activation::Action(act) => act,
+                Activation::Push(never) => match never {},
+            });
         // Every arm of the dispatch turns an rk into a blocking fetch, a scrobble or a play; an
         // empty one would fetch nothing and land on a blank page. `build` already refuses to offer
         // such a row — this is the belt to that braces, since the rows are data-driven off hub
-        // rows.
-        if !matches!(act, Action::None) && !act.rk().is_empty() {
+        // rows. A key that names no row (the separator has none) only dismisses.
+        if let Some(act) = act.filter(|act| !act.rk().is_empty()) {
             fx.push(Fx::App(AppFx::ItemMenu(ItemMenuReq {
                 act,
                 sid: self.arg.sid,
@@ -542,7 +558,7 @@ impl ItemMenuScreen {
 
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
     pub(crate) fn sel(&self) -> i32 {
-        self.table.sel
+        self.form.table.sel
     }
 
     /// The server every action from this menu names. Captured rather than looked up: on a Continue
@@ -567,15 +583,19 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Machine<H> for ItemMen
         match ev {
             ScreenEvent::Mount => self.build_rows(H::metadata(cx)),
             ScreenEvent::Tick(tick) => {
-                self.table.sel = cx
+                self.form.table.sel = cx
                     .focus
                     .current
                     .filter(|key| key.entry == self.entry)
-                    .map(|key| key.elem as i32)
-                    .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame(cx.measure).h);
+                    .and_then(|key| self.form.index_of_key(RowKey(key.elem)))
+                    .map_or(self.form.table.sel, |i| i as i32);
+                self.form.table.update(tick.dt(), self.frame(cx.measure).h);
             }
-            ScreenEvent::FocusMoved { to, .. } => self.table.sel = to.elem as i32,
+            ScreenEvent::FocusMoved { to, .. } => {
+                if let Some(i) = self.form.index_of_key(RowKey(to.elem)) {
+                    self.form.table.sel = i as i32;
+                }
+            }
             ScreenEvent::Activate(elem) => self.activate(*elem, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(key) = cx.focus.current {
@@ -627,10 +647,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         });
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
-        self.acts
-            .get(*elem as usize)
-            .is_some_and(|a| a.is_some())
-            .then_some(GroupId(0))
+        self.form.index_of_key(RowKey(*elem)).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
         let delta = match dir {
@@ -648,12 +665,13 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
         <Self as Focusable<H>>::group_of(self, elem, cx)?;
-        let rect = self.table.row_frame(self.frame(cx.measure), *elem as i32)?;
+        let index = self.form.index_of_key(RowKey(*elem))?;
+        let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
             clip: self.frame(cx.measure),
-            index: Some(*elem),
+            index: Some(index as u32),
         })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -667,14 +685,9 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
-        let sel = u32::try_from(self.table.sel).unwrap_or(0);
         FocusKey {
             entry: self.entry,
-            elem: if self.acts.get(sel as usize).is_some_and(|a| a.is_some()) {
-                sel
-            } else {
-                self.opening()
-            },
+            elem: self.form.selected_key().map_or_else(|| self.opening(), |k| k.0),
         }
     }
 }
@@ -713,7 +726,7 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenu
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame(f.measure);
         crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
-        self.table.draw(p, r, f.measure);
+        self.form.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                 f.stop(
@@ -741,12 +754,13 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenu
 impl LogicalState for ItemMenuScreen {
     fn write(&self, c: &mut Canon) {
         self.arg.write(c);
-        c.seq(self.acts.len());
-        for a in &self.acts {
-            c.option(a.as_ref(), |c, a| a.write(c));
+        let n = self.form.table.n_rows() as usize;
+        c.seq(n);
+        for i in 0..n {
+            c.option(self.form.binding_at(i).map(|b| &b.action), |c, a| a.write(c));
         }
-        c.u32(self.table.sel as u32);
-        self.table.write_motion(c);
+        c.u32(self.form.table.sel as u32);
+        self.form.table.write_motion(c);
     }
     fn probe(&self, out: &mut String) {
         out.push_str("item_menu");
@@ -800,37 +814,74 @@ mod tests {
         );
         m
     }
-    fn labels(sec: &Section) -> Vec<String> {
-        sec.rows
+    /// A built menu: the form run through a [`FormTable`], so a test reads rows back the way the
+    /// screen does — by identity — instead of through a parallel vector.
+    struct Built(FormTable<ItemRow, Action, Infallible>);
+    fn built(form: ItemForm) -> Built {
+        let mut table = FormTable::new(crate::screens::registry::BAND);
+        table.set(form, None);
+        Built(table)
+    }
+    fn build(m: &PmsMovie, from_deck: bool) -> Built {
+        built(super::build(m, from_deck))
+    }
+    fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::Extra>) -> Built {
+        built(super::build_with(m, from_deck, trailer))
+    }
+    fn build_episode(rk: &str, mark: PosterMark) -> Built {
+        built(super::build_episode(rk, mark))
+    }
+    fn build_season(rk: &str, mark: PosterMark) -> Built {
+        built(super::build_season(rk, mark))
+    }
+    impl Built {
+        /// The row ids in drawn order (the separator is not a row).
+        fn ids(&self) -> Vec<ItemRow> {
+            (0..self.0.table.n_rows() as usize).filter_map(|i| self.0.id_at(i).copied()).collect()
+        }
+        /// Every action the menu can commit, in drawn order.
+        fn actions(&self) -> Vec<Action> {
+            (0..self.0.table.n_rows() as usize)
+                .filter_map(|i| self.0.binding_at(i).map(|b| b.action.clone()))
+                .collect()
+        }
+        /// The action the row `id` commits.
+        fn action(&self, id: ItemRow) -> Action {
+            let i = self.0.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on offer"));
+            self.0.binding_at(i).expect("bound").action.clone()
+        }
+        fn offers(&self, id: ItemRow) -> bool {
+            self.0.index_of(&id).is_some()
+        }
+        fn is_destructive(&self, id: ItemRow) -> bool {
+            self.0.index_of(&id).is_some_and(|i| self.0.table.sections[0].rows[i].destructive)
+        }
+    }
+    fn labels(menu: &Built) -> Vec<String> {
+        menu.0.table.sections[0]
+            .rows
             .iter()
-            .map(|r| {
-                if r.sep {
-                    "—".to_string()
-                } else {
-                    r.label.clone()
-                }
-            })
+            .map(|r| if r.sep { "—".to_string() } else { r.label.clone() })
             .collect()
     }
     /// The write each row commits, paired with its label — the projection every row-set assertion
     /// below is really about, since a label and its verb living in two places is the bug this
     /// module's `Action` split closed.
-    fn verbs(
-        sec: &Section,
-        acts: &[Option<Action>],
-    ) -> Vec<(String, Option<crate::viewstate::Write>)> {
-        labels(sec)
-            .into_iter()
-            .zip(acts.iter())
-            .map(|(l, a)| (l, a.as_ref().and_then(|a| a.watch_write())))
+    fn verbs(menu: &Built) -> Vec<(String, Option<crate::viewstate::Write>)> {
+        let table = &menu.0.table;
+        (0..table.n_rows() as usize)
+            .map(|i| {
+                let label = table.sections[0].rows[i].label.clone();
+                (label, menu.0.binding_at(i).and_then(|b| b.action.watch_write()))
+            })
             .collect()
     }
 
     #[test]
     fn an_episode_offers_the_pinned_row_set_in_order() {
-        let (sec, acts) = build(&item(3, PosterMark::None), false);
+        let menu = build(&item(3, PosterMark::None), false);
         assert_eq!(
-            labels(&sec),
+            labels(&menu),
             [
                 "Go to Episode",
                 "Go to Show",
@@ -839,34 +890,32 @@ mod tests {
                 "Play from Start"
             ]
         );
-        // the separator carries no action, every other row does
-        assert!(acts[2].is_none());
-        assert!(acts
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != 2)
-            .all(|(_, a)| a.is_some()));
+        // the separator is not a row: every BOUND row acts, and there are four of them
+        assert_eq!(
+            menu.ids(),
+            [ItemRow::GoToItem, ItemRow::GoToShow, ItemRow::MarkWatched, ItemRow::PlayFromStart]
+        );
         // "Go to Show" targets the SHOW rk + the episode's season, not the episode
-        match acts[1].as_ref().unwrap() {
-            Action::GoToShow(rk, season) => assert_eq!((rk.as_str(), *season), ("7", 3)),
-            _ => panic!("row 1 must be Go to Show"),
+        match menu.action(ItemRow::GoToShow) {
+            Action::GoToShow(rk, season) => assert_eq!((rk.as_str(), season), ("7", 3)),
+            _ => panic!("Go to Show must commit GoToShow"),
         }
     }
 
     #[test]
     fn a_watched_leaf_offers_only_the_way_back() {
-        let (sec, acts) = build(&item(0, PosterMark::Watched), false); // movie, viewCount >= 1
+        let menu = build(&item(0, PosterMark::Watched), false); // movie, viewCount >= 1
         assert_eq!(
-            labels(&sec),
+            labels(&menu),
             ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"]
         );
         assert_eq!(
-            acts[2].as_ref().unwrap().watch_write(),
+            menu.action(ItemRow::MarkUnwatched).watch_write(),
             Some(crate::viewstate::Write::Unwatched),
             "a finished item has one end left to be sent to"
         );
         // a movie has no show, so no second navigation row
-        assert!(!labels(&sec).contains(&"Go to Show".to_string()));
+        assert!(!menu.offers(ItemRow::GoToShow));
     }
 
     #[test]
@@ -881,27 +930,27 @@ mod tests {
     /// watched", which is the middle of the range and not the end of it.
     #[test]
     fn a_show_has_no_play_from_start_and_gets_the_pair_when_it_is_mid_run() {
-        let (sec, acts) = build(&item(1, PosterMark::InProgress), false);
+        let menu = build(&item(1, PosterMark::InProgress), false);
         assert_eq!(
-            labels(&sec),
+            labels(&menu),
             ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"]
         );
         assert_eq!(
-            acts[2].as_ref().unwrap().watch_write(),
+            menu.action(ItemRow::MarkWatched).watch_write(),
             Some(crate::viewstate::Write::Watched)
         );
         assert_eq!(
-            acts[3].as_ref().unwrap().watch_write(),
+            menu.action(ItemRow::MarkUnwatched).watch_write(),
             Some(crate::viewstate::Write::Unwatched)
         );
 
         // a show whose every leaf is seen is DONE, and offering to mark it watched again was the
         // old row set's other wrong answer (it read `!unwatched`, which cannot tell the two apart)
-        let (sec, _) = build(&item(1, PosterMark::Watched), false);
-        assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Unwatched"]);
+        let menu = build(&item(1, PosterMark::Watched), false);
+        assert_eq!(labels(&menu), ["Go to Show", "—", "Mark as Unwatched"]);
         // …and one nobody has opened offers only the way forward
-        let (sec, _) = build(&item(1, PosterMark::None), false);
-        assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Watched"]);
+        let menu = build(&item(1, PosterMark::None), false);
+        assert_eq!(labels(&menu), ["Go to Show", "—", "Mark as Watched"]);
     }
 
     #[test]
@@ -910,21 +959,18 @@ mod tests {
         // would resolve to an empty rk, i.e. a blocking fetch for nothing and a blank page
         let mut m = item(3, PosterMark::None);
         m.show_rk.clear();
-        let (sec, acts) = build(&m, false);
+        let menu = build(&m, false);
         assert_eq!(
-            labels(&sec),
+            labels(&menu),
             ["Go to Episode", "—", "Mark as Watched", "Play from Start"]
         );
-        assert!(acts
-            .iter()
-            .flatten()
-            .all(|a| !matches!(a, Action::GoToShow(..))));
+        assert!(!menu.offers(ItemRow::GoToShow));
         // and a SEASON with no parent has no navigation at all — so no leading separator either,
         // which would otherwise open the menu with a rule above its first row
         let mut s = item(2, PosterMark::None);
         s.show_rk.clear();
-        let (sec, _) = build(&s, false);
-        assert_eq!(labels(&sec), ["Mark as Watched"]);
+        let menu = build(&s, false);
+        assert_eq!(labels(&menu), ["Mark as Watched"]);
     }
 
     /// **Remove from Continue Watching** is gated on the SHELF, not on the item: only a card that
@@ -937,7 +983,7 @@ mod tests {
     #[test]
     fn the_remove_from_deck_row_exists_only_on_a_continue_watching_card() {
         // same card, both shelves — the ONLY difference is where it was focused
-        let (off_deck, acts_off) = build(&item(3, PosterMark::None), false);
+        let off_deck = build(&item(3, PosterMark::None), false);
         assert_eq!(
             labels(&off_deck),
             [
@@ -949,14 +995,11 @@ mod tests {
             ]
         );
         assert!(
-            !acts_off
-                .iter()
-                .flatten()
-                .any(|a| matches!(a, Action::RemoveFromDeck(_))),
+            !off_deck.offers(ItemRow::RemoveFromDeck),
             "a card off the deck must not offer to remove it from one"
         );
 
-        let (on_deck, acts_on) = build(&item(3, PosterMark::None), true);
+        let on_deck = build(&item(3, PosterMark::None), true);
         assert_eq!(
             labels(&on_deck),
             [
@@ -969,22 +1012,15 @@ mod tests {
             ],
             "…and on the deck it is the LAST row, after the watched toggle"
         );
-        match acts_on
-            .last()
-            .expect("a trailing action")
-            .as_ref()
-            .expect("not a separator")
-        {
+        assert_eq!(on_deck.ids().last(), Some(&ItemRow::RemoveFromDeck), "it is the last row");
+        match on_deck.action(ItemRow::RemoveFromDeck) {
             Action::RemoveFromDeck(rk) => {
                 assert_eq!(rk, "42", "…carrying the card's own ratingKey")
             }
-            _ => panic!("the last row must be the deck removal"),
+            _ => panic!("the deck row must commit the deck removal"),
         }
         // it is an ADDITION to the group, not a replacement — the watch-state row is still there
-        assert!(acts_on
-            .iter()
-            .flatten()
-            .any(|a| matches!(a, Action::MarkWatched(_))));
+        assert!(on_deck.offers(ItemRow::MarkWatched));
     }
 
     /// The detail page's filmstrip menu: the state rows, no navigation group, and therefore no
@@ -993,34 +1029,29 @@ mod tests {
     /// two builders' tails rather than by re-listing the labels here.
     #[test]
     fn the_filmstrip_menu_is_the_state_group_alone() {
-        let (sec, acts) = build_episode("42", PosterMark::None);
-        assert_eq!(labels(&sec), ["Mark as Watched", "Play from Start"]);
-        assert!(
-            acts.iter().all(|a| a.is_some()),
-            "no separator, so every row acts"
-        );
+        let menu = build_episode("42", PosterMark::None);
+        assert_eq!(labels(&menu), ["Mark as Watched", "Play from Start"]);
+        assert_eq!(menu.ids().len(), 2, "no separator, so every row acts");
         // the shelf menu's episode rows END with exactly these two, in this order
-        let (shelf, _) = build(&item(3, PosterMark::None), false);
-        assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
+        let shelf = build(&item(3, PosterMark::None), false);
+        let shelf_labels = labels(&shelf);
+        assert_eq!(labels(&menu), shelf_labels[shelf_labels.len() - 2..]);
 
         // a watched episode gets the way back instead, carrying its OWN rk (the menu captured its
         // target when it was presented — nothing here may resolve through a live focus index)
-        let (sec, acts) = build_episode("77", PosterMark::Watched);
-        assert_eq!(labels(&sec), ["Mark as Unwatched", "Play from Start"]);
-        match acts[0].as_ref().unwrap() {
+        let menu = build_episode("77", PosterMark::Watched);
+        assert_eq!(labels(&menu), ["Mark as Unwatched", "Play from Start"]);
+        match menu.action(ItemRow::MarkUnwatched) {
             Action::MarkUnwatched(rk) => assert_eq!(rk, "77"),
-            _ => panic!("row 0 must be the unwatched row"),
+            _ => panic!("the unwatched row must commit MarkUnwatched"),
         }
-        match acts[1].as_ref().unwrap() {
+        match menu.action(ItemRow::PlayFromStart) {
             Action::PlayFromStart(rk) => assert_eq!(rk, "77"),
-            _ => panic!("row 1 must be Play from Start"),
+            _ => panic!("Play from Start must commit PlayFromStart"),
         }
         // and nothing navigates: both rows the shelf menu offers an episode are dead ends from the
         // page that episode already belongs to
-        assert!(!acts
-            .iter()
-            .flatten()
-            .any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
+        assert!(!menu.offers(ItemRow::GoToShow) && !menu.offers(ItemRow::GoToItem));
     }
 
     /// **A menu never opens with its focus on a destructive action.** *Mark as Unwatched* throws the
@@ -1029,10 +1060,9 @@ mod tests {
     /// Deck* is last in the shelf menu and is tagged too, so no reorder can make it the opening row.
     #[test]
     fn a_menu_never_opens_on_a_destructive_row() {
-        let opening = |(sec, acts): (Section, Vec<Option<Action>>)| {
-            let mut t = TableView::new();
-            t.open_sections(vec![sec]);
-            acts[t.sel as usize].clone().expect("the opening row acts")
+        let opening = |menu: Built| {
+            let id = *menu.0.id_at(menu.0.table.sel as usize).expect("the opening row acts");
+            menu.action(id)
         };
         assert!(matches!(opening(build_episode("77", PosterMark::Watched)),
             Action::PlayFromStart(_)), "a watched episode opened on Mark as Unwatched");
@@ -1040,9 +1070,10 @@ mod tests {
             Action::MarkUnwatched(_)), "the only row is the one on offer");
         assert!(matches!(opening(build_episode("79", PosterMark::None)),
             Action::MarkWatched(_)));
-        let (sec, acts) = build(&item(3, PosterMark::None), true);
-        let deck = acts.iter().position(|a| matches!(a, Some(Action::RemoveFromDeck(_))));
-        assert!(sec.rows[deck.expect("rig: a deck card")].destructive);
+        let menu = build(&item(3, PosterMark::None), true);
+        assert!(menu.offers(ItemRow::RemoveFromDeck), "rig: a deck card");
+        assert!(menu.is_destructive(ItemRow::RemoveFromDeck));
+        assert!(menu.is_destructive(ItemRow::MarkUnwatched) || !menu.offers(ItemRow::MarkUnwatched));
     }
 
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
@@ -1056,8 +1087,7 @@ mod tests {
     fn a_part_watched_item_offers_both_ends_of_the_range() {
         // the shelf card (an episode with a live resume point)
         let tail = |mark| {
-            let (sec, _) = build(&item(3, mark), false);
-            labels(&sec).split_off(3) // past "Go to Episode", "Go to Show", the separator
+            labels(&build(&item(3, mark), false)).split_off(3) // past "Go to Episode", "Go to Show", the separator
         };
         assert_eq!(
             tail(PosterMark::None),
@@ -1074,8 +1104,7 @@ mod tests {
 
         // …and the detail page's filmstrip, off the same builder, so the two cannot drift
         let strip = |mark| {
-            let (sec, _) = build_episode("42", mark);
-            labels(&sec)
+            labels(&build_episode("42", mark))
         };
         assert_eq!(
             strip(PosterMark::None),
@@ -1115,7 +1144,7 @@ mod tests {
                 .media_container;
             crate::pms::parse_item(&mc.hub[0].metadata[0], crate::plex::ServerId::UNSET)
         };
-        let set = |json: &str| labels(&build(&row(json), false).0);
+        let set = |json: &str| labels(&build(&row(json), false));
 
         // a MOVIE, in each of the three states — one navigation row, then the state group
         let movie = |extra: &str| {
@@ -1163,9 +1192,9 @@ mod tests {
         );
 
         // and no Related row offers the deck action: that shelf is not the Continue Watching deck
-        let (sec, acts) = build(&row(&movie("")), false);
-        assert!(!labels(&sec).iter().any(|l| l == "Remove from Deck"));
-        assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
+        let menu = build(&row(&movie("")), false);
+        assert!(!labels(&menu).iter().any(|l| l == "Remove from Deck"));
+        assert!(!menu.offers(ItemRow::RemoveFromDeck));
     }
 
     /// **A row performs the verb its own label names**, in every state and at both entry points —
@@ -1187,26 +1216,26 @@ mod tests {
         ] {
             for kind in [0, 1, 2, 3] {
                 for deck in [false, true] {
-                    let (sec, acts) = build(&item(kind, mark), deck);
-                    for (label, got) in verbs(&sec, &acts) {
+                    let menu = build(&item(kind, mark), deck);
+                    for (label, got) in verbs(&menu) {
                         assert_eq!(got, want(&label), "{label:?} (kind {kind}, {mark:?})");
                     }
                 }
             }
-            let (sec, acts) = build_episode("42", mark);
-            for (label, got) in verbs(&sec, &acts) {
+            let menu = build_episode("42", mark);
+            for (label, got) in verbs(&menu) {
                 assert_eq!(got, want(&label), "{label:?} on the filmstrip ({mark:?})");
             }
         }
     }
 
-    /// The pair is TWO ROWS and therefore two actions, and `acts` has to grow with it —
-    /// [`ACTS_PARALLEL`]'s failure is silent by construction (the press performs its neighbour's
-    /// action), and the conditional tail is exactly where a row gets added without one. The
-    /// builders' own `debug_assert` covers this for every case a test builds; this states it as the
-    /// property.
+    /// Every row a menu draws is a row it can act on: a row and its action are declared in ONE
+    /// place ([`ItemForm`]), so the shifted-neighbour failure the old parallel vector allowed —
+    /// a row added without its action, every action below it moving up one — has no spelling left.
+    /// States the property over every kind, state and entry point the builders serve: each drawn,
+    /// non-separator row is bound, and its action names the item the menu is about.
     #[test]
-    fn the_action_vector_grows_with_the_conditional_rows() {
+    fn every_drawn_row_is_bound_to_an_action() {
         for mark in [
             PosterMark::None,
             PosterMark::InProgress,
@@ -1214,16 +1243,14 @@ mod tests {
         ] {
             for kind in [0, 1, 2, 3] {
                 for deck in [false, true] {
-                    let (sec, acts) = build(&item(kind, mark), deck);
-                    assert_eq!(
-                        acts.len(),
-                        sec.rows.len(),
-                        "kind {kind}, {mark:?}, deck {deck}"
-                    );
+                    let menu = build(&item(kind, mark), deck);
+                    let drawn = menu.0.table.sections[0].rows.iter().filter(|r| !r.sep).count();
+                    assert_eq!(menu.actions().len(), drawn, "kind {kind}, {mark:?}, deck {deck}");
                 }
             }
-            let (sec, acts) = build_episode("42", mark);
-            assert_eq!(acts.len(), sec.rows.len(), "filmstrip, {mark:?}");
+            let menu = build_episode("42", mark);
+            let drawn = menu.0.table.sections[0].rows.len();
+            assert_eq!(menu.actions().len(), drawn, "filmstrip, {mark:?}");
         }
     }
 
@@ -1235,8 +1262,10 @@ mod tests {
     /// (`acts[i].is_none()`), and which is what the engine asks.
     #[test]
     fn the_focus_walk_steps_over_the_separator_and_stops_at_the_ends() {
-        let screen = screen_with(build(&item(3, PosterMark::None), false).1);
-        let step = |from: u32, dir: Dir| {
+        let screen = screen_with(super::build(&item(3, PosterMark::None), false));
+        let key = |id: ItemRow| id.key().0;
+        let step = |from: ItemRow, dir: Dir| {
+            let from = key(from);
             match with_cx(|cx| {
                 <ItemMenuScreen as Focusable<HostFixture>>::neighbour(
                     &screen,
@@ -1248,33 +1277,37 @@ mod tests {
                     cx,
                 )
             }) {
-                Step::Move(key) => Some(key.elem),
+                Step::Move(k) => Some(k.elem),
                 _ => None,
             }
         };
-        assert_eq!(step(0, Dir::Down), Some(1)); // Go to Episode → Go to Show
-        assert_eq!(step(1, Dir::Down), Some(3)); // NOT 2 — the separator is skipped
-        assert_eq!(step(3, Dir::Down), Some(4)); // Play from Start
-        assert_eq!(step(4, Dir::Down), None); // stops at the end
-        assert_eq!(step(3, Dir::Up), Some(1)); // skipped back over the separator
-        assert_eq!(step(1, Dir::Up), Some(0));
-        assert_eq!(step(0, Dir::Up), None); // stops at the start
+        use ItemRow::*;
+        assert_eq!(step(GoToItem, Dir::Down), Some(key(GoToShow)));
+        assert_eq!(step(GoToShow, Dir::Down), Some(key(MarkWatched))); // the separator is skipped
+        assert_eq!(step(MarkWatched, Dir::Down), Some(key(PlayFromStart)));
+        assert_eq!(step(PlayFromStart, Dir::Down), None); // stops at the end
+        assert_eq!(step(MarkWatched, Dir::Up), Some(key(GoToShow))); // skipped back over the separator
+        assert_eq!(step(GoToShow, Dir::Up), Some(key(GoToItem)));
+        assert_eq!(step(GoToItem, Dir::Up), None); // stops at the start
     }
 
-    /// A cursor landed on the separator settles onto a real row — `TableView::set_sections`'
-    /// `settle` used to do this; the ENGINE asks `reconcile`, which answers the first focusable
-    /// row for anything that is not one.
+    /// A focus key that names no row settles onto the opening row — the ENGINE asks `reconcile`,
+    /// which answers the opening row for anything that is not one. The separator has no key at
+    /// all, so there is no element a cursor could land on it with.
     #[test]
-    fn a_selection_landed_on_the_separator_settles_onto_a_real_row() {
-        let screen = screen_with(build(&item(3, PosterMark::None), false).1);
+    fn a_key_naming_no_row_settles_onto_a_real_row() {
+        let screen = screen_with(super::build(&item(3, PosterMark::None), false));
         let want = FocusKey {
             entry: EntryId(7),
-            elem: 2,
-        }; // index 2 IS the separator
+            elem: 0xdead,
+        };
         let got =
             with_cx(|cx| <ItemMenuScreen as Focusable<HostFixture>>::reconcile(&screen, want, cx));
-        assert_ne!(got.elem, 2, "the separator is not a focus stop");
-        assert_eq!(got.elem, 0, "…and the first real row is where it lands");
+        assert_eq!(got.elem, ItemRow::GoToItem.key().0, "…the first real row is where it lands");
+        let live = FocusKey { entry: EntryId(7), elem: ItemRow::MarkWatched.key().0 };
+        let kept =
+            with_cx(|cx| <ItemMenuScreen as Focusable<HostFixture>>::reconcile(&screen, live, cx));
+        assert_eq!(kept.elem, live.elem, "a live row is left where it is");
     }
 
     /// **The menu carries the row it was opened on**, and it is the ENTRY's argument now rather
@@ -1357,12 +1390,16 @@ mod tests {
         let measure = MenuMeasure;
         for preference in [Preference::En, Preference::Es, Preference::Be] {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
-            let mut table = TableView::new();
-            table.compact = true;
-            table.set_sections(vec![Section::new("")
-                .row(Row::new(crate::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
-                .row(Row::new(crate::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
-                .row(Row::new(crate::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))], 0, false);
+            let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::screens::registry::BAND);
+            form.table.compact = true;
+            form.set(Form::new().section(FormSection::new("")
+                .item(ItemRow::MarkWatched, RowKind::Button, Action::MarkWatched("1".into()),
+                    Row::new(crate::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
+                .item(ItemRow::MarkUnwatched, RowKind::Button, Action::MarkUnwatched("1".into()),
+                    Row::new(crate::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
+                .item(ItemRow::RemoveFromDeck, RowKind::Button, Action::RemoveFromDeck("1".into()),
+                    Row::new(crate::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
+            let table = &form.table;
             let width = table.measured_width(&measure);
             if preference == Preference::Be {
                 assert!(width > MENU_MIN_W, "the failing Belarusian menu must exercise growth");
@@ -1450,7 +1487,7 @@ mod tests {
     /// walks the list at the hardware rate — 12 admitted steps in the window below against 4.
     #[test]
     fn the_item_menu_hold_repeats_through_the_surface_not_the_loop() {
-        let mut screen = screen_with(build(&item(3, PosterMark::None), false).1);
+        let mut screen = screen_with(super::build(&item(3, PosterMark::None), false));
         // the fresh press: acted on unconditionally, and it re-arms the cadence from itself
         assert_eq!(feed(&mut screen, Key::Down, Edge::Down, 1000), Handled::No);
         // the hardware's own repeats, 50 ms apart
@@ -1558,18 +1595,21 @@ mod tests {
 
     /// A mounted screen whose row set is already built, so a test can state a property about the
     /// walk or the cadence without going through the container.
-    fn screen_with(acts: Vec<Option<Action>>) -> ItemMenuScreen {
+    fn screen_with(form: ItemForm) -> ItemMenuScreen {
         let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&item(3, PosterMark::None), false));
         s.built = true;
-        s.acts = acts;
+        s.form.table.compact = true;
+        s.form.set(form, None);
         s
     }
 
+    /// The focus key of the first row whose action satisfies `want`.
     fn first_action(s: &ItemMenuScreen, want: impl Fn(&Action) -> bool) -> u32 {
-        s.acts
-            .iter()
-            .position(|a| a.as_ref().is_some_and(&want))
-            .expect("the row set offers this action") as u32
+        (0..s.form.table.n_rows() as usize)
+            .find(|i| s.form.binding_at(*i).is_some_and(|b| want(&b.action)))
+            .and_then(|i| s.form.key_at(i))
+            .expect("the row set offers this action")
+            .0
     }
 
     /// Commit a row and return the ONE request it emitted.
@@ -1637,27 +1677,22 @@ mod tests {
 
     #[test]
     fn a_movie_menu_without_a_trailer_keeps_today_s_labels() {
-        let (sec, acts) = build(&item(0, PosterMark::None), false);
+        let menu = build(&item(0, PosterMark::None), false);
         assert_eq!(
-            labels(&sec),
+            labels(&menu),
             ["Go to Movie", "—", "Mark as Watched", "Play from Start"]
         );
-        assert_eq!(acts.len(), sec.rows.len());
-        assert!(acts
-            .iter()
-            .flatten()
-            .all(|a| !matches!(a, Action::PlayTrailer { .. })));
+        assert!(!menu.offers(ItemRow::PlayTrailer));
     }
 
     #[test]
     fn a_movie_menu_with_a_trailer_offers_play_trailer_for_the_extra() {
         let extra = extra();
         let movie = item(0, PosterMark::None);
-        let (sec, acts) = build_with(&movie, false, Some(&extra));
-        assert!(labels(&sec).contains(&"Play Trailer".to_string()));
-        assert_eq!(acts.len(), sec.rows.len());
-        match acts.iter().flatten().find(|a| matches!(a, Action::PlayTrailer { .. })) {
-            Some(Action::PlayTrailer { rk, part, .. }) => {
+        let menu = build_with(&movie, false, Some(&extra));
+        assert!(labels(&menu).contains(&"Play Trailer".to_string()));
+        match menu.action(ItemRow::PlayTrailer) {
+            Action::PlayTrailer { rk, part, .. } => {
                 assert_eq!(rk, "99");
                 assert_eq!(part, "/library/parts/trailer");
                 assert_ne!(rk.as_str(), movie.rk.as_str());
@@ -1668,23 +1703,19 @@ mod tests {
 
     #[test]
     fn a_show_menu_with_a_trailer_offers_play_trailer() {
-        let (sec, acts) = build_with(&item(1, PosterMark::None), false, Some(&extra()));
-        assert!(labels(&sec).contains(&"Play Trailer".to_string()));
-        assert_eq!(acts.len(), sec.rows.len());
+        let menu = build_with(&item(1, PosterMark::None), false, Some(&extra()));
+        assert!(labels(&menu).contains(&"Play Trailer".to_string()));
     }
 
     #[test]
     fn episode_and_season_menus_never_offer_play_trailer() {
         for kind in [2, 3] {
-            let (sec, acts) = build_with(&item(kind, PosterMark::None), false, Some(&extra()));
+            let menu = build_with(&item(kind, PosterMark::None), false, Some(&extra()));
             assert!(
-                !labels(&sec).contains(&"Play Trailer".to_string()),
+                !labels(&menu).contains(&"Play Trailer".to_string()),
                 "kind {kind}"
             );
-            assert!(acts
-                .iter()
-                .flatten()
-                .all(|a| !matches!(a, Action::PlayTrailer { .. })));
+            assert!(!menu.offers(ItemRow::PlayTrailer));
         }
     }
 
@@ -1722,13 +1753,9 @@ mod tests {
         extra.title.clear();
         let mut movie = item(0, PosterMark::None);
         movie.title = "The Movie".into();
-        let (_, acts) = build_with(&movie, false, Some(&extra));
-        match acts
-            .iter()
-            .flatten()
-            .find(|a| matches!(a, Action::PlayTrailer { .. }))
-        {
-            Some(Action::PlayTrailer { title, rk, part, .. }) => {
+        let menu = build_with(&movie, false, Some(&extra));
+        match menu.action(ItemRow::PlayTrailer) {
+            Action::PlayTrailer { title, rk, part, .. } => {
                 assert_eq!(title, "The Movie");
                 assert_eq!(rk, "99");
                 assert_eq!(part, "/library/parts/trailer");
@@ -1774,31 +1801,31 @@ mod tests {
         let trailer = crate::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
         // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.
         let all_menus = || {
-            let mut menus: Vec<(String, Section)> = Vec::new();
+            let mut menus: Vec<(String, Built)> = Vec::new();
             for kind in 0..=3 {
                 for mark in marks {
                     for from_deck in [false, true] {
                         for with_trailer in [false, true] {
                             let t = with_trailer.then_some(&trailer);
                             menus.push((format!("card kind={kind} {mark:?} deck={from_deck} trailer={with_trailer}"),
-                                build_with(&item(kind, mark), from_deck, t).0));
+                                build_with(&item(kind, mark), from_deck, t)));
                         }
                     }
                 }
             }
             for mark in marks {
-                menus.push((format!("episode {mark:?}"), build_episode("1", mark).0));
-                menus.push((format!("season {mark:?}"), build_season("1", mark).0));
+                menus.push((format!("episode {mark:?}"), build_episode("1", mark)));
+                menus.push((format!("season {mark:?}"), build_season("1", mark)));
             }
             menus
         };
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            for (name, sec) in all_menus() {
-                let mut table = TableView::new();
-                table.compact = true;
-                table.set_sections(vec![sec], 0, false);
+            for (name, menu) in all_menus() {
+                let mut menu = menu;
+                menu.0.table.compact = true;
+                let table = &menu.0.table;
                 out.extend(table.menu_cap_failure(&measure, &format!("{} {name}", language.tag())));
                 out.extend(table.app_fit_failures(widest, &format!("{} {name}", language.tag())));
                 out.extend(table.app_fit_failures_hugged(&format!("{} {name}", language.tag())));

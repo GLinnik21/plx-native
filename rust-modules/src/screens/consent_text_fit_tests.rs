@@ -20,7 +20,7 @@ fn every_privacy_row_fits_its_column_in_every_language() {
         let (mut sink_out, mut present) = sink();
         let page = ConsentPage::settings(EntryId(0), &cx, &mut mk_fx(&mut sink_out, &mut present));
         let tag = language.tag();
-        out.extend(page.table.app_fit_failures(frame_w, tag));
+        out.extend(page.form.table.app_fit_failures(frame_w, tag));
     }
     crate::ui::table::assert_no_fit_failures(&out);
 }
