@@ -1260,6 +1260,44 @@ pub(crate) fn revoke_for_profile_switch() {
 /// authoritative roster and, when necessary, moves `current` to the first installed survivor.
 pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    commit_installed_roster(installed);
+}
+
+/// **Roster refresh** — the SAME seated identity's roster re-read from plex.tv (the admin's boot
+/// reconcile), committed after `auth::install_roster` re-registered what it lists. Not a
+/// profile switch, and deliberately not [`revoke_for_profile_switch`]: nothing about WHO is asking
+/// changed, so a slot the refresh re-installed keeps its identity — its token was swapped live to
+/// live, in place, which is a credential refresh (`Client::grant_epoch`) and costs no resident art.
+/// Only a slot the refreshed roster no longer lists is retired: its token blanked (the grant is
+/// gone) and hidden, exactly what the switch's revoke-then-commit did to it.
+///
+/// Before this existed the refresh went through the switch path, so an ordinary stored-session
+/// launch whose stored token differed from plex.tv's current grant logged `plex: 2 server(s)
+/// revoked — profile changed`, blanked every client, blinked every poster and refetched every hub.
+pub(crate) fn finish_roster_refresh(installed: &[ServerId]) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let dropped: Vec<ServerId> = ids().filter(|id| !installed.contains(id)).collect();
+    for id in &dropped {
+        if let Some(c) = client_for(*id) {
+            c.set_token("");
+        }
+        if let Some(i) = id.index() {
+            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        }
+    }
+    commit_installed_roster(installed);
+    if !dropped.is_empty() {
+        crate::log(&format!(
+            "plex: {} server(s) retired — no longer granted",
+            dropped.len()
+        ));
+    }
+}
+
+/// The shared commit point of [`finish_profile_switch`] and [`finish_roster_refresh`]: `installed`
+/// becomes the authoritative roster, and `current` moves to its first eligible survivor when the
+/// old one is not among them. Caller holds [`WRITE`].
+fn commit_installed_roster(installed: &[ServerId]) {
     let floor = FLOOR.load(Ordering::Acquire);
     let mut exact = 0u32;
     let mut first = ServerId::UNSET;

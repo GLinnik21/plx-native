@@ -654,18 +654,27 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
             }, client_id);
             retire_grant_on_https(&source.machine_id, &origin);
         }
-        owner::RegistryPlan::Install { sources, primary, replace } => {
-            if *replace {
-                // The profile's identity changes HERE, at the commit, with the tokens: grants
-                // survive only for the exact origins this roster installs (`plex::grant`).
+        owner::RegistryPlan::Install { sources, primary, commit } => {
+            use owner::RosterCommit;
+            if *commit != RosterCommit::Merge {
+                // The roster is replaced HERE, at the commit: grants survive only for the exact
+                // origins this roster installs (`plex::grant`).
                 let installing: Vec<(String, Origin)> = sources.iter()
                     .filter_map(|s| s.origin().map(|origin| (s.machine_id.clone(), origin)))
                     .collect();
                 crate::plex::grant::roster_replaced(&installing);
+            }
+            // Only a switch changes WHO is asking, so only a switch revokes every live token first.
+            // A refresh of the seated identity re-tokens in place (`RosterCommit::Refresh`).
+            if *commit == RosterCommit::Switch {
                 crate::plex::revoke_for_profile_switch();
             }
             let installed = install_roster(sources, *primary, client_id);
-            if *replace { crate::plex::finish_profile_switch(&installed); }
+            match commit {
+                RosterCommit::Switch => crate::plex::finish_profile_switch(&installed),
+                RosterCommit::Refresh => crate::plex::finish_roster_refresh(&installed),
+                RosterCommit::Merge => {}
+            }
             for source in sources {
                 if let Some(origin) = source.origin() { retire_grant_on_https(&source.machine_id, &origin); }
             }

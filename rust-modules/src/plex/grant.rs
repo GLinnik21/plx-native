@@ -459,9 +459,10 @@ pub(crate) fn network_changed() {
     moved();
 }
 
-/// **A roster replacement COMMITTED** (`RegistryPlan::Install { replace: true }` — a profile
-/// switch, its late roster, or a roster refresh; the same commit that blanks every published
-/// token, `plex::servers::revoke_for_profile_switch`). A grant survives only when it names exactly
+/// **A roster replacement COMMITTED** (`RegistryPlan::Install` with `RosterCommit::Switch` — a
+/// profile switch or its late roster, the commit that blanks every published token,
+/// `plex::servers::revoke_for_profile_switch` — or `RosterCommit::Refresh`, the seated identity's
+/// roster re-read, which blanks only the servers it drops). A grant survives only when it names exactly
 /// a `(machine, origin)` the new roster `installed`; every other grant dies here.
 ///
 /// No generation moves: the identity a grant is bound to is the ACCOUNT's sign-in

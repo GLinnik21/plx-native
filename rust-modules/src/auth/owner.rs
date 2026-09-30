@@ -211,13 +211,29 @@ pub(crate) enum CoordinatorAction {
     SignInFailed { phase: Phase },
 }
 
+/// What a [`RegistryPlan::Install`] does to the slots already live. The line that matters is
+/// between the last two: whether the identity asking the servers CHANGED.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub(crate) enum RosterCommit {
+    /// Register the roster beside whatever is live — a boot, a picker's cached roster, discovery
+    /// progress. Nothing is retired.
+    Merge,
+    /// The SAME seated identity's roster re-read from plex.tv (the admin's boot reconcile): install
+    /// in place and retire only what it no longer lists (`plex::finish_roster_refresh`). No live
+    /// token is revoked, so a server whose grant merely rotated keeps its resident art.
+    Refresh,
+    /// A profile switch (or its late roster): every live token is revoked before the new identity's
+    /// grants land (`plex::revoke_for_profile_switch`), then the installed set becomes the roster.
+    Switch,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum RegistryPlan {
     DevInstall { primary: crate::plex::session::ServerRef, extras: Vec<crate::plex::session::SourceRef>, client_id: String },
     /// Boot picker's avatar client, before any profile is permitted to enter Home.
     Primary { server: crate::plex::session::ServerRef, token: String },
     Activate { source: crate::plex::session::SourceRef, ipv6: bool },
-    Install { sources: Vec<crate::plex::session::SourceRef>, primary: Option<usize>, replace: bool },
+    Install { sources: Vec<crate::plex::session::SourceRef>, primary: Option<usize>, commit: RosterCommit },
     Endpoint { expected: ServerLifecycle, source: crate::plex::session::SourceRef },
     Probe(super::SettledProbe),
     Revoke,
@@ -1311,7 +1327,7 @@ impl SessionMachine {
         let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
             expected_disk: self.state.disk_identity.clone(),
             credentials: Some(patch.clone()), lifecycle: None,
-            registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }],
+            registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, commit: RosterCommit::Merge }],
             purpose: PersistencePurpose::Final, writes_durable: true, authority };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             credentials: Some(patch), activate_profile: true, ready: Some(false),
@@ -1375,7 +1391,7 @@ impl SessionMachine {
             expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
-                primary: None, replace: false }],
+                primary: None, commit: RosterCommit::Merge }],
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: crate::plex::session::SaveAuthority::Routine };
         self.begin_commit(req, 0, true, plan, CommitDelta {
@@ -1832,7 +1848,7 @@ impl SessionMachine {
                     token: self.state.persisted.pms_token().into() });
             }
             registry.push(RegistryPlan::Install {
-                sources: self.state.persisted.sources.clone(), primary: None, replace: false,
+                sources: self.state.persisted.sources.clone(), primary: None, commit: RosterCommit::Merge,
             });
             let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
                 expected_disk: self.state.disk_identity.clone(),
@@ -2038,7 +2054,7 @@ impl SessionMachine {
 
     fn roster_plan(next: &PersistedSession, probes: &[super::SettledProbe]) -> Vec<RegistryPlan> {
         let primary = next.sources.iter().position(|source| source.machine_id == next.server.machine_id);
-        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, replace: true }];
+        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, commit: RosterCommit::Switch }];
         plans.extend(probes.iter().cloned().map(RegistryPlan::Probe));
         plans
     }
@@ -2157,7 +2173,7 @@ impl SessionMachine {
                         },
                         super::RegistryProgress::Settled { probe, .. } => RegistryPlan::Probe(probe.clone()),
                         super::RegistryProgress::Install { sources, primary, .. } =>
-                            RegistryPlan::Install { sources: sources.clone(), primary: *primary, replace: false },
+                            RegistryPlan::Install { sources: sources.clone(), primary: *primary, commit: RosterCommit::Merge },
                     });
                 }
             }
@@ -2236,8 +2252,12 @@ impl SessionMachine {
                             let primary = Some(sources.iter()
                                 .position(|source| source.machine_id == *admitted_machine_id)
                                 .expect("the admitted primary is part of the reconciled roster"));
+                            // The seated identity is unchanged — only admins reach this arm, and
+                            // the answer was fetched with this very account's token — so this is
+                            // a REFRESH, never a switch: a rotated grant for the same user must
+                            // not revoke every live client (owner trace 2026-09-30).
                             plan.registry = vec![RegistryPlan::Install {
-                                sources: sources.clone(), primary, replace: true,
+                                sources: sources.clone(), primary, commit: RosterCommit::Refresh,
                             }];
                             plan.registry.extend(settled.iter().cloned().map(RegistryPlan::Probe));
                         }
@@ -4731,12 +4751,75 @@ mod tests {
         let patch = plan.credentials.as_ref().unwrap();
         assert_eq!(patch.server.machine_id, admitted.machine_id);
         let install = plan.registry.iter().find_map(|plan| match plan {
-            RegistryPlan::Install { sources, primary, replace } => Some((sources, primary, replace)),
+            RegistryPlan::Install { sources, primary, commit } => Some((sources, primary, commit)),
             _ => None,
         }).expect("refresh installs an admitted roster");
         assert_eq!(install.1.and_then(|index| install.0.get(index))
             .map(|source| source.machine_id.as_str()), Some("preferred-machine"));
-        assert!(*install.2);
+        assert_eq!(*install.2, RosterCommit::Refresh, "an admin refresh is not a profile switch");
+    }
+
+    /// **Blink B** (owner trace, 2026-09-30, ~11.6 s into an ordinary stored-session launch):
+    /// `plex: 2 server(s) revoked — profile changed` with nobody touching the profile, then every
+    /// poster on Home `HIDDEN` and every hub refetched. The boot's admin roster refresh found the
+    /// same seated profile's server under plex.tv's current grant (a token string different from
+    /// the stored one) and committed that as a PROFILE SWITCH — blanking every live client.
+    /// A refresh of the seated profile's roster is not a change of identity: the stored server's
+    /// resident art must survive the whole commit.
+    #[test]
+    fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+            title: "Owner".into(), admin: true, ..Default::default() }];
+        let mut owner = roster_refresh_fixture("u-owner", users);
+        // The stored-session boot: the persisted roster, registered before any discovery.
+        let stored = owner.state.persisted.sources.clone();
+        assert!(super::super::execute_session_registry(&RegistryPlan::Install {
+            sources: stored.clone(), primary: None, commit: RosterCommit::Merge,
+        }, "synthetic-client"));
+        let sid = crate::plex::id_of_machine("profile-machine").expect("the stored server registered");
+
+        // Discovery reaches the same server, same address, same user — under plex.tv's grant.
+        let mut reached = stored[0].clone();
+        reached.token = "plex-tv-grant-for-the-same-owner".into();
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let resources = vec![crate::plex::account::Resource { name: reached.name.clone(),
+            client_identifier: reached.machine_id.clone(), provides: "server".into(), owned: true,
+            access_token: reached.token.clone(), ..Default::default() }];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources, found: vec![reached.clone()],
+                        admitted_machine_id: reached.machine_id.clone(), household: vec![1],
+                        settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("a rotated grant is persisted");
+
+        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
+            for p in &plan.registry {
+                assert!(super::super::execute_session_registry(p, "synthetic-client"));
+            }
+        });
+        assert!(kept, "a same-profile roster refresh revoked the stored server's art");
+        let c = crate::plex::client_for(sid).unwrap();
+        assert!(c.image_transcode_path("/t", 2, 2, false).ends_with("X-Plex-Token=plex-tv-grant-for-the-same-owner"),
+            "the refresh must still install plex.tv's current grant");
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -4788,13 +4871,13 @@ mod tests {
             SessionFx::Commit { plan, .. } => Some(plan), _ => None,
         }).expect("the primary address change commits the refreshed roster");
         let install = plan.registry.iter().find_map(|plan| match plan {
-            RegistryPlan::Install { sources, primary, replace } => Some((sources, primary, replace)),
+            RegistryPlan::Install { sources, primary, commit } => Some((sources, primary, commit)),
             _ => None,
         }).expect("the address change replaces the live registry");
         assert!(install.0.iter().any(|source| source.machine_id == "secondary"
             && source.token == "fresh-secondary-token"),
             "a still-granted cached secondary must survive a missed identity probe");
-        assert!(*install.2);
+        assert_eq!(*install.2, RosterCommit::Refresh, "an admin refresh is not a profile switch");
     }
 
     /// Issue #132's production half: a signed-in account whose cached roster is EMPTY (a failed

@@ -41,7 +41,7 @@ fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() 
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
         sources: vec![stored],
         primary: Some(0),
-        replace: false,
+        commit: owner::RosterCommit::Merge,
     }, "registry-test-client"));
 
     let ids = crate::plex::server_ids().collect::<Vec<_>>();
@@ -70,7 +70,7 @@ fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
         sources: vec![stored.clone()],
         primary: Some(0),
-        replace: false,
+        commit: owner::RosterCommit::Merge,
     }, "registry-test-client"));
     let id = crate::plex::server_ids().next().expect("recovery slot");
     let expected = ClientLifecycle::capture(crate::plex::client_for(id).unwrap()).logical(id.raw());
@@ -860,7 +860,7 @@ fn post_sign_out_registration_keeps_captured_login_client_id() {
     assert_eq!(client.client_id_for_test(), captured,
         "early activation must use the login capture even while CACHE is revoked");
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
-        sources: vec![fresh], primary: Some(0), replace: false,
+        sources: vec![fresh], primary: Some(0), commit: owner::RosterCommit::Merge,
     }, &captured));
     assert!(std::ptr::eq(client, crate::plex::client_opt().unwrap()));
     crate::plex::reset_servers_for_test();
@@ -932,7 +932,7 @@ fn a_roster_commit_leaves_in_flight_asks_and_other_offers_live() {
     let mut installed = lan_source("kid-token");
     installed.tier = Some(probe::Location::Local);
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
-        sources: vec![installed], primary: Some(0), replace: true,
+        sources: vec![installed], primary: Some(0), commit: owner::RosterCommit::Switch,
     }, "registry-test-client"));
     assert!(crate::plex::grant::offer("offered-http").is_some(), "the commit cleared another server's offer");
     assert_eq!(ask.settle("other-http", &other, &evidence), Ok(()),
@@ -1047,7 +1047,7 @@ fn an_https_install_commit_retires_the_plaintext_grant() {
     upgraded.origin_url = "https://192-168-0-10.example.test:32400".into();
     upgraded.tier = Some(probe::Location::Local);
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
-        sources: vec![upgraded], primary: Some(0), replace: false,
+        sources: vec![upgraded], primary: Some(0), commit: owner::RosterCommit::Merge,
     }, "registry-test-client"));
     assert_eq!(crate::plex::grant::granted_origin("lan-http"), None);
     assert!(!crate::plex::grant::allowed_under(CredentialPolicy::HttpsOnly, &origin));
@@ -1071,7 +1071,7 @@ fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
     let mut installed = lan_source("kid-token");
     installed.tier = Some(probe::Location::Local);
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
-        sources: vec![installed], primary: Some(0), replace: true,
+        sources: vec![installed], primary: Some(0), commit: owner::RosterCommit::Switch,
     }, "registry-test-client"));
     assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(lan.clone()));
     assert_eq!(crate::plex::grant::granted_origin("other-http"), None);
