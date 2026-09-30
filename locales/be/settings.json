@@ -14,6 +14,7 @@
   "settings.trailers.title": "Аўтаматычна паказваць трэйлеры",
   "settings.trailers.detail": "Прайграваць трэйлер з гукам на старонцы твора.",
   "settings.about.title": "Пра PlxNative",
+  "settings.about.section": "Пра праграму",
   "settings.about.detail": "Версія, аўтарскія правы і звесткі пра праект.",
   "settings.root.copy": "Кіруйце наладамі гэтага тэлевізара і свайго профілю Plex. Мовы гуку і субцітраў сінхранізуюцца з уліковым запісам Plex; прадвыбраныя налады прайгравання і мова праграмы дзейнічаюць на гэтым тэлевізары.",
   "settings.libraries.count": {

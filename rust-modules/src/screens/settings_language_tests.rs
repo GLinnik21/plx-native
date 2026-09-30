@@ -142,7 +142,7 @@ fn signed_out_settings_reaches_language_and_back_restores_it_after_contribution(
     let _session = scratch_session("language-back");
     let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root, crate::pms::HubsSnapshot::empty_for_test().view());
     step(&mut surface, ScreenEvent::Mount, None);
-    step(&mut surface, ScreenEvent::Activate(3), None);
+    step(&mut surface, ScreenEvent::Activate(1), None);
     assert_eq!(surface.inner.top().unwrap().arg, SettingsPage::Language);
     settle(&mut surface);
     let contribution = FocusKey { entry: EntryId(0), elem: 4 };

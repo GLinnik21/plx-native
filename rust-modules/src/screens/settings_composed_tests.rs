@@ -358,8 +358,8 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
 }
 
-/// **The composition, at depth.** Signed out, the Settings root's rows are Privacy & data
-/// / Legal notices / About, so OK on row 1 pushes the Legal index; LEFT off that index's
+/// **The composition, at depth.** Signed out, the Settings root's rows are Video & playback
+/// / Language / Privacy & data / Legal notices / About, so OK on row 3 pushes the Legal index; LEFT off that index's
 /// column then runs the whole chain — edge rule, synthetic BACK, the surface's own pop —
 /// and lands back on the Settings root with the surface still up and still owning input.
 #[test]
@@ -373,7 +373,7 @@ fn left_inside_the_family_pops_the_inner_stack_and_never_dismisses_the_surface()
         path(&d, id)
     );
 
-    seat(&mut d, id, 1);
+    seat(&mut d, id, 3);
     frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
     assert!(
         path(&d, id).contains("/legal:"),
@@ -456,7 +456,7 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
 /// leaves a real remembered cursor for `ContainerGroup` to (wrongly) read back.
 ///
 /// Fixture choice: the SIGNED-OUT root, like every other test in this file — its second row
-/// (`elem: 1`) is Legal notices. A signed-in root prepends Favourites and moves Legal to index 2,
+/// (`elem: 3`) is Legal notices. A signed-in root prepends Favourites and moves Legal to index 6,
 /// which would still prove the same thing but is not what `opened()` boots here.
 #[test]
 fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_it() {
@@ -469,13 +469,15 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         path(&d, id)
     );
 
-    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); one real DOWN moves
-    // focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 1.
-    frame(&mut d, &mut rig, 16, vec![key(Key::Down, tick(16))]);
+    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); three real DOWNs
+    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 3.
+    for i in 1..=3u32 {
+        frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
+    }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, 1, "row 1 is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, 3, "row 3 is Legal notices in the signed-out fixture");
 
-    frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
+    frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
     assert!(
         path(&d, id).contains("/legal:"),
         "OK on Legal notices pushed the index: {}",
@@ -489,14 +491,14 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
     );
 
     // The leak, when present, survives an idle frame too — the seat is not a one-frame fluke.
-    frame(&mut d, &mut rig, 48, vec![]);
+    frame(&mut d, &mut rig, 80, vec![]);
     assert_eq!(
         d.focus().map(|k| k.elem),
         Some(0),
         "…and the fresh seat holds after an idle frame"
     );
 
-    frame(&mut d, &mut rig, 64, vec![key(Key::Back, tick(64))]);
+    frame(&mut d, &mut rig, 96, vec![key(Key::Back, tick(96))]);
     let p = path(&d, id);
     assert!(!p.contains("/legal:"), "BACK popped the index off the surface's stack: {p}");
     assert!(
@@ -686,18 +688,15 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
     crate::plex::session::publish_profile_for_test(Some(user.clone()), 72);
     let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 72, AudioPreferences::default());
     let (mut d, mut rig, id) = opened();
-    // Audio & Subtitles is the root's last row: walk DOWN until focus stops moving.
+    // Audio & Subtitles is the signed-in root's third row (Favorite libraries, Video & playback,
+    // Audio & subtitles): walk DOWN twice.
     let mut ms = 32;
-    let mut last = d.focus();
-    loop {
+    for _ in 0..2 {
         frame(&mut d, &mut rig, ms, vec![key(Key::Down, tick(ms))]);
         ms += 16;
-        if d.focus() == last { break; }
-        last = d.focus();
-        assert!(ms < 1000, "the root must end");
     }
-    let audio_row = last.expect("a root row is focused").elem;
-    assert!(audio_row > 3, "the premise: the root row sits below the loaded table's extent");
+    let audio_row = d.focus().expect("a root row is focused").elem;
+    assert_eq!(audio_row, 2, "the premise: Audio & subtitles is root row 2, not the page's first row");
     frame(&mut d, &mut rig, ms, vec![key(Key::Ok, tick(ms))]);
     assert!(path(&d, id).contains("/audio-subtitles:"), "OK pushed Audio & Subtitles: {}", path(&d, id));
     frame(&mut d, &mut rig, ms + 16, vec![]);
@@ -708,5 +707,5 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
     frame(&mut d, &mut rig, ms + 32, vec![]);
     frame(&mut d, &mut rig, ms + 48, vec![]);
     assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
-        "the first landed rows seat the top row, not the root's stale row {audio_row} clamped to the last");
+        "the first landed rows seat the top row, not the root's stale row {audio_row}");
 }

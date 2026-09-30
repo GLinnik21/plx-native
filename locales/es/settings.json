@@ -14,6 +14,7 @@
   "settings.trailers.title": "Tráileres automáticos",
   "settings.trailers.detail": "Reproduce el tráiler con sonido tras un momento.",
   "settings.about.title": "Acerca de PlxNative",
+  "settings.about.section": "Acerca de",
   "settings.about.detail": "Versión, derechos de autor e información del proyecto.",
   "settings.root.copy": "Gestiona este televisor y tu perfil de Plex. Los idiomas de audio y subtítulos se sincronizan con tu cuenta de Plex; los valores de reproducción y el idioma de la app se aplican a este televisor.",
   "settings.libraries.count": {

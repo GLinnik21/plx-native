@@ -260,9 +260,10 @@ record_flow 4 search-shelf-detail-back "search=s0" "sleep:2 down down ok sleep:2
 # 5 Detail -> Person -> Detail -> BACK -> Person -> BACK -> Detail
 record_flow 5 detail-person-detail "detail=$RK_MOVIE detailsec=1 detailok" "sleep:2 down ok sleep:2 back sleep:1 back sleep:1 down ok sleep:2 back" 'route=person'
 # 6 chip -> Account -> Settings -> Privacy -> Legal -> document -> BACK x4
-# The synthetic token boot has no signed-in account: Favourites is absent, so Privacy is row 0.
-# Visit it and toggle its first choice, then return to row 0 and step down once to Legal.
-record_flow 6 settings-family "settings=root" "sleep:1 ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings'
+# The synthetic token boot has no signed-in account: Favourites is absent, so the root is Playback,
+# Language, Privacy, Legal, About and Privacy is row 2. Step down twice, visit it and toggle its
+# first choice, then return to row 2 and step down once to Legal.
+record_flow 6 settings-family "settings=root" "sleep:1 down down ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings'
 # 7 first-run consent -> onboard -> Home
 record_flow 7 firstrun-consent-onboard "firstrun" "sleep:1 ok sleep:1 ok sleep:1 down ok sleep:2" 'route='
 # 8 Detail -> hold on Related -> ItemMenu -> BACK. detailsec is a DOWN count, not a section id:
