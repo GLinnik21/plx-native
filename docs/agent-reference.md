@@ -128,9 +128,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   preserves it). Verified end to end 2026-08-29: the full binary, the `.debug` and the stripped one
   all carry the same id, and `addr2line -e pkg/plxnative.debug` resolves an address the stripped
   binary answers `?? ??:0` for. **It is opt-in for one reason and it is not build time** — a
-  debuginfo cross build is 30 s cold and the artifact that SHIPS is unchanged (6.93 MB stripped, a
-  hair *smaller* than without) — but its target dir is 356 MB, and this repo already keys a
-  separate `rust-modules/target*` per configuration and multiplies that again per worktree.
+  debuginfo cross build is 30 s cold and the artifact that SHIPS is unchanged (6.93 MB stripped when
+  measured 2026-08-29, a hair *smaller* than without; the absolute has since grown — a RELEASE=1
+  stripped binary was 10.11 MB on 2026-10-01 with `--gc-sections`) — but its target dir is 356 MB,
+  and this repo already keys a separate `rust-modules/target*` per configuration and multiplies
+  that again per worktree.
   (**`make disk` is how you see what that has come to**, across every checkout at once, and
   `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` is how you get it back —
   every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes

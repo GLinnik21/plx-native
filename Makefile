@@ -309,6 +309,10 @@ endif
 #   -> pkg/plxnative.debug               79.8 MB
 #   -> stripped, i.e. what ships          6.93 MB vs 6.99 MB from a non-debuginfo build
 #
+# (Those are the 2026-08-29 absolutes; the binary has grown since. On 2026-10-01 a RELEASE=1
+# stripped binary is 21.72 MB without --gc-sections and 10.11 MB with it — see GC_SECTIONS_LDFLAG.
+# The debuginfo-vs-not delta was not re-measured; it is DWARF, which strip removes either way.)
+#
 # So it costs nothing that SHIPS — the stripped artifact is if anything a hair smaller — and the
 # time is bearable. What it costs is disk, ~356 MB per feature-keyed target dir, on a machine whose
 # `rust-modules/target*` already runs to tens of gigabytes across the configurations this repo
@@ -820,8 +824,26 @@ pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-mo
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
 SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
+# --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
+# executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
+# code arrives as a finished staticlib, so without the flag every section of every archive member
+# that got pulled in stays — measured on the dev binary (unmodified main, 2026-10-01): 22.95 MB
+# allocated, of which 8.27 MB .rodata (mostly icu_datetime compiled_data for markers the app never
+# asks for: non-Gregorian calendars, time-zone and pattern/name markers; every locale of the markers
+# it DOES use is kept) and 13.2 MB .text, and 62 libc/libm imports (posix_spawn, chroot, splice,
+# sinf, ...) that only dead code used.
+# Roots needed no extra KEEP/--undefined: the entry point and the .init_array/.fini_array
+# constructors are roots by construction, the Starfish interposer is a root because
+# --export-dynamic-symbol exports it, and everything else the app needs is reached by a relocation
+# (the ffmpeg/curl/ACB/Starfish entry points are dlsym'd out of OTHER libraries, never out of this
+# executable, whose .dynsym defines only _init, _fini and the interposer). Nothing here uses
+# `#[used]`/`link_section`/`__attribute__((constructor))`. If a future feature needs a symbol that
+# only `dlsym(RTLD_DEFAULT, ...)` reaches inside this binary, it must be exported or KEEP()ed
+# explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer is exported (and that
+# Load-with-context is not a loader dependency); it does not assert that nothing else is defined.
+GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
-	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(SMP_INTERPOSER_LDFLAG) \
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) \
 	  $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
