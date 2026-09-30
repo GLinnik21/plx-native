@@ -2341,7 +2341,9 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
 fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_it() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let live = Live::start(EnhMode::Honor("ac3"));
+    // No `/decision` is asked of this fixture, so the logged variant stands in for `Live::start`;
+    // the log is what lets the test wait for the stop, which `stop_encoder_session` sends off-thread.
+    let (live, log) = slow_live_logged(std::time::Duration::ZERO);
     install(&mut ps, &live, Delivery::Direct, a1(), None, 0);
 
     // The worker's own commit inside `try_retranscode` (`replace_active_encoder_for`), captured
@@ -2397,6 +2399,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
         "the stale landing must never write its session projection over the live route",
     );
 
+    wait_until("the leaked encoder's stop", || stop_seen(&log, "leaked-worker-session"));
     let requests = live.finish();
     assert!(
         requests
