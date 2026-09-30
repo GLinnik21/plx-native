@@ -184,8 +184,8 @@ fn menu_section(name: Option<&str>, rows: &[Action]) -> (String, Section) {
 /// `px` is the app's own side margin: it was a literal 80, which sat 16px outside the 5% overscan
 /// frame — and the chip it hangs off is at `MARGIN_X`, so aligning the two is what the design meant
 /// anyway. `py` clears `widgets::TOP_BAR_BOTTOM` (130) by a `space::MD`.
-fn panel_rect(table: &TableView) -> Rect {
-    let pw = 440.0f32;
+fn panel_rect(table: &TableView, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    let pw = table.menu_panel_width(measure);
     let px = crate::ui::consts::MARGIN_X;
     let py = 154.0f32;
     let ph = table.measured_height().clamp(120.0, 440.0);
@@ -197,10 +197,10 @@ fn panel_rect(table: &TableView) -> Rect {
 /// in and the height comes from a `TableView` no host test can measure.
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, crate::ui::Rect)>) {
-    let r = panel_rect(&TableView::new());
+    let r = panel_rect(&TableView::new(), &crate::ui::fixture::FixtureMeasure);
     out.push((
         "account menu panel",
-        crate::ui::Rect::new(r.x, r.y, r.w, 440.0),
+        crate::ui::Rect::new(r.x, r.y, crate::ui::table::MENU_MAX_W, 440.0),
     ));
 }
 
@@ -262,8 +262,8 @@ impl AccountMenuScreen {
         self.rows.iter().position(|action| *action as u32 == elem)
     }
 
-    fn frame(&self) -> Rect {
-        panel_rect(&self.table)
+    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        panel_rect(&self.table, measure)
     }
 
     /// Commit the focused row. **Every action dismisses**, exactly as the legacy `on_ok` did by
@@ -320,7 +320,7 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
                     .filter(|key| key.entry == self.entry)
                     .and_then(|key| self.row_of(key.elem).map(|row| row as i32))
                     .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame().h);
+                self.table.update(tick.dt(), self.frame(cx.measure).h);
             }
             ScreenEvent::FocusMoved { to, .. } => {
                 if let Some(row) = self.row_of(to.elem) { self.table.sel = row as i32; }
@@ -349,14 +349,14 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
 }
 
 impl<H: AppLike> Focusable<H> for AccountMenuScreen {
-    fn groups(&self, _: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
             kind: GroupKind::Column,
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: self.frame(),
+            extent: self.frame(cx.measure),
             len: self.rows.len(),
             elem: ElemKind::Bare,
         });
@@ -379,13 +379,13 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
             None => Step::Edge,
         }
     }
-    fn place(&self, elem: &u32, _: &Cx<'_, H>, _: At) -> Option<Placed> {
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
         let row = self.row_of(*elem)?;
-        let rect = self.table.row_frame(self.frame(), row as i32)?;
+        let rect = self.table.row_frame(self.frame(cx.measure), row as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
-            clip: self.frame(),
+            clip: self.frame(cx.measure),
             index: Some(row as u32),
         })
     }
@@ -433,8 +433,8 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        let r = self.frame();
         let measure = f.measure;
+        let r = self.frame(measure);
         crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         crate::ui::profile::phase("glass.foreground", || {
             self.table.draw(p, r, measure);
@@ -878,7 +878,7 @@ mod tests {
     /// through the real [`menu_section`] over every action the menu can ever offer (the lab-only
     /// diagnostics row included), for a named account (the header is the user's own name, exempt)
     /// and a nameless one (the header is this app's own "Account" word, judged), in the same
-    /// compact table and 440px panel `build`/`panel_rect` draw.
+    /// compact table `build` draws, at the shared menu cap.
     #[test]
     fn every_app_owned_run_fits_the_panel_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
@@ -891,7 +891,14 @@ mod tests {
                 let mut table = TableView::new();
                 table.compact = true;
                 table.set_sections(vec![sec], 0, false);
-                out.extend(table.app_fit_failures(panel_rect(&table).w, &format!("{} name={name:?}", language.tag())));
+                let what = format!("{} name={name:?}", language.tag());
+                // Only the nameless menu is app text end to end; a real profile name is server
+                // text that may push the hug to the cap, where it ellipsizes.
+                if name.is_none() {
+                    out.extend(table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, &what));
+                }
+                out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, &what));
+                out.extend(table.app_fit_failures_hugged(&what));
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);

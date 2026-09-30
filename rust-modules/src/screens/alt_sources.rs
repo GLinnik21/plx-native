@@ -96,7 +96,7 @@ use crate::ui::screen::{
     GroupSpec, Hover, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step,
     Stop,
 };
-use crate::ui::table::{Badge, Row, Section, TableView};
+use crate::ui::table::{Badge, Row, Section, TableView, MENU_MAX_W, MENU_MIN_W};
 use crate::ui::{theme, Rect};
 
 /// The fields [`AltSourcesScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
@@ -137,10 +137,6 @@ impl LogicalState for AltSourcesArg {
 
 // ---- geometry --------------------------------------------------------------------------------
 
-/// The panel's width — the design's `altPanelW`. Wide because the row fills all four of the cell's
-/// content places (library, owner, runtime, class) and the two on the right are fixed runs: the
-/// label block gets whatever is left, and it is the library name that must not elide.
-const PANEL_W: f32 = 700.0;
 /// The pinned ~20px corner radius, the item menu's.
 const PANEL_RAD: f32 = 20.0;
 /// Air between the button that opened the panel and the panel itself — one `space` rung.
@@ -162,7 +158,8 @@ const RISE: f32 = crate::ui::popover::Popover::RISE;
 /// button's left edge (the list and the label it came from share a margin), pulled inside the
 /// screen's keep-out. Pure (anchor + measured height in, rect out), so the placement rules are
 /// host-testable without mounting anything.
-pub(crate) fn panel_at(a: Rect, content_h: f32) -> Rect {
+pub(crate) fn panel_at(a: Rect, content_w: f32, content_h: f32) -> Rect {
+    let width = content_w.clamp(MENU_MIN_W, MENU_MAX_W);
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE);
     let below = a.y + a.h + BTN_GAP;
     let y = if below + h <= SCR_H - EDGE {
@@ -170,8 +167,8 @@ pub(crate) fn panel_at(a: Rect, content_h: f32) -> Rect {
     } else {
         (a.y - BTN_GAP - h).max(EDGE)
     };
-    let x = a.x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
-    Rect::new(x, y, PANEL_W, h)
+    let x = a.x.clamp(EDGE_X, (SCR_W - EDGE_X - width).max(EDGE_X));
+    Rect::new(x, y, width, h)
 }
 
 // ---- the model (pure) ------------------------------------------------------------------------
@@ -408,9 +405,9 @@ impl AltSourcesScreen {
         self.table.set_sections(vec![sec], sel, false);
     }
 
-    pub(crate) fn frame(&self) -> Rect {
+    pub(crate) fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
-        panel_at(Rect::new(x, y, w, h), self.table.measured_height())
+        panel_at(Rect::new(x, y, w, h), self.table.measured_width(measure), self.table.measured_height())
     }
 
     fn dismiss<H: AppLike>(&self, fx: &mut Effects<'_, H>) {
@@ -466,7 +463,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
                     .filter(|key| key.entry == self.entry)
                     .map(|key| key.elem as i32)
                     .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame().h);
+                self.table.update(tick.dt(), self.frame(cx.measure).h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -517,14 +514,14 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
 /// surface with no page to escape onto, and `place`/`neighbour` read straight off `TableView`'s
 /// own row geometry (`row_frame`, `next_selectable`) rather than a second copy of it.
 impl<H: AppLike<Memory = PageMemory>> Focusable<H> for AltSourcesScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
             kind: GroupKind::Column,
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: self.frame(),
+            extent: self.frame(cx.measure),
             len: self.rows.len(),
             elem: ElemKind::Bare,
         });
@@ -546,12 +543,12 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for AltSourcesScreen {
             None => Step::Edge,
         }
     }
-    fn place(&self, elem: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let rect = self.table.row_frame(self.frame(), *elem as i32)?;
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let rect = self.table.row_frame(self.frame(cx.measure), *elem as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
-            clip: self.frame(),
+            clip: self.frame(cx.measure),
             index: Some(*elem),
         })
     }
@@ -629,7 +626,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;
-        let r = self.frame();
+        let r = self.frame(f.measure);
         let p = f.painter.alpha(appear).translate(0.0, RISE * (1.0 - appear));
         let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while

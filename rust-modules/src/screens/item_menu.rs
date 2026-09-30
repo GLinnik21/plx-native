@@ -56,7 +56,7 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table::{Row, Section, TableView, MENU_MAX_W, MENU_MIN_W};
 use crate::ui::widgets::PosterMark;
 use crate::ui::{theme, Rect};
 
@@ -153,8 +153,6 @@ impl Action {
     }
 }
 
-/// Baseline compact panel width; longer translated actions grow it at BODY size.
-const PANEL_MIN_W: f32 = 460.0;
 /// The pinned ~20px corner radius.
 const PANEL_RAD: f32 = 20.0;
 /// Air between the focused card's drawn edge and the panel — one `space` rung, like every other gap.
@@ -388,7 +386,7 @@ fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
 /// safe band so a bottom shelf still gets a whole panel. Pure (anchor + measured height in, rect
 /// out), which is what makes the placement rules host-testable.
 fn panel_at(a: Rect, content_w: f32, content_h: f32) -> Rect {
-    let width = content_w.clamp(PANEL_MIN_W, SCR_W - 2.0 * EDGE_X);
+    let width = content_w.clamp(MENU_MIN_W, MENU_MAX_W);
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE); // same floor the profile popover uses
     let right = a.x + a.w + CARD_GAP;
     let x = if right + width <= SCR_W - EDGE_X {
@@ -409,7 +407,7 @@ fn panel_at(a: Rect, content_w: f32, content_h: f32) -> Rect {
 /// argument the legacy `present` made for resolving it before it stored `OPENER`.
 pub(crate) fn fallback_anchor() -> Rect {
     Rect::new(
-        (SCR_W - CARD_W) * 0.5 - PANEL_MIN_W * 0.5,
+        (SCR_W - CARD_W) * 0.5 - MENU_MIN_W * 0.5,
         (SCR_H - CARD_H) * 0.5,
         CARD_W,
         CARD_H,
@@ -1367,7 +1365,7 @@ mod tests {
                 .row(Row::new(crate::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))], 0, false);
             let width = table.measured_width(&measure);
             if preference == Preference::Be {
-                assert!(width > PANEL_MIN_W, "the failing Belarusian menu must exercise growth");
+                assert!(width > MENU_MIN_W, "the failing Belarusian menu must exercise growth");
             }
             for x in [MARGIN_X, (SCR_W - CARD_W) * 0.5, SCR_W - MARGIN_X - CARD_W] {
                 let anchor = Rect::new(x, SCR_H - 120.0, CARD_W, CARD_H);
@@ -1388,7 +1386,7 @@ mod tests {
     fn the_panel_sits_beside_the_card_and_never_leaves_the_screen() {
         let h = 5.0 * 60.0; // a five-row menu, roughly
                             // a card on the left of the shelf: the panel sits to its RIGHT, clear of the card
-        let r = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), PANEL_MIN_W, h);
+        let r = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), MENU_MIN_W, h);
         assert!(
             r.x >= MARGIN_X + CARD_W,
             "expected the panel right of the card, got x={}",
@@ -1397,7 +1395,7 @@ mod tests {
         // a card at the right edge: it flips LEFT rather than running off screen — and lands clear
         // of the card it belongs to, which is the whole point of anchoring beside it
         let a = Rect::new(SCR_W - 300.0, 300.0, CARD_W, CARD_H);
-        let r = panel_at(a, PANEL_MIN_W, h);
+        let r = panel_at(a, MENU_MIN_W, h);
         assert!(
             r.x + r.w <= SCR_W - EDGE + 0.5,
             "panel ran off the right edge: x={} w={}",
@@ -1413,7 +1411,7 @@ mod tests {
         );
         assert!(r.x >= EDGE - 0.5);
         // a card near the bottom keeps the whole panel on screen
-        let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), PANEL_MIN_W, h);
+        let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), MENU_MIN_W, h);
         assert!(
             low.y + low.h <= SCR_H - EDGE + 0.5,
             "panel ran off the bottom: y={} h={}",
@@ -1425,7 +1423,7 @@ mod tests {
         // …and "on screen" means inside the OVERSCAN frame, which is why the keep-out is per axis:
         // `space::XL` 64 clears `MARGIN_Y` and misses `MARGIN_X` by 32. A panel placed against an
         // anchor has no fixed rect a table could carry, so the frame is graded on its extremes here.
-        let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), PANEL_MIN_W, 4000.0);
+        let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), MENU_MIN_W, 4000.0);
         for (what, p) in [("flipped", r), ("low", low), ("tall", tall)] {
             assert!(
                 crate::ui::consts::inside_safe(p),
@@ -1759,8 +1757,8 @@ mod tests {
     }
 
     /// **Every action row of every item menu fits its panel, in every shipped language.** The
-    /// panel grows to its content ([`panel_at`] clamps `measured_width` between [`PANEL_MIN_W`] and
-    /// the safe width), so what this guards is the CEILING: no verb may be longer than the widest
+    /// panel grows to its content ([`panel_at`] clamps `measured_width` between [`MENU_MIN_W`] and
+    /// [`MENU_MAX_W`]), so what this guards is the CEILING: no verb may be longer than the widest
     /// panel the screen will ever draw. Built through the real [`build_with`], [`build_episode`]
     /// and [`build_season`] over every item kind, watch state, Continue Watching and trailer
     /// combination, in the same compact table `build_rows` seats, measured with the device's
@@ -1769,8 +1767,9 @@ mod tests {
     fn every_action_row_fits_the_widest_panel_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         // The panel hugs its content, so it always fits itself; the widest it may ever grow to
-        // ([`panel_at`]'s ceiling) is the width a verb can actually be held to.
-        let widest = SCR_W - 2.0 * EDGE_X;
+        // ([`MENU_MAX_W`], the shared cap) is the width a verb can actually be held to.
+        let widest = MENU_MAX_W;
+        let measure = crate::fontcov::advances::ShippedMeasure;
         let marks = [PosterMark::None, PosterMark::InProgress, PosterMark::Watched];
         let trailer = crate::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
         // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.
@@ -1800,7 +1799,9 @@ mod tests {
                 let mut table = TableView::new();
                 table.compact = true;
                 table.set_sections(vec![sec], 0, false);
+                out.extend(table.menu_cap_failure(&measure, &format!("{} {name}", language.tag())));
                 out.extend(table.app_fit_failures(widest, &format!("{} {name}", language.tag())));
+                out.extend(table.app_fit_failures_hugged(&format!("{} {name}", language.tag())));
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);

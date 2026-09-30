@@ -14,6 +14,8 @@ use crate::ui::screen::{
 };
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::table::{Row, Section, TableView};
+#[cfg(test)]
+use crate::ui::table::MENU_MAX_W;
 use crate::ui::Rect;
 use std::borrow::Cow;
 
@@ -357,13 +359,16 @@ impl LibraryMenu {
             #[cfg(test)] draft_rebuilds: 0,
         }
     }
-    fn frame(&self) -> Rect {
+    /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width`]), hung off the
+    /// anchor's left edge and pulled back so the right edge stays inside the keep-out.
+    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.table.measured_height().clamp(120.0, 740.0);
+        let width = self.table.menu_panel_width(measure);
         Rect::new(
-            x.clamp(96.0, 1174.0),
+            x.clamp(96.0, (1920.0 - 96.0 - width).max(96.0)),
             (y + h + 16.0).clamp(96.0, 984.0 - height),
-            650.0,
+            width,
             height,
         )
     }
@@ -561,7 +566,7 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                             .map(|row| row.table_index)
                     })
                     .unwrap_or(-1);
-                self.table.update(tick.dt(), self.frame().h);
+                self.table.update(tick.dt(), self.frame(cx.measure).h);
             }
             ScreenEvent::FocusMoved { to, .. } => {
                 self.table.sel = self
@@ -600,14 +605,14 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
     }
 }
 impl<H: LibraryLike> Focusable<H> for LibraryMenu {
-    fn groups(&self, _: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
             kind: GroupKind::Column,
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: self.frame(),
+            extent: self.frame(cx.measure),
             len: self.rows.len(),
             elem: ElemKind::Bare,
         });
@@ -635,13 +640,13 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
                 })
             })
     }
-    fn place(&self, elem: &u32, _: &Cx<'_, H>, _: At) -> Option<Placed> {
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
         let row = self.rows.iter().find(|row| row.key == *elem)?;
-        let rect = self.table.row_frame(self.frame(), row.table_index)?;
+        let rect = self.table.row_frame(self.frame(cx.measure), row.table_index)?;
         Some(Placed {
             rect,
             rest_rect: rect,
-            clip: self.frame(),
+            clip: self.frame(cx.measure),
             index: Some(row.table_index as u32),
         })
     }
@@ -690,9 +695,10 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // phases: the frosted ground plus its rows, so a slow frame while the Sort/Filter menu is
         // up can be read as the PANEL or as the host under it rather than as one `main.ui` total.
         let field = f.underlay;
+        let frame = self.frame(measure);
         crate::ui::profile::phase("lb.menu", || {
-            crate::ui::widgets::panel_ground(p, self.frame(), PANEL_RADIUS, field);
-            self.table.draw(p, self.frame(), measure);
+            crate::ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field);
+            self.table.draw(p, frame, measure);
         });
         for row in &self.rows {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &row.key, f.cx, At::Drawn) {
@@ -1174,10 +1180,12 @@ mod tests {
 
     /// **Every TYPE row fits the popover, in every shipped language** — movie and TV sections
     /// alike, Collections included, with the section header. Measured with the device's
-    /// whole-pixel advances at the popover's fixed width.
+    /// whole-pixel advances at the shared menu cap (`MENU_MAX_W`) and at the width the hugged
+    /// popover actually gets.
     #[test]
     fn every_type_row_fits_the_popover_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let measure = crate::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
@@ -1185,7 +1193,9 @@ mod tests {
                 let draft = type_draft(kind, LibraryType::Collections);
                 let mut table = TableView::new();
                 table.set_sections(draft.sections, draft.selected, false);
-                out.extend(table.app_fit_failures(650.0, &format!("{} {kind:?}", language.tag())));
+                out.extend(table.menu_cap_failure(&measure, &format!("{} {kind:?}", language.tag())));
+                out.extend(table.app_fit_failures(MENU_MAX_W, &format!("{} {kind:?}", language.tag())));
+                out.extend(table.app_fit_failures_hugged(&format!("{} {kind:?}", language.tag())));
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);
@@ -1203,6 +1213,7 @@ mod tests {
                 title: crate::i18n::msg::browse_library_plays().into(), default_desc: true },
         ];
         let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];
+        let measure = crate::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
@@ -1219,7 +1230,9 @@ mod tests {
             for (name, draft) in drafts {
                 let mut table = TableView::new();
                 table.set_sections(draft.sections, draft.selected, false);
-                out.extend(table.app_fit_failures(650.0, &format!("{tag} {name}")));
+                out.extend(table.menu_cap_failure(&measure, &format!("{tag} {name}")));
+                out.extend(table.app_fit_failures(MENU_MAX_W, &format!("{tag} {name}")));
+                out.extend(table.app_fit_failures_hugged(&format!("{tag} {name}")));
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);

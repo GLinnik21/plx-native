@@ -67,8 +67,6 @@ pub struct Row {
     /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
     /// chevron (via the [`Row::chevron`] sugar) or e.g. the sort menu's direction chevron.
     pub ticon: Option<crate::ui::icons::Icon>,
-    /// Reserve [`Self::ticon`]'s column even when this row draws no icon — see [`Row::ticon_slot`].
-    pub ticon_slot: bool,
     /// THE leading accessory icon — the SAME column the [`Row::checked`] checkmark occupies, for
     /// lists whose rows are ACTIONS rather than a picker's options (the item context menu's
     /// `[icon] [label]` rows). `checked` wins the slot when both are set: a picker's active mark is
@@ -102,7 +100,6 @@ impl Row {
             value_origin: Origin::default(),
             value_dim: false,
             ticon: None,
-            ticon_slot: false,
             licon: None,
             dim: false,
             sep: false,
@@ -190,17 +187,6 @@ impl Row {
         if v {
             self.ticon = Some(crate::ui::icons::Icon::Chevron);
         }
-        self
-    }
-    /// **Hold the trailing accessory's column open on a row that draws none.**
-    ///
-    /// For a list where only SOME rows go somewhere: without it the read-out beside the chevron
-    /// shifts right on every row that has none, so a column of years reads as ragged text instead
-    /// of a column you can compare down. The design states it as a reserved 26px slot at
-    /// `opacity:0` (`Person Screen.dc.html`: "the column is reserved on every row so the year
-    /// column stays on one guide"). Ignored when a `ticon` is actually set.
-    pub fn ticon_slot(mut self, v: bool) -> Self {
-        self.ticon_slot = v;
         self
     }
     pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self {
@@ -373,6 +359,13 @@ const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup row
 /// draws chrome ABOVE the list (the Sources panel's level pills) can start it on the same line the
 /// rows do, instead of re-deriving two private constants and drifting from them.
 pub const CONTENT_X: f32 = SIDE + CONTENT_PAD;
+
+/// Narrowest a popover menu panel gets (only to avoid a degenerate sliver around one short row).
+pub const MENU_MIN_W: f32 = 300.0;
+/// Widest any popover menu panel may be — the one shared cap ([`TableView::menu_panel_width`]).
+/// Content wider than this ellipsizes on screen and FAILS the per-menu localization tests, so a
+/// translation that needs more room is caught in `cargo test`, not on a customer's TV.
+pub const MENU_MAX_W: f32 = 650.0;
 const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
 /// Focused-row pill corner radius. `pub` for the [`ROW_H`] caller shape.
@@ -383,6 +376,12 @@ const PANEL_BG: [f32; 4] = theme::SURFACE_PANEL; // opaque panel colour — fade
 /// Air between two chips of one right-aligned badge run (a subtitle row's `FORCED` + `SDH`).
 const BADGE_GAP: f32 = 10.0;
 const ACCESSORY_GAP: f32 = 14.0;
+/// The air a HUGGED panel keeps between a row's label and its trailing read-out — the spacing
+/// scale's label→value rung ([`theme::space::MD`], 24px). [`TableView::measured_width`] budgets it,
+/// so at its own width every row shows at least this much space. It is the panel-sizing target,
+/// not the layout's floor: a crowded row (a table wider content than its frame) may still squeeze
+/// the pair down to [`ACCESSORY_GAP`] ([`TableView::row_columns_under`]) before the value elides.
+const ROW_VALUE_GAP: f32 = theme::space::MD;
 /// The empty band under a row's lowest ink, which every row kind leaves: a plain row's label is
 /// centred in `ROW_H` with 13px under it, and a two-line row's centred pair leaves ~12.
 const ROW_INK_PAD: f32 = 12.0;
@@ -443,6 +442,21 @@ pub(crate) fn assert_no_fit_failures(out: &[String]) {
     assert!(out.is_empty(), "text the television would end in an ellipsis:\n  {}", out.join("\n  "));
 }
 const ACCESSORY_ICON_W: f32 = 26.0;
+
+/// The horizontal space a row's trailing icon takes from the content edge: its INK width (per
+/// [`crate::ui::icons::ink_x`]) plus [`ACCESSORY_GAP`]. The icon is drawn so its ink, not its
+/// 26px box, ends on the content edge — the same edge a flush read-out ends on — so the eye sees
+/// one right edge whatever the glyph's own side bearing.
+fn ticon_slot_w(icon: crate::ui::icons::Icon) -> f32 {
+    let (l, r) = crate::ui::icons::ink_x(icon);
+    (r - l) * ACCESSORY_ICON_W + ACCESSORY_GAP
+}
+
+/// Where the trailing icon's box starts, as an offset from the content edge (<= 0): the box is
+/// placed so the glyph's ink right edge lands ON the content edge.
+fn ticon_box_dx(icon: crate::ui::icons::Icon) -> f32 {
+    -crate::ui::icons::ink_x(icon).1 * ACCESSORY_ICON_W
+}
 /// The trailing read-out's WEIGHT: `size::LABEL` **bold**, which is what the `PlxNative Design
 /// System`'s `TableView` authors it as (`var(--font-weight-bold) var(--size-label)`) and what its
 /// prose says in words. The product drew it regular until 2026-08-21 — a rung below the row's
@@ -474,10 +488,10 @@ pub struct TableView {
     ///
     /// Defaults to `true`, so every panel whose list is the only focusable thing is unchanged.
     pub list_focused: bool,
-    /// compact size class: BODY regular row LABELS instead of the default HEADLINE bold (the small
-    /// account popover; HEADLINE-bold rows overwhelmed a 440px panel of one-word actions). Set it
-    /// on every ACTION menu — the item context menu, account, more, and the library sort/filter/
-    /// genre menus all do; only a PICKER of title+detail rows stays on the default.
+    /// compact size class: BODY regular row LABELS instead of the default HEADLINE bold (HEADLINE-bold
+    /// rows overwhelmed the small account popover, a panel of one-word actions). Set it on every
+    /// ACTION menu — the item context menu, account, more, and the library sort/filter/genre menus
+    /// all do; only a PICKER of title+detail rows stays on the default.
     ///
     /// It no longer affects HEADERS: those are CAPS at CAPTION in both classes, because the caps
     /// are what make a header a label and a size that varied could tie with its own rows.
@@ -688,27 +702,62 @@ impl TableView {
         self.content_h() + TOP_PAD + BOT_PAD
     }
 
-    /// Intrinsic panel width for complete labels at the table's own typography. Action menus
-    /// use this before placing their panel, rather than sizing it for one English label.
+    /// Intrinsic panel width: the width at which EVERY header, label, sub-line and trailing value
+    /// resolves to its full natural width under [`Self::row_columns_under`] /
+    /// [`Self::header_columns`] with the device's [`fit::HEADROOM`] to spare. It is the INVERSE of
+    /// those two layouts and is built from the same pieces (`row_runs`, [`Self::trailing_width`],
+    /// [`ROW_VALUE_GAP`], [`ACCESSORY_GAP`], the hug margin), so a panel of exactly this width can
+    /// never elide a run the layout would have kept. Action menus size their panel with it.
     pub(crate) fn measured_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        let (size, bold) = self.label_style();
+        let h = fit::HEADROOM;
         let mut width: f32 = 0.0;
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header = measure.width_str(&section.header.to_uppercase(), theme::size::CAPTION, false);
-                let accessory = if section.accessory.is_empty() { 0.0 } else {
-                    GAP + measure.width_str(&section.accessory, theme::size::MICRO, false).min(ACCESSORY_W)
+                let band = if section.accessory.is_empty() {
+                    header / h
+                } else {
+                    let accessory = measure
+                        .width_str(&section.accessory, theme::size::MICRO, false)
+                        .min(ACCESSORY_W)
+                        .max(Self::accessory_floor(section, measure));
+                    (header + accessory) / h + ACCESSORY_GAP
                 };
-                width = width.max(2.0 * CONTENT_X + header + accessory);
+                width = width.max(2.0 * CONTENT_X + band);
             }
             for row in section.rows.iter().filter(|row| !row.sep) {
-                let label = measure.width_str(&row.label, size, bold);
+                let (label, value) = self.row_runs(row, measure);
                 let detail = measure.width_str(&row.detail, theme::size::CAPTION, false);
-                width = width.max(2.0 * CONTENT_X + CHECK_W + GAP
-                    + label.max(detail) + Self::trailing_width(row, measure));
+                let primary = (label / h).max(detail / h);
+                let text = match value {
+                    Some(value) => primary + ROW_VALUE_GAP + value / h,
+                    None => primary,
+                };
+                let fixed = self.trailing_width(row, measure) - Self::value_slot(row, measure);
+                width = width.max(2.0 * CONTENT_X + CHECK_W + GAP + fixed + text);
             }
         }
         width.ceil()
+    }
+
+    /// The shared popover-menu width rule: the table's own [`Self::measured_width`] (longest
+    /// header / label / detail / trailing value plus `2 * CONTENT_X` of padding and the check
+    /// column) clamped to [[`MENU_MIN_W`], [`MENU_MAX_W`]]. Every TableView-in-popover menu sizes
+    /// its panel with this; none carries a width constant of its own.
+    ///
+    /// [`MENU_MAX_W`] is a localization CATCH, not a silent ellipsis: each menu's fit test grades
+    /// its shipped languages at the cap, and [`Self::menu_cap_failure`] flags any draft whose
+    /// `measured_width` exceeds it.
+    pub(crate) fn menu_panel_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        self.measured_width(measure).clamp(MENU_MIN_W, MENU_MAX_W)
+    }
+
+    /// Test-side half of the cap: `Err` names the offending width when this table would need a
+    /// panel wider than [`MENU_MAX_W`] (`what` = language tag + menu/row context).
+    #[cfg(test)]
+    pub(crate) fn menu_cap_failure(&self, measure: &dyn crate::ui::machine::Measure, what: &str) -> Option<String> {
+        let w = self.measured_width(measure);
+        (w > MENU_MAX_W).then(|| format!("{what}: measured_width {w} > MENU_MAX_W {MENU_MAX_W}"))
     }
 
     /// Every text slot (label, detail sub-line, trailing value, section header, section accessory)
@@ -782,14 +831,33 @@ impl TableView {
             .collect()
     }
 
+    /// [`Self::app_fit_failures`] graded at the width this table's popover ACTUALLY gets
+    /// ([`Self::menu_panel_width`] at the device's advances), not at the [`MENU_MAX_W`] ceiling: a
+    /// panel that hugs its content must not elide any of it.
+    #[cfg(test)]
+    pub(crate) fn app_fit_failures_hugged(&self, tag: &str) -> Vec<String> {
+        let w = self.menu_panel_width(&crate::fontcov::advances::ShippedMeasure);
+        self.app_fit_failures(w, &format!("{tag} @hugged {w}"))
+    }
+
+    /// Where a row's read-out ends (its right edge) in a `frame_w`-wide table — the x offset from
+    /// the panel's left, the same `text_right - trailing` the draw uses.
+    #[cfg(test)]
+    fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
+        let mut trailing = row.ticon.map_or(0.0, ticon_slot_w);
+        if !row.badges.is_empty() {
+            trailing += row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None, &crate::fontcov::advances::ShippedMeasure)).sum::<f32>()
+                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
+        }
+        frame_w - SIDE - CONTENT_PAD - trailing
+    }
+
     fn label_style(&self) -> (std::os::raw::c_int, bool) {
         if self.compact { (theme::size::BODY, false) } else { (theme::size::HEADLINE, true) }
     }
 
-    fn trailing_width(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        let mut width = if row.ticon.is_some() || row.ticon_slot {
-            ACCESSORY_ICON_W + ACCESSORY_GAP
-        } else { 0.0 };
+    fn trailing_width(&self, row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        let mut width = row.ticon.map_or(0.0, ticon_slot_w);
         if !row.badges.is_empty() {
             width += row.badges.iter().map(|badge| crate::ui::widgets::badge_w(badge.text(), None, measure)).sum::<f32>()
                 + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
@@ -820,23 +888,51 @@ impl TableView {
     /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
     /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
     fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> RowColumns {
-        let fixed = Self::trailing_width(row, measure) - Self::value_slot(row, measure);
+        let fixed = self.trailing_width(row, measure) - Self::value_slot(row, measure);
         let span = (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - fixed).max(0.0);
-        let Some(value) = row.readout() else {
+        let (label, value) = self.row_runs(row, measure);
+        let Some(value) = value else {
             return RowColumns { label_w: span, value_w: 0.0 };
         };
-        let (size, bold) = self.label_style();
         let (label_w, value_w) = fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
-            primary_nat: (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil() / headroom,
-            secondary_nat: measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0) / headroom,
+            primary_nat: label / headroom,
+            secondary_nat: value / headroom,
             primary_share: fit::ROW_PRIMARY_SHARE,
         });
         RowColumns { label_w, value_w }
     }
 
+    /// A row's two runs at their natural widths, exactly as [`Self::row_columns_under`] feeds them
+    /// to [`fit::two_runs`] at headroom `1.0` and [`Self::measured_width`] sums them: the label
+    /// hugged with [`fit::HUG_MARGIN`] (whole pixels), and the trailing value if it has one.
+    fn row_runs(&self, row: &Row, measure: &dyn crate::ui::machine::Measure) -> (f32, Option<f32>) {
+        let (size, bold) = self.label_style();
+        (
+            (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil(),
+            row.readout().map(|v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0)),
+        )
+    }
+
     /// The trailing value's natural slot (run + its gap), `0` for a row without one.
     fn value_slot(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
         row.readout().map_or(0.0, |v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP)
+    }
+
+    /// The width a server-header section guarantees its app-owned accessory text (hugged like a
+    /// row label), `0` when the header is not a server one yielding to app text. Shared by
+    /// [`Self::header_columns`] and [`Self::measured_width`].
+    fn accessory_floor(section: &Section, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        let app_text = if !section.accessory_app_prefix.is_empty() {
+            Some(section.accessory_app_prefix.as_str())
+        } else if section.accessory_origin == Origin::App {
+            Some(section.accessory.as_str())
+        } else {
+            None
+        };
+        match app_text.filter(|_| section.header_origin == Origin::Server) {
+            Some(t) => (measure.width_str(t, theme::size::MICRO, false) * fit::HUG_MARGIN).ceil(),
+            None => 0.0,
+        }
     }
 
     /// A [`Section::header`]'s (uppercased, as drawn) and [`Section::accessory`]'s columns, the
@@ -856,21 +952,14 @@ impl TableView {
         }
         let header_nat = measure.width_str(&section.header.to_uppercase(), theme::size::CAPTION, false) / headroom;
         let accessory_nat = measure.width_str(&section.accessory, theme::size::MICRO, false).min(ACCESSORY_W) / headroom;
-        let app_text = if !section.accessory_app_prefix.is_empty() {
-            Some(section.accessory_app_prefix.as_str())
-        } else if section.accessory_origin == Origin::App {
-            Some(section.accessory.as_str())
-        } else {
-            None
-        };
-        let Some(app_text) = app_text.filter(|_| section.header_origin == Origin::Server) else {
+        let floor = Self::accessory_floor(section, measure) / headroom;
+        if floor == 0.0 {
             return fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
                 primary_nat: header_nat,
                 secondary_nat: accessory_nat,
                 primary_share: fit::ROW_PRIMARY_SHARE,
             });
-        };
-        let floor = (measure.width_str(app_text, theme::size::MICRO, false) * fit::HUG_MARGIN).ceil() / headroom;
+        }
         let share = floor.max(span * (1.0 - fit::ROW_PRIMARY_SHARE)) / span.max(1.0);
         let (accessory_w, header_w) = fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
             primary_nat: accessory_nat.max(floor),
@@ -1232,11 +1321,9 @@ impl TableView {
             let mut trailing = 0.0f32;
             if let Some(ti) = row.ticon {
                 let cs = ACCESSORY_ICON_W;
-                let cr = Rect::new(text_right - cs, cyc - cs * 0.5, cs, cs);
+                let cr = Rect::new(text_right + ticon_box_dx(ti), cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, ti, cr, base);
-                trailing = cs + ACCESSORY_GAP;
-            } else if row.ticon_slot {
-                trailing = ACCESSORY_ICON_W + ACCESSORY_GAP; // reserved, drawn empty — see `Row::ticon_slot`
+                trailing = ticon_slot_w(ti);
             }
             // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
             // three trailing runs (the design system's cell is a flex row whose label block takes
@@ -1782,5 +1869,52 @@ mod tests {
         assert!(!short_flagged, "a short value that fits must not be reported: {issues:?}");
         let long_flagged = issues.iter().any(|i| i.role == FitRole::Value && i.text.starts_with("This value"));
         assert!(long_flagged, "a genuinely too-long value must still be reported: {issues:?}");
+    }
+
+    /// **Every row's LAST trailing element ends on one right edge** (the row content's right edge).
+    /// On a row with a trailing icon that is the icon; on a row without one it is the read-out
+    /// itself, flush — no empty column is held open. And a hugged panel must show every run whole.
+    #[test]
+    fn a_sections_values_share_a_right_edge_and_the_hugged_panel_elides_nothing() {
+        use crate::fontcov::advances::ShippedMeasure as M;
+        use crate::ui::machine::Measure;
+        let mut table = TableView::new();
+        table.compact = false;
+        let section = Section::new("")
+            .row(Row::new("Unwatched only").value("Off"))
+            .row(Row::new("Genre").value("All").chevron(true))
+            .row(Row::new("Lone").chevron(true));
+        table.set_sections(vec![section], 0, false);
+        let content_right = 800.0 - SIDE - CONTENT_PAD;
+        let (off, genre, lone) = (&table.sections[0].rows[0], &table.sections[0].rows[1], &table.sections[0].rows[2]);
+        // the chevron's INK ends on the content edge (its box overhangs by the right-side bearing)
+        let ink_right = |row: &Row| {
+            let icon = row.ticon.unwrap();
+            content_right + ticon_box_dx(icon) + crate::ui::icons::ink_x(icon).1 * ACCESSORY_ICON_W
+        };
+        let last_edge = |row: &Row| if row.ticon.is_some() { ink_right(row) } else { table.value_right_edge(row, 800.0) };
+        let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
+        assert!(
+            near(table.value_right_edge(off, 800.0), ink_right(genre)),
+            "'Off' ends at {} but the chevron ink at {}",
+            table.value_right_edge(off, 800.0),
+            ink_right(genre)
+        );
+        assert!(near(ink_right(genre), content_right), "chevron ink {} is not on the content edge {content_right}", ink_right(genre));
+        assert!(near(last_edge(off), last_edge(lone)), "a value row and a lone-chevron row end on different edges");
+        assert!(
+            near(table.value_right_edge(genre, 800.0), content_right - ticon_slot_w(genre.ticon.unwrap())),
+            "a value beside a chevron stops one ink-width + gap short of the edge"
+        );
+        let w = table.menu_panel_width(&M);
+        let failures = table.app_fit_failures_hugged("filter");
+        assert!(failures.is_empty(), "elision at the hugged width {w}: {failures:?}");
+        let (size, bold) = table.label_style();
+        for (row, icon) in [(off, 0.0), (genre, ticon_slot_w(crate::ui::icons::Icon::Chevron))] {
+            let span = w - 2.0 * CONTENT_X - CHECK_W - GAP - icon;
+            let value = row.readout().unwrap();
+            let gap = span - M.width_str(&row.label, size, bold) - M.width_str(value, theme::size::LABEL, VALUE_BOLD != 0);
+            assert!(gap >= theme::space::MD - 0.01, "{}: label to value air {gap} < the MD rung", row.label);
+        }
     }
 }

@@ -188,7 +188,7 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
         arg(700.0, 880.0),
         crate::stores::metadata::MetadataStore::default().view(),
     );
-    let (a, b) = (high.frame(), low.frame());
+    let (a, b) = { let m = crate::ui::fixture::FixtureMeasure; (high.frame(&m), low.frame(&m)) };
     assert_ne!(
         (a.x, a.y),
         (b.x, b.y),
