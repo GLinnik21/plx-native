@@ -68,7 +68,7 @@ mod tests {
 
     /// **A profile switch that never commits changes no identity.** The grant a person's consent
     /// minted stays live while a switch is attempted and refused: the identity moves at the switch's
-    /// COMMIT (`RegistryPlan::Install { replace: true }`), never at its launch.
+    /// COMMIT (`RegistryPlan::Install` with `RosterCommit::Switch`), never at its launch.
     #[test]
     fn a_refused_profile_switch_leaves_the_live_plaintext_grant_alone() {
         let _g = crate::testlock::serial();

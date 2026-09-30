@@ -2708,3 +2708,31 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
         }
     }
 }
+
+/// The page-freeze holds Home's snapshot until the page is quiescent so first poster admission can
+/// settle behind it. The ambient wash dissolve and the hero focus pop are decorative — neither
+/// moves layout or the grid — so they must be visible pixel motion (`page_moving`) yet not page
+/// layout motion (`page_layout_moving`), or Home rides the whole 600 ms hold cap.
+#[test]
+fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let key = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let mut saw_decor = false;
+    let mut layout_moving_frames = 0;
+    for i in 1..40u32 {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }));
+        saw_decor |= crate::ui::idle::page_moving();
+        layout_moving_frames += usize::from(crate::ui::idle::page_layout_moving());
+    }
+    assert!(saw_decor, "the hero pop / wash dissolve must still report visible page motion");
+    assert_eq!(layout_moving_frames, 0, "decorative springs must not count as page layout motion");
+}

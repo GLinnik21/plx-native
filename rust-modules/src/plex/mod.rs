@@ -110,7 +110,7 @@ pub use servers::{
 // to call and nothing else's — a caller that merely wants to stop using a server wants
 // `set_current`, and one that wants to forget a share wants plex.tv to stop granting it.
 #[allow(unused_imports)]
-pub(crate) use servers::{finish_profile_switch, id_of_machine, revoke_all, revoke_for_profile_switch};
+pub(crate) use servers::{finish_profile_switch, finish_roster_refresh, id_of_machine, revoke_before_foreign_retoken, revoke_all, revoke_for_profile_switch};
 // The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
 // `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
 // does — that call mints and PERSISTS a device uuid, which a host test has no business writing —

@@ -15,8 +15,10 @@
 //!   it draws the page being captured live at full alpha; the dip alpha rides the glass composite.
 //!   Shared chrome remains a separate live layer. Existing snapshot fences pause the ramp while
 //!   the GPU completes a capture (bounded by `gfx::SNAPSHOT_DEFER_MAX`). After In, the image stays
-//!   held while the destination reports page-owned motion or first-frame resource work. At visual
-//!   quiescence the dispatcher takes one full-alpha replacement capture off-screen, presents that
+//!   held while the destination reports layout motion (springs outside `idle::decorative`, read
+//!   through `idle::page_layout_moving`) or first-frame resource work; decorative springs such as
+//!   Home's wash dissolve, hero art reveal and hero focus pop still wake the present gate but do
+//!   not hold the snapshot. At visual quiescence the dispatcher takes one full-alpha replacement capture off-screen, presents that
 //!   image, then switches to identical live output on the following frame. No VISIBLE frame draws a live
 //!   page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
 //!   settles. Screen/input/lifecycle state continues ticking behind the held image.

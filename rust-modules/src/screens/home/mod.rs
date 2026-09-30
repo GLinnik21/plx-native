@@ -248,20 +248,26 @@ impl Backdrop {
         dt: f32,
     ) {
         self.bind(hero, outgoing, selected, snap);
-        if self.tex.0 != 0 {
-            self.art.step(1.0, AmbientWash::K, dt);
-        }
-        if self.outgoing_tex.0 != 0 {
-            self.outgoing_art.step(1.0, AmbientWash::K, dt);
-        }
+        // decorative hero-art reveal dissolve (same reason as the wash below)
+        crate::ui::idle::decorative(|| {
+            if self.tex.0 != 0 {
+                self.art.step(1.0, AmbientWash::K, dt);
+            }
+            if self.outgoing_tex.0 != 0 {
+                self.outgoing_art.step(1.0, AmbientWash::K, dt);
+            }
+        });
         if let Some(item) = grid_item.filter(|m| m.has_blur) {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
-        self.wash.step(
-            wash_corners(hero.map(|h| h.item), self.grid_target, snap),
-            AmbientWash::K,
-            dt,
-        );
+        // decorative colour dissolve under the page — must not hold the page-freeze snapshot
+        crate::ui::idle::decorative(|| {
+            self.wash.step(
+                wash_corners(hero.map(|h| h.item), self.grid_target, snap),
+                AmbientWash::K,
+                dt,
+            )
+        });
     }
 
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
@@ -893,7 +899,9 @@ impl HomeScreen {
             Some(Located::Hero(i)) if status_read(view).is_none() => Some(i),
             _ => None,
         };
-        self.hero_pop.step(hero_focus, dt);
+        // decorative: an in-place scale of the focused control, no layout — must not hold the
+        // page-freeze snapshot (`idle::decorative`)
+        crate::ui::idle::decorative(|| self.hero_pop.step(hero_focus, dt));
         let visible_cx: Cx<'_, H> = Cx {
             views: cx.views,
             tick: cx.tick,

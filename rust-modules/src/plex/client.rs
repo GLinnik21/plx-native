@@ -136,6 +136,17 @@ pub struct Client {
     // share a value: a cache that only compares "did this number move" therefore also flushes
     // when `client()` starts answering with a different server.
     token_gen: AtomicU32,
+    /// **Grant epoch**: which IDENTITY the token speaks for, as opposed to which token string it
+    /// is. Moves only when a token is revoked (blanked) or admitted after a revocation — the two
+    /// edges every change of who is asking passes through, because the registry blanks a slot's
+    /// token before a profile switch, a sign-out or a withdrawn plaintext grant re-keys it
+    /// (`servers::revoke_for_profile_switch`, `revoke_all`, `regrade_credentials`). A live token
+    /// replaced in place by another live one is the same identity's credential refreshed —
+    /// discovery re-registering a stored server under plex.tv's current grant — and keeps it.
+    /// Read by caches of what a server SERVED rather than of a request string (resident poster
+    /// art, `app::adapters::poster::lookup`), which must drop on a new identity and survive a
+    /// refresh. Seeded from the same sequence as `token_gen`, so a new `Client` never shares one.
+    grant_epoch: AtomicU32,
     /// Immutable process-local instance identity for adapter recordings, distinct from both the
     /// secret token and the Plex device identifier. A token swap must not rename this instance.
     instance_gen: u32,
@@ -275,6 +286,7 @@ impl Client {
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(generation),
+            grant_epoch: AtomicU32::new(generation),
             instance_gen: generation,
             data_io_disabled: std::sync::atomic::AtomicBool::new(false),
             denied_data_requests: AtomicU32::new(0),
@@ -344,12 +356,39 @@ impl Client {
 
     /// Swap the `X-Plex-Token` at runtime (Plex Home profile switch — same server, new per-user
     /// token). Cheap; the next request picks it up via [`Client::with_token`]. Bumps the token
-    /// generation so token-baked caches (the poster key memo) invalidate.
+    /// generation so token-baked caches (the poster key memo) invalidate, and — only across a
+    /// revocation edge (live → blank, blank → live) — the [`Client::grant_epoch`].
     pub fn set_token(&self, token: &str) {
         if let Ok(mut g) = self.token.write() {
+            if g.is_empty() != token.is_empty() {
+                self.grant_epoch.store(next_gen(), Relaxed);
+            }
             *g = token.to_owned();
         }
         self.token_gen.store(next_gen(), Relaxed);
+    }
+    /// **Revoke a live token that `token` would replace**, when the caller cannot prove the two
+    /// speak for one identity: the live one is blanked, so the replacement lands across a
+    /// revocation edge and [`Client::grant_epoch`] moves exactly as for a profile switch. A blank
+    /// slot, or the same token again, is left alone. Returns whether it revoked.
+    pub(super) fn revoke_unless_same(&self, token: &str) -> bool {
+        let revoked = match self.token.write() {
+            Ok(mut g) if !g.is_empty() && g.as_str() != token => {
+                g.clear();
+                self.grant_epoch.store(next_gen(), Relaxed);
+                true
+            }
+            _ => false,
+        };
+        if revoked {
+            self.token_gen.store(next_gen(), Relaxed);
+        }
+        revoked
+    }
+    /// The identity epoch of this server's credential — see the field. Unchanged by a live-to-live
+    /// retoken; moved by every revocation and by the admission that follows one.
+    pub(crate) fn grant_epoch(&self) -> u32 {
+        self.grant_epoch.load(Relaxed)
     }
     /// Token generation for THIS server — moved by [`Client::set_token`]; caches keyed on paths
     /// that embed the token compare this to know when to flush. Signature unchanged from the

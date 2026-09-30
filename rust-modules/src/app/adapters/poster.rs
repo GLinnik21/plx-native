@@ -44,6 +44,7 @@
 //! cheaper half of the per-frame identity scan, so it goes first.
 mod fan;
 mod refresh;
+mod trace;
 
 use crate::img;
 use crate::plex::ServerId;
@@ -176,6 +177,10 @@ struct Pslot {
     gen: c_uint,   // bumped on eviction; stale-decode guard
     cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
     token_gen: u32, // the grant that built this request (profile switches need not erase disk)
+    /// The IDENTITY the art was claimed under ([`crate::plex::Client::grant_epoch`]). What a hit
+    /// must match: a same-user retoken keeps it (and the slot is re-keyed to the fresh request),
+    /// a revocation — profile switch, sign-out — does not.
+    grant_epoch: u32,
     frame: c_uint, // last frame poster_get touched it (evict-protect)
     /// `P_RETRY` only: the app-clock tick (`app::clock::now`, ms) the next attempt may go at.
     /// `None` = parked by the worker and not yet scheduled — the next DRAW on the main thread
@@ -223,6 +228,7 @@ impl Pslot {
         gen: 0,
         cache_gen: 0,
         token_gen: 0,
+        grant_epoch: 0,
         frame: 0,
         retry_at: None,
         retry_wake_sent: false,
@@ -383,15 +389,36 @@ fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
     }
 }
 
-/// Does this slot hold the art `srv` was asked for under `key`?
-///
 /// The store's whole identity rule, extracted because it is the one thing a second server can
 /// break invisibly: with the key alone, server B's card is served from A's slot — same texture,
-/// wrong picture, and the wrong token on the fetch that filled it. The `u16` compare goes first
-/// because this runs for every slot of every probe of every visible tile, and it is the half that
-/// can reject without touching the [`PT_KEYLEN`]-byte array.
-fn slot_matches(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
-    s.state != P_EMPTY && s.srv == srv && key_bytes(s) == key
+/// wrong picture, and the wrong token on the fetch that filled it. The `srv` compare goes first
+/// because this runs for every slot of every probe of every visible tile.
+///
+/// Does `s` hold the same PICTURE `key` asks for — same server, same request once its credential
+/// is set aside? The token is part of the request bytes (a worker fetches exactly the key), but it
+/// is not part of what the server returns: two grants for one identity get the same pixels. So a
+/// resident slot answers a draw whose key differs only in `X-Plex-Token`, and [`lookup`] re-keys
+/// it; whether the IDENTITY behind that token still matches is [`Pslot::grant_epoch`]'s question.
+fn same_art(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
+    if s.state == P_EMPTY || s.srv != srv {
+        return false;
+    }
+    // One memcmp settles the common case (an unchanged credential); only a key that differs pays
+    // for the two token scans.
+    let held = key_bytes(s);
+    held == key || sans_token(held) == sans_token(key)
+}
+
+/// `key` without its trailing credential. [`crate::plex::Client::with_token`] appends
+/// `X-Plex-Token=` as the LAST parameter of every built request (the test pinning the token to the
+/// end of the key holds that); a percent-encoded `url=` value cannot contain a literal `=`, so the
+/// last occurrence is the parameter. A key with no token (a baked fan key) is returned whole.
+fn sans_token(key: &[u8]) -> &[u8] {
+    const TOKEN: &[u8] = b"X-Plex-Token=";
+    match key.windows(TOKEN.len()).rposition(|w| w == TOKEN) {
+        Some(i) if i > 0 && matches!(key[i - 1], b'&' | b'?') => &key[..i - 1],
+        _ => key,
+    }
 }
 
 struct Store {
@@ -495,6 +522,36 @@ static mut KEY_MEMO: Option<KeyMemo> = None;
 #[cfg(test)]
 fn reset_key_memo() {
     unsafe { *std::ptr::addr_of_mut!(KEY_MEMO) = None };
+}
+
+/// Does a poster that is RESIDENT for `sid` before `change` still answer a draw after it? Seeds
+/// one READY slot exactly as a finished claim leaves it, runs `change` (a registry event), then
+/// probes through the real [`built_key`] and [`lookup`] the way a draw does. Shared by the poster
+/// tests and the session owner's roster tests, which is why it is crate-visible.
+#[cfg(test)]
+pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce()) -> bool {
+    const SRC: &str = "/library/metadata/42/thumb";
+    reset_key_memo();
+    let before = built_key(sid, SRC, 2, 2, false).expect("a registered server builds a key").to_owned();
+    {
+        let c = crate::plex::client_for(sid).expect("a registered server");
+        let mut g = store();
+        g.slots = [Pslot::ZERO; PT_CAP];
+        let slot = &mut g.slots[0];
+        slot.srv = sid;
+        slot.cache_gen = crate::imgcache::generation();
+        slot.token_gen = c.token_gen();
+        slot.grant_epoch = c.grant_epoch();
+        set_key(slot, &before);
+        slot.state = P_READY;
+    }
+    change();
+    let hit = built_key(sid, SRC, 2, 2, false)
+        .map(|k| k.to_owned())
+        .is_some_and(|k| lookup(sid, &k, Touch::Draw).0 == Some(PosterKey(0)));
+    store().slots = [Pslot::ZERO; PT_CAP];
+    reset_key_memo();
+    hit
 }
 
 /// The built request path for `(srv, path, w, h, png)` — the store key — memoised. `None` for an
@@ -818,10 +875,30 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
     let mut g = store();
     let cache_gen = crate::imgcache::generation();
-    let token_gen = crate::plex::client_for(srv).map_or(0, |c| c.token_gen());
-    // hit?
+    let (token_gen, grant_epoch) = crate::plex::client_for(srv)
+        .map_or((0, 0), |c| (c.token_gen(), c.grant_epoch()));
+    // hit? Matched on the picture and the identity, not the token string: discovery re-registering
+    // a stored server under plex.tv's current grant for the same user moves `token_gen` (and the
+    // key's `X-Plex-Token`) but not the art — the owner's "every poster blinks when the server is
+    // reached" (imgtrace `cause=key_changed`, 2026-09-30).
     for i in 0..PT_CAP {
-        if g.slots[i].cache_gen == cache_gen && g.slots[i].token_gen == token_gen && slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
+        if g.slots[i].cache_gen == cache_gen && g.slots[i].grant_epoch == grant_epoch && same_art(&g.slots[i], srv, key_s.as_bytes()) {
+            // Same identity, refreshed credential: carry the fresh request so any later fetch of
+            // this slot (a re-arm after eviction, a retry) dials with the grant now in force.
+            let key_changed = key_bytes(&g.slots[i]) != key_s.as_bytes();
+            if g.slots[i].token_gen != token_gen || key_changed {
+                // A parked transient failure (a 401 under the stored token, typically) was the OLD
+                // credential's answer. Its backoff says nothing about the fresh grant: make the
+                // retry due now, so the P_RETRY branch below re-arms it on this draw — through the
+                // same card-motion gate every other re-arm passes — instead of after up to 30 s.
+                if g.slots[i].state == P_RETRY && key_changed {
+                    g.slots[i].attempts = 0;
+                    g.slots[i].retry_at = Some(crate::app::clock::now());
+                    g.slots[i].retry_wake_sent = false;
+                }
+                set_key(&mut g.slots[i], key_s);
+                g.slots[i].token_gen = token_gen;
+            }
             if touch == Touch::Draw {
                 g.clock = g.clock.wrapping_add(1);
                 let (c, f) = (g.clock, g.frame);
@@ -846,6 +923,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                         crate::ui::card_motion::deferred();
                         #[cfg(feature = "devtriggers")]
                         crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
+                        trace::outcome("declined_retry");
                         return (None, Warm::Known);
                     }
                     #[cfg(feature = "devtriggers")]
@@ -853,7 +931,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
+                    let gen = g.slots[i].gen;
                     drop(g);
+                    trace::claim(trace::current(), i, gen);
                     CV.notify_one();
                     return (None, Warm::Known);
                 }
@@ -886,6 +966,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     // enforce. It does not stop the cycle: under sustained pressure the key can be
                     // evicted and cooled down again the moment it lands, indefinitely — it only
                     // paces how often that cycle is allowed to turn.
+                    trace::outcome("evict_cooldown");
                     return (None, Warm::Known);
                 }
                 if decline {
@@ -894,6 +975,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
+                    trace::outcome("declined_evicted");
                     return (None, Warm::Known);
                 }
                 #[cfg(feature = "devtriggers")]
@@ -903,14 +985,27 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
+                let gen = g.slots[i].gen;
                 drop(g);
+                trace::claim(trace::current(), i, gen);
                 RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
                 log_residency();
                 CV.notify_one();
                 return (None, Warm::Known);
             }
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
+            trace::outcome(match g.slots[i].state { P_READY => "ready", P_WANT => "queued", P_LOADING => "loading", P_DECODED => "decoded", P_RETRY => "retry_wait", P_FAILED => "failed", _ => "other" });
             return (hit, Warm::Known);
+        }
+    }
+    // The same picture held under an older account epoch or identity: the hit loop above could not
+    // match it, so whatever this draw gets next — a claim, or a decline while the card moves — it
+    // lost that picture for THIS reason. Named here, before any early return, because the draw
+    // that reports the blink is usually a declined one (imgtrace printed `cause=unknown` for 18 of
+    // 19 tiles in the owner's revocation trace).
+    if trace::armed() {
+        if let Some(s) = g.slots.iter().find(|s| same_art(s, srv, key_s.as_bytes())) {
+            trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "grant_epoch" });
         }
     }
     // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
@@ -947,14 +1042,20 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         crate::ui::card_motion::deferred();
         #[cfg(feature = "devtriggers")]
         crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
+        trace::outcome("declined_new");
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
-        None => return (None, Warm::Full), // all visible: skip
+        None => { trace::outcome("store_full"); return (None, Warm::Full) } // all visible: skip
     };
     let (was_ready, old_px) = (g.slots[idx].state == P_READY, g.slots[idx].px);
+    if trace::armed() {
+        if g.slots[idx].state != P_EMPTY {
+            trace::lost(idx, g.slots[idx].gen, "recycled");
+        }
+    }
     let (use_, frame) = match touch {
         Touch::Draw => {
             g.clock = g.clock.wrapping_add(1);
@@ -972,6 +1073,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.gen = s.gen.wrapping_add(1);
         s.cache_gen = cache_gen;
         s.token_gen = token_gen;
+        s.grant_epoch = grant_epoch;
         set_key(s, key_s);
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
@@ -990,7 +1092,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.evict_cooldown_until = None;
         s.evict_wake_sent = false;
     }
+    let claimed_gen = g.slots[idx].gen;
     drop(g);
+    trace::claim(trace::current(), idx, claimed_gen);
     // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
     // the recycled slot, and pixels a worker decoded that nobody drained
     if was_ready {
@@ -1011,8 +1115,23 @@ static SOURCE: PosterSource = PosterSource;
 
 impl tex::Source for PosterSource {
     fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey> {
-        let srv = ServerId::from_raw(srv);
-        lookup(srv, built_key(srv, path, w, h, png)?, Touch::Draw).0
+        let sid = ServerId::from_raw(srv);
+        let key = built_key(sid, path, w, h, png)?;
+        if !trace::armed() {
+            return lookup(sid, key, Touch::Draw).0;
+        }
+        let id = trace::draw_id(srv, path, w, h, png);
+        let kid = trace::key_id(srv, key.as_bytes());
+        trace::set_current(id);
+        let hit = lookup(sid, key, Touch::Draw).0;
+        let gate = match crate::ui::card_motion::verdict() {
+            Some(crate::ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
+            Some(crate::ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
+            _ => trace::Gate::Open,
+        };
+        trace::probe(id, kid, hit.is_some_and(tex::resident), gate);
+        trace::set_current(0);
+        hit
     }
     /// The prefetch: start the fetch, take no key, take no LRU protection. Two deliberate
     /// differences from a draw's probe, and together they are why a prefetch can share a 64-slot
@@ -1023,7 +1142,12 @@ impl tex::Source for PosterSource {
     fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         let srv = ServerId::from_raw(srv);
         match built_key(srv, path, w, h, png) {
-            Some(k) => lookup(srv, k, Touch::Warm).1,
+            Some(k) => {
+                if trace::armed() { trace::set_current(trace::draw_id(srv.raw(), path, w, h, png)); }
+                let r = lookup(srv, k, Touch::Warm).1;
+                if trace::armed() { trace::set_current(0); }
+                r
+            }
             None => Warm::Known,
         }
     }
@@ -1045,6 +1169,7 @@ impl tex::Source for PosterSource {
             if matches!(s.state, P_READY | P_DECODED) {
                 s.state = P_EVICTED;
                 transitioned = true;
+                trace::lost(key.0 as usize, s.gen, if refused { "refused" } else { "evicted" });
                 // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
                 // (this key was evicted before, inside the thrash window) escalates the backoff
                 // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
@@ -1141,6 +1266,7 @@ fn store_idle() -> bool {
 /// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
 /// once-a-frame, screen-agnostic read of whether it is quiet.
 pub(crate) fn begin_frame() {
+    trace::begin_frame();
     let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
@@ -1166,6 +1292,7 @@ pub(crate) fn drain_decoded() {
             let s = &mut g.slots[i];
             let (px, w, h) = (s.px, s.pw, s.ph);
             s.px = 0;
+            trace::handoff(i, s.gen);
             let current = s.cache_gen == crate::imgcache::generation();
             // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
             // A brief double charge is safe; a gap would let both workers over-admit decodes.
@@ -1380,6 +1507,8 @@ pub(crate) fn log_cache_stats() {
 /// was stale, and whether a failure is one that can change.
 struct Loaded<T> {
     art: Option<T>,
+    /// The art came from the disk tier (a hit that decoded), not the network.
+    from_disk: bool,
     stale: Option<crate::imgcache::DiskKey>,
     transient: bool,
 }
@@ -1394,7 +1523,7 @@ fn load_art<T>(
     cache_gen: u64,
     mut decode: impl FnMut(&[u8]) -> Option<T>,
 ) -> Loaded<T> {
-    let mut out = Loaded { art: None, stale: None, transient: false };
+    let mut out = Loaded { art: None, from_disk: false, stale: None, transient: false };
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
@@ -1405,6 +1534,7 @@ fn load_art<T>(
             match decode(&cached.bytes) {
                 Some(art) => {
                     out.art = Some(art);
+                    out.from_disk = true;
                     if cached.stale {
                         out.stale = Some(k.clone());
                     }
@@ -1554,6 +1684,7 @@ fn poster_worker() {
             s.state = P_LOADING;
             (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen)
         };
+        trace::worker_start(idx, gen);
         let (mut w, mut h) = (0, 0);
         let mut px = std::ptr::null_mut();
         let mut stale = None;
@@ -1583,6 +1714,7 @@ fn poster_worker() {
                 if let Some((p, dw, dh)) = loaded.art {
                     (px, w, h) = (p, dw, dh);
                 }
+                trace::disk(idx, gen, if loaded.from_disk { "hit" } else { "net" });
                 stale = loaded.stale.map(|k| (client, k));
                 transient = loaded.transient;
             }
@@ -1601,10 +1733,12 @@ fn poster_worker() {
                     s.pw = w;
                     s.ph = h;
                     s.state = P_DECODED;
+                    trace::decoded(idx, gen);
                     true
                 } else {
                     if transient && cache_gen == crate::imgcache::generation() { park_retry(s); }
                     else { s.state = P_FAILED; }
+                    trace::lost(idx, gen, "failed");
                     false
                 }
             } else { false }
@@ -2031,6 +2165,81 @@ mod tests {
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
+    /// **Blink A** (owner trace, 2026-09-30: every on-screen poster `HIDDEN … cause=key_changed`
+    /// the frame `auth: reached "…" (ours)` landed). A stored-session boot registers the owned
+    /// server with the token it saved; discovery then reaches the SAME server for the SAME user and
+    /// re-registers it with plex.tv's current grant. That is a credential refresh, not a new
+    /// identity: the picture already on screen is the same bytes and must stay resident.
+    #[test]
+    fn discovery_retokening_the_stored_server_keeps_its_resident_art() {
+        let (_fresh, sid, tok) = one_server();
+        // A different grant string for the same user, and the byte-identical one: both are the
+        // same identity, and neither may cost a tile its texture.
+        for grant in ["tok-plex-tv-grant-for-the-same-user", tok] {
+            let kept = resident_art_survives_for_test(sid, || {
+                let again = crate::plex::register_for_test(
+                    "poster-test", "127.0.0.1", 32400, grant, "cid-poster-test");
+                assert_eq!(again, sid, "discovery must reuse the stored server's slot");
+            });
+            assert!(kept, "re-registering the same server for the same user blanked its art ({grant})");
+        }
+    }
+
+    /// A tile whose fetch under the STORED token was answered transiently (a 401 is transient, see
+    /// `transient_status`) sits in `P_RETRY` with a grown backoff. When the same user's fresh grant
+    /// re-keys that slot, the backoff belongs to the credential that failed, not to the new one:
+    /// the draw that finds it must fetch again at once, not wait out up to 30 s.
+    #[test]
+    fn a_retokened_retry_slot_fetches_with_the_fresh_grant_at_once() {
+        let (_fresh, sid, _tok) = one_server();
+        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        let src = "/library/metadata/42/thumb";
+        let stale = key_for(sid, src, 2, 2, 0);
+        {
+            let c = crate::plex::client_for(sid).unwrap();
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = c.token_gen();
+            slot.grant_epoch = c.grant_epoch();
+            set_key(slot, &stale);
+            slot.state = P_RETRY;
+            slot.attempts = 5;
+            slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
+        }
+        let again = crate::plex::register_for_test(
+            "poster-test", "127.0.0.1", 32400, "tok-plex-tv-grant-for-the-same-user", "cid-poster-test");
+        assert_eq!(again, sid);
+        let fresh = key_for(sid, src, 2, 2, 0);
+        assert_ne!(fresh, stale);
+        lookup(sid, &fresh, Touch::Draw);
+        {
+            let g = store();
+            let s = &g.slots[0];
+            assert_eq!(s.state, P_WANT, "the fresh grant waited out the old grant's backoff");
+            assert_eq!(s.attempts, 0, "the old grant's failures are not the new one's");
+            assert_eq!(key_bytes(s), fresh.as_bytes());
+        }
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The line [`discovery_retokening_the_stored_server_keeps_its_resident_art`] must not blur:
+    /// a revocation (profile switch, sign-out) is a change of WHO, and art claimed under the old
+    /// identity must not answer a draw under the new one.
+    #[test]
+    fn a_revocation_still_retires_resident_art() {
+        let (_fresh, sid, tok) = one_server();
+        let kept = resident_art_survives_for_test(sid, || {
+            crate::plex::revoke_for_profile_switch();
+            let again = crate::plex::register_for_test(
+                "poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
+            assert_eq!(again, sid);
+        });
+        assert!(!kept, "a profile switch must not keep the previous identity's resident art");
+    }
+
     /// A rejected decode used to leave the source in READY while the cache remembered the key as
     /// failed. No later probe could re-arm either half, so the tile drew its skeleton forever.
     #[test]
@@ -2046,6 +2255,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_DECODED;
             slot.px = 0;
@@ -2101,6 +2311,7 @@ mod tests {
             slot.srv = srv;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
             set_key(slot, &path);
         }
 
@@ -2238,6 +2449,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             g.quit = false;
             let gen = crate::plex::client_for(srv).unwrap().token_gen();
+            let epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
             let cache_gen = crate::imgcache::generation();
             for (i, path) in [&path0, &path1].into_iter().enumerate() {
                 let slot = &mut g.slots[i];
@@ -2245,6 +2457,7 @@ mod tests {
                 slot.srv = srv;
                 slot.cache_gen = cache_gen;
                 slot.token_gen = gen;
+                slot.grant_epoch = epoch;
                 set_key(slot, path);
             }
         }
@@ -2382,6 +2595,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
@@ -2423,6 +2637,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             // No eviction history, so the cooldown gate would admit this re-arm. That isolates
@@ -2467,6 +2682,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.attempts = 1;
@@ -2517,6 +2733,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2565,6 +2782,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2655,6 +2873,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
@@ -2706,6 +2925,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2748,6 +2968,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2798,6 +3019,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2868,6 +3090,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
             slot.evicted_at = Some(0);
@@ -3012,6 +3235,7 @@ mod tests {
             slot.srv = sid;
             slot.cache_gen = crate::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -3283,18 +3507,18 @@ mod tests {
         set_key(&mut s, KEY);
 
         assert!(
-            slot_matches(&s, a, KEY.as_bytes()),
+            same_art(&s, a, KEY.as_bytes()),
             "the server that asked for it"
         );
         assert!(
-            !slot_matches(&s, b, KEY.as_bytes()),
+            !same_art(&s, b, KEY.as_bytes()),
             "the same path on another server is another slot"
         );
         assert!(
-            !slot_matches(&s, ServerId::UNSET, KEY.as_bytes()),
+            !same_art(&s, ServerId::UNSET, KEY.as_bytes()),
             "and an unknown server matches nothing"
         );
-        assert!(!slot_matches(
+        assert!(!same_art(
             &s,
             a,
             b"/photo/:/transcode?width=250&height=375&minSize=1&url=%2Fother"
@@ -3306,7 +3530,16 @@ mod tests {
             state: P_EMPTY,
             ..s
         };
-        assert!(!slot_matches(&evicted, a, KEY.as_bytes()));
+        assert!(!same_art(&evicted, a, KEY.as_bytes()));
+
+        // The credential is not the picture: the same request under a refreshed grant is the same
+        // art (whether the identity behind it still matches is `grant_epoch`'s question), and a
+        // token never makes two different pictures one.
+        set_key(&mut s, &format!("{KEY}&X-Plex-Token=old-grant"));
+        assert!(same_art(&s, a, format!("{KEY}&X-Plex-Token=fresh-grant").as_bytes()));
+        assert!(!same_art(&s, b, format!("{KEY}&X-Plex-Token=fresh-grant").as_bytes()));
+        assert!(!same_art(&s, a,
+            b"/photo/:/transcode?width=250&height=375&minSize=1&url=%2Fother&X-Plex-Token=old-grant"));
     }
 
     /// The memo's twin of the rule above, plus the generation half. Both are about serving a path

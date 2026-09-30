@@ -204,6 +204,11 @@ pub(crate) fn pms_origin() -> Option<crate::plex::Origin> {
 
 crate::dev::latched_flag! { pub(crate) fn imagecache_stats_armed = "imagecache-stats"; }
 crate::dev::latched_flag! {
+    /// `/tmp/plxnative-imgtrace` — per-image poster timeline and every picture-lost event
+    /// (`app/adapters/poster/trace.rs`). Absent in shipping builds.
+    pub(crate) fn imgtrace_armed = "imgtrace";
+}
+crate::dev::latched_flag! {
     /// RAM-only control leg for cache performance comparisons; absent in shipping builds.
     pub(crate) fn imagecache_bypass_armed = "imagecache-bypass";
 }

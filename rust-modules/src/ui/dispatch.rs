@@ -1082,7 +1082,7 @@ where
         let why = self.present.why();
         report.underlay_moving = self.present.page_moving();
         self.page_quiescent = !report.underlay_moving
-            && !crate::ui::idle::page_moving()
+            && !crate::ui::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         report.video_only = self.present.video_plane()
             && !self.present.changed()
@@ -1262,7 +1262,7 @@ where
         let page_quiescent = self.page_quiescent
             && !crate::text::prewarm_pending()
             && !self.present.page_moving()
-            && !crate::ui::idle::page_moving()
+            && !crate::ui::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         let mut image = self.page_image;
         let paint = if eligible {
