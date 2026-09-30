@@ -89,7 +89,7 @@ fn a_failed_status_verdict_is_never_the_danger_token() {
     assert_eq!(StatusOverlay::verdict_face(StatusKind::Working).2, theme::TEXT_SECONDARY);
 }
 
-/// A PAGE-placed Failed read-out hangs its verdict from `FULL_ANCHOR_TOP` (372, the player's
+/// A PAGE-placed Failed read-out hangs its verdict from `FULL_ANCHOR_TOP` (540, the player's
 /// glyph line) in screen space whatever frame the caller held, and stacks the reason and the row
 /// under it — the row `space::LG` under the reason's two-line slot, or under the verdict when there
 /// is no reason — centred on the panel. A bounded one and a Working one still centre in their
@@ -133,11 +133,11 @@ fn a_full_frame_failed_readout_hangs_from_the_top_anchor() {
 /// The 112px glyph a page-placed `Failed` read-out draws above its verdict (spec "1A") sits
 /// exactly [`StatusOverlay::GLYPH_GAP`] above [`StatusOverlay::FULL_ANCHOR_TOP`], centred on the
 /// PANEL (`Rect::FULL`), never the caller's frame — same rule as the verdict/row centring above.
-/// On the shared 1920×1080 screen space that is `x=1920/2-56=904, y=372-44-112=216, w=h=112`.
+/// On the shared 1920×1080 screen space that is `x=1920/2-56=904, y=540-44-112=384, w=h=112`.
 /// A non-`Failed` kind, and a `Failed` one that never called `.page()`, draw no glyph at all.
 #[test]
 fn the_page_glyph_hangs_above_the_anchor_and_only_a_page_placed_failure_draws_one() {
-    let want = Rect::new(904.0, 216.0, 112.0, 112.0);
+    let want = Rect::new(904.0, 384.0, 112.0, 112.0);
     let content = Rect::new(96.0, 232.0, 1728.0, 848.0);
     for frame in [Rect::FULL, content] {
         let o = StatusOverlay::new(frame, c"Couldn't sign in", StatusKind::Failed)
@@ -171,14 +171,14 @@ fn glyph_ceiling_scales_the_glyph_down_and_omits_it_below_the_minimum_size() {
     let natural_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
 
     // A ceiling far above the natural glyph box has no effect at all.
-    let far = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(150.0);
+    let far = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(natural_top - 66.0);
     let rect = far.glyph_frame().expect("a distant ceiling must not omit the glyph");
     assert_eq!((rect.y, rect.h), (natural_top, StatusOverlay::GLYPH_SIZE), "no shrink when there is room");
 
-    // A tight-but-survivable ceiling (the Library's own measured tab-strip bottom, 254) shrinks
-    // the box just enough to clear it, keeping the gap/size proportion and never moving the
-    // verdict.
-    let ceiling = 254.0_f32;
+    // A tight-but-survivable ceiling (38px into the natural box — the depth the Library's tab strip
+    // reached back when the anchor was 372) shrinks the box just enough to clear it, keeping the
+    // gap/size proportion and never moving the verdict.
+    let ceiling = natural_top + 38.0;
     let tight = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(ceiling);
     let rect = tight.glyph_frame().expect("this ceiling leaves enough room for a shrunk glyph");
     assert!(rect.h < StatusOverlay::GLYPH_SIZE, "a tight ceiling must actually shrink the box");
@@ -200,17 +200,17 @@ fn glyph_ceiling_scales_the_glyph_down_and_omits_it_below_the_minimum_size() {
     assert!((rect.h / shrunk_gap - natural_ratio).abs() < 0.02, "size and gap must shrink together, keeping proportion");
     assert!(rect.y + rect.h <= StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_CEILING_MARGIN.min(StatusOverlay::GLYPH_GAP),
         "the shrunk box must still sit above the verdict's anchor");
-    assert_eq!(StatusOverlay::FULL_ANCHOR_TOP, 372.0, "FULL_ANCHOR_TOP itself never moves for a ceiling caller");
+    assert_eq!(StatusOverlay::FULL_ANCHOR_TOP, 540.0, "FULL_ANCHOR_TOP itself never moves for a ceiling caller");
 
     // A ceiling tight enough that the scaled size would fall below `GLYPH_MIN_SIZE` omits the
     // glyph entirely rather than draw a blurry thumbnail.
-    let tiny = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(310.0);
+    let tiny = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(natural_top + 94.0);
     assert!(tiny.glyph_frame().is_none(), "a ceiling this tight must omit the glyph rather than shrink it further");
 }
 
-/// **At the Library's ACTUAL measured ceiling (254 — its tab strip's bottom), the shrunk glyph's
-/// size must rasterize 1:1, not get upscaled from a rounded texture.** The unquantized factor at
-/// this ceiling is `112 * 106/156 ≈ 76.10` — `icons.rs::tex_for` rounds `Rect`'s `w.max(h)` to a
+/// **At a ceiling 38px into the natural box (the depth the Library's 254 tab-strip bottom reached
+/// while the anchor was 372), the shrunk glyph's size must rasterize 1:1, not get upscaled from a
+/// rounded texture.** The unquantized factor at this ceiling is `112 * 106/156 ≈ 76.10` — `icons.rs::tex_for` rounds `Rect`'s `w.max(h)` to a
 /// whole pixel before rasterizing (`draw`'s `r.w.max(r.h).round()`) but, before this test, drew
 /// the fractional 76.10-wide RECT itself, forcing GL to rescale a 76px texture onto a 76.10px
 /// quad — soft, at exactly the shrink this task exists to keep crisp. `glyph_rect` must hand back
@@ -220,7 +220,8 @@ fn glyph_ceiling_scales_the_glyph_down_and_omits_it_below_the_minimum_size() {
 #[test]
 fn the_librarys_real_ceiling_shrinks_the_glyph_to_a_size_that_rasterizes_1to1() {
     let icon = crate::ui::icons::Icon::ServerBadgeMinus;
-    let ceiling = 254.0_f32; // CONTENT_TOP (194) + StatusOverlay::CTRL_H (60), library/status.rs
+    let natural_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
+    let ceiling = natural_top + 38.0;
     let overlay = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
         .page(icon).glyph_ceiling(ceiling);
     let rect = overlay.glyph_frame().expect("this ceiling leaves room for a shrunk glyph");

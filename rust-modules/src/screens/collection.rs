@@ -333,7 +333,7 @@ impl CollectionScreen {
 
     /// The page's read-out, one per non-Ready status. Loading and Empty are quiet answers centred
     /// in the grid's region (C4a); an unavailable collection (refused, not shared with this
-    /// profile, or gone) fills the page with the shared `Failed` verdict and its reason at the 372
+    /// profile, or gone) fills the page with the shared `Failed` verdict and its reason at the 540
     /// anchor and no header (C4b) — BACK is the way out, so it offers no action; a transport
     /// failure is the page-placed `Failed` read-out every page shares (`StatusOverlay::page`,
     /// `ui/CLAUDE.md` rule 4) — Home's and the Library's untyped "can't reach" verdict, so their

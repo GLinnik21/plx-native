@@ -946,7 +946,7 @@ pub(crate) fn draw_readout(
 // **The shared page read-out, not a layout of its own.** A failed playback is a page that failed,
 // exactly as Home's, a Library section's and the sign-in read-out are, so it is the same
 // component at the same placement: `StatusOverlay::page` hangs the verdict from
-// `FULL_ANCHOR_TOP` (372) with its 112 px glyph 44 px above it, the reason in the reserved
+// `FULL_ANCHOR_TOP` (540) with its 112 px glyph 44 px above it, the reason in the reserved
 // two-line slot, and a row of real controls stacked directly under it. Until 2026-09-28 this was
 // a bespoke composition (a 96 px glyph, a primary-ink verdict, three centred prose lines and key
 // caps drawn into the sentences, a support line at the same weight as the reason); the owner's
@@ -965,7 +965,9 @@ pub(crate) fn draw_readout(
 const PLEX_PASS: &str = "Plex Pass";
 
 /// The support line's cap top this far above the canvas bottom — inside the safe area's
-/// bottom margin band's upper edge, clear of the row by construction (the row ends near y 670).
+/// bottom margin band's upper edge, clear of the row by construction, and
+/// `the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band` fails if a taller row or
+/// note ever meets it.
 const FOOTER_TOP: f32 = SCR_H - crate::ui::consts::MARGIN_Y - theme::space::XL;
 
 /// Everything the failure read-out draws, resolved once from the live failure. The draw, the
