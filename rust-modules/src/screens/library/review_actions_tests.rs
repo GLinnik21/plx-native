@@ -541,11 +541,11 @@ fn rapid_filter_activations_invert_the_pending_desired_value() {
     let cx = fixture.cx(None);
     menu.refresh(&cx);
     let elem = menu
-        .rows
-        .iter()
-        .find(|row| matches!(row.action, Action::Edit(QueryEdit::Unwatched(_))))
+        .form
+        .index_of(&"unwatched".to_string())
+        .and_then(|i| menu.form.key_at(i))
         .unwrap()
-        .key;
+        .0;
     let mut output = Vec::new();
     let mut present = crate::ui::present::Present::new();
     for _ in 0..2 {

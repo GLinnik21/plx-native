@@ -25,7 +25,9 @@
 //! projections rather than borrows of its statics).
 use crate::browse::{SourceState, SrcGroup};
 use crate::plex::probe::Location;
+use crate::ui::form::{Form, FormId, FormSection, RowKey, RowKind};
 use crate::ui::table::{Row, Section};
+use std::convert::Infallible;
 
 /// The two levels of the Sources list — **one per surface now, and not swappable from either.**
 /// They were the two halves of one panel, exchanged by segmented pills at its top; see the module
@@ -49,16 +51,31 @@ pub(crate) enum Level {
     OnHome,
 }
 
-/// What a row of the Sources list does. Built beside the rows, indexed by the same global row
-/// index the `TableView` reports — including the separator, which does nothing and can never be
-/// focused, but still occupies an index.
+/// What a row of the Sources list IS — and so what pressing it does: its identity in the
+/// [`SrcForm`] the list is declared as. The separator above the roster-refresh row is an inert
+/// slot ([`FormSection::separator`]): it takes a layout index and has no identity, so it can never
+/// be focused or pressed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SrcAction {
-    None,
+pub(crate) enum SrcTarget {
     /// browse (Browse level) or favourite (OnHome level) this section
     Library(usize),
     Recheck,
 }
+
+/// The hand-assigned focus key of each row: a library's key is its directory section index (the
+/// section, not the row's position in a group-ordered list, so a server's libraries landing later
+/// moves no other row's key); the roster refresh sits far above any section index.
+impl FormId for SrcTarget {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            SrcTarget::Library(section) => *section as u32,
+            SrcTarget::Recheck => 0x0100_0000,
+        })
+    }
+}
+
+/// The Sources list as a form: an item's action IS its identity.
+pub(crate) type SrcForm = Form<SrcTarget, SrcTarget, Infallible>;
 
 /// Does the list end with the roster-refresh row?
 ///
@@ -207,16 +224,15 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
 /// the word `On`/`Off` at the trailing edge, and no ticks. A mark says where you are, a word says
 /// what is set, and no row is allowed to say both.
 ///
-/// Returns the sections beside one [`SrcAction`] per global row index — the separator included,
-/// which does nothing but still occupies an index.
-pub(crate) fn sections(
+/// Returns the list as a [`SrcForm`]: every library row declared with its [`SrcTarget`], and the
+/// separator above the roster-refresh row an inert slot.
+pub(crate) fn form(
     level: Level,
     groups: &[crate::browse::SrcGroup],
     rows: &[crate::browse::SrcRow],
     tail: Tail,
-) -> (Vec<Section>, Vec<SrcAction>) {
-    let mut out: Vec<Section> = Vec::new();
-    let mut acts: Vec<SrcAction> = Vec::new();
+) -> SrcForm {
+    let mut out: Vec<FormSection<SrcTarget, SrcTarget, Infallible>> = Vec::new();
     for (gi, g) in groups.iter().enumerate() {
         let mine = rows.iter().filter(|r| r.src == gi);
         // a server whose libraries we have never learned contributes no group at all — a header
@@ -231,60 +247,73 @@ pub(crate) fn sections(
         // same register as the rows' own `On`/`Off`.
         let sec = Section::new(g.name.clone())
             .server_header();
-        let mut sec = header_accessory(sec, g).dim(!usable(g));
+        let head = header_accessory(sec, g).dim(!usable(g));
+        let mut sec = FormSection::from_head(head);
         for r in mine {
             let mut row = Row::new(r.title.clone()).server_label();
-            row = match level {
-                Level::Browse => row.checked(r.current).detail(r.count_line.clone()),
-                Level::OnHome => row
-                    .toggle(r.pinned)
-                    // the LAST pinned library: the value dims, the label keeps live ink, and the
-                    // sub-line states the rule. Not the whole row — dim means unavailable, and this
-                    // is the library that works.
-                    .value_dim(r.last_pinned)
-                    .detail(if r.last_pinned {
-                        crate::i18n::msg::widgets_source_needs_library().to_string()
-                    } else {
-                        r.count_line.clone()
-                    }),
+            let kind = match level {
+                Level::Browse => {
+                    row = row.checked(r.current).detail(r.count_line.clone());
+                    RowKind::Choice
+                }
+                Level::OnHome => {
+                    row = row
+                        .toggle(r.pinned)
+                        // the LAST pinned library: the value dims, the label keeps live ink, and the
+                        // sub-line states the rule. Not the whole row — dim means unavailable, and this
+                        // is the library that works.
+                        .value_dim(r.last_pinned)
+                        .detail(if r.last_pinned {
+                            crate::i18n::msg::widgets_source_needs_library().to_string()
+                        } else {
+                            r.count_line.clone()
+                        });
+                    RowKind::Toggle
+                }
             };
-            acts.push(SrcAction::Library(r.section));
-            sec = sec.row(row);
+            let target = SrcTarget::Library(r.section);
+            sec = sec.item(target, kind, target, row);
         }
         out.push(sec);
     }
     // …and the one row that is not a library, last, under a separator. It rides BOTH levels, which
     // is what keeps their row counts — and therefore the panel's height — identical.
-    if tail == Tail::None {
-        return (out, acts);
+    if tail == Tail::Recheck {
+        if let Some(last) = out.pop() {
+            // no leading glyph, deliberately: on the Browse level that column carries the picker's
+            // tick, and an action mark in it would be a second grammar for one column
+            out.push(last.separator().item(
+                SrcTarget::Recheck,
+                RowKind::Button,
+                SrcTarget::Recheck,
+                Row::new(crate::i18n::msg::widgets_source_new_shares()),
+            ));
+        }
     }
-    if let Some(last) = out.last_mut() {
-        last.rows.push(Row::separator());
-        acts.push(SrcAction::None);
-        // no leading glyph, deliberately: on the Browse level that column carries the picker's
-        // tick, and an action mark in it would be a second grammar for one column
-        last.rows.push(Row::new(crate::i18n::msg::widgets_source_new_shares()));
-        acts.push(SrcAction::Recheck);
-    }
-    (out, acts)
-}
-
-/// Where the cursor sits. On OPEN it lands on the library you are browsing; on a rebuild — a level
-/// swap, a pin flip, a source's libraries landing — it HOLDS, because the two levels list the same
-/// rows in the same order and the design's whole claim about the swap is that nothing moves.
-pub(crate) fn sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
-    keep.unwrap_or_else(|| {
-        rows.iter()
-            .position(|r| r.current)
-            .map(|i| i as i32)
-            .unwrap_or(0)
-    })
+    out.into_iter().fold(Form::new(), Form::section)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::browse::{SourceState, SrcGroup};
+    use crate::ui::form::FormTable;
+
+    /// The built list as a table sees it: the drawn sections, and the target of every FOCUSABLE row
+    /// in layout order (separators and notes have none).
+    fn sections(
+        level: Level,
+        groups: &[SrcGroup],
+        rows: &[crate::browse::SrcRow],
+        tail: Tail,
+    ) -> (Vec<Section>, Vec<SrcTarget>) {
+        let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::screens::registry::BAND);
+        built.set(form(level, groups, rows, tail), None);
+        let targets = (0..built.table.n_rows() as usize)
+            .filter_map(|i| built.id_at(i).copied())
+            .collect();
+        (std::mem::take(&mut built.table.sections), targets)
+    }
 
     fn group(state: SourceState, tier: Option<Location>, handle: &str) -> SrcGroup {
         SrcGroup {

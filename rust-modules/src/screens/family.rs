@@ -11,7 +11,6 @@
 
 use crate::ui::machine::{Canon, Chrome, Cx, Host, LogicalState, ScreenId};
 use crate::ui::screen::ScreenArg;
-use crate::ui::table::TableView;
 use crate::ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
@@ -258,21 +257,10 @@ pub(crate) fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, I
     }
 }
 
-/// Seat a table on the engine's focus: a row key parks the selection on that row and lights the
-/// list; a key elsewhere (the band, the alert) dims it. Every page in the family NOT yet on a
-/// `FormTable` answers `FocusMoved` with this (elem = row index), so the drawn selection and the
-/// engine never disagree; a form page answers with [`form_focus`].
-pub(crate) fn table_focus(table: &mut TableView, elem: u32) {
-    if elem < super::registry::BAND && (elem as i32) < table.n_rows() {
-        table.sel = elem as i32;
-        table.list_focused = true;
-    } else {
-        table.list_focused = false;
-    }
-}
-
-/// [`table_focus`] for a form-backed page: the elem is a row's [`RowKey`] number, not its index.
-/// A key the form does not know (the band, the alert, a row that left) dims the list.
+/// Seat a form-backed page's table on the engine's focus: a row key parks the selection on that row
+/// and lights the list; the elem is a row's [`RowKey`] number, not its index. A key the form does
+/// not know (the band, the alert, a row that left) dims the list. Every page answers `FocusMoved`
+/// with this, so the drawn selection and the engine never disagree.
 pub(crate) fn form_focus<Id, A, Dest>(form: &mut FormTable<Id, A, Dest>, elem: u32)
 where
     Id: PartialEq + Clone,
@@ -352,59 +340,6 @@ pub(crate) fn palette() -> ControlPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::table::{Row, Section};
-    // Imported by its ABSOLUTE path, and that is the whole point. The module body above reaches
-    // the registry as `super::registry`, because there `super` is `crate::screens` — but inside
-    // this nested `mod tests` the same spelling means `family::registry`, which does not exist.
-    // Copying a working path down one module level is how that breaks, and no gate but the test
-    // build can see it, so name the module once here and let every test below say `registry::`.
-    use crate::screens::registry;
-
-    fn table_with_rows(n: i32) -> TableView {
-        let mut t = TableView::new();
-        let mut s = Section::new("Section");
-        for i in 0..n {
-            s = s.row(Row::new(format!("Row {i}")));
-        }
-        t.set_sections(vec![s], 0, false);
-        t
-    }
-
-    /// A row key inside the table's own range parks the selection there and lights the list —
-    /// every page in the family answers `FocusMoved` this way, so this is the one function that
-    /// decides whether a page's drawn selection ever disagrees with the engine's own idea of
-    /// where focus is.
-    #[test]
-    fn a_row_key_inside_the_table_seats_and_lights_it() {
-        let mut t = table_with_rows(3);
-        table_focus(&mut t, 2);
-        assert_eq!(t.sel, 2);
-        assert!(t.list_focused);
-    }
-
-    /// A key at or above [`registry::BAND`] is a band (or alert) control, never a row —
-    /// the table must dim rather than light some row it does not actually have.
-    #[test]
-    fn a_band_key_dims_the_table_without_touching_its_selection() {
-        let mut t = table_with_rows(3);
-        t.sel = 1;
-        t.list_focused = true;
-        table_focus(&mut t, registry::BAND);
-        assert!(!t.list_focused, "a band element must not read as a lit row");
-        assert_eq!(t.sel, 1, "the row selection itself is untouched — only the light changes");
-    }
-
-    /// An element past the table's own row COUNT is dimmed too, even though its numeric value is
-    /// below [`registry::BAND`] — a page whose row set just shrank (Favourite libraries
-    /// after the last favourite is removed, say) must not light a row it no longer has rather
-    /// than crashing on an out-of-range `sel`.
-    #[test]
-    fn a_key_below_the_band_but_past_the_row_count_still_dims() {
-        let mut t = table_with_rows(2);
-        table_focus(&mut t, 5);
-        assert!(!t.list_focused);
-    }
-
     /// [`super::SettingsPage`]'s `ScreenId`s are what a `NavStack` uses to decide whether two
     /// requests name "the same instance" (`same_instance` is bare equality here, but `NavOp::Root`
     /// elsewhere in the library also keys eviction bookkeeping off `id()`) — two variants sharing

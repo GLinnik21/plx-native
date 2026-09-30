@@ -23,13 +23,13 @@ use crate::ui::machine::{
 use crate::ui::route_screen::RouteLayout;
 use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
-use crate::ui::source_list::{self, Level, SrcAction, Tail};
-use crate::ui::table::TableView;
+use crate::ui::form::{FormTable, RowKey};
+use crate::ui::source_list::{self, Level, SrcTarget, Tail};
 use crate::ui::table_screen::{BandPart, Header, TableScreen};
 use crate::ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, View};
 
-use super::family::{palette, table_focus, BAND_GROUP, TABLE_GROUP};
+use super::family::{form_focus, palette, BAND_GROUP, TABLE_GROUP};
 use super::registry::{band_index, word, AppFx, DirectoryLike, LoopReq};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,8 +52,10 @@ impl ActionKind {
 pub(crate) struct OnboardScreen {
     entry: EntryId,
     settings: bool,
-    table: TableView,
-    acts: Vec<SrcAction>,
+    /// The Favorite libraries list and what each row is, declared together
+    /// ([`source_list::form`]) — a press resolves by the row's [`SrcTarget`] identity, never by a
+    /// position.
+    form: FormTable<SrcTarget, SrcTarget, std::convert::Infallible>,
     table_gen: u32,
     table_epoch: u32,
     entry_pins: Vec<(usize, bool)>,
@@ -161,8 +163,7 @@ impl OnboardScreen {
         let mut s = Self {
             entry,
             settings,
-            table: TableView::new(),
-            acts: Vec::new(),
+            form: FormTable::new(super::registry::BAND),
             table_gen: u32::MAX,
             table_epoch: directory.epoch().unwrap_or(0),
             entry_pins: base.clone(),
@@ -181,7 +182,7 @@ impl OnboardScreen {
             band: false, // ditto
         };
         s.rebuild(false, directory);
-        s.table.list_focused = settings;
+        s.form.table.list_focused = settings;
         s
     }
 
@@ -247,12 +248,17 @@ impl OnboardScreen {
         let gen = directory.source_list_gen();
         let groups: Vec<_> = directory.sources().iter().map(|(_, group)| group.clone()).collect();
         let rows = self.draft_rows(directory);
-        let (secs, acts) = source_list::sections(Level::OnHome, &groups, &rows, Tail::None);
-        let sel = if keep { self.table.sel } else { 0 };
+        let form = source_list::form(Level::OnHome, &groups, &rows, Tail::None);
         self.table_gen = gen;
-        self.acts = acts;
-        self.table.compact = false;
-        self.table.set_sections(secs, sel, keep);
+        self.form.table.compact = false;
+        if keep {
+            // a rebuild under the cursor (a press, a roster landing) holds the focused library by
+            // identity and lets the pill glide rather than snap
+            let held = self.form.selected_id().copied();
+            self.form.set_sliding(form, held.as_ref());
+        } else {
+            self.form.set(form, None);
+        }
         self.state.draft = self.draft.clone();
         // `draft_rows()` just resynced `self.draft`/`self.entry_pins` against whatever the roster
         // looks like now, so `dirty()` below reads the SAME state `has_band()` would have read
@@ -334,9 +340,8 @@ impl OnboardScreen {
         body_copy_for(&who)
     }
 
-    fn toggle_row(&mut self, row: i32, directory: DirectoryView<'_>) {
-        let act = usize::try_from(row).ok().and_then(|i| self.acts.get(i)).copied();
-        if let Some(SrcAction::Library(section)) = act {
+    fn toggle_row(&mut self, target: SrcTarget, directory: DirectoryView<'_>) {
+        if let SrcTarget::Library(section) = target {
             let Some(idx) = self.draft.iter().position(|(s, _)| *s == section) else {
                 return;
             };
@@ -438,7 +443,8 @@ struct OnboardView<'a> {
 impl<'a> OnboardView<'a> {
     fn screen(&'a self) -> TableScreen<'a> {
         let layout = RouteLayout::screen();
-        TableScreen::new(Header::new(layout, None, "", ""), &self.screen.table, TABLE_GROUP, self.screen.entry)
+        TableScreen::new(Header::new(layout, None, "", ""), &self.screen.form.table, TABLE_GROUP, self.screen.entry)
+            .keyed(&self.screen.form)
             .uncommitted(self.screen.settings && self.screen.dirty())
             .with_band(BandPart {
                 layout,
@@ -512,8 +518,8 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 }
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
-                self.table.update(dt, RouteLayout::screen().sectioned_table().h);
-                if self.table.n_rows() == 0 {
+                self.form.table.update(dt, RouteLayout::screen().sectioned_table().h);
+                if self.form.table.n_rows() == 0 {
                     self.phase_ms = self.phase_clock.advance(*t, &mut fx.present()); // the spinner
                 }
                 Handled::Yes
@@ -526,12 +532,15 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                table_focus(&mut self.table, to.elem);
+                form_focus(&mut self.form, to.elem);
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
                 if band_index(*e).is_none() {
-                    self.toggle_row(*e as i32, H::directory(cx));
+                    let target = self.form.index_of_key(RowKey(*e)).and_then(|i| self.form.id_at(i)).copied();
+                    if let Some(target) = target {
+                        self.toggle_row(target, H::directory(cx));
+                    }
                     fx.invalidate(crate::ui::present::Provenance::Input);
                 }
                 Handled::Yes
@@ -730,7 +739,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         };
         Part::<H>::draw(&mut band, f, layout.action);
         let lf = layout.sectioned_table();
-        if self.table.n_rows() == 0 {
+        if self.form.table.n_rows() == 0 {
             let env = Env::inert();
             if directory.discovery() == SecFetch::Failed {
                 StatusOverlay::new(lf, crate::i18n::msg::settings_onboard_failed_c(), StatusKind::Failed)
@@ -745,13 +754,13 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             return;
         }
         let mut table = crate::ui::table_screen::TablePart {
-            table: &self.table,
+            table: &self.form.table,
             frame: lf,
             group: TABLE_GROUP,
             entry: self.entry,
             uncommitted: false,
             has_band: !labels.is_empty(),
-            keys: None,
+            keys: Some(&self.form),
         };
         Part::<H>::draw(&mut table, f, lf);
     }
@@ -786,6 +795,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::ui::form::FormId;
     use crate::ui::machine::{FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Source, Stamped};
     use crate::ui::present::Present;
 
@@ -1008,7 +1018,7 @@ mod tests {
 
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(s.has_band(), "Done appears after an edit");
 
         browse.stores.browse_run(BrowseCmd::Reset);
@@ -1035,7 +1045,7 @@ mod tests {
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
 
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(
             !s.draft_rows(browse.capture())[0].pinned,
             "the draft reflects the toggle immediately — the screen must show it"
@@ -1061,7 +1071,7 @@ mod tests {
         assert!(browse.pinned(0), "a discarded draft leaves the live pin exactly where BACK found it");
 
         // Toggling and THEN committing is what actually queues the write.
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
@@ -1098,7 +1108,7 @@ mod tests {
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
         assert!(!s.dirty(), "nothing has been touched yet");
 
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(s.dirty(), "the draft moved, so Done has something to commit");
         assert!(
             browse.pinned(0),
@@ -1178,13 +1188,13 @@ mod tests {
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
 
         // 1. Off — an edit, so this row's baseline is now stale the moment the world moves.
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         // 2. The Plex Home roster lands while the editor is open and the live default for this
         //    row drifts Off on its own, with no press behind it.
         browse.set_pinned(0, false);
         s.rebuild(true, browse.capture());
         // 3. …and the viewer changes their mind and puts it back On.
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(
             s.draft_rows(browse.capture())[0].pinned,
             "the draft shows what was pressed — a touched row does not ride the live default"
@@ -1217,7 +1227,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(0, browse.capture()); // draft: section 0 off — a real, in-progress user edit
+        s.toggle_row(SrcTarget::Library(0), browse.capture()); // draft: section 0 off — a real, in-progress user edit
         assert!(s.dirty());
 
         // What `sync_roster`'s `reset()` does mid-session: the table's IDENTITY changes out from
@@ -1263,7 +1273,7 @@ mod tests {
         s.rebuild(true, browse.capture());
         assert!(!s.dirty(), "landing alone is not an edit");
 
-        s.toggle_row(1, browse.capture());
+        s.toggle_row(SrcTarget::Library(1), browse.capture());
         assert!(
             s.dirty(),
             "a toggle on a freshly-landed row must make Done appear, or it can never be committed"
@@ -1283,13 +1293,13 @@ mod tests {
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
         assert!(s.draft_rows(browse.capture())[0].pinned, "section 0 starts as the only pinned library");
 
-        s.toggle_row(0, browse.capture()); // the only pinned library refuses to turn off
+        s.toggle_row(SrcTarget::Library(0), browse.capture()); // the only pinned library refuses to turn off
         assert!(s.draft_rows(browse.capture())[0].pinned, "turning off the last favourite is refused");
 
         // Turning the second one on first frees the floor, and the first can then turn off.
-        s.toggle_row(1, browse.capture());
+        s.toggle_row(SrcTarget::Library(1), browse.capture());
         assert!(s.draft_rows(browse.capture())[1].pinned);
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(!s.draft_rows(browse.capture())[0].pinned, "with a second library on, the first is free to turn off");
     }
 
@@ -1308,7 +1318,7 @@ mod tests {
         browse.seed_pins(&[true, true]);
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::Yes, "first run's BACK is its own answer to the key");
         assert!(effs
@@ -1324,7 +1334,7 @@ mod tests {
 
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(0, browse.capture());
+        s.toggle_row(SrcTarget::Library(0), browse.capture());
         let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::No, "Settings BACK is the surface's own stack to pop");
         assert!(effs.is_empty(), "…and this screen asks for nothing on the way out");
@@ -1506,7 +1516,7 @@ mod tests {
     /// D4).** `phase_ms` used to be a raw `+= dt` accumulator with a separate, easy-to-forget
     /// `fx.note(Motion)` a few lines below it. Now it is `motion::Phase`, which reports from
     /// inside its own `advance`. An `OnboardScreen::first_run` over a reset `browse` store starts
-    /// with zero rows, which is exactly the spinner's own gate (`self.table.n_rows() == 0`), so
+    /// with zero rows, which is exactly the spinner's own gate (`self.form.table.n_rows() == 0`), so
     /// this drives it through the real `Machine::step` `Tick` path.
     #[test]
     fn the_empty_roster_spinner_reports_motion_on_every_tick() {
@@ -1515,7 +1525,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
-        assert_eq!(s.table.n_rows(), 0, "a reset browse store starts with no rows");
+        assert_eq!(s.form.table.n_rows(), 0, "a reset browse store starts with no rows");
         let m = crate::ui::fixture::FixtureMeasure;
         let cxv = test_cx(&m, None, browse.capture());
         let mut present = Present::new();
@@ -1617,7 +1627,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(0, browse.capture()); // a real user edit: draft[0] = false, entry_pins[0] stays true
+        s.toggle_row(SrcTarget::Library(0), browse.capture()); // a real user edit: draft[0] = false, entry_pins[0] stays true
 
         // A second source answers mid-edit and `resolve_pins` re-derives section 0's own
         // still-unrecorded default independently of the user's press, landing on `false` — the
@@ -1660,7 +1670,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(0, browse.capture()); // the answer: section 0 Off
+        s.toggle_row(SrcTarget::Library(0), browse.capture()); // the answer: section 0 Off
 
         // …and now the live pin arrives at the same value by itself.
         browse.set_pinned(0, false);
@@ -1732,7 +1742,7 @@ mod tests {
 
         // The last row has no in-group neighbour below it: this is what makes it an EDGE case
         // (rule 2) rather than an ordinary `move_sel`.
-        let last_row = FocusKey { entry: EntryId(0), elem: 1u32 };
+        let last_row = FocusKey { entry: EntryId(0), elem: SrcTarget::Library(1).key().0 };
         assert!(
             matches!(
                 crate::ui::screen::Focusable::<InnerHost>::neighbour(&s, last_row, crate::ui::screen::Dir::Down, &cx),
@@ -1805,7 +1815,7 @@ mod tests {
 
         let (handled, effs) = step_ev(
             &mut s,
-            &ScreenEvent::Activate(0),
+            &ScreenEvent::Activate(SrcTarget::Library(0).key().0),
             None,
             browse.capture(),
         );
@@ -1827,7 +1837,7 @@ mod tests {
 
     /// **The Favorite libraries table's app-owned text fits its column, in every shipped
     /// language**, for both mountings (first run and Settings), through the screen's own
-    /// `rebuild` (so the real `source_list::sections` output and the real `sectioned_table`
+    /// `rebuild` (so the real `source_list::form` output and the real `sectioned_table`
     /// width). Server and library names are marked `server_*` by that builder and exempt.
     #[test]
     fn every_favourites_row_fits_its_column_in_every_language() {
@@ -1843,8 +1853,8 @@ mod tests {
             let first = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
             let inside = OnboardScreen::settings(EntryId(0), browse.capture());
             for (mounting, screen) in [("first run", &first), ("settings", &inside)] {
-                assert!(screen.table.n_rows() > 0, "the fixture must put rows in the table");
-                out.extend(screen.table.app_fit_failures(frame_w, &format!("{} {mounting}", language.tag())));
+                assert!(screen.form.table.n_rows() > 0, "the fixture must put rows in the table");
+                out.extend(screen.form.table.app_fit_failures(frame_w, &format!("{} {mounting}", language.tag())));
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);

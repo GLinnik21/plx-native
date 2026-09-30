@@ -81,6 +81,7 @@
 //! beneath it, which is a smaller surprise than the cursor jumping mid-interaction.
 
 use std::borrow::Cow;
+use std::convert::Infallible;
 
 use crate::metadata::AltCopy;
 use crate::plex::ServerId;
@@ -96,7 +97,8 @@ use crate::ui::screen::{
     GroupSpec, Hover, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step,
     Stop,
 };
-use crate::ui::table::{Badge, Row, Section, TableView, MENU_MAX_W, MENU_MIN_W};
+use crate::ui::form::{Form, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::table::{Badge, Row, TableView, MENU_MAX_W, MENU_MIN_W};
 use crate::ui::{theme, Rect};
 
 /// The fields [`AltSourcesScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
@@ -281,26 +283,21 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
         .collect()
 }
 
-/// The panel's one section, built from the resolved rows alone (pure, so the text-fit suite drives
-/// it). A row's four content places: the tick is WHICH copy you are on, the label WHICH LIBRARY (a
-/// server's name), the sub-line WHOSE (another person's name, or this app's "This account"), the
-/// read-out HOW LONG and the badge WHAT YOU GET.
-fn section_for(rows: &[AltRow]) -> Section {
-    let mut sec = Section::new("");
-    for r in rows {
-        let mut row = Row::new(r.label.clone()).server_label().detail(r.detail.clone()).checked(r.checked);
-        if !r.own_detail {
-            row = row.server_detail();
-        }
-        if let Some(v) = &r.value {
-            row = row.value(v.clone());
-        }
-        if let Some(b) = &r.badge {
-            row = row.badge(Badge::Text(b.clone()));
-        }
-        sec = sec.row(row);
+/// One row's drawing: its four content places. The tick is WHICH copy you are on, the label WHICH
+/// LIBRARY (a server's name), the sub-line WHOSE (another person's name, or this app's "This
+/// account"), the read-out HOW LONG and the badge WHAT YOU GET.
+fn row_for(r: &AltRow) -> Row {
+    let mut row = Row::new(r.label.clone()).server_label().detail(r.detail.clone()).checked(r.checked);
+    if !r.own_detail {
+        row = row.server_detail();
     }
-    sec
+    if let Some(v) = &r.value {
+        row = row.value(v.clone());
+    }
+    if let Some(b) = &r.badge {
+        row = row.badge(Badge::Text(b.clone()));
+    }
+    row
 }
 
 /// What OK on the highlighted row does.
@@ -311,13 +308,9 @@ pub(crate) enum Action {
     Open { sid: ServerId, rk: String },
 }
 
-/// The index→destination mapping, pure so the "the row you are on is not a destination" rule is
-/// host-testable. A selection outside the list is [`Action::None`] rather than whatever happens to
-/// sit at that index in some other row set (`sel` survives a rebuild).
-pub(crate) fn action_at(rows: &[AltRow], sel: i32, here_sid: ServerId, here_rk: &str) -> Action {
-    let Some(row) = usize::try_from(sel).ok().and_then(|i| rows.get(i)) else {
-        return Action::None;
-    };
+/// What one row's OK means, decided once when the row is declared, so the "the row you are on is
+/// not a destination" rule is host-testable and no press ever indexes a list.
+pub(crate) fn action_for(row: &AltRow, here_sid: ServerId, here_rk: &str) -> Action {
     if crate::plex::same_item((row.sid, &row.rk), (here_sid, here_rk)) || row.rk.is_empty() {
         return Action::None;
     }
@@ -325,6 +318,38 @@ pub(crate) fn action_at(rows: &[AltRow], sel: i32, here_sid: ServerId, here_rk: 
         sid: row.sid,
         rk: row.rk.clone(),
     }
+}
+
+/// A row's identity: the copy it names (server + ratingKey) and, for a producer that listed the
+/// same copy twice, which occurrence — a duplicate is a second row, never a second identity
+/// collision. Selection across a rebuild follows this, not a position.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AltId {
+    sid: ServerId,
+    rk: String,
+    nth: usize,
+}
+
+impl AltId {
+    /// The identity of the row at `pos` of `rows`.
+    fn of(rows: &[AltRow], pos: usize) -> Self {
+        let r = &rows[pos];
+        let nth = rows[..pos].iter().filter(|o| o.sid == r.sid && o.rk == r.rk).count();
+        AltId { sid: r.sid, rk: r.rk.clone(), nth }
+    }
+}
+
+/// The panel's one section, declared from the resolved rows alone (pure, so the text-fit suite
+/// drives it): every row carries its own destination ([`action_for`]). The dynamic rows' focus key
+/// is their position in the list (docs/settings-form.md, "Dynamic rows"): the list is one
+/// unheaded section whose length and order the store decides.
+pub(crate) fn form_for(rows: &[AltRow], here_sid: ServerId, here_rk: &str) -> Form<AltId, Action, Infallible> {
+    let mut sec = FormSection::new("");
+    for (pos, r) in rows.iter().enumerate() {
+        let id = AltId::of(rows, pos);
+        sec = sec.item_keyed(id, RowKey(pos as u32), RowKind::Choice, action_for(r, here_sid, here_rk), row_for(r));
+    }
+    Form::new().section(sec)
 }
 
 // ---- the surface -----------------------------------------------------------------------------
@@ -343,7 +368,8 @@ pub(crate) struct AltSourcesScreen {
     arg: AltSourcesArg,
     /// The rows the `TableView` and `dests` were built from — the rebuild stamp (module doc).
     rows: Vec<AltRow>,
-    pub(crate) table: TableView,
+    /// The table and what each row does, replaced together ([`form_for`]).
+    pub(crate) form: FormTable<AltId, Action, Infallible>,
 }
 
 impl AltSourcesScreen {
@@ -352,7 +378,7 @@ impl AltSourcesScreen {
             entry,
             arg,
             rows: Vec::new(),
-            table: TableView::new(),
+            form: FormTable::new(crate::ui::table_screen::BAND_BASE),
         };
         screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
@@ -389,25 +415,26 @@ impl AltSourcesScreen {
         if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
             self.rows = self.live_rows(meta);
         }
-        let mut sel = match sel_mode {
-            Sel::Keep => self.table.sel.max(0),
-            Sel::OnTheCopyYouAreOn => 0,
-        };
-        if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
-            if let Some(i) = self.rows.iter().position(|r| r.checked) {
-                sel = i as i32;
+        let form = form_for(&self.rows, self.arg.sid, &self.arg.rk);
+        // rows carry a sub-line — the track menu's size class, not the account popover's
+        self.form.table.compact = false;
+        match sel_mode {
+            // leave the cursor where the user put it — on the same copy, found by identity
+            Sel::Keep => {
+                let held = self.form.selected_id().cloned();
+                self.form.set(form, held.as_ref());
+            }
+            // on the copy you are on (the tick), else the first row
+            Sel::OnTheCopyYouAreOn => {
+                let here = self.rows.iter().position(|r| r.checked).map(|pos| AltId::of(&self.rows, pos));
+                self.form.set(form, here.as_ref());
             }
         }
-        let sec = section_for(&self.rows);
-        sel = sel.min((self.rows.len() as i32 - 1).max(0));
-        // rows carry a sub-line — the track menu's size class, not the account popover's
-        self.table.compact = false;
-        self.table.set_sections(vec![sec], sel, false);
     }
 
     pub(crate) fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
-        panel_at(Rect::new(x, y, w, h), self.table.measured_width(measure), self.table.measured_height())
+        panel_at(Rect::new(x, y, w, h), self.form.table.measured_width(measure), self.form.table.measured_height())
     }
 
     fn dismiss<H: AppLike>(&self, fx: &mut Effects<'_, H>) {
@@ -417,12 +444,15 @@ impl AltSourcesScreen {
     /// Commit row `elem` and close. The row you are ALREADY on reports nothing — there is nowhere
     /// to navigate to, and the tick has already answered the question the press was asking.
     ///
-    /// Takes the elem directly rather than reading `self.table.sel`: the engine's OK arm reads it
+    /// Takes the elem directly rather than reading the table's cursor: the engine's OK arm reads it
     /// off the current focus key and a pointer click's `Activate` names the STOP that was clicked,
     /// which need not be the row the cursor was already resting on — the same distinction
     /// `AccountMenuScreen::activate` draws.
     fn commit<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
-        let action = action_at(&self.rows, elem as i32, self.arg.sid, &self.arg.rk);
+        let action = match self.form.index_of_key(RowKey(elem)).and_then(|i| self.form.activate(i)) {
+            Some(crate::ui::form::Activation::Action(action)) => action,
+            _ => Action::None,
+        };
         self.dismiss(fx);
         if let Action::Open { sid, rk } = action {
             // The PAGE navigates. This surface names the destination and nothing else — the
@@ -457,17 +487,19 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
                 // exactly as `AccountMenuScreen::step` does — `FocusMoved` already keeps the two
                 // in step, this is the belt to its suspenders for a focus change this screen was
                 // not told about directly (a remembered-cursor seat on `Enter`, say).
-                self.table.sel = cx
+                self.form.table.sel = cx
                     .focus
                     .current
                     .filter(|key| key.entry == self.entry)
-                    .map(|key| key.elem as i32)
-                    .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame(cx.measure).h);
+                    .and_then(|key| self.form.index_of_key(RowKey(key.elem)))
+                    .map_or(self.form.table.sel, |i| i as i32);
+                self.form.table.update(tick.dt(), self.frame(cx.measure).h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                self.table.sel = to.elem as i32;
+                if let Some(i) = self.form.index_of_key(RowKey(to.elem)) {
+                    self.form.table.sel = i as i32;
+                }
                 fx.invalidate(crate::ui::present::Provenance::Input);
                 Handled::Yes
             }
@@ -509,7 +541,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
 
 /// **A single-column `Focusable` over the table's own cursor** (phase 12, D2) — the same shape
 /// `AccountMenuScreen::groups` uses for its own `TableView`: one `GroupKind::Column` of
-/// `self.rows.len()` `Bare` elements (OK/click activates on the down edge, never arms a hold —
+/// one `Bare` element per row (OK/click activates on the down edge, never arms a hold —
 /// there is nothing here to hold), `EdgeRule::Stop` on every side since this is a standalone
 /// surface with no page to escape onto, and `place`/`neighbour` read straight off `TableView`'s
 /// own row geometry (`row_frame`, `next_selectable`) rather than a second copy of it.
@@ -522,34 +554,35 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for AltSourcesScreen {
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
             extent: self.frame(cx.measure),
-            len: self.rows.len(),
+            len: self.form.focusable_len(),
             elem: ElemKind::Bare,
         });
     }
     fn group_of(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((*elem as usize) < self.rows.len()).then_some(GroupId(0))
+        self.form.index_of_key(RowKey(*elem)).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        let next = match dir {
-            Dir::Up => self.table.next_selectable(key.elem as i32, -1),
-            Dir::Down => self.table.next_selectable(key.elem as i32, 1),
-            _ => None,
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
         };
-        match next {
-            Some(i) => Step::Move(FocusKey {
+        match self.form.step_key(RowKey(key.elem), delta) {
+            Some(next) => Step::Move(FocusKey {
                 entry: self.entry,
-                elem: i as u32,
+                elem: next.0,
             }),
             None => Step::Edge,
         }
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let rect = self.table.row_frame(self.frame(cx.measure), *elem as i32)?;
+        let index = self.form.index_of_key(RowKey(*elem))?;
+        let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
             clip: self.frame(cx.measure),
-            index: Some(*elem),
+            index: Some(index as u32),
         })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -558,14 +591,14 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for AltSourcesScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: 0,
+                elem: self.form.opening_key().map_or(0, |k| k.0),
             }
         }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         FocusKey {
             entry: self.entry,
-            elem: self.table.sel.max(0) as u32,
+            elem: self.form.selected_key().or_else(|| self.form.opening_key()).map_or(0, |k| k.0),
         }
     }
 }
@@ -587,8 +620,8 @@ impl LogicalState for AltSourcesScreen {
                 })
                 .bool(r.checked);
         }
-        c.u32(self.table.sel as u32);
-        self.table.write_motion(c);
+        c.u32(self.form.table.sel as u32);
+        self.form.table.write_motion(c);
     }
     fn probe(&self, out: &mut String) {
         out.push_str("alt");
@@ -634,7 +667,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
         let field = f.underlay;
         crate::ui::profile::phase("dt.alt", || {
             crate::ui::widgets::panel_ground(p, r, PANEL_RAD, field);
-            self.table.draw(p, r, measure);
+            self.form.table.draw(p, r, measure);
         });
         // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what
         // `Focusable::place` answers) rather than the transient slide `p` draws with — at rest
@@ -643,7 +676,10 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
         // wider version of this gap (no container feeds a fading surface's alpha into the map
         // yet), so this keeps the one known edge rather than inventing a second.
         let hit_p = f.painter.alpha(appear);
-        for elem in 0..self.rows.len() as u32 {
+        for index in 0..self.form.table.n_rows() as usize {
+            let Some(elem) = self.form.key_at(index).map(|k| k.0) else {
+                continue;
+            };
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                 f.stop(
                     hit_p,

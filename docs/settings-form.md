@@ -8,7 +8,7 @@ agreed result.
 **Status:** PR 1 (`ui/form.rs`) and PR 2 (keyed focus: `TablePart::keys`, `family::form_focus`; the Settings
 root on `root_form` / `FormTable`) and PR 3 (one navigation path: `family::form_activate`, `SettingsPage::Picker`, `preferences::PickerPage`; the
 Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Legal index, Consent controls and the Item / Account / More menus on a
-`FormTable`; `FormTable::set_or_open` / `set_sliding` for the menus and the Consent toggles) have landed; PR 5 is open. The track menu and source list still use index focus.
+`FormTable`; `FormTable::set_or_open` / `set_sliding` for the menus and the Consent toggles) and PR 5 (the track menu and source list, with note / separator slots, plus the Alternate-sources panel, the onboarding source editor and the Library menu; every parallel rows / actions vector beside a `TableView` deleted) have landed. The migration is complete.
 
 ## Goals (owner)
 
@@ -21,21 +21,26 @@ Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Le
 4. Leaf pages' layout does not change (the pixels of Privacy, Legal, documents, About, Language,
    Playback, Audio & Subtitles, the pickers stay as they are); only root-like structure moves.
 
-## Today (why)
+## Before the migration (why) — historical
 
-- `screens/settings.rs` `root_sections(&RootInputs) -> (Vec<Section>, Vec<Action>)` pushes rows
-  and a parallel `actions` vector by hand; `RootPage::activate` indexes `self.rows[row]`.
-- Focus identity is the raw table index everywhere: `family::table_focus` (family.rs:218) sets
-  `table.sel = elem`; `TablePart`'s `Focusable` impl (ui/table_screen.rs:146-190) maps elem <->
-  index; `RootState.sel` is canon-hashed (settings.rs:979); the family's `remembered` pop seats
-  are canon-hashed u32 keys (settings.rs:529). A reorder moves focus keys, fingerprints, replay.
-- Two drill-down mechanisms: (a) the family stack (`Fx::Nav(NavOp::Push(SettingsPage::X))`,
-  settings.rs ~1278); (b) `PreferencesPage`'s private in-page picker: its own `picker_table`,
-  `submenu: RoutePush`, `leaving`, `state.picker: Option<Field>` (preferences.rs:70-134, :481,
-  :563), bypassing the stack's back handling, remembered seat and canon.
-- The same parallel-vector pattern: `preferences.rs field_section`, `ui/track_menu.rs`,
-  `ui/source_list.rs`, `screens/item_menu.rs`, `screens/account_menu.rs`, `ui/more_menu.rs`,
-  `screens/legal.rs`, `screens/consent.rs`.
+This section records what the code looked like when the migration was designed; none of it is
+true of the tree any more.
+
+- `screens/settings.rs` `root_sections(&RootInputs) -> (Vec<Section>, Vec<Action>)` pushed rows
+  and a parallel `actions` vector by hand; `RootPage::activate` indexed `self.rows[row]`.
+- Focus identity was the raw table index everywhere: `family::table_focus` set
+  `table.sel = elem`; `TablePart`'s `Focusable` impl mapped elem <-> index; `RootState.sel` was
+  canon-hashed; the family's `remembered` pop seats were canon-hashed u32 keys. A reorder moved
+  focus keys, fingerprints and replay.
+- There were two drill-down mechanisms: (a) the family stack
+  (`Fx::Nav(NavOp::Push(SettingsPage::X))`); (b) `PreferencesPage`'s private in-page picker, with
+  its own `picker_table`, `submenu: RoutePush`, `leaving` and `state.picker: Option<Field>`,
+  bypassing the stack's back handling, remembered seat and canon.
+- The same parallel-vector pattern sat in `preferences.rs field_section`, `ui/track_menu.rs`
+  (`targets` / `audio_targets`), `ui/source_list.rs` (`SrcAction`), `screens/item_menu.rs`,
+  `screens/account_menu.rs`, `ui/more_menu.rs`, `screens/legal.rs`, `screens/consent.rs`,
+  `screens/onboard.rs` (`acts`), `screens/alt_sources.rs` (`action_at`) and
+  `screens/library/menu.rs` (`MenuRow` / `MenuDraft.rows`).
 
 ## Model (`rust-modules/src/ui/form.rs`)
 
@@ -57,6 +62,11 @@ Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Le
   `index_of(&Id)`, `index_of_key(RowKey)`, `key_at(index)`. Linear scan; no HashMap. `Id:
   PartialEq + Clone`; actions cloned on dispatch. debug-assert no duplicate Id and no duplicate
   key per set().
+- Three read/transform helpers on `Form` serve the dynamic menus (PR 5): `contains(&Id)` (is this
+  focusable row in the built form — what a rebuild asks before naming a landing id), `slots()`
+  (the layout in order, `None` at inert slots) and `map(f)` (re-type every binding, or demote a row
+  to an inert slot that is still drawn). The Library menu builds its Sources rows from the shared
+  `source_list::form` this way and assigns interned keys afterwards.
 - Disappearing id on `set` (sign-out removes rows, a server vanishes): nearest surviving
   selectable row in the OLD order — prefer the next, else the previous; menus keep their existing
   safe opening row; `open_sections`' destructive-row rule (table.rs:638) preserved.
@@ -69,7 +79,9 @@ Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Le
 - Cost: one Vec per rebuild; picker lists can exceed 100 rows (language), lookup stays linear;
   covered by an operation-count unit test (not a timed one).
 
-## Focus
+## Focus (as designed; all of it has landed)
+
+The bullets below are the design, written before the migration. `family::table_focus` is gone (`family::form_focus` replaced it) and no table is left on index mapping.
 
 - A form-aware table part: `TablePart` gains an optional key map from the `FormTable`; when
   present, ALL FIVE focus hooks — `group_of`, `neighbour`, `place`, `reconcile`, `seat` — and the
@@ -127,7 +139,7 @@ Playback / Audio & Subtitles field list on a `FormTable`) and PR 4 (Language, Le
 ## PR sequence
 
 1. `ui/form.rs` — Form, FormTable, RowKey, RowKind, unit tests. No callers yet.
-2. Keyed focus (form-aware TablePart, key-aware table_focus, canon keys) + Settings root on
+2. Keyed focus (form-aware TablePart, key-aware `form_focus` (the old `table_focus` is deleted), canon keys) + Settings root on
    `root_form` + reorder test; anchors re-recorded.
 3. One navigation path: `form_activate` on every Settings page; `SettingsPage::Picker`; delete
    PreferencesPage's private submenu; preferences revision refresh; structural nav test; FPS.

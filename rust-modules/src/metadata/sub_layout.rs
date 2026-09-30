@@ -37,9 +37,10 @@ pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     )
 }
 
-/// What a Subtitles-panel row IS, by POSITION — one entry per drawn row, in the exact order the
-/// sections draw (`TableView::sel` is one flat index over all of them). Every reader of a focused
-/// row matches on this rather than re-deriving which section a row fell in.
+/// What a Subtitles-panel row IS — one per drawn row. `ui::track_menu` declares each row under it
+/// (as its `TrackRow` identity), and every reader of a focused row matches on that rather than
+/// re-deriving which section a row fell in. (The footnote naming why Timing/Color are dim is an
+/// inert slot there, not a row with a target.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowTarget {
     Off,
@@ -47,10 +48,6 @@ pub(crate) enum RowTarget {
     Sub(usize),
     Timing,
     Color,
-    /// The non-selectable footnote naming why Timing/Color are dim (M7 follow-up: a live Burn).
-    /// Never produced by [`sub_sections`] itself — `ui::track_menu` inserts it, alongside the row,
-    /// once it knows the live route is actually burning right now, which this pure model does not.
-    Note,
 }
 
 /// The one badge a track row may show — never more than one (`player.html:954`'s priority:

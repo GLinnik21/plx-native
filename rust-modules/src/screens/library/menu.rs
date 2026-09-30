@@ -12,8 +12,10 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
-use crate::ui::source_list::{self, Level, SrcAction, Tail};
-use crate::ui::table::{Row, Section, TableView};
+use crate::ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::source_list::{self, Level, SrcTarget, Tail};
+use crate::ui::table::{Row, TableView};
+use std::convert::Infallible;
 #[cfg(test)]
 use crate::ui::table::MENU_MAX_W;
 use crate::ui::Rect;
@@ -35,17 +37,39 @@ enum Action {
     Recheck,
 }
 
-struct MenuRow {
-    key: u32,
-    action: Action,
-    table_index: i32,
-}
+/// A menu's rows: identity string per focusable row (the stable name focus follows across a
+/// reorder), the semantic action, and no other parallel list.
+type MenuForm = Form<String, Action, Infallible>;
+type MenuSection = FormSection<String, Action, Infallible>;
+type MenuTable = FormTable<String, Action, Infallible>;
 
+/// What a menu wants to show now: the change-detection stamp, the declared rows (keys are assigned
+/// when the draft is applied, from the menu's identity registry), and the identity to land on when
+/// the focused row did not survive.
 struct MenuDraft {
     stamp: Vec<u8>,
-    sections: Vec<Section>,
-    rows: Vec<(String, Action, i32)>,
-    selected: i32,
+    form: MenuForm,
+    selected: Option<String>,
+}
+
+/// A selectable row. The key is a placeholder until [`number`] gives it the identity's slot.
+fn choice(section: MenuSection, identity: String, action: Action, row: Row) -> MenuSection {
+    section.item_keyed(identity, RowKey(0), RowKind::Choice, action, row)
+}
+
+/// Give every focusable row the key its identity owns in `identities` (an identity keeps its key
+/// for the menu's life, so focus follows a row across a reorder), interning new ones.
+fn number(form: MenuForm, identities: &mut Vec<String>) -> MenuForm {
+    form.map(|b| {
+        let key = match identities.iter().position(|old| old == &b.id) {
+            Some(i) => i as u32,
+            None => {
+                identities.push(b.id.clone());
+                (identities.len() - 1) as u32
+            }
+        };
+        Some(Binding { key: RowKey(key), ..b })
+    })
 }
 
 #[derive(Default)]
@@ -100,16 +124,6 @@ fn stamp_tier(stamp: &mut Stamp, tier: Option<crate::plex::probe::Location>) {
     });
 }
 
-fn preserved_selection(old_key: Option<u32>, rows: &[MenuRow], fallback: i32) -> i32 {
-    old_key
-        .and_then(|key| {
-            rows.iter()
-                .find(|row| row.key == key)
-                .map(|row| row.table_index)
-        })
-        .unwrap_or(fallback)
-}
-
 fn source_draft(
     epoch: u32,
     current: usize,
@@ -122,8 +136,8 @@ fn source_draft(
         .filter(|section| Some(section.kind) == kind && section.row.pinned)
         .map(|section| section.row.clone())
         .collect();
-    let (source_sections, actions) =
-        source_list::sections(Level::Browse, groups, &source_rows, Tail::Recheck);
+    let source_form =
+        source_list::form(Level::Browse, groups, &source_rows, Tail::Recheck);
     let mut stamp = Stamp::default();
     stamp.tag(1);
     stamp.u32(epoch);
@@ -146,11 +160,17 @@ fn source_draft(
         stamp.bool(row.last_pinned);
         stamp.bool(row.current);
     }
-    let mut rows = Vec::new();
-    let mut selected = 0i32;
-    for (table_index, action) in actions.iter().enumerate() {
-        match action {
-            SrcAction::Library(index) => {
+    let slots: Vec<Option<SrcTarget>> = source_form
+        .slots()
+        .into_iter()
+        .map(|slot| slot.map(|b| b.action))
+        .collect();
+    let mut selected = None;
+    let mut addresses = std::collections::HashMap::new();
+    for slot in &slots {
+        match slot {
+            Some(SrcTarget::Library(index)) => {
+                // A library the directory has no address for is drawn, never focusable.
                 let Some(candidate) = sections.get(*index) else {
                     continue;
                 };
@@ -164,42 +184,50 @@ fn source_draft(
                 stamp.u32(u32::from(sid.raw()));
                 stamp.i64(candidate.key);
                 stamp.u32(target.epoch);
+                let identity = format!("section:{}:{}", sid.raw(), candidate.key);
                 if candidate.row.current {
-                    selected = table_index as i32;
+                    selected = Some(identity.clone());
                 }
-                rows.push((
-                    format!("section:{}:{}", sid.raw(), candidate.key),
-                    Action::Select(target),
-                    table_index as i32,
-                ));
+                addresses.insert(*index, (identity, target));
             }
-            SrcAction::Recheck => {
-                stamp.tag(5);
-                rows.push(("recheck".into(), Action::Recheck, table_index as i32));
-            }
-            SrcAction::None => stamp.tag(6),
+            Some(SrcTarget::Recheck) => stamp.tag(5),
+            None => stamp.tag(6),
         }
     }
+    let form = source_form.map(|b| match b.action {
+        SrcTarget::Library(index) => addresses.remove(&index).map(|(identity, target)| Binding {
+            id: identity,
+            key: RowKey(0),
+            kind: b.kind,
+            action: Action::Select(target),
+            disabled: b.disabled,
+        }),
+        SrcTarget::Recheck => Some(Binding {
+            id: "recheck".into(),
+            key: RowKey(0),
+            kind: b.kind,
+            action: Action::Recheck,
+            disabled: b.disabled,
+        }),
+    });
     MenuDraft {
         stamp: stamp.finish(),
-        sections: source_sections,
-        rows,
+        form,
         selected,
     }
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = Section::new(crate::i18n::msg::browse_library_sort_by());
-    let mut rows = Vec::new();
+    let mut section = MenuSection::new(crate::i18n::msg::browse_library_sort_by());
     let mut stamp = Stamp::default();
     stamp.tag(7);
     stamp.u32(sort_index as u32);
     stamp.bool(sort_desc);
-    let mut selected = 0;
+    let mut selected = None;
     for (i, sort) in sorts.iter().enumerate() {
         let active = i == sort_index;
         if active {
-            selected = i as i32;
+            selected = Some(format!("sort:{}", sort.key));
         }
         let desc = if active {
             !sort_desc
@@ -216,25 +244,24 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
                 crate::ui::icons::Icon::ChevronUp
             });
         }
-        section = section.row(row);
         stamp.tag(8);
         stamp.str(&sort.key);
         stamp.str(&sort.title);
         stamp.bool(sort.default_desc);
         stamp.bool(desc);
-        rows.push((
+        section = choice(
+            section,
             format!("sort:{}", sort.key),
             Action::Edit(QueryEdit::Sort {
                 key: sort.key.clone(),
                 desc,
             }),
-            i as i32,
-        ));
+            row,
+        );
     }
     MenuDraft {
         stamp: stamp.finish(),
-        sections: vec![section],
-        rows,
+        form: MenuForm::new().section(section),
         selected,
     }
 }
@@ -252,31 +279,40 @@ fn listing_kind(
 
 /// The TYPE menu: every [`LibraryType`] the section's kind offers, the current one checked.
 fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
-    let mut section = Section::new(crate::i18n::msg::browse_library_filter_by());
-    let mut rows = Vec::new();
-    let mut selected = 0;
-    for (index, &kind) in LibraryType::offered(section_kind).iter().enumerate() {
-        section = section.row(Row::new(kind.title(section_kind)).checked(kind == current));
-        rows.push((format!("type:{}", kind.code()), Action::Edit(QueryEdit::LibraryType(kind)), index as i32));
-        if kind == current { selected = index as i32; }
+    let mut section = MenuSection::new(crate::i18n::msg::browse_library_filter_by());
+    let mut selected = None;
+    for &kind in LibraryType::offered(section_kind) {
+        let identity = format!("type:{}", kind.code());
+        if kind == current { selected = Some(identity.clone()); }
+        section = choice(
+            section,
+            identity,
+            Action::Edit(QueryEdit::LibraryType(kind)),
+            Row::new(kind.title(section_kind)).checked(kind == current),
+        );
     }
     let mut stamp = Stamp::default();
     stamp.tag(13);
     stamp.tag(u8::from(section_kind == SecKind::Show));
     stamp.u32(current.code());
-    MenuDraft { stamp: stamp.finish(), sections: vec![section], rows, selected }
+    MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
-    let mut section = Section::new(crate::i18n::msg::browse_library_filter())
-        .row(Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched));
+    let mut section = MenuSection::new(crate::i18n::msg::browse_library_filter()).item_keyed(
+        "unwatched".into(),
+        RowKey(0),
+        RowKind::Toggle,
+        Action::Edit(QueryEdit::Unwatched(!unwatched)),
+        Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched),
+    );
     if genres_supported {
         let mut row = Row::new(crate::i18n::msg::browse_library_genre())
             .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
             .chevron(true);
         // A chosen genre is the server's tag title; "All" is the app's.
         if genre.is_some() { row = row.server_value(); }
-        section = section.row(row);
+        section = choice(section, "genre".into(), Action::Genre, row);
     }
     let mut stamp = Stamp::default();
     stamp.tag(9);
@@ -289,46 +325,44 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
     }
     MenuDraft {
         stamp: stamp.finish(),
-        sections: vec![section],
-        rows: {
-            let mut rows = vec![("unwatched".into(), Action::Edit(QueryEdit::Unwatched(!unwatched)), 0)];
-            if genres_supported { rows.push(("genre".into(), Action::Genre, 1)); }
-            rows
-        },
-        selected: 0,
+        form: MenuForm::new().section(section),
+        selected: None,
     }
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
-    let mut section = Section::new(crate::i18n::msg::browse_library_genre()).row(Row::new(crate::i18n::msg::browse_library_all_genres()).checked(current.is_none()));
-    let mut rows = vec![("genre:all".into(), Action::Edit(QueryEdit::Genre(None)), 0)];
+    let mut section = choice(
+        MenuSection::new(crate::i18n::msg::browse_library_genre()),
+        "genre:all".into(),
+        Action::Edit(QueryEdit::Genre(None)),
+        Row::new(crate::i18n::msg::browse_library_all_genres()).checked(current.is_none()),
+    );
     let mut stamp = Stamp::default();
     stamp.tag(10);
     stamp.tag(u8::from(current.is_some()));
     if let Some(current) = current {
         stamp.str(&current.id);
     }
-    let mut selected = 0;
-    for (i, genre) in genres.iter().enumerate() {
+    let mut selected = current.is_none().then(|| "genre:all".to_string());
+    for genre in genres {
         let active = current.is_some_and(|selected| selected.id == genre.id);
         if active {
-            selected = (i + 1) as i32;
+            selected = Some(format!("genre:{}", genre.id));
         }
-        section = section.row(Row::new(&genre.title).checked(active).server_label());
         stamp.tag(11);
         stamp.str(&genre.id);
         stamp.str(&genre.title);
         stamp.bool(active);
-        rows.push((
+        section = choice(
+            section,
             format!("genre:{}", genre.id),
             Action::Edit(QueryEdit::Genre(Some(genre.id.clone()))),
-            (i + 1) as i32,
-        ));
+            Row::new(&genre.title).checked(active).server_label(),
+        );
     }
     MenuDraft {
         stamp: stamp.finish(),
-        sections: vec![section],
-        rows,
+        form: MenuForm::new().section(section),
         selected,
     }
 }
@@ -337,9 +371,10 @@ pub(crate) struct LibraryMenu {
     entry: EntryId,
     arg: LibraryMenuArg,
     kind: LibraryMenuKind,
-    rows: Vec<MenuRow>,
+    /// The rows and their table, replaced together; a row's [`RowKey`] is its identity's slot in
+    /// `identities`, so focus follows a row across a reorder.
+    form: MenuTable,
     identities: Vec<String>,
-    table: TableView,
     stamp: Vec<u8>,
     desired_unwatched: Option<bool>,
     #[cfg(test)] draft_rebuilds: usize,
@@ -351,9 +386,8 @@ impl LibraryMenu {
             entry,
             kind: arg.kind,
             arg,
-            rows: Vec::new(),
+            form: MenuTable::new(crate::screens::registry::BAND),
             identities: Vec::new(),
-            table: TableView::new(),
             stamp: Vec::new(),
             desired_unwatched: None,
             #[cfg(test)] draft_rebuilds: 0,
@@ -363,8 +397,8 @@ impl LibraryMenu {
     /// anchor's left edge and pulled back so the right edge stays inside the keep-out.
     fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
-        let height = self.table.measured_height().clamp(120.0, 740.0);
-        let width = self.table.menu_panel_width(measure);
+        let height = self.form.table.measured_height().clamp(120.0, 740.0);
+        let width = self.form.table.menu_panel_width(measure);
         Rect::new(
             x.clamp(96.0, (1920.0 - 96.0 - width).max(96.0)),
             (y + h + 16.0).clamp(96.0, 984.0 - height),
@@ -372,15 +406,6 @@ impl LibraryMenu {
             height,
         )
     }
-    fn key_for(&mut self, identity: String) -> u32 {
-        if let Some(i) = self.identities.iter().position(|old| old == &identity) {
-            i as u32
-        } else {
-            self.identities.push(identity);
-            (self.identities.len() - 1) as u32
-        }
-    }
-
     fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
         if self.desired_unwatched == Some(listing.unwatched()) {
@@ -399,24 +424,17 @@ impl LibraryMenu {
             self.draft_rebuilds += 1;
         }
 
-        let old_key = self
-            .rows
-            .iter()
-            .find(|row| row.table_index == self.table.sel)
-            .map(|row| row.key);
-        let mut rows = Vec::with_capacity(draft.rows.len());
-        for (identity, action, table_index) in draft.rows {
-            rows.push(MenuRow {
-                key: self.key_for(identity),
-                action,
-                table_index,
-            });
-        }
-        let selected = preserved_selection(old_key, &rows, draft.selected);
+        let form = number(draft.form, &mut self.identities);
+        // The focused row if it survives, else the draft's own pick.
+        let keep = self
+            .form
+            .selected_id()
+            .filter(|id| form.contains(id))
+            .cloned()
+            .or(draft.selected);
         self.stamp = draft.stamp;
-        self.rows = rows;
-        self.table.compact = true;
-        self.table.set_sections(draft.sections, selected, false);
+        self.form.table.compact = true;
+        self.form.set(form, keep.as_ref());
     }
 
     fn draft(
@@ -424,9 +442,6 @@ impl LibraryMenu {
         listing: crate::stores::browse::ListingView<'_>,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> MenuDraft {
-        let mut rows = Vec::new();
-        let mut sections = Vec::new();
-        let selected = 0i32;
         let title = match self.kind {
             LibraryMenuKind::Type => crate::i18n::msg::browse_library_filter_by(),
             LibraryMenuKind::Sort => crate::i18n::msg::browse_library_sort_by(),
@@ -434,7 +449,7 @@ impl LibraryMenu {
             LibraryMenuKind::Genre => crate::i18n::msg::browse_library_genre(),
             LibraryMenuKind::Sources => crate::i18n::msg::browse_library_libraries(),
         };
-        let mut section = Section::new(title);
+        let mut section = MenuSection::new(title);
         match self.kind {
             LibraryMenuKind::Type => return type_draft(listing_kind(listing, directory), listing.library_type()),
             LibraryMenuKind::Sort => {
@@ -460,8 +475,12 @@ impl LibraryMenu {
                         directory.sections(),
                     );
                 }
-                section = section.row(Row::new(crate::i18n::msg::browse_library_check_shares()));
-                rows.push(("recheck".into(), Action::Recheck, 0));
+                section = choice(
+                    section,
+                    "recheck".into(),
+                    Action::Recheck,
+                    Row::new(crate::i18n::msg::browse_library_check_shares()),
+                );
             }
         }
         let mut stamp = Stamp::default();
@@ -469,20 +488,18 @@ impl LibraryMenu {
         stamp.u32(self.kind as u32);
         stamp.u32(listing.sort_index() as u32);
         stamp.bool(listing.unwatched());
-        sections.push(section);
         MenuDraft {
             stamp: stamp.finish(),
-            sections,
-            rows,
-            selected,
+            form: MenuForm::new().section(section),
+            selected: None,
         }
     }
     fn activate<H: LibraryLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let Some(action) = self
-            .rows
-            .iter()
-            .find(|row| row.key == elem)
-            .map(|row| row.action.clone())
+            .form
+            .index_of_key(RowKey(elem))
+            .and_then(|i| self.form.binding_at(i))
+            .map(|b| b.action.clone())
         else {
             return;
         };
@@ -556,25 +573,18 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                         }),
                     )));
                 }
-                self.table.sel = cx
+                self.form.table.sel = cx
                     .focus
                     .current
-                    .and_then(|focus| {
-                        self.rows
-                            .iter()
-                            .find(|row| row.key == focus.elem)
-                            .map(|row| row.table_index)
-                    })
-                    .unwrap_or(-1);
-                self.table.update(tick.dt(), self.frame(cx.measure).h);
+                    .and_then(|focus| self.form.index_of_key(RowKey(focus.elem)))
+                    .map_or(-1, |i| i as i32);
+                self.form.table.update(tick.dt(), self.frame(cx.measure).h);
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                self.table.sel = self
-                    .rows
-                    .iter()
-                    .find(|row| row.key == to.elem)
-                    .map(|row| row.table_index)
-                    .unwrap_or(-1);
+                self.form.table.sel = self
+                    .form
+                    .index_of_key(RowKey(to.elem))
+                    .map_or(-1, |i| i as i32);
             }
             ScreenEvent::Activate(elem) => self.activate(*elem, cx, fx),
             ScreenEvent::PressCommit(_) => {
@@ -613,41 +623,36 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
             extent: self.frame(cx.measure),
-            len: self.rows.len(),
+            len: self.form.focusable_len(),
             elem: ElemKind::Bare,
         });
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
-        self.rows
-            .iter()
-            .any(|row| row.key == *elem)
-            .then_some(GroupId(0))
+        self.form.index_of_key(RowKey(*elem)).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
-        let Some(index) = self.rows.iter().position(|row| row.key == key.elem) else {
-            return Step::Edge;
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
         };
-        let next = match dir {
-            Dir::Up => index.checked_sub(1),
-            Dir::Down => Some(index + 1),
-            _ => None,
-        };
-        next.and_then(|i| self.rows.get(i))
-            .map_or(Step::Edge, |row| {
+        self.form
+            .step_key(RowKey(key.elem), delta)
+            .map_or(Step::Edge, |next| {
                 Step::Move(FocusKey {
                     entry: self.entry,
-                    elem: row.key,
+                    elem: next.0,
                 })
             })
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
-        let row = self.rows.iter().find(|row| row.key == *elem)?;
-        let rect = self.table.row_frame(self.frame(cx.measure), row.table_index)?;
+        let index = self.form.index_of_key(RowKey(*elem))?;
+        let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
             clip: self.frame(cx.measure),
-            index: Some(row.table_index as u32),
+            index: Some(index as u32),
         })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -656,18 +661,14 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.rows.first().map_or(0, |row| row.key),
+                elem: self.form.opening_key().map_or(0, |key| key.0),
             }
         }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         FocusKey {
             entry: self.entry,
-            elem: self
-                .rows
-                .iter()
-                .find(|row| row.table_index == self.table.sel)
-                .map_or(0, |row| row.key),
+            elem: self.form.selected_key().map_or(0, |key| key.0),
         }
     }
 }
@@ -698,16 +699,17 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         let frame = self.frame(measure);
         crate::ui::profile::phase("lb.menu", || {
             crate::ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field);
-            self.table.draw(p, frame, measure);
+            self.form.table.draw(p, frame, measure);
         });
-        for row in &self.rows {
-            if let Some(placed) = <Self as Focusable<H>>::place(self, &row.key, f.cx, At::Drawn) {
+        for index in 0..self.form.table.n_rows() as usize {
+            let Some(key) = self.form.key_at(index) else { continue };
+            if let Some(placed) = <Self as Focusable<H>>::place(self, &key.0, f.cx, At::Drawn) {
                 f.stop(
                     p,
                     Stop {
                         key: FocusKey {
                             entry: self.entry,
-                            elem: row.key,
+                            elem: key.0,
                         },
                         rect: placed.rect,
                         rest_rect: placed.rest_rect,
@@ -736,9 +738,14 @@ impl LogicalState for LibraryMenu {
         // The identity registry alone cannot distinguish a reorder or changed action payload.
         c.seq(self.stamp.len());
         for byte in &self.stamp { c.u8(*byte); }
-        c.seq(self.rows.len());
-        for row in &self.rows { c.u32(row.key).u32(row.table_index as u32); }
-        self.table.write_motion(c);
+        // Each focusable row as (key, table index), in layout order.
+        c.seq(self.form.focusable_len());
+        for index in 0..self.form.table.n_rows() as usize {
+            if let Some(key) = self.form.key_at(index) {
+                c.u32(key.0).u32(index as u32);
+            }
+        }
+        self.form.table.write_motion(c);
     }
     fn probe(&self, out: &mut String) {
         out.push_str("library_menu");
@@ -757,6 +764,30 @@ mod tests {
     use crate::ui::fixture::FixtureMeasure;
     use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
     use crate::ui::screen::ScreenArg;
+
+    /// A draft as a table lays it out — the drawn sections, and every focusable row as
+    /// `(identity, action, table index)` — so a test reads WHAT the menu shows and binds without
+    /// reaching into the form's internals.
+    struct Laid {
+        stamp: Vec<u8>,
+        sections: Vec<crate::ui::table::Section>,
+        rows: Vec<(String, Action, i32)>,
+        /// The table index the menu would seat: the draft's own pick, else the first row.
+        selected: i32,
+    }
+    fn lay(draft: MenuDraft) -> Laid {
+        let mut identities = Vec::new();
+        let mut laid = MenuTable::new(crate::screens::registry::BAND);
+        laid.set(number(draft.form, &mut identities), None);
+        let rows = (0..laid.table.n_rows() as usize)
+            .filter_map(|i| {
+                let b = laid.binding_at(i)?;
+                Some((b.id.clone(), b.action.clone(), i as i32))
+            })
+            .collect();
+        let selected = draft.selected.and_then(|id| laid.index_of(&id)).map_or(0, |i| i as i32);
+        Laid { stamp: draft.stamp, sections: std::mem::take(&mut laid.table.sections), rows, selected }
+    }
 
     #[derive(Clone)]
     struct Arg;
@@ -837,7 +868,7 @@ mod tests {
             title: "Title".into(),
             default_desc: false,
         }];
-        let up = sort_draft(&sorts, 0, false);
+        let up = lay(sort_draft(&sorts, 0, false));
         assert_eq!(
             up.sections[0].rows[0].ticon,
             Some(crate::ui::icons::Icon::ChevronUp)
@@ -847,7 +878,7 @@ mod tests {
             Action::Edit(QueryEdit::Sort { desc: true, .. })
         ));
 
-        let down = sort_draft(&sorts, 0, true);
+        let down = lay(sort_draft(&sorts, 0, true));
         assert_eq!(
             down.sections[0].rows[0].ticon,
             Some(crate::ui::icons::Icon::ChevronDown)
@@ -902,14 +933,14 @@ mod tests {
                 title: "Comedy".into(),
             },
         ];
-        let draft = genre_draft(&genres, Some(&genres[1]));
+        let draft = lay(genre_draft(&genres, Some(&genres[1])));
         assert_eq!(draft.sections[0].rows[0].label, "All Genres");
         assert!(!draft.sections[0].rows[0].checked);
         assert_eq!(draft.sections[0].rows[2].label, "Comedy");
         assert!(draft.sections[0].rows[2].checked);
         assert_eq!(draft.selected, 2);
 
-        let changed = genre_draft(&genres, Some(&genres[0]));
+        let changed = lay(genre_draft(&genres, Some(&genres[0])));
         assert_ne!(draft.stamp, changed.stamp);
         assert!(changed.sections[0].rows[1].checked);
         assert!(!changed.sections[0].rows[2].checked);
@@ -919,7 +950,7 @@ mod tests {
     fn tv_type_menu_checks_and_commits_each_granularity() {
         let types = [LibraryType::Primary, LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections];
         for (selected, current) in types.into_iter().enumerate() {
-            let draft = type_draft(SecKind::Show, current);
+            let draft = lay(type_draft(SecKind::Show, current));
             assert_eq!(draft.selected, selected as i32);
             assert_eq!(draft.sections[0].rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
                 ["TV Shows", "Seasons", "Episodes", "Collections"]);
@@ -929,13 +960,13 @@ mod tests {
             assert!(matches!(draft.rows[selected].1, Action::Edit(QueryEdit::LibraryType(kind)) if kind == current));
         }
         assert_ne!(type_draft(SecKind::Show, LibraryType::Primary).stamp,
-            type_draft(SecKind::Show, LibraryType::Episodes).stamp);
+            lay(type_draft(SecKind::Show, LibraryType::Episodes)).stamp);
     }
 
     #[test]
     fn movie_type_menu_offers_movies_and_collections() {
         for (selected, current) in [LibraryType::Primary, LibraryType::Collections].into_iter().enumerate() {
-            let draft = type_draft(SecKind::Movie, current);
+            let draft = lay(type_draft(SecKind::Movie, current));
             assert_eq!(draft.selected, selected as i32);
             assert_eq!(draft.sections[0].rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
                 ["Movies", "Collections"]);
@@ -943,7 +974,7 @@ mod tests {
         }
         // The same checked row names a different menu in the other kind of library.
         assert_ne!(type_draft(SecKind::Movie, LibraryType::Collections).stamp,
-            type_draft(SecKind::Show, LibraryType::Collections).stamp);
+            lay(type_draft(SecKind::Show, LibraryType::Collections)).stamp);
     }
 
     #[test]
@@ -952,14 +983,14 @@ mod tests {
             id: "7".into(),
             title: "Drama".into(),
         };
-        let all = filter_draft(false, None, true);
+        let all = lay(filter_draft(false, None, true));
         assert_eq!(all.sections[0].rows[1].value.as_deref(), Some("All"));
         assert!(matches!(
             all.rows[0].1,
             Action::Edit(QueryEdit::Unwatched(true))
         ));
 
-        let filtered = filter_draft(true, Some(&drama), true);
+        let filtered = lay(filter_draft(true, Some(&drama), true));
         assert_eq!(filtered.sections[0].rows[1].value.as_deref(), Some("Drama"));
         assert!(filtered.sections[0].rows[0].toggle == Some(true));
         assert!(matches!(
@@ -1022,7 +1053,7 @@ mod tests {
         // with_cx retains the same explicit directory shape a Bridge captures from its owner.
         let _guard = crate::testlock::serial();
         let (groups, sections) = source_sections();
-        let draft = source_draft(11, 0, &groups, &sections);
+        let draft = lay(source_draft(11, 0, &groups, &sections));
         assert_eq!(draft.sections.len(), 2);
         assert_eq!(draft.sections[1].header, "Friend NAS");
         assert_eq!(draft.sections[1].accessory, "friend");
@@ -1054,8 +1085,8 @@ mod tests {
                 anchor: [0; 4],
             },
         );
-        menu.apply_draft(draft);
-        let recheck = menu.rows[2].key;
+        menu.apply_draft(source_draft(11, 0, &groups, &sections));
+        let recheck = menu.form.key_at(3).expect("recheck is bound").0;
         let placed = with_cx(|cx|
             <LibraryMenu as Focusable<HostFixture>>::place(&menu, &recheck, cx, At::Drawn)
                 .expect("recheck remains placed after the separator"));
@@ -1080,13 +1111,13 @@ mod tests {
     #[test]
     fn sources_rebuild_on_metadata_without_changing_stable_row_identities() {
         let (groups, sections) = source_sections();
-        let before = source_draft(11, 0, &groups, &sections);
+        let before = lay(source_draft(11, 0, &groups, &sections));
         let mut changed_groups = groups.clone();
         changed_groups[1].state = SourceState::Unreachable;
         let mut changed_sections = sections.clone();
         changed_sections[1].row.count_line = "5 films".into();
         changed_sections[1].row.current = true;
-        let after = source_draft(11, 1, &changed_groups, &changed_sections);
+        let after = lay(source_draft(11, 1, &changed_groups, &changed_sections));
 
         assert_ne!(before.stamp, after.stamp);
         assert!(after.sections[1].dim);
@@ -1103,17 +1134,17 @@ mod tests {
         let (mut groups, sections) = source_sections();
         groups[0].name = "A:B".into();
         groups[0].handle = "C".into();
-        let first = source_draft(11, 0, &groups, &sections);
+        let first = lay(source_draft(11, 0, &groups, &sections));
         groups[0].name = "A".into();
         groups[0].handle = "B:C".into();
-        let second = source_draft(11, 0, &groups, &sections);
+        let second = lay(source_draft(11, 0, &groups, &sections));
         assert_ne!(first.stamp, second.stamp);
 
         groups[0].name = "A|B".into();
-        let third = source_draft(11, 0, &groups, &sections);
+        let third = lay(source_draft(11, 0, &groups, &sections));
         groups[0].name = "A".into();
         groups[0].handle = "B:C|A|B".into();
-        let fourth = source_draft(11, 0, &groups, &sections);
+        let fourth = lay(source_draft(11, 0, &groups, &sections));
         assert_ne!(third.stamp, fourth.stamp);
     }
 
@@ -1134,12 +1165,12 @@ mod tests {
             },
         );
         menu.apply_draft(source_draft(11, 0, &groups, &sections));
-        let focused_key = menu.rows[1].key;
-        menu.table.sel = menu.rows[1].table_index;
+        let focused_key = menu.form.key_at(1).expect("second source row").0;
+        menu.form.table.sel = 1;
         let quiet = source_draft(11, 0, &groups, &sections);
         menu.apply_draft(quiet);
         assert_eq!(
-            menu.table.sel, 1,
+            menu.form.table.sel, 1,
             "identical refresh does not reset TableView selection"
         );
 
@@ -1164,14 +1195,11 @@ mod tests {
         shifted[2].row.section = 2;
         menu.apply_draft(source_draft(11, 0, &groups, &shifted));
         assert_eq!(
-            menu.rows
-                .iter()
-                .find(|row| row.key == focused_key)
-                .map(|row| row.table_index),
+            menu.form.index_of_key(RowKey(focused_key)),
             Some(2)
         );
         assert_eq!(
-            menu.table.sel, 2,
+            menu.form.table.sel, 2,
             "metadata/shape refresh preserves the focused source key"
         );
     }
@@ -1190,7 +1218,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for kind in [SecKind::Movie, SecKind::Show] {
-                let draft = type_draft(kind, LibraryType::Collections);
+                let draft = lay(type_draft(kind, LibraryType::Collections));
                 let mut table = TableView::new();
                 table.set_sections(draft.sections, draft.selected, false);
                 out.extend(table.menu_cap_failure(&measure, &format!("{} {kind:?}", language.tag())));
@@ -1219,13 +1247,13 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             let tag = language.tag();
             let drafts = [
-                ("sort asc", sort_draft(&sorts, 1, false)),
-                ("sort desc", sort_draft(&sorts, 0, true)),
-                ("filter all", filter_draft(false, None, true)),
-                ("filter genre", filter_draft(true, Some(&genres[0]), true)),
-                ("filter no genres", filter_draft(false, None, false)),
-                ("genre all", genre_draft(&genres, None)),
-                ("genre one", genre_draft(&genres, Some(&genres[0]))),
+                ("sort asc", lay(sort_draft(&sorts, 1, false))),
+                ("sort desc", lay(sort_draft(&sorts, 0, true))),
+                ("filter all", lay(filter_draft(false, None, true))),
+                ("filter genre", lay(filter_draft(true, Some(&genres[0]), true))),
+                ("filter no genres", lay(filter_draft(false, None, false))),
+                ("genre all", lay(genre_draft(&genres, None))),
+                ("genre one", lay(genre_draft(&genres, Some(&genres[0])))),
             ];
             for (name, draft) in drafts {
                 let mut table = TableView::new();

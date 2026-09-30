@@ -840,7 +840,7 @@ mod tests {
         }
     }
 
-    /// A screen never keeps its own idea of which row is selected: `family::table_focus` seats the
+    /// A screen never keeps its own idea of which row is selected: `family::form_focus` seats the
     /// drawn table on whatever key the ENGINE reports through `FocusMoved`, and this is what wires
     /// that call into `LegalIndex` specifically.
     #[test]

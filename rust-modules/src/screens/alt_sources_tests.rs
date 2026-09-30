@@ -77,10 +77,17 @@ fn panel(host_sid: ServerId, rk: &str) -> AltSourcesScreen {
     )
 }
 
+/// The one section the screen draws for `list`, built through the same [`form_for`].
+fn section_for(list: &[AltRow]) -> crate::ui::table::Section {
+    let mut t = FormTable::<AltId, Action, std::convert::Infallible>::new(crate::ui::table_screen::BAND_BASE);
+    t.set(form_for(list, sid(0), "0"), None);
+    t.table.sections.remove(0)
+}
+
 /// What the panel would DRAW — the materialised table, not `rows(alt_copies(..))`. The pure path
 /// passes without the rebuild and proves nothing about what is on screen.
 fn drawn(p: &AltSourcesScreen) -> Vec<String> {
-    p.table.sections[0]
+    p.form.table.sections[0]
         .rows
         .iter()
         .map(|r| r.detail.clone())
@@ -315,25 +322,22 @@ fn ok_navigates_to_another_copy_and_never_to_the_one_you_are_on() {
     };
     let list = [row(0, "4"), row(1, "318"), row(2, "")];
     assert_eq!(
-        action_at(&list, 0, sid(0), "4"),
+        action_for(&list[0], sid(0), "4"),
         Action::None,
         "the copy you are on goes nowhere"
     );
     assert_eq!(
-        action_at(&list, 1, sid(0), "4"),
+        action_for(&list[1], sid(0), "4"),
         Action::Open {
             sid: sid(1),
             rk: "318".into()
         }
     );
     assert_eq!(
-        action_at(&list, 2, sid(0), "4"),
+        action_for(&list[2], sid(0), "4"),
         Action::None,
         "a copy with no ratingKey is not a destination"
     );
-    assert_eq!(action_at(&list, 3, sid(0), "4"), Action::None);
-    assert_eq!(action_at(&list, -1, sid(0), "4"), Action::None);
-    assert_eq!(action_at(&[], 0, sid(0), "4"), Action::None);
 }
 
 /// The headless stand-in describes what a device capture is looking at, so its SHAPE is graded
@@ -467,7 +471,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     alt_restamp_owners();
     assert!(p.refresh(test_store().view()), "the correction reached the drawn table");
     assert_eq!(
-        p.table.n_rows(),
+        p.form.table.n_rows(),
         2,
         "the open panel is rebuilt, not emptied or duplicated"
     );
@@ -726,7 +730,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
         crate::stores::metadata::MetadataStore::default().view(),
     );
     let measure = crate::ui::fixture::FixtureMeasure;
-    let want = panel_at(low, p.table.measured_width(&measure), p.table.measured_height());
+    let want = panel_at(low, p.form.table.measured_width(&measure), p.form.table.measured_height());
     let got = p.frame(&measure);
     assert_eq!((got.x, got.y, got.w, got.h), (want.x, want.y, want.w, want.h));
 }
@@ -879,12 +883,8 @@ mod focus_and_hit {
             here,
             "4",
         );
-        p.table.compact = false;
-        let mut sec = Section::new("");
-        for r in &p.rows {
-            sec = sec.row(Row::new(r.label.clone()).detail(r.detail.clone()).checked(r.checked));
-        }
-        p.table.set_sections(vec![sec], 0, false);
+        p.form.table.compact = false;
+        p.form.set(form_for(&p.rows, here, "4"), None);
         (p, here, there)
     }
 
@@ -951,7 +951,7 @@ mod focus_and_hit {
     fn place_matches_the_tables_own_row_geometry() {
         let (p, ..) = two_row_panel();
         let cx = fixture_cx(None);
-        let want = p.table.row_frame(p.frame(&crate::ui::fixture::FixtureMeasure), 1).expect("row 1 is drawn");
+        let want = p.form.table.row_frame(p.frame(&crate::ui::fixture::FixtureMeasure), 1).expect("row 1 is drawn");
         let placed = Focusable::<HostFixture>::place(&p, &1, &cx, At::Drawn).expect("row 1 places");
         assert_eq!(
             (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
@@ -976,7 +976,7 @@ mod focus_and_hit {
             by: crate::ui::screen::By::Dir,
         };
         assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
-        assert_eq!(p.table.sel, 1);
+        assert_eq!(p.form.table.sel, 1);
     }
 
     /// **`Activate` on the row you are NOT standing on navigates to it**, exactly what OK/click
@@ -1015,7 +1015,7 @@ mod focus_and_hit {
     }
 
     /// **Activating the row you are already standing on reports nothing to navigate to** — the
-    /// pure `action_at` rule the panel's `commit` defers to, exercised here through the same
+    /// pure `action_for` rule the panel's `commit` defers to, exercised here through the same
     /// `Activate` seam a real OK press now takes.
     #[test]
     fn activating_the_current_row_only_dismisses() {
@@ -1051,7 +1051,7 @@ mod focus_and_hit {
 }
 
 /// **Every app-owned run of the *Also available* panel fits its column, in every shipped
-/// language.** Built through the real [`rows`] (from copies) and the real [`section_for`] the
+/// language.** Built through the real [`rows`] (from copies) and the same [`form_for`] the
 /// screen draws from; the library and a friend's name are server/user text and exempt, so what is
 /// judged is the "This account" sub-line and the runtime read-out, at the shared [`MENU_MAX_W`] cap.
 #[test]

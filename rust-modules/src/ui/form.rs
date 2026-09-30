@@ -238,6 +238,60 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
         self.sections.push(s);
         self
     }
+    /// Does the built form hold a focusable row `id` (in a visible section)? What a rebuild asks
+    /// before it names a row to land on, so the landing never depends on a stale position.
+    pub fn contains(&self, id: &Id) -> bool
+    where
+        Id: PartialEq,
+    {
+        self.sections
+            .iter()
+            .filter(|s| s.visible)
+            .flat_map(|s| &s.slots)
+            .any(|slot| matches!(slot, Slot::Item(b, _) if &b.id == id))
+    }
+    /// The form's slots in layout order (visible sections only): `Some(binding)` for a focusable
+    /// row, `None` for a separator or note. A READ of what was declared — for a caller that must
+    /// stamp the layout (a change-detection key) without keeping a second list of it.
+    pub fn slots(&self) -> Vec<Option<&Binding<Id, A, Dest>>> {
+        self.sections
+            .iter()
+            .filter(|s| s.visible)
+            .flat_map(|s| &s.slots)
+            .map(|slot| match slot {
+                Slot::Item(b, _) => Some(b),
+                Slot::Inert(_) => None,
+            })
+            .collect()
+    }
+    /// Re-type every focusable row: `f` gets each binding and answers its replacement, or `None` to
+    /// demote the row to an inert slot — still DRAWN exactly as declared, but never focusable.
+    /// Sections, headers, accessories and every row's presentation pass through untouched, so a
+    /// shared builder (`ui::source_list::form`) serves a surface that has its own row identities.
+    pub fn map<Id2, A2>(self, mut f: impl FnMut(Binding<Id, A, Dest>) -> Option<Binding<Id2, A2, Dest>>) -> Form<Id2, A2, Dest> {
+        Form {
+            sections: self
+                .sections
+                .into_iter()
+                .map(|fs| FormSection {
+                    head: fs.head,
+                    visible: fs.visible,
+                    skipped: fs.skipped,
+                    slots: fs
+                        .slots
+                        .into_iter()
+                        .map(|slot| match slot {
+                            Slot::Item(b, row) => match f(b) {
+                                Some(b2) => Slot::Item(b2, row),
+                                None => Slot::Inert(row),
+                            },
+                            Slot::Inert(row) => Slot::Inert(row),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
     /// Exactly the `Vec<Section>` a hand builder would make, and the bindings indexed by GLOBAL
     /// row index (`None` at inert slots).
     fn build(self) -> (Vec<Section>, Vec<Option<Binding<Id, A, Dest>>>) {

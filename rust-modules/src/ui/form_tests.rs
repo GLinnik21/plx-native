@@ -492,3 +492,46 @@ fn key_helpers_resolve_by_identity_and_step_over_inert_rows() {
     assert_eq!(t.step_key(Id::A.key(), -1), None);
     assert_eq!(t.step_key(RowKey(999), 1), None, "an unknown key has no neighbour");
 }
+
+/// `Form::contains` answers for a focusable row in a VISIBLE section only: not an inert slot, not a
+/// dropped `item_if`, not a hidden section's row.
+#[test]
+fn contains_sees_only_focusable_rows_in_visible_sections() {
+    let f = F::new()
+        .section(S::new("Hidden").visible(false).item(Id::A, RowKind::Button, Act::A, Row::new("x")))
+        .section(
+            S::new("Shown")
+                .item_if(false, Id::B, RowKind::Button, Act::B, Row::new("y"))
+                .note("n")
+                .item(Id::C, RowKind::Button, Act::C, Row::new("z")),
+        );
+    assert!(!f.contains(&Id::A), "a hidden section's row is not in the form");
+    assert!(!f.contains(&Id::B), "a dropped item_if row is not in the form");
+    assert!(f.contains(&Id::C));
+    assert!(!f.contains(&Id::D));
+}
+
+/// `Form::map` re-types the bindings and leaves the drawing alone; a row it declines stays drawn
+/// but is inert; `slots` reads the layout back in order, `None` at inert slots.
+#[test]
+fn map_retypes_bindings_demotes_declined_rows_and_slots_read_the_layout() {
+    let before = sample(true);
+    let order: Vec<Option<Id>> = before.slots().into_iter().map(|b| b.map(|b| b.id.clone())).collect();
+    assert_eq!(order, [Some(Id::A), Some(Id::B), None, Some(Id::C), None, Some(Id::D)]);
+
+    let mapped = sample(true).map(|b| {
+        (b.id != Id::B).then(|| Binding {
+            id: format!("{:?}", b.id),
+            key: RowKey(b.key.0 + 1),
+            kind: b.kind,
+            action: (),
+            disabled: b.disabled,
+        })
+    });
+    let mut t: FormTable<String, (), Dest> = FormTable::new(100);
+    t.set(mapped, None);
+    assert_eq!(t.focusable_len(), 3, "A, C, D stay; B was demoted");
+    assert_eq!(t.id_at(1), None, "B keeps its layout index but is never bound");
+    assert_eq!(t.table.sections[0].rows[1].label, "Beta", "drawn exactly as declared");
+    assert_eq!(t.index_of_key(RowKey(11)), Some(0), "the key the closure answered is the key bound");
+}

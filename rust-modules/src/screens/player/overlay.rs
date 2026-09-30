@@ -667,7 +667,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // and extend the transport's read time exactly as a hand-moved cursor used to.
                 let i = to.elem as i32;
                 match &mut self.panel {
-                    Panel::Tracks(p) => p.set_sel(i),
+                    Panel::Tracks(p) => p.focus_key(to.elem),
                     Panel::Info(p) => p.set_focus(i),
                     Panel::Chapters(p) => p.set_sel(i),
                     Panel::More(p) => p.focus_key(to.elem),

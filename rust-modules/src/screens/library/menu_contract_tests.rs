@@ -103,19 +103,19 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
         SortEntry { key: "addedAt".into(), desc_key: String::new(), title: "Added".into(), default_desc: true },
     ];
     sort.apply_draft(sort_draft(&sorts, 0, false));
-    let sort_key = sort.rows[1].key;
+    let sort_key = sort.form.key_at(1).unwrap().0;
     let mut filter = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Filter, [0; 4]));
     filter.apply_draft(filter_draft(false, None, true));
-    let filter_key = filter.rows[0].key;
+    let filter_key = filter.form.key_at(0).unwrap().0;
     let (groups, sections) = source_sections();
     let mut sources = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
     sources.apply_draft(source_draft(11, 0, &groups, &sections));
-    let source_key = sources.rows[1].key;
+    let source_key = sources.form.key_at(1).unwrap().0;
 
     with_cx(|cx| {
-        assert!(matches!(sort.rows.iter().find(|row| row.key == sort_key).map(|row| &row.action), Some(Action::Edit(QueryEdit::Sort { key, desc: true })) if key == "addedAt"));
-        assert!(matches!(filter.rows.iter().find(|row| row.key == filter_key).map(|row| &row.action), Some(Action::Edit(QueryEdit::Unwatched(true)))));
-        assert!(matches!(sources.rows.iter().find(|row| row.key == source_key).map(|row| &row.action), Some(Action::Select(SectionAddress { sid, section: 7, .. })) if *sid == ServerId::from_raw(2)));
+        assert!(matches!(sort.form.index_of_key(RowKey(sort_key)).and_then(|i| sort.form.binding_at(i)).map(|b| &b.action), Some(Action::Edit(QueryEdit::Sort { key, desc: true })) if key == "addedAt"));
+        assert!(matches!(filter.form.index_of_key(RowKey(filter_key)).and_then(|i| filter.form.binding_at(i)).map(|b| &b.action), Some(Action::Edit(QueryEdit::Unwatched(true)))));
+        assert!(matches!(sources.form.index_of_key(RowKey(source_key)).and_then(|i| sources.form.binding_at(i)).map(|b| &b.action), Some(Action::Select(SectionAddress { sid, section: 7, .. })) if sid == &ServerId::from_raw(2)));
         assert!(<LibraryMenu as Focusable<HostFixture>>::place(&sort, &sort_key, cx, At::Drawn).is_some());
         assert!(<LibraryMenu as Focusable<HostFixture>>::place(&filter, &filter_key, cx, At::Drawn).is_some());
         assert!(<LibraryMenu as Focusable<HostFixture>>::place(&sources, &source_key, cx, At::Drawn).is_some());
@@ -164,7 +164,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
             &effect.fx,
             Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(
                 SectionAddress { sid, section: 7, .. }
-            )))) if *sid == ServerId::from_raw(2)
+            )))) if sid == &ServerId::from_raw(2)
         )));
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
@@ -241,13 +241,13 @@ fn open_sources_refreshes_metadata_once_then_settles() {
 
     let cx_first = source_cx(&listing, &first, &hubs, &measure, Tick { ms: 1, dt_us: 16_000 });
     effects(&mut menu, &cx_first);
-    let first_key = menu.rows[0].key;
+    let first_key = menu.form.key_at(0).unwrap().0;
     let first_stamp = menu.stamp.clone();
     assert_eq!(menu.draft_rebuilds, 1);
     effects(&mut menu, &cx_first);
     assert_eq!(menu.stamp, first_stamp);
-    assert_eq!(menu.rows[0].key, first_key, "an unchanged open source menu settles");
-    let first_selection = menu.table.sel;
+    assert_eq!(menu.form.key_at(0).unwrap().0, first_key, "an unchanged open source menu settles");
+    let first_selection = menu.form.table.sel;
     assert_eq!(menu.draft_rebuilds, 1);
 
     {
@@ -260,12 +260,12 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     effects(&mut menu, &cx_changed);
     assert_ne!(menu.stamp, first_stamp, "source metadata refresh rebuilds the open menu");
-    assert_eq!(menu.rows[0].key, first_key, "refresh preserves the row identity");
+    assert_eq!(menu.form.key_at(0).unwrap().0, first_key, "refresh preserves the row identity");
     assert_eq!(menu.draft_rebuilds, 2);
     let changed_stamp = menu.stamp.clone();
     effects(&mut menu, &cx_changed);
     assert_eq!(menu.stamp, changed_stamp, "the changed source menu settles after one rebuild");
-    assert_eq!(menu.rows[0].key, first_key);
-    assert_eq!(menu.table.sel, first_selection);
+    assert_eq!(menu.form.key_at(0).unwrap().0, first_key);
+    assert_eq!(menu.form.table.sel, first_selection);
     assert_eq!(menu.draft_rebuilds, 2);
 }
