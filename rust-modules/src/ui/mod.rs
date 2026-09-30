@@ -51,6 +51,9 @@ pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band
 pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
+pub mod form; // declared, ordered rows with stable keys: Form / FormTable (docs/settings-form.md)
+#[cfg(test)]
+mod form_tests;
 pub mod info_panel;
 #[cfg(test)]
 mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
