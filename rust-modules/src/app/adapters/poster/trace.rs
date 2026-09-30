@@ -26,7 +26,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
-use std::time::Instant;
 
 use super::PT_CAP;
 
@@ -253,7 +252,6 @@ impl Tracker {
 struct Global {
     t: Tracker,
     frame: u64,
-    t0: Option<Instant>,
 }
 static TRACE: Mutex<Option<Global>> = Mutex::new(None);
 
@@ -271,9 +269,12 @@ pub(super) fn armed() -> bool {
 
 fn with<R>(f: impl FnOnce(&mut Tracker, u64, u64) -> R) -> R {
     let mut g = TRACE.lock().unwrap_or_else(|e| e.into_inner());
-    let g = g.get_or_insert_with(|| Global { t: Tracker::default(), frame: 0, t0: None });
-    let t0 = *g.t0.get_or_insert_with(Instant::now);
-    let ms = t0.elapsed().as_millis() as u64;
+    let g = g.get_or_insert_with(|| Global { t: Tracker::default(), frame: 0 });
+    // The frame budget's performance counter (`diag::heartbeat::now_us`): monotonic, callable from
+    // the workers that report stages (`app::clock` is the main thread's frame time), and the
+    // instrument clock `app/` already reads in place of `Instant`. Every line prints differences
+    // only, so its origin does not matter.
+    let ms = crate::diag::heartbeat::now_us() / 1000;
     let frame = g.frame;
     f(&mut g.t, frame, ms)
 }
