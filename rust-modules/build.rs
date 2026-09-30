@@ -2,7 +2,7 @@
 //! itself LINKS on the developer's own machine — the host UI simulator, and the host TEST BINARY.
 //!
 //! Identity and version generation run for EVERY build. Host link configuration is a **no-op for the build
-//! that ships**: the television binary is linked by the Makefile, not by cargo (the crate is a
+//! that ships**: the television binary is linked by the Makefile, not by cargo (the ARM archive is a
 //! staticlib; a staticlib has no link step), so the ARM cross build reaches the early return below
 //! and emits nothing further.
 //!

@@ -8,10 +8,10 @@ name = "plxnative-modules"
 # report itself as the last published release.
 version = "0.7.0"
 edition = "2021"
-# The crate is a staticlib and is never published to crates.io, so these are not for a registry —
-# they are so `cargo metadata` and any SBOM tool agree with the repo's own LICENSE, which is the
-# provenance a webosbrew reviewer reads. The manifest asserting nothing while the root said MIT
-# was a contradiction with no upside.
+# The crate is linked into the C app as a staticlib (see [lib] below) and is never published to
+# crates.io, so these are not for a registry — they are so `cargo metadata` and any SBOM tool agree
+# with the repo's own LICENSE, which is the provenance a webosbrew reviewer reads. The manifest
+# asserting nothing while the root said MIT was a contradiction with no upside.
 license = "GPL-3.0-or-later"
 description = "Application core for PlxNative — an unofficial native Plex client for LG webOS."
 repository = "https://github.com/GLinnik21/plx-native"
@@ -20,11 +20,14 @@ repository = "https://github.com/GLinnik21/plx-native"
 # exposes the same C ABI its src/*.h declares, so the C code calls it unchanged.
 [lib]
 name = "plxnative_modules"
-# `staticlib` is what the Makefile links into the ARM binary. `rlib` is additionally required so
-# the host simulator binary below can depend on this same crate as a Rust library — a bin target
-# cannot link a staticlib-only crate. It costs the cross build one extra artifact and changes
-# nothing about the `.a` the Makefile picks up.
-crate-type = ["staticlib", "rlib"]
+# `rlib` only, and that is deliberate. The host simulator bin and the storage helper depend on this
+# crate as a Rust library, and a declared `staticlib` would make every cargo build that links it
+# also write a ~200 MB archive that bundles every upstream crate (and make the ARM build write an
+# rlib nobody links). The archive the Makefile links into the ARM binary is asked for explicitly
+# instead: `cargo rustc --lib --crate-type staticlib` in the `$(RUST_LIB)` rule, which writes the
+# same `libplxnative_modules.a`. A plain `cargo build` therefore produces NO archive —
+# `ci/test_no_host_staticlib.py` holds that line.
+crate-type = ["rlib"]
 
 # The macOS/desktop UI simulator. Not built by `make`, not shipped, and inert unless its feature is
 # on — see the `hostsim` feature below and `src/bin/sim.rs`.

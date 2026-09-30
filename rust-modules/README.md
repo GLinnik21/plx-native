@@ -1,6 +1,6 @@
 # rust-modules — the Rust app core
 
-This crate is a `staticlib` linked into the C binary (`pkg/plxnative`). It began as a
+This crate's ARM build is a `staticlib` linked into the C binary (`pkg/plxnative`). It began as a
 gradual, module-by-module C→Rust migration; today it IS the app — UI, event loop, player
 engine, demux pipeline, and the Plex data layer all live here (see `docs/agent-reference.md`
 for the architecture). The C side boots the process, records an async-signal-safe fallback crash
@@ -43,8 +43,8 @@ tool for the C++ interop.
 
 ## Build (see the Makefile for the full toolchain)
 
-Cross-compiled with plain `cargo +nightly build -Z build-std=std,panic_unwind` for
-`arm-unknown-linux-gnueabi`; the C side and the final link use the webOS NDK
+Cross-compiled (the `.a` via `cargo +nightly rustc --lib --crate-type staticlib`, with
+`-Z build-std=std,panic_unwind`) for `arm-unknown-linux-gnueabi`; the C side and the final link use the webOS NDK
 (`make setup-env`). Critical TV flags: `-C target-cpu=cortex-a9` (the default
 ARMv6 codegen emits a CP15 memory barrier that SIGILLs on this SoC; cortex-a9
 emits the dedicated `dmb`) and `-C target-feature=-neon`, with `-Z build-std`

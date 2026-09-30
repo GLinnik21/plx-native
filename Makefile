@@ -751,18 +751,25 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
 RUST_INPUTS := $(shell find rust-modules/src rust-modules/build_support locales assets -type f 2>/dev/null)
-$(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
+$(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
+	mkdir -p rust-modules/$(RUST_TDIR)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
-	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
-	    --lib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
+	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
+	@# The crate declares `crate-type = ["rlib"]`, so this `.a` exists only because the line above
+	@# asked for it. Checked AFTER cargo returns (never as a prerequisite, which would make a no-op
+	@# `make` fail): if cargo did not write the archive make links, the next step would relink an
+	@# OLD one with no comment.
+	python3 ci/check-staticlib-artifact.py rust-modules/$(RUST_TDIR)/.lib-artifacts.json $(RUST_LIB)
 
 # The helper is an independent executable: it has its own auxv implementation and must never
 # link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
 #
 # ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc --bin ... --no-default-
-# -features` and $(RUST_LIB)'s `cargo build --lib` (default features) are two DIFFERENTLY-
+# -features` and $(RUST_LIB)'s `cargo rustc --lib` (default features) are two DIFFERENTLY-
 # CONFIGURED invocations of the SAME package (plxnative-modules), and `make -j` runs them
 # concurrently — exactly the hazard rust-modules/.cargo/config.toml's own comment already
 # documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
@@ -1367,6 +1374,10 @@ check-unlocked: lint check-localization
 	python3 ci/test_link_evidence.py
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
+	@# The crate builds as an rlib only (the ARM archive is `cargo rustc --crate-type staticlib`, see
+	@# $(RUST_LIB)); this reads cargo's own artifact records for the build just above, so it adds no
+	@# compile, and fails if a host build ever writes a ~200 MB archive again.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py

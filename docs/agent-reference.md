@@ -307,8 +307,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
 `arm-webos-linux-gnueabi-gcc` (GCC 12, **glibc 2.12, armv7-a soft-float**; default `cortex-a9`
 codegen, so we do *not* pin `-mcpu`). It ships a **sysroot** with the TV's own SONAME'd libs,
-which the Makefile links against. Rust is a static lib built with plain `cargo +nightly build -Z
-build-std --target arm-unknown-linux-gnueabi` (a staticlib needs no linker, so no external
+which the Makefile links against. Rust is a static lib built with `cargo +nightly rustc --lib
+--crate-type staticlib -Z build-std --target arm-unknown-linux-gnueabi` (the crate itself declares
+`rlib` only; a staticlib needs no linker, so no external
 cross-linker — but `-Z build-std` + `-C target-cpu=cortex-a9` is load-bearing: the default
 ARMv6 codegen emits the CP15 barrier that SIGILLs on the A53; see the Makefile comment). Headers
 come from `include/` (the TV's SDL2 2.0.x-fork headers, kept ahead of the sysroot's newer copies
