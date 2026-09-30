@@ -1000,6 +1000,10 @@ fn request_tls_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
 ) -> Result<Resp, RequestFailure> {
+    // The one funnel every libcurl easy request passes (plex.tv account calls, PMS TLS control
+    // calls via `request_result_evidence`). A frame-thread caller would freeze the HUD for up to
+    // the request timeout: panic in host tests, abort under `threadcheck`.
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("curl request") });
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
@@ -1965,5 +1969,20 @@ mod tls_mode_tests {
         std::fs::create_dir_all(dir.join("roots.pem")).expect("temp dirs");
         assert_eq!(shipped_ca_bundle(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod blocking_guard_tests {
+    use super::*;
+
+    /// plex.tv calls (`AccountClient`) never pass `http::request_with`, so its `assert_may_block`
+    /// cannot see them; the guard lives in the libcurl funnel instead. The address is never
+    /// dialled: the guard fires before the request is built.
+    #[test]
+    #[should_panic(expected = "main-thread block: curl request")]
+    fn a_plex_tv_call_inside_a_frame_is_rejected() {
+        let _frame = crate::task::FrameScope::enter();
+        let _ = request_evidence("https://plex.tv.invalid/api/v2/ping", &[], "GET", None, API, false, None, None);
     }
 }

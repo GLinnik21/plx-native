@@ -29,6 +29,26 @@ pub(crate) fn transport_target(play: Option<bool>, paused: bool) -> bool {
     }
 }
 
+/// The transport state the VIEWER sees and their next press toggles.
+///
+/// A claim's presentation hold (`player::claim_hold`) pauses the stream too, but that pause is the
+/// hold's loan, not the viewer's: while it stands the viewer sees a spinner over a playing intent,
+/// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
+/// resume leaves the stream held until the landing.
+pub(crate) fn viewer_paused() -> bool {
+    paused() && !crate::player::claim_hold::owns_pause()
+}
+
+/// The clock intent an OS suspend saves for the foreground restore. Reads the transport through
+/// the same lens as the viewer's toggle ([`viewer_paused`]); the pause a claim's presentation hold
+/// is keeping is the hold's loan and must not be saved as the viewer's, or foregrounding a session
+/// that was playing under a spinner would restore it Paused.
+pub(crate) fn clock_for_suspend_now(
+    lifecycle: &ForegroundLifecycle,
+) -> ForegroundClock {
+    lifecycle.clock_for_suspend(viewer_paused())
+}
+
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
 /// gate at the same accepted native boundary; keeping a second commit here used to leave a window
 /// in which deadline accounting still treated an already-accepted Pause as active playback.
@@ -38,6 +58,15 @@ pub(crate) fn set_transport_paused(
     pa: &mut crate::player::adapter::PlayerAdapter,
     value: bool,
 ) -> bool {
+    // PLAY while a hold owns the pause: the viewer sees a spinner over a playing intent, so Play is
+    // already satisfied. Resuming here would run the OLD stream mid-flight and replay its seconds
+    // after the landing, which still owes the play-back. Not a press that outranks the hold.
+    if !value && crate::player::claim_hold::owns_pause() {
+        return true;
+    }
+    // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
+    // press that finds the transport already in the state it asks for.
+    crate::player::claim_hold::note_user_transport();
     if paused() == value {
         return true;
     }

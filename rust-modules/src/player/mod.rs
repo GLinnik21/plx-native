@@ -16,6 +16,7 @@
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
 #![allow(non_upper_case_globals)]
 pub(crate) mod adapter;
+pub(crate) mod claim_hold;
 pub(crate) mod ass; // pinned libass worker and immutable rendered frames
 pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub(crate) mod engine;
@@ -542,6 +543,11 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     // and the frozen target — a visible jump back and forth on every seek.
     if SHARED.seeking.load(Relaxed) {
         return shared::PlaybackState::Seeking;
+    }
+    // A retranscode claim's flight holds presentation (`claim_hold`): the stream is paused for the
+    // server's round trip, and the transport's busy mark is the HUD's existing way to say "working".
+    if claim_hold::active() {
+        return shared::PlaybackState::Buffering;
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }

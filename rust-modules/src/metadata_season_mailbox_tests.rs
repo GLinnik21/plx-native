@@ -211,3 +211,51 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
 
     clear(test_state(), test_adapter());
 }
+
+/// `app/run.rs::menu_play_tick` reaches `load_season_now` from inside the run loop's `FrameScope`,
+/// and the fetch is synchronous by design (the chained play of `episodes[0]` needs the list).
+/// `http::request_with` rejects any PMS call made inside a frame without `allow_blocking`, and
+/// `load_season_now` swallows a panic with `catch_unwind` -- so without the exception the season
+/// list silently never installs. The fixture serves one episode; the assertion is that it lands.
+#[test]
+fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
+    use std::io::{Read, Write};
+    let _serial = crate::testlock::serial();
+    assert!(crate::net::global_init() && crate::curlio::available());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let server = std::thread::spawn(move || {
+        // Bounded wait: the red state (no exception) never dials, and must fail rather than hang.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut conn = loop {
+            match listener.accept() {
+                Ok((conn, _)) => break conn,
+                Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(_) => return,
+            }
+        };
+        conn.set_nonblocking(false).unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = conn.read(&mut buf);
+        let body = r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"ep-menu","type":"episode","title":"E"}]}}"#;
+        let _ = write!(
+            conn,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+    });
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test("season-live", "127.0.0.1", port, "token", "season-client");
+    crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
+    install_show_on(sid, "show-1", 1, &["stale"]);
+
+    let frame = crate::task::FrameScope::enter();
+    load_season_now(test_state(), test_adapter(), 0);
+    drop(frame);
+
+    server.join().unwrap();
+    crate::plex::reset_servers_for_test();
+    assert_eq!(listed_eps(), ["ep-menu"], "the blocking season fetch must run under its allow_blocking exception");
+    assert_eq!(selected_tab(), 0);
+}

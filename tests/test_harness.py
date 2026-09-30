@@ -3188,6 +3188,20 @@ class AbrTraceMetrics(unittest.TestCase):
         files = run.triggers_for_case(case)
         self.assertIn(("plxnative-menupick", "0,boost"), files)
 
+    def test_subtitle_op_names_a_track_not_a_row(self):
+        """`subtitle_text_srt` once hard-coded row 3, which became the Color row (`menupick: row 3
+        already active -- no commit`). A `track` op derives the row in the app from the panel's own
+        row map; `row` still passes through verbatim."""
+        case = {"rk": "1", "operations": [{"op": "play"}, {"op": "subtitle", "tab": 1, "track": 0}]}
+        self.assertIn(("plxnative-menupick", "1,track:0"), run.triggers_for_case(case))
+        case["operations"][1] = {"op": "subtitle", "tab": 1, "row": 3}
+        self.assertIn(("plxnative-menupick", "1,3"), run.triggers_for_case(case))
+        with open(os.path.join(os.path.dirname(__file__), "manifest.json")) as fh:
+            manifest = json.load(fh)
+        rows = [op for c in manifest["cases"] for op in c.get("operations", [])
+                if op.get("op") == "subtitle" and "row" in op]
+        self.assertEqual(rows, [], "a hard-coded subtitle-menu row drifts; use `track`")
+
     def test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable(self):
         """issue #266 PR4 review: EVERY case forces the persisted preference at boot (default
         `off`), so a case's starting preference never depends on what an earlier case's pick left
@@ -5850,21 +5864,57 @@ class StreamSelectionReset(unittest.TestCase):
             ok = run.pms_reset_streams("tv.example", 32400, "72", "TOKEN")
         self.assertFalse(ok)
 
-    def test_server_selected_subtitle_case_opts_out_of_the_reset(self):
-        """audio_enhancement_burns_server_selected_subtitle's whole premise is PMS's OWN current
-        pick, not the manifest's declared default -- an unconditional reset would erase exactly
-        the precondition this case reads, so it must declare stream_reset: false rather than get
-        it by accident."""
-        m = _manifest()
-        cases = {c["name"]: c for c in m["cases"]}
-        case = cases["audio_enhancement_burns_server_selected_subtitle"]
-        self.assertFalse(case.get("stream_reset", True))
+    def test_server_selected_subtitle_case_seeds_its_own_subtitle_after_the_reset(self):
+        """audio_enhancement_burns_server_selected_subtitle reads a SERVER-selected subtitle, and
+        `subtitle_text_srt` plays the same part -- its reset/pick leaves an explicit selection,
+        so relying on stream_reset: false made the case order-dependent. The case now declares
+        `setup.seed_subtitle`; `apply_stream_setup` must reset, THEN PUT a non-zero
+        subtitleStreamID resolved from live metadata (no id in the manifest)."""
+        case = {c["name"]: c for c in _manifest()["cases"]}[
+            "audio_enhancement_burns_server_selected_subtitle"]
+        case = {"rk": "72", **case}
+        self.assertTrue(case.get("stream_reset", True))
+        self.assertNotIn("stream_reset", case)
+        self.assertIn("seed_subtitle", case["setup"])
+        self.assertNotRegex(json.dumps(case["setup"]), r"\d{4}")
+        streams = [
+            {"id": 2694, "streamType": 1},
+            {"id": 2695, "streamType": 2, "selected": 1},
+            {"id": 2697, "streamType": 3, "languageCode": "eng"},
+            {"id": 2698, "streamType": 3, "languageCode": "deu"},
+        ]
+        calls = []
+
+        def fake_urlopen(req, timeout=15):
+            calls.append(req.full_url)
+            resp = (self._metadata_response(streams, part_id=749)
+                    if "/library/metadata/" in req.full_url else io.BytesIO(b""))
+            resp.status = 200
+            return self._urlopen_ctx(resp)
+
+        with mock.patch.object(run.urllib.request, "urlopen", side_effect=fake_urlopen):
+            run.apply_stream_setup("tv.example", 32400, case, "TOKEN")
+        puts = [u for u in calls if "/library/parts/749" in u]
+        self.assertEqual(len(puts), 2, calls)
+        self.assertIn("subtitleStreamID=0", puts[0])
+        self.assertIn("subtitleStreamID=2697", puts[1])
+        self.assertIn("allParts=1", puts[1])
+
+    def test_seed_subtitle_resolves_by_language_and_refuses_a_missing_track(self):
+        streams = [{"id": 5, "streamType": 3, "languageCode": "eng"},
+                   {"id": 6, "streamType": 3, "languageCode": "deu"}]
+        part = {"Stream": streams}
+        self.assertEqual(run.pms_resolve_subtitle_stream(part, {"language": "deu"}), 6)
+        self.assertEqual(run.pms_resolve_subtitle_stream(part, {"track": 1}), 6)
+        self.assertIsNone(run.pms_resolve_subtitle_stream(part, {"track": 2}))
+        self.assertIsNone(run.pms_resolve_subtitle_stream(part, {"language": "fra"}))
 
     def test_run_case_guards_the_reset_on_stream_reset_key(self):
         """The manifest key is only a convention unless `run_case` actually reads it -- inspect
         the source (same trick as `abr_shape_keys` above) rather than driving the whole
         (TV-calling) function, so this stays a host-only, network-free assertion."""
-        src = inspect.getsource(run.run_case)
+        self.assertIn("apply_stream_setup(", inspect.getsource(run.run_case))
+        src = inspect.getsource(run.apply_stream_setup)
         self.assertIn('case.get("stream_reset", True)', src)
         self.assertIn("pms_reset_streams(", src)
 

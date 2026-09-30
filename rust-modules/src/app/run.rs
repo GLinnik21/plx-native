@@ -783,7 +783,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // resolving would otherwise save (and restore to) the spot the user just
             // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
             let saved_ns = intended_pos(&mut app.player.session);
-            let clock = app.player.lifecycle.clock_for_suspend(paused());
+            let clock = super::lifecycle::clock_for_suspend_now(&app.player.lifecycle);
             app.player.lifecycle.suspend(saved_ns, clock);
             // The OS took the screen; whatever the pointer was doing, its button-up is never
             // going to arrive here.

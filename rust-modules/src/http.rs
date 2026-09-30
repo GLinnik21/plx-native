@@ -269,6 +269,16 @@ fn request_with(
     body_policy: BodyPolicy,
     pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
+    // This is the single dispatch chokepoint for every PMS/plex.tv REST call, plaintext or TLS.
+    // A frame-thread caller landing here blocks on SO_RCVTIMEO (up to 15s) with the HUD frozen; the
+    // dev threadcheck watchdog SIGABRTs after 2s instead. `assert_may_block` panics (host tests) or
+    // aborts (device, `feature="threadcheck"`) if this runs while `FrameScope` says we are on the
+    // frame thread and nothing has explicitly called `allow_blocking` first. A call site that trips
+    // this in `cargo test` is doing PMS I/O on the main thread and needs to move to a worker (see
+    // `route::decision::try_retranscode` for the pattern) or, if it is a pre-existing, not-yet-split
+    // path, wrap the call with `allow_blocking` and say why.
+    let _guard =
+        crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("PMS HTTP") });
     if !credential_transport_allowed(origin, path, headers) {
         return RequestOutcome::Transport(None);
     }

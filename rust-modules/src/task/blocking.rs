@@ -29,10 +29,12 @@ impl Drop for FrameScope {
     fn drop(&mut self) { FRAMES.with(|depth| depth.set(depth.get() - 1)); }
 }
 
-#[allow(dead_code)] // Explicit escape hatch; no production call site currently needs it.
 pub(crate) struct AllowBlocking { _label: super::watchdog::LabelScope }
-/// Explicit exceptions belong at user actions, with a reason and follow-up at the call site.
-#[allow(dead_code)] // Kept available for a justified, greppable exception.
+/// Explicit exceptions belong at user actions, with a reason and follow-up at the call site. See
+/// `route::decision`'s `retranscode_as` and the `ClaimPrimary::ReleaseToDirect` arm of
+/// `execute_retranscode_claim` for the two call sites this repo currently has, both labelled
+/// "pending split" — the recovery arm (`recover_auto_to_original_for`/`admit_original_part`/
+/// `admit_or_plain_remux`) still runs its PMS I/O on the frame thread and is the next one to move.
 pub(crate) fn allow_blocking(reason: &'static BlockingLabel) -> AllowBlocking {
     assert!(!reason.text.is_empty());
     ALLOWED.with(|depth| depth.set(depth.get() + 1));
