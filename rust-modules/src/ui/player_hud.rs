@@ -79,15 +79,20 @@ pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
     draw_subtitle_message(&text, hud_up);
 }
 
-/// Shared caption placement for plain text and a styled-renderer failure message.
+/// Shared caption placement for plain text and a styled-renderer failure message. Text size and
+/// vertical placement follow the viewer's Settings > Playback picks (`route::subtitle_size`,
+/// `route::subtitle_position`) — native ASS/SSA keeps its authored style instead
+/// (`docs/ass-subtitles.md`).
 pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
+    let scale = subtitle_size_scale(crate::route::subtitle_size());
+    let max_chars = ((42.0 / scale).round() as usize).max(20);
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
         let seg = seg.trim();
         if seg.is_empty() {
             continue;
         }
-        for l in wrap(seg, 42) {
+        for l in wrap(seg, max_chars) {
             if lines.len() < MAX_CAPTION_LINES {
                 lines.push(l);
             }
@@ -96,12 +101,15 @@ pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
     if lines.is_empty() {
         return;
     }
-    let sz = 36; // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
-    let lh = CAPTION_LINE_PITCH;
+    // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
+    let sz = (36.0 * scale).round() as i32;
+    let lh = CAPTION_LINE_PITCH * scale;
     let n = lines.len() as f32;
     let cx = SCR_W * 0.5;
-    // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
-    let baseline = if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y };
+    // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up; the viewer's
+    // Position pick lifts it further still, same direction, on top of that
+    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y })
+        - subtitle_position_lift(crate::route::subtitle_position());
     let block_top = baseline - n * lh;
     let ink = subtitle_ink(); // white unless the viewer picked a dimmer tone (track menu)
     let outline = theme::scrim_black(0.85);
@@ -130,6 +138,31 @@ fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
         .get(tone.index() as usize)
         .copied()
         .unwrap_or(theme::SUBTITLE_INKS[0])
+}
+
+/// The face-size multiplier for the viewer's Settings > Playback pick, applied to the plain-text
+/// caption's 36 px base face ([`draw_subtitle_message`]) and its line pitch/wrap width together,
+/// so a larger caption still wraps before it runs off either edge.
+fn subtitle_size_scale(size: crate::plex::session::SubtitleSize) -> f32 {
+    use crate::plex::session::SubtitleSize;
+    match size {
+        SubtitleSize::Small => 0.78,
+        SubtitleSize::Medium => 1.0,
+        SubtitleSize::Large => 1.25,
+        SubtitleSize::ExtraLarge => 1.5,
+    }
+}
+
+/// How far ABOVE [`SUB_BASE_Y`]/[`SUB_CEIL_Y`] the viewer's Position pick lifts the plain-text
+/// caption ([`draw_subtitle_message`]) — Low is the baseline every build before this preference
+/// drew, so it lifts nothing.
+fn subtitle_position_lift(position: crate::plex::session::SubtitlePosition) -> f32 {
+    use crate::plex::session::SubtitlePosition;
+    match position {
+        SubtitlePosition::Low => 0.0,
+        SubtitlePosition::Middle => 160.0,
+        SubtitlePosition::High => 320.0,
+    }
 }
 
 /// Subtitle baseline: where the caption block sits with the transport DOWN, and the ceiling it

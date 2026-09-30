@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
-use crate::route::{DirectPlayMode, Quality};
+use crate::route::{DirectPlayMode, Quality, SubtitlePosition, SubtitleSize};
 use crate::ui::decision_prompt::{DecisionPrompt, PromptStep};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -27,16 +27,17 @@ pub(crate) const SHAPE: &str = "PreferencesV2{kind:u8,picker:u8,selection:u32,bu
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind { Playback, AudioSubtitles }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field { Quality, DirectPlay, AudioLanguage, SubtitleMode, SubtitleLanguage, ForcedSubtitles }
+enum Field { Quality, DirectPlay, SubtitleSize, SubtitlePosition, AudioLanguage, SubtitleMode, SubtitleLanguage, ForcedSubtitles }
 impl Field {
     fn title(self) -> &'static str { match self {
         Self::Quality => crate::i18n::msg::settings_playback_quality(), Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play(),
+        Self::SubtitleSize => crate::i18n::msg::settings_playback_subtitle_size(), Self::SubtitlePosition => crate::i18n::msg::settings_playback_subtitle_position(),
         Self::AudioLanguage => crate::i18n::msg::settings_audio_language(), Self::SubtitleMode => crate::i18n::msg::settings_audio_subtitles(),
         Self::SubtitleLanguage => crate::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => crate::i18n::msg::settings_audio_forced_subtitles(),
     }}
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Value { Quality(Quality), DirectPlay(DirectPlayMode), Language(String), Mode(i64), Forced(i64) }
+enum Value { Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), Language(String), Mode(i64), Forced(i64) }
 #[derive(Clone)]
 enum Action { Open(Field), Pick(Value), Retry }
 struct State {
@@ -167,6 +168,8 @@ impl PreferencesPage {
         let command = match value {
             Value::Quality(quality) => PreferenceCmd::Quality { quality, reply },
             Value::DirectPlay(mode) => PreferenceCmd::DirectPlay { mode, reply },
+            Value::SubtitleSize(size) => PreferenceCmd::SubtitleSize { size, reply },
+            Value::SubtitlePosition(position) => PreferenceCmd::SubtitlePosition { position, reply },
             _ => return,
         };
         self.pending = Some(Pending::Local(rx)); self.state.busy = true;
@@ -258,7 +261,7 @@ impl PreferencesPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::Quality(_) | Value::DirectPlay(_) => self.save_local(value, fx),
+            Value::Quality(_) | Value::DirectPlay(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) => self.save_local(value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.picker, value) {
@@ -322,6 +325,8 @@ fn resolve_value(field: Field, quality: Quality, direct_play: DirectPlayMode, pr
     match field {
         Field::Quality => Value::Quality(quality),
         Field::DirectPlay => Value::DirectPlay(direct_play),
+        Field::SubtitleSize => Value::SubtitleSize(crate::route::subtitle_size()),
+        Field::SubtitlePosition => Value::SubtitlePosition(crate::route::subtitle_position()),
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
         Field::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
         Field::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
@@ -336,6 +341,10 @@ fn field_options(field: Field, quality: Quality, direct_play: DirectPlayMode, pr
             .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
         Field::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
             .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
+        Field::SubtitleSize => SubtitleSize::LADDER.into_iter()
+            .map(|s| (subtitle_size_label(s).into(), Value::SubtitleSize(s))).collect(),
+        Field::SubtitlePosition => SubtitlePosition::LADDER.into_iter()
+            .map(|p| (subtitle_position_label(p).into(), Value::SubtitlePosition(p))).collect(),
         Field::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
             .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
         Field::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
@@ -363,6 +372,8 @@ fn field_readout(field: Field, quality: Quality, direct_play: DirectPlayMode, pr
         // Only the foreign-audio mode has a short form (es does not fit beside the label); the
         // other two modes show the picker's own label.
         Field::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => crate::i18n::msg::settings_audio_foreign_short().into(),
+        Field::SubtitleSize => subtitle_size_label(crate::route::subtitle_size()).into(),
+        Field::SubtitlePosition => subtitle_position_label(crate::route::subtitle_position()).into(),
         _ => {
             let current = resolve_value(field, quality, direct_play, prefs);
             field_options(field, quality, direct_play, prefs).into_iter().find(|(_, v)| *v == current)
@@ -386,7 +397,7 @@ struct FieldSectionInputs<'a> {
 fn field_section(inputs: &FieldSectionInputs<'_>) -> (Section, Vec<String>, Vec<Action>) {
     let mut section = Section::new("");
     let fields: &[Field] = match inputs.kind {
-        Kind::Playback => &[Field::Quality, Field::DirectPlay],
+        Kind::Playback => &[Field::Quality, Field::DirectPlay, Field::SubtitleSize, Field::SubtitlePosition],
         Kind::AudioSubtitles if inputs.prefs.is_some() => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
         _ => &[],
     };
@@ -413,6 +424,21 @@ fn field_section(inputs: &FieldSectionInputs<'_>) -> (Section, Vec<String>, Vec<
 }
 fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
+}
+fn subtitle_size_label(size: SubtitleSize) -> &'static str {
+    match size {
+        SubtitleSize::Small => crate::i18n::msg::settings_playback_subtitle_size_small(),
+        SubtitleSize::Medium => crate::i18n::msg::settings_playback_subtitle_size_medium(),
+        SubtitleSize::Large => crate::i18n::msg::settings_playback_subtitle_size_large(),
+        SubtitleSize::ExtraLarge => crate::i18n::msg::settings_playback_subtitle_size_extra_large(),
+    }
+}
+fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
+    match position {
+        SubtitlePosition::Low => crate::i18n::msg::settings_playback_subtitle_position_low(),
+        SubtitlePosition::Middle => crate::i18n::msg::settings_playback_subtitle_position_middle(),
+        SubtitlePosition::High => crate::i18n::msg::settings_playback_subtitle_position_high(),
+    }
 }
 /// The Direct Play row's trailing read-out. `mode_label`'s Forced string is long enough to squeeze
 /// the row's label, so Forced alone takes the short form; the picker lists the full strings.

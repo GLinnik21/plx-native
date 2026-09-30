@@ -632,6 +632,42 @@
     "value": "Direct Play",
     "description": "Settings, consent or sign-in UI: settings.playback.direct_play"
   },
+  "settings.playback.subtitle_size": {
+    "value": "Subtitle size",
+    "description": "Settings, consent or sign-in UI: the client-rendered subtitle caption's text size."
+  },
+  "settings.playback.subtitle_size.small": {
+    "value": "Small",
+    "description": "Subtitle size picker option: the smallest client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.medium": {
+    "value": "Medium",
+    "description": "Subtitle size picker option: the default client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.large": {
+    "value": "Large",
+    "description": "Subtitle size picker option: a larger client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.extra_large": {
+    "value": "Extra Large",
+    "description": "Subtitle size picker option: the largest client-rendered caption size."
+  },
+  "settings.playback.subtitle_position": {
+    "value": "Subtitle position",
+    "description": "Settings, consent or sign-in UI: how high above the bottom edge the client-rendered subtitle caption sits."
+  },
+  "settings.playback.subtitle_position.low": {
+    "value": "Low",
+    "description": "Subtitle position picker option: the caption sits near the bottom edge (the default)."
+  },
+  "settings.playback.subtitle_position.middle": {
+    "value": "Middle",
+    "description": "Subtitle position picker option: the caption sits further up the picture."
+  },
+  "settings.playback.subtitle_position.high": {
+    "value": "High",
+    "description": "Subtitle position picker option: the caption sits near the top of the safe area."
+  },
   "settings.audio.language": {
     "value": "Preferred audio language",
     "description": "Settings, consent or sign-in UI: settings.audio.language"
