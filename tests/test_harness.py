@@ -988,6 +988,8 @@ class FpsIdentity(unittest.TestCase):
     def test_settings_scenes_carry_the_50_fps_contract_and_idle_inverse(self):
         scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
         for name, overlay in (("settings-root", "settings"),
+                              ("settings-playback", "playback"),
+                              ("settings-picker", "picker"),
                               ("settings-privacy", "privacy"),
                               ("settings-legal", "legal")):
             with self.subTest(scene=name):

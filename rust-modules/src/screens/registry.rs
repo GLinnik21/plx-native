@@ -1185,6 +1185,12 @@ pub(crate) mod word {
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";
     pub(crate) const LEGAL: &str = "legal";
+    /// The Playback page, the Audio & Subtitles page and a preference's choice list
+    /// (`screens::preferences`): pages of the Settings family's inner stack, each its own
+    /// `overlay=` word so a scene can tell them from the root.
+    pub(crate) const PLAYBACK: &str = "playback";
+    pub(crate) const AUDIO: &str = "audio";
+    pub(crate) const PICKER: &str = "picker";
     pub(crate) const CONSENT: &str = "consent";
     pub(crate) const ONBOARD: &str = "onboard";
     /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s
@@ -1985,6 +1991,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::person_bio::SHAPE,
     "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::screens::preferences::SHAPE,
+    crate::screens::preferences::PICKER_SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2080,7 +2087,9 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 // from 0x38a9_2955_0af8_72f6 (see the doc paragraphs above), to 0xbb81_9301_0d21_bc8a on main.
 // Localization's Settings pages then join it as LocalizationSettingsV4, with the language
 // picker's busy state and the login report alert (0x677d_0944_ef25_3900 before the collections).
-const SCREEN_SHAPES_PIN: u64 = 0x668c_44dc_797c_5b0f;
+// Settings form PR 3: the picker is its own page (`PickerV1`) and the field list is a FormTable
+// page (`PreferencesV3`); the previous pin was 0x668c_44dc_797c_5b0f.
+const SCREEN_SHAPES_PIN: u64 = 0x1a5c_e155_557b_e949;
 
 #[cfg(test)]
 mod arg_tests {

@@ -528,7 +528,7 @@ pub(crate) fn libswitch_armed() -> bool {
 pub(crate) fn searchosc_armed() -> bool {
     crate::dev::flag("searchosc")
 }
-/// `/tmp/plxnative-settings=<root|home|privacy|legal>`.
+/// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|picker-quality|…>`.
 pub(crate) fn settings_boot_value() -> Option<String> {
     crate::dev::read("settings")
 }
@@ -1080,6 +1080,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "language" => crate::screens::family::SettingsPage::Language,
                 "contribute" => crate::screens::family::SettingsPage::Contribute,
                 "playback" => crate::screens::family::SettingsPage::Playback,
+                // root → Playback → the Quality picker (`SettingsPage::boot_trail`), so BACK works.
+                "picker-quality" => crate::screens::family::SettingsPage::Picker(crate::screens::family::PickerKind::Quality),
                 "audio" => crate::screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]

@@ -33,7 +33,7 @@ use std::borrow::Cow;
 use crate::ui::containers::stack::{Instance, NavStack};
 use crate::ui::containers::transition::Immediate;
 use crate::ui::containers::{Life, Minter};
-use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, Key,
@@ -50,7 +50,7 @@ use crate::ui::table::{Row, Section, TableView};
 use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::{theme, Painter, Rect};
 
-use super::family::{form_focus, inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -79,8 +79,8 @@ fn settings_entrance_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
     local_alpha * nav_page_alpha
 }
 
-/// The push spring — the family's one `RoutePush`, shared with the pages' in-place submenus —
-/// with the page it is carrying OUT on a pop.
+/// The push spring — the family's one `RoutePush`, the only one, since every Settings drill-down is a stack
+/// push — with the page it is carrying OUT on a pop.
 struct Push {
     route: RoutePush,
     /// Which endpoint the spring is driving to: a push runs to open, a pop back to closed.
@@ -149,7 +149,13 @@ impl RouteSurface {
             ground_ready: false,
             remembered: Vec::new(),
         };
-        s.inner.request(NavOp::Root(root), ReturnState::default());
+        let mut trail = root.boot_trail().into_iter();
+        if let Some(first) = trail.next() {
+            s.inner.request(NavOp::Root(first), ReturnState::default());
+        }
+        for page in trail {
+            s.inner.request(NavOp::Push(page), ReturnState::default());
+        }
         s
     }
 
@@ -450,6 +456,7 @@ fn mount_page(
             Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
+        SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
     }
 }
 
@@ -483,8 +490,11 @@ fn mount_page(
 ///
 ///  * `RootPage` → `RootState`: the selected row's `RowKey` (identity, not position; `remembered` holds
 ///    the same keys for the root), Automatically Sign In, and trailer autoplay.
-///  * `PreferencesPage`: page/picker identity, confirmed values, pending/error presentation and
-///    the Force acknowledgement state. See `screens::preferences::SHAPE`.
+///  * `PreferencesPage` (Playback, Audio & Subtitles): the selected field's `RowKey`, confirmed
+///    values and pending/error presentation. See `screens::preferences::SHAPE`.
+///  * `PickerPage` (one preference's choice list, `SettingsPage::Picker`): which field, the
+///    selected option's position, the checked option, pending/error presentation and the Force
+///    acknowledgement state. See `screens::preferences::PICKER_SHAPE`.
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
@@ -816,7 +826,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
-        // `super::family` here matches this file's own `use super::family::{form_focus, inner_cx,
+        // `super::family` here matches this file's own `use super::family::{form_activate, form_focus, form_right_target, inner_cx,
         // table_focus, InnerHost, SettingsPage, ALERT_GROUP};` above — `family` is shared vocabulary, not a sibling screen.
         super::family::set_palette(self.ground.palette());
         match self.kind {
@@ -1316,13 +1326,8 @@ impl RootPage {
     /// Activate the row whose focus key is `key` (an `Activate` element or the RIGHT rule's).
     fn activate(&mut self, key: u32, directory: crate::stores::browse::DirectoryView<'_>,
         fx: &mut Effects<'_, InnerHost>) {
-        let Some(index) = self.form.index_of_key(RowKey(key)) else {
+        let Some(action) = form_activate(&self.form, key, fx) else {
             return;
-        };
-        let action = match self.form.activate(index) {
-            Some(Activation::Push(dest)) => return fx.push(Fx::Nav(NavOp::Push(dest))),
-            Some(Activation::Action(action)) => action,
-            None => return,
         };
         match action {
             Action::Door => {}
@@ -1462,12 +1467,8 @@ impl Machine<InnerHost> for RootPage {
                 ..
             }) => {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
-                if let Some(k) = cx.focus.current {
-                    let opens = self.form.index_of_key(RowKey(k.elem))
-                        .is_some_and(|i| self.form.table.row_opens(i as i32));
-                    if opens {
-                        self.activate(k.elem, cx.views, fx);
-                    }
+                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
+                    self.activate(key, cx.views, fx);
                 }
                 Handled::Yes
             }
@@ -1569,6 +1570,10 @@ mod pop_and_remember_tests;
 #[cfg(test)]
 #[path = "settings_composed_tests.rs"]
 mod composed_tests;
+
+#[cfg(test)]
+#[path = "settings_nav_structure_tests.rs"]
+mod nav_structure_tests;
 
 // The picker persists an installation preference, while the immutable LocaleContext continues
 // to render the current session. Choosing a language never remounts a screen or resets playback.

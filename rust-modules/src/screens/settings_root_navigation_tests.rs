@@ -4,6 +4,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use crate::ui::form::Activation;
 use crate::ui::machine::{Edge, InputEvent, InputKind, Source};
 use crate::ui::present::Present;
 use crate::ui::screen::By;

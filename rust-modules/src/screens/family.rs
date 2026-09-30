@@ -84,6 +84,46 @@ pub(crate) enum SettingsPage {
     Preview(u8),
     /// The FIRST-RUN consent question: one stage per page, the second pushed over the first.
     ConsentStage(u8),
+    /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
+    Picker(PickerKind),
+}
+
+/// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the first four,
+/// `AudioSubtitles` for the rest) and the page's own title/options live in `screens::preferences`;
+/// the NAME of the field lives here because the parent pushes it through this vocabulary rather
+/// than through the module that implements it (the module doc's rule).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PickerKind {
+    Quality,
+    DirectPlay,
+    SubtitleSize,
+    SubtitlePosition,
+    AudioLanguage,
+    SubtitleMode,
+    SubtitleLanguage,
+    ForcedSubtitles,
+}
+
+impl SettingsPage {
+    /// The pages a boot target opens the surface over, root first: `plxnative-settings=picker-…`
+    /// is reached as root → Playback → the picker, so BACK from it lands where an interactive
+    /// visit would. Every other page is booted as the surface's root.
+    pub(crate) fn boot_trail(self) -> Vec<SettingsPage> {
+        match self {
+            SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
+            page => vec![page],
+        }
+    }
+}
+
+impl PickerKind {
+    /// The page that lists this field (its picker is pushed from there and returns there).
+    pub(crate) fn parent(self) -> SettingsPage {
+        match self {
+            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition => SettingsPage::Playback,
+            _ => SettingsPage::AudioSubtitles,
+        }
+    }
 }
 
 impl ScreenArg for SettingsPage {
@@ -104,6 +144,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Document(_) => 105,
             SettingsPage::Preview(_) => 106,
             SettingsPage::ConsentStage(_) => 107,
+            SettingsPage::Picker(_) => 112,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -141,6 +182,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Legal
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
+            SettingsPage::Picker(kind) => *kind as u8,
         });
     }
     fn probe(&self, out: &mut String) {
@@ -157,9 +199,13 @@ impl LogicalState for SettingsPage {
             SettingsPage::Document(_) => "document",
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
+            SettingsPage::Picker(_) => "picker",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
+        }
+        if let SettingsPage::Picker(kind) = self {
+            out.push_str(&format!("[{}]", *kind as u8));
         }
     }
 }
@@ -249,8 +295,44 @@ pub(crate) const TABLE_GROUP: GroupId = GroupId(0);
 pub(crate) const BAND_GROUP: GroupId = GroupId(1);
 pub(crate) const ALERT_GROUP: GroupId = GroupId(2);
 
-use crate::ui::form::{FormTable, RowKey};
-use crate::ui::machine::GroupId;
+use crate::ui::form::{Activation, FormTable, RowKey};
+use crate::ui::machine::{Effects, Fx, GroupId, NavOp};
+
+/// **The ONE activation path of every form page in the family** (docs/settings-form.md,
+/// "Navigation"): resolve the focus key to its row and either push the row's destination — a
+/// `Nav` item emits `Fx::Nav(NavOp::Push(dest))` itself and answers `None` — or hand back the
+/// row's action for the page's own `match`. No page pushes through a private path, and no page
+/// owns a `RoutePush`: the surface is the only stack executor.
+pub(crate) fn form_activate<Id, A>(
+    form: &FormTable<Id, A, SettingsPage>,
+    key: u32,
+    fx: &mut Effects<'_, InnerHost>,
+) -> Option<A>
+where
+    Id: PartialEq + Clone,
+    A: Clone,
+{
+    let index = form.index_of_key(RowKey(key))?;
+    match form.activate(index)? {
+        Activation::Push(dest) => {
+            fx.push(Fx::Nav(NavOp::Push(dest)));
+            None
+        }
+        Activation::Action(action) => Some(action),
+    }
+}
+
+/// Rule 8 (RIGHT on a row that opens nested content enters it, exactly as OK does): the focus key
+/// of the row RIGHT should activate, if the focused row opens something.
+pub(crate) fn form_right_target<Id, A, Dest>(form: &FormTable<Id, A, Dest>, key: u32) -> Option<u32>
+where
+    Id: PartialEq + Clone,
+    A: Clone,
+    Dest: Clone,
+{
+    let i = form.index_of_key(RowKey(key))?;
+    form.table.row_opens(i as i32).then_some(key)
+}
 
 thread_local! {
     /// The surface's ground palette, published for the frame so the pages' controls are keyed to
@@ -342,6 +424,7 @@ mod tests {
             SettingsPage::Document(0),
             SettingsPage::Preview(0),
             SettingsPage::ConsentStage(0),
+            SettingsPage::Picker(PickerKind::Quality),
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| crate::ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();
