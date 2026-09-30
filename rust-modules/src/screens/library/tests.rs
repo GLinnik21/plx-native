@@ -1234,13 +1234,14 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
 
 /// **The page glyph and the Library's own live tab strip never overlap.** They used to (measured
 /// 254-216 = 38px, `status.rs`'s own comment: "the Library keeps its chrome live ABOVE the
-/// read-out" while the glyph box sat fixed at 216..328) whenever a failed section's page still
-/// carried other, populated tabs. `status_overlay` now passes `glyph_ceiling` at the tab strip's
+/// read-out" while the glyph box sat fixed at 216..328, anchor 372) whenever a failed section's
+/// page still carried other, populated tabs; with the anchor at 540 the natural box starts at 384,
+/// clear of the strip with room to spare. `status_overlay` still passes `glyph_ceiling` at the tab strip's
 /// bottom (`CONTENT_TOP..CONTENT_TOP+CTRL_H` = library/layout's `CONTENT_TOP` =
 /// `ui::consts::GRID_TOP_Y` = 194, height `StatusOverlay::CTRL_H` = 60, so screen y 194..254)
-/// whenever `self.libraries` — the tabs — is non-empty, and `StatusOverlay::glyph_rect` shrinks
-/// the glyph box to clear it rather than let the two overlap. Without a live strip the glyph
-/// still draws at its natural, unshrunk 216..328 box — the fix must be a no-op there.
+/// whenever `self.libraries` — the tabs — is non-empty, and `StatusOverlay::glyph_rect` would shrink
+/// the glyph box to clear it rather than let the two overlap. At this anchor it never has to: with
+/// or without a live strip the glyph draws at its natural, unshrunk 384..496 box.
 #[test]
 fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     use crate::ui::widgets::StatusOverlay;
@@ -1268,11 +1269,11 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     let cx = fixture.cx(Some(page.key(RETRY)));
     let (caption, reason) = page.status_text(&cx);
     let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
-    let glyph = overlay.glyph_frame().expect("a live strip still leaves room for a shrunk glyph at this ceiling");
-    assert!(glyph.y >= tab_strip_bottom,
-        "the glyph box (top y={}) must not start above the tab strip's bottom (y={tab_strip_bottom})", glyph.y);
-    assert!(glyph.h < StatusOverlay::GLYPH_SIZE, "the live strip must actually shrink the glyph below its natural \
-        {}px, or this fixture is not exercising `glyph_ceiling`", StatusOverlay::GLYPH_SIZE);
+    let glyph = overlay.glyph_frame().expect("a live strip never omits the glyph at this anchor");
+    assert!(glyph.y >= tab_strip_bottom + StatusOverlay::GLYPH_CEILING_MARGIN,
+        "the glyph box (top y={}) must start clear of the tab strip's bottom (y={tab_strip_bottom})", glyph.y);
+    assert_eq!(glyph.h, StatusOverlay::GLYPH_SIZE, "the anchor sits low enough that the strip no longer reaches \
+        the glyph, so a live strip costs it nothing — the ceiling is only a guard now");
 
     // No live strip (`Fixture::new`'s single, un-favourited-enough section clears
     // `self.libraries`): the glyph is unaffected, at its natural, unshrunk position.

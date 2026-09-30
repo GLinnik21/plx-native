@@ -556,11 +556,11 @@ mod ink_tests {
         }
     }
 
-    /// **Every size the Library's `glyph_ceiling` shrink can actually land the page glyph at
+    /// **Every size a `glyph_ceiling` shrink (the Collection header's) can actually land the page glyph at
     /// rasterizes 1:1 too**, not just the natural 112px — `StatusOverlay::glyph_rect` scales
     /// continuously between `GLYPH_MIN_SIZE` (56, below which it draws nothing) and `GLYPH_SIZE`
     /// (112), and every value in that range must clear `MAX_ICON_PX` unclamped or a shrunk glyph
-    /// goes soft exactly where the Library fix put it. One representative mark (rasterizing all
+    /// goes soft exactly where the ceiling put it. One representative mark (rasterizing all
     /// twelve at every size would be redundant with the test above, which already grades all
     /// twelve at 112) is enough to catch a clamp regression at the sizes that matter.
     #[test]

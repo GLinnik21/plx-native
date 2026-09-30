@@ -3503,7 +3503,7 @@ impl PageGround {
 // [`StatusOverlay::FULL_ANCHOR_TOP`] in screen space with the reason and the row stacked under it,
 // so all three share one verdict line (and one row line when they carry the same copy). The Library's still leaves its chrome
 // live above it (a section failing is not the app failing, `Shared Sources.dc.html` D); it just no
-// longer centres in the region under that chrome, which dropped its block ~250px below Home's.
+// longer centres in the region under that chrome, which dropped its block well below Home's.
 //
 // **Up to three blocks, and each answers one question**: the verdict (what happened), the reason
 // (why, and what is NOT broken), the action (the one thing to press). Two of the three are
@@ -3621,11 +3621,11 @@ impl<'a> StatusOverlay<'a> {
     /// The FULL-SCREEN top anchor: the player's failure glyph, and the verdict band of a
     /// [page-filling](Self::page) `Failed` read-out. Anchored from the top so the verdict stays
     /// put whatever grows below it.
-    pub const FULL_ANCHOR_TOP: f32 = 372.0;
+    pub const FULL_ANCHOR_TOP: f32 = 540.0;
     /// A [page-placed](Self::page) `Failed` read-out's glyph — square, this side.
     pub const GLYPH_SIZE: f32 = 112.0;
     /// The air between the glyph's bottom edge and [`Self::FULL_ANCHOR_TOP`] — the verdict's cap
-    /// top, so the glyph box's own top sits at `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE` (216 on
+    /// top, so the glyph box's own top sits at `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE` (384 on
     /// the 1920×1080 screen space every page-filling read-out shares).
     pub const GLYPH_GAP: f32 = 44.0;
     /// The air kept between the (possibly shrunk) glyph box's top edge and
@@ -3694,9 +3694,9 @@ impl<'a> StatusOverlay<'a> {
     }
     /// **Some OTHER chrome on this page already occupies down to this y — shrink the glyph to
     /// clear it, rather than let the two overlap.** The Library keeps its tab strip live above a
-    /// failed section's read-out (a section failing is not the app failing), and that strip can
-    /// reach as low as y 254 while the glyph's natural box starts at 216 — an ~38px overlap if
-    /// nothing accounts for it. Only the glyph box (and the air above the verdict it sits in)
+    /// failed section's read-out (a section failing is not the app failing). That strip reaches
+    /// y 254 and the glyph's natural box starts at 384, so today nothing collides; the ceiling is
+    /// the guard for chrome that grows down into the box (at anchor 372 it was an ~38px overlap). Only the glyph box (and the air above the verdict it sits in)
     /// shrinks; [`Self::FULL_ANCHOR_TOP`] never moves, so the verdict, reason and action row are
     /// unaffected. Below [`Self::GLYPH_MIN_SIZE`] the glyph is dropped rather than drawn as a
     /// thumbnail. Home and sign-in pass no ceiling — they own the whole page above the verdict —
@@ -3752,7 +3752,7 @@ impl<'a> StatusOverlay<'a> {
     }
     /// **The ONE place a page-placed `Failed` read-out's glyph box is computed** — square,
     /// centred horizontally on `frame`, its bottom edge above [`Self::FULL_ANCHOR_TOP`] by a gap,
-    /// with no `ceiling`: [`Self::GLYPH_SIZE`] and [`Self::GLYPH_GAP`] exactly (216 on the shared
+    /// with no `ceiling`: [`Self::GLYPH_SIZE`] and [`Self::GLYPH_GAP`] exactly (384 on the shared
     /// 1920×1080 screen space `frame` is `Rect::FULL` for every page-placed read-out).
     ///
     /// With a `ceiling` (`glyph_ceiling`'s y), the size and the gap shrink TOGETHER by whatever

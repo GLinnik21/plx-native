@@ -11,7 +11,7 @@ impl LibraryScreen {
         };
         // A failed source fills the page under the live chrome, so it stands on the shared page
         // lines (`StatusOverlay::page`) — level with Home's and the sign-in failure's — rather than
-        // centring in the content region, which dropped it ~250px below them. Loading and the
+        // centring in the content region, which dropped it well below them. Loading and the
         // empty answer keep the region.
         // Same untyped "can't reach" verdict as Home's — no typed cause here either, so the two
         // pages share the glyph.
@@ -20,8 +20,8 @@ impl LibraryScreen {
             .focused(cx.focus.current == Some(self.key(RETRY)));
         // The tab strip (`draw_library_controls`) stays live above a failed section's read-out —
         // a section failing is not the app failing — so the glyph is told where that chrome's
-        // bottom edge is and shrinks to clear it rather than overlap it (`glyph_ceiling`'s own
-        // doc). `self.libraries` empty is exactly the condition `draw_library_controls` itself
+        // bottom edge is, and would shrink to clear it if the strip ever reached the natural box
+        // (`glyph_ceiling`'s own doc). At the current anchor it never does; the ceiling is a guard. `self.libraries` empty is exactly the condition `draw_library_controls` itself
         // uses to skip drawing the strip at all.
         if !self.libraries.is_empty() {
             overlay = overlay.glyph_ceiling(CONTENT_TOP + StatusOverlay::CTRL_H);

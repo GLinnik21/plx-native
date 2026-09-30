@@ -264,8 +264,8 @@ presentation in a design pass.
    Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
    `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument). A
-   read-out centred in its own container instead lands ~250 px low and reads as a different
-   component.
+   read-out centred in its own container instead lands visibly off that verdict line and reads as a
+   different component.
 
 5. **Read the DS contract before inventing a control state.** Focus, hover and selected treatments
    come from the component's `.d.ts` in the design system, not from a lane's judgement. The Search
