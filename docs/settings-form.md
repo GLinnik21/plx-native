@@ -5,6 +5,9 @@ menus) a declared, ordered list of rows, and every Settings drill-down one stack
 in three rounds by an independent model reviewer before implementation; this file is the
 agreed result.
 
+**Status:** PR 1 (`ui/form.rs`) and PR 2 (keyed focus: `TablePart::keys`, `family::form_focus`; the Settings
+root on `root_form` / `FormTable`) have landed; PRs 3-5 are open. Every other page still uses index focus.
+
 ## Goals (owner)
 
 1. "Settings are a straightforward structure. It should be described like SwiftUI, and switching

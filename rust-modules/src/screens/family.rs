@@ -213,8 +213,9 @@ pub(crate) fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, I
 }
 
 /// Seat a table on the engine's focus: a row key parks the selection on that row and lights the
-/// list; a key elsewhere (the band, the alert) dims it. Every page in the family answers
-/// `FocusMoved` with this, so the drawn selection and the engine never disagree.
+/// list; a key elsewhere (the band, the alert) dims it. Every page in the family NOT yet on a
+/// `FormTable` answers `FocusMoved` with this (elem = row index), so the drawn selection and the
+/// engine never disagree; a form page answers with [`form_focus`].
 pub(crate) fn table_focus(table: &mut TableView, elem: u32) {
     if elem < super::registry::BAND && (elem as i32) < table.n_rows() {
         table.sel = elem as i32;
@@ -224,11 +225,31 @@ pub(crate) fn table_focus(table: &mut TableView, elem: u32) {
     }
 }
 
+/// [`table_focus`] for a form-backed page: the elem is a row's [`RowKey`] number, not its index.
+/// A key the form does not know (the band, the alert, a row that left) dims the list.
+pub(crate) fn form_focus<Id, A, Dest>(form: &mut FormTable<Id, A, Dest>, elem: u32)
+where
+    Id: PartialEq + Clone,
+    A: Clone,
+    Dest: Clone,
+{
+    let on_table = form.index_of_key(RowKey(elem)).filter(|_| elem < super::registry::BAND);
+    form.note_engine_key(on_table.map(|_| RowKey(elem)));
+    match on_table {
+        Some(i) => {
+            form.table.sel = i as i32;
+            form.table.list_focused = true;
+        }
+        None => form.table.list_focused = false,
+    }
+}
+
 /// The band's group in every page of the family; the table is `GroupId(0)`, an alert `GroupId(2)`.
 pub(crate) const TABLE_GROUP: GroupId = GroupId(0);
 pub(crate) const BAND_GROUP: GroupId = GroupId(1);
 pub(crate) const ALERT_GROUP: GroupId = GroupId(2);
 
+use crate::ui::form::{FormTable, RowKey};
 use crate::ui::machine::GroupId;
 
 thread_local! {

@@ -359,7 +359,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
 }
 
 /// **The composition, at depth.** Signed out, the Settings root's rows are Video & playback
-/// / Language / Privacy & data / Legal notices / About, so OK on row 3 pushes the Legal index; LEFT off that index's
+/// / Language / Privacy & data / Legal notices / About, so OK on Legal notices pushes the Legal index; LEFT off that index's
 /// column then runs the whole chain — edge rule, synthetic BACK, the surface's own pop —
 /// and lands back on the Settings root with the surface still up and still owning input.
 #[test]
@@ -373,7 +373,7 @@ fn left_inside_the_family_pops_the_inner_stack_and_never_dismisses_the_surface()
         path(&d, id)
     );
 
-    seat(&mut d, id, 3);
+    seat(&mut d, id, root_key(RootId::Legal));
     frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
     assert!(
         path(&d, id).contains("/legal:"),
@@ -416,7 +416,7 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
     let _g = crate::testlock::serial();
     let _sess = scratch_session("composed-left-root");
     let (mut d, mut rig, id) = opened();
-    seat(&mut d, id, 0);
+    seat(&mut d, id, root_key(RootId::Playback));
     frame(&mut d, &mut rig, 32, vec![key(Key::Left, tick(32))]);
     assert!(
         path(&d, id).starts_with("settings/root:"),
@@ -455,9 +455,9 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
 /// snapshot, so neither can observe this regression; only a real key through the real engine
 /// leaves a real remembered cursor for `ContainerGroup` to (wrongly) read back.
 ///
-/// Fixture choice: the SIGNED-OUT root, like every other test in this file — its second row
-/// (`elem: 3`) is Legal notices. A signed-in root prepends Favourites and moves Legal to index 6,
-/// which would still prove the same thing but is not what `opened()` boots here.
+/// Fixture choice: the SIGNED-OUT root, like every other test in this file — its Legal notices
+/// row (by identity: its `RowKey`, not an index). A signed-in root prepends Favourites
+/// and moves Legal down, which would still prove the same thing but is not what `opened()` boots.
 #[test]
 fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_it() {
     let _g = crate::testlock::serial();
@@ -475,7 +475,7 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, 3, "row 3 is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the third DOWN is Legal notices in the signed-out fixture");
 
     frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
     assert!(
@@ -696,7 +696,8 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
         ms += 16;
     }
     let audio_row = d.focus().expect("a root row is focused").elem;
-    assert_eq!(audio_row, 2, "the premise: Audio & subtitles is root row 2, not the page's first row");
+    assert_eq!(audio_row, root_key(RootId::AudioSubtitles),
+        "the premise: Audio & subtitles is the root's row, not the page's first row");
     frame(&mut d, &mut rig, ms, vec![key(Key::Ok, tick(ms))]);
     assert!(path(&d, id).contains("/audio-subtitles:"), "OK pushed Audio & Subtitles: {}", path(&d, id));
     frame(&mut d, &mut rig, ms + 16, vec![]);
@@ -708,4 +709,110 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
     frame(&mut d, &mut rig, ms + 48, vec![]);
     assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
         "the first landed rows seat the top row, not the root's stale row {audio_row}");
+}
+
+// ---- a rebuild that moves or drops rows, through the REAL dispatcher and focus engine ----------
+//
+// The page lands by identity (`FormTable::set`); the engine keeps the KEY it last held. These
+// tests run whole frames so the engine's own per-frame reconcile is what is graded: a hand-fed
+// `FocusMoved` never sees the engine disagree with the page.
+
+fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_ms: u32) -> u32 {
+    let mut ms = from_ms;
+    for _ in 0..6 {
+        ms += 16;
+        frame(d, rig, ms, vec![]);
+    }
+    ms
+}
+
+/// Walk focus to `elem` with real DOWN presses (a `set_focus` seat sends the page no `FocusMoved`).
+fn walk_to(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, mut ms: u32, elem: u32) -> u32 {
+    for _ in 0..12 {
+        if d.focus().map(|k| k.elem) == Some(elem) {
+            return ms;
+        }
+        ms += 16;
+        frame(d, rig, ms, vec![key(Key::Down, tick(ms))]);
+    }
+    panic!("never reached {elem}: focus {:?}", d.focus());
+}
+
+fn sel_of(d: &Dispatcher<InnerHost>, id: EntryId) -> u32 {
+    let p = path(d, id);
+    let at = p.find("root sel=").unwrap_or_else(|| panic!("not on the root: {p}")) + "root sel=".len();
+    p[at..].split(' ').next().unwrap().parse().unwrap()
+}
+
+fn sign_out() {
+    crate::plex::session::save(&crate::plex::session::Session::default());
+}
+
+#[test]
+fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-signout");
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    ms = walk_to(&mut d, &mut rig, ms, root_key(RootId::TrailerAutoplay));
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::TrailerAutoplay)), "premise: signed in, on Trailer autoplay");
+    sign_out();
+    settle_frames(&mut d, &mut rig, ms);
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Privacy)),
+        "the engine follows the page's identity landing (next survivor), not row 0");
+    assert_eq!(sel_of(&d, id), root_key(RootId::Privacy), "the page and the engine agree");
+}
+
+#[test]
+fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_key() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-plaintext");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
+    let mut saved: crate::plex::session::Session = (*crate::plex::session::peek()).clone();
+    for m in ["m-a", "m-b", "m-c"] {
+        saved = saved.with_plaintext_choice(&account, m, PlaintextChoice::Allowed);
+    }
+    crate::plex::session::save(&saved);
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    let (a, b, c) = (PLAINTEXT_KEY_BASE, PLAINTEXT_KEY_BASE + 1, PLAINTEXT_KEY_BASE + 2);
+    ms = walk_to(&mut d, &mut rig, ms, b);
+    assert_eq!(d.focus().map(|k| k.elem), Some(b), "premise: focus on the second server");
+    let _ = (a, c);
+    // the first server's answer is withdrawn: B is now the FIRST switch, key 1000
+    crate::plex::session::save(&crate::plex::session::peek().with_plaintext_choice(&account, "m-a", PlaintextChoice::Undecided));
+    ms = settle_frames(&mut d, &mut rig, ms);
+    assert_eq!(d.focus().map(|k| k.elem), Some(PLAINTEXT_KEY_BASE),
+        "focus stays on m-b, which moved to the first switch; the stale key 1001 now names m-c");
+    assert_eq!(sel_of(&d, id), PLAINTEXT_KEY_BASE);
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    crate::storage_worker::drain_for_test();
+    let after = crate::plex::session::peek();
+    assert_eq!(after.plaintext_choice(&account, "m-b"), PlaintextChoice::Revoked, "OK toggled the focused server");
+    assert_eq!(after.plaintext_choice(&account, "m-c"), PlaintextChoice::Allowed, "and not the one that took its key");
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_pop_after_the_list_changed_reseats_on_the_row_the_page_landed_on() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-pop");
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    ms = walk_to(&mut d, &mut rig, ms, root_key(RootId::AudioSubtitles));
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    ms = settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).contains("audio"), "premise: the Audio & subtitles page is pushed: {}", path(&d, id));
+    sign_out(); // Audio & subtitles is a signed-in row: it is gone when we come back
+    ms = settle_frames(&mut d, &mut rig, ms);
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Back, tick(ms + 16))]);
+    settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).starts_with("settings/root:"), "{}", path(&d, id));
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Language)),
+        "the stale remembered key reseats on the page's landing (next survivor), not row 0");
+    assert_eq!(sel_of(&d, id), root_key(RootId::Language));
 }
