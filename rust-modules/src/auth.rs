@@ -642,9 +642,12 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
             let id = register_observed_origin("", &server.origin(), token, server.resolve_pin().as_ref(), connection, client_id);
             crate::plex::set_current(id);
         }
-        owner::RegistryPlan::Activate { source, ipv6 } => {
+        owner::RegistryPlan::Activate { source, ipv6, same_identity } => {
             let Some(origin) = source.origin() else { return false };
             let Some(location) = source.tier else { return false };
+            if !*same_identity {
+                crate::plex::revoke_before_foreign_retoken(&source.machine_id, &source.token);
+            }
             apply_candidate_activation(CandidateActivation {
                 machine_id: source.machine_id.clone(), token: source.token.clone(),
                 name: source.name.clone(), credit: source.shared_by.clone(), owned: source.owned,
@@ -666,13 +669,17 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
             }
             // Only a switch changes WHO is asking, so only a switch revokes every live token first.
             // A refresh of the seated identity re-tokens in place (`RosterCommit::Refresh`).
-            if *commit == RosterCommit::Switch {
-                crate::plex::revoke_for_profile_switch();
+            match commit {
+                RosterCommit::Switch => crate::plex::revoke_for_profile_switch(),
+                RosterCommit::Refresh { same_identity: false } => for s in sources {
+                    crate::plex::revoke_before_foreign_retoken(&s.machine_id, &s.token);
+                },
+                RosterCommit::Refresh { same_identity: true } | RosterCommit::Merge => {}
             }
             let installed = install_roster(sources, *primary, client_id);
             match commit {
                 RosterCommit::Switch => crate::plex::finish_profile_switch(&installed),
-                RosterCommit::Refresh => crate::plex::finish_roster_refresh(&installed),
+                RosterCommit::Refresh { .. } => crate::plex::finish_roster_refresh(&installed),
                 RosterCommit::Merge => {}
             }
             for source in sources {
@@ -3323,6 +3330,25 @@ fn refreshed_sources(
         }
     }
     out
+}
+
+/// **Is the SEATED profile provably the account holder** whose `account_token` listed the roster
+/// being applied? The roster refresh runs only for an admin seat, but "admin" is not "the account
+/// signed in": a non-managed Home member who signed in with their own plex.tv account and switched
+/// to the admin's tile has an admin seat and the MEMBER's account token, so every grant the
+/// refresh carries is the member's. No stored field names the account holder, so the proof is
+/// structural:
+///
+/// - no Plex Home selection was ever made (`user.uuid` empty): the seat IS the signed-in account;
+/// - or a server the holder's answer calls `owned` (`holder_owns`) is also `owned` in the seated
+///   profile's own roster — a Plex server has exactly one owning account, so the two are one.
+///
+/// Anything else is unproven, and the caller revokes a live token before replacing it.
+fn seated_is_account_holder<'a>(seated: &Session, holder_owns: impl IntoIterator<Item = &'a str>) -> bool {
+    seated.user.uuid.is_empty()
+        || holder_owns.into_iter().any(|machine| {
+            seated.sources.iter().any(|s| s.owned && s.machine_id == machine)
+        })
 }
 
 fn same_sources(a: &[SourceRef], b: &[SourceRef]) -> bool {

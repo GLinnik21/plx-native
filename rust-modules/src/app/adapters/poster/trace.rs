@@ -1,6 +1,7 @@
 //! `imgtrace` — the per-image timeline of the poster pipeline, armed by `/tmp/plxnative-imgtrace`
-//! (`dev::scenarios::imgtrace_armed`). Inert unless armed; without `devtriggers` the flag is
-//! `false` at compile time and every entry point returns at its first line.
+//! (`dev::scenarios::imgtrace_armed`). Inert unless armed: every entry point returns at its first
+//! line when the latch reads `false`, and without `devtriggers` the trigger reader behind it always
+//! answers `false`, so the latch never arms.
 //!
 //! **What it answers.** A tile that draws its placeholder and then its picture looks the same to a
 //! viewer whether (a) the picture is simply arriving for the first time, or (b) the picture WAS on
@@ -10,16 +11,17 @@
 //!
 //! ```text
 //! imgtrace: k=1a2b3c4d shown n=1 frames=9 ms=141 probes=4 maxgap=5f unknown=1 moving=0 why=declined_new:1,loading:2 claim=+1f/+16ms worker=+17ms disk=hit decode=+29ms handoff=+3f draw=+9f after=first
-//! imgtrace: k=1a2b3c4d HIDDEN n=1 shown_frames=212 gap=1f cause=token_gen
+//! imgtrace: k=1a2b3c4d HIDDEN n=1 shown_frames=212 gap=1f cause=grant_epoch
 //! ```
 //!
 //! `shown` closes a placeholder episode: every offset is from the episode's FIRST draw probe;
 //! `unknown`/`moving` count the probes the card-motion gate declined before the claim; `after`
 //! names what ended the previous episode (`first` for a first appearance). `HIDDEN` is the true
 //! blink: a draw that found no texture for an identity whose previous draw had one, with the last
-//! recorded loss (`evicted`, `refused`, `recycled`, `token_gen`, `cache_gen`, `key_changed`,
-//! `failed`) or `unknown`, and `gap`, the frames since that identity was last drawn — a tile that
-//! scrolled away and came back has a gap, a blink in place has `gap=1f`.
+//! recorded loss (`evicted`, `refused`, `recycled`, `grant_epoch` — the server's credential now
+//! speaks for another identity — `cache_gen`, `key_changed`, `failed`) or `unknown`, and `gap`, the
+//! frames since that identity was last drawn — a tile that scrolled away and came back has a gap, a
+//! blink in place has `gap=1f`.
 //!
 //! Rate: at most two lines per episode per identity, and [`LINE_CAP`] for the whole process.
 
@@ -431,12 +433,12 @@ mod tests {
     fn a_generation_loss_is_only_charged_to_an_identity_that_was_shown() {
         let mut t = Tracker::default();
         t.probe(5, 50, false, Gate::Open, 1, 0);
-        t.lost_id(5, "token_gen");
+        t.lost_id(5, "grant_epoch");
         let l = t.probe(5, 50, true, Gate::Open, 2, 16);
         assert!(l[0].ends_with("after=first"), "{}", l[0]);
-        t.lost_id(5, "token_gen");
+        t.lost_id(5, "grant_epoch");
         let l = t.probe(5, 50, false, Gate::Open, 3, 32);
-        assert!(l[0].ends_with("gap=1f cause=token_gen"), "{}", l[0]);
+        assert!(l[0].ends_with("gap=1f cause=grant_epoch"), "{}", l[0]);
     }
 
     #[test]

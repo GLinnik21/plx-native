@@ -218,10 +218,14 @@ pub(crate) enum RosterCommit {
     /// Register the roster beside whatever is live — a boot, a picker's cached roster, discovery
     /// progress. Nothing is retired.
     Merge,
-    /// The SAME seated identity's roster re-read from plex.tv (the admin's boot reconcile): install
-    /// in place and retire only what it no longer lists (`plex::finish_roster_refresh`). No live
-    /// token is revoked, so a server whose grant merely rotated keeps its resident art.
-    Refresh,
+    /// The seated profile's roster re-read from plex.tv (the admin's boot reconcile): install in
+    /// place and retire only what it no longer lists (`plex::finish_roster_refresh`). With
+    /// `same_identity` — the seated profile is provably the account holder whose token listed the
+    /// roster (`auth::seated_is_account_holder`) — no live token is revoked, so a server whose
+    /// grant merely rotated keeps its resident art. Without it, each live token the roster would
+    /// REPLACE is revoked first (`plex::revoke_before_foreign_retoken`): another account's grant
+    /// never inherits what the seated identity claimed.
+    Refresh { same_identity: bool },
     /// A profile switch (or its late roster): every live token is revoked before the new identity's
     /// grants land (`plex::revoke_for_profile_switch`), then the installed set becomes the roster.
     Switch,
@@ -232,7 +236,9 @@ pub(crate) enum RegistryPlan {
     DevInstall { primary: crate::plex::session::ServerRef, extras: Vec<crate::plex::session::SourceRef>, client_id: String },
     /// Boot picker's avatar client, before any profile is permitted to enter Home.
     Primary { server: crate::plex::session::ServerRef, token: String },
-    Activate { source: crate::plex::session::SourceRef, ipv6: bool },
+    /// `same_identity`: the grant speaks for the identity already seated, so it may replace a live
+    /// token in place. `false` revokes a DIFFERENT live token first — see [`RosterCommit::Refresh`].
+    Activate { source: crate::plex::session::SourceRef, ipv6: bool, same_identity: bool },
     Install { sources: Vec<crate::plex::session::SourceRef>, primary: Option<usize>, commit: RosterCommit },
     Endpoint { expected: ServerLifecycle, source: crate::plex::session::SourceRef },
     Probe(super::SettledProbe),
@@ -2170,6 +2176,13 @@ impl SessionMachine {
                                 port: i64::from(candidate.origin.port()), tier: Some(candidate.location),
                                 extensions: Default::default(),
                             }, ipv6: candidate.ipv6,
+                            // A roster refresh lists `/resources` with the ACCOUNT token; the seated
+                            // profile is admin (gate above) but not necessarily that account. Only
+                            // a server both call OWNED proves them one identity. Every other
+                            // operation's grants are the identity it is establishing.
+                            same_identity: pending.key.op != SessionOp::ServerRoster
+                                || super::seated_is_account_holder(&self.state.persisted,
+                                    candidate.owned.then_some(candidate.machine_id.as_str())),
                         },
                         super::RegistryProgress::Settled { probe, .. } => RegistryPlan::Probe(probe.clone()),
                         super::RegistryProgress::Install { sources, primary, .. } =>
@@ -2256,8 +2269,13 @@ impl SessionMachine {
                             // the answer was fetched with this very account's token — so this is
                             // a REFRESH, never a switch: a rotated grant for the same user must
                             // not revoke every live client (owner trace 2026-09-30).
+                            let same_identity = super::seated_is_account_holder(
+                                &self.state.persisted,
+                                resources.iter().filter(|r| r.is_server() && r.owned)
+                                    .map(|r| r.client_identifier.as_str()));
                             plan.registry = vec![RegistryPlan::Install {
-                                sources: sources.clone(), primary, commit: RosterCommit::Refresh,
+                                sources: sources.clone(), primary,
+                                commit: RosterCommit::Refresh { same_identity },
                             }];
                             plan.registry.extend(settled.iter().cloned().map(RegistryPlan::Probe));
                         }
@@ -4756,7 +4774,10 @@ mod tests {
         }).expect("refresh installs an admitted roster");
         assert_eq!(install.1.and_then(|index| install.0.get(index))
             .map(|source| source.machine_id.as_str()), Some("preferred-machine"));
-        assert_eq!(*install.2, RosterCommit::Refresh, "an admin refresh is not a profile switch");
+        // A refresh, not a switch. Whether it is the SAME identity is not this test's question: here
+        // the holder's answer does not call the seated profile's owned server its own, so it is
+        // unproven (`seated_is_account_holder`) and the executor revokes before re-tokening.
+        assert!(matches!(install.2, RosterCommit::Refresh { .. }), "an admin refresh is not a profile switch");
     }
 
     /// **Blink B** (owner trace, 2026-09-30, ~11.6 s into an ordinary stored-session launch):
@@ -4822,6 +4843,117 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    /// The seated profile is the Home ADMIN, but the account signed in on this television is a
+    /// non-managed MEMBER of that Home (their own plex.tv account, switched to the admin's tile).
+    /// The roster refresh lists `/resources` with the member's `account_token`, so every token it
+    /// carries is the MEMBER's grant — the admin's own server comes back `owned: false`. The stored
+    /// registry (the admin's grants) is live; returns the owner, the admin server's slot and the
+    /// member's view of it.
+    fn member_account_on_admin_seat() -> (SessionMachine, crate::plex::ServerId, crate::plex::session::SourceRef) {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let users = vec![
+            crate::plex::session::HomeUserRef { id: 1, uuid: "u-admin".into(), title: "Admin".into(),
+                admin: true, ..Default::default() },
+            crate::plex::session::HomeUserRef { id: 2, uuid: "u-member".into(), title: "Member".into(),
+                ..Default::default() },
+        ];
+        let owner = roster_refresh_fixture("u-admin", users);
+        assert!(owner.state.persisted.active_profile_is_admin());
+        let stored = owner.state.persisted.sources.clone();
+        assert!(stored[0].owned, "the admin's roster calls the admin's server owned");
+        assert!(super::super::execute_session_registry(&RegistryPlan::Install {
+            sources: stored.clone(), primary: None, commit: RosterCommit::Merge,
+        }, "synthetic-client"));
+        let sid = crate::plex::id_of_machine("profile-machine").expect("the stored server registered");
+        let mut members_view = stored[0].clone();
+        members_view.token = "member-grant-for-the-admins-server".into();
+        members_view.owned = false;
+        (owner, sid, members_view)
+    }
+
+    /// Review finding on the Refresh commit: `admin` is not "the account holder". The terminal
+    /// reconcile of [`member_account_on_admin_seat`] installs the member's grants over the admin's
+    /// live tokens; nothing proves the two are one identity, so the art claimed under the admin
+    /// must not survive into the member-token session.
+    #[test]
+    fn a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
+        let _g = crate::testlock::serial();
+        let (mut owner, sid, members_view) = member_account_on_admin_seat();
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let resources = vec![crate::plex::account::Resource { name: members_view.name.clone(),
+            client_identifier: members_view.machine_id.clone(), provides: "server".into(), owned: false,
+            access_token: members_view.token.clone(), ..Default::default() }];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources, found: vec![members_view.clone()],
+                        admitted_machine_id: members_view.machine_id.clone(), household: vec![1, 2],
+                        settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("the changed roster commits");
+        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
+            for p in &plan.registry {
+                assert!(super::super::execute_session_registry(p, "synthetic-client"));
+            }
+        });
+        assert!(!kept, "another account's grants were installed as a same-identity refresh");
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// The same gap one observation earlier: the roster worker's `Activate` progress for the
+    /// admin's server, carrying the member's grant, re-tokens the admin's live slot in place.
+    #[test]
+    fn an_activation_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
+        let _g = crate::testlock::serial();
+        let (mut owner, sid, members_view) = member_account_on_admin_seat();
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let activate = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
+            admission: AdmissionId(req), arrival: 1, terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Registry(
+                super::super::RegistryProgress::Activate {
+                    epoch, expected: Some(expected),
+                    candidate: super::super::CandidateActivation {
+                        machine_id: members_view.machine_id.clone(), token: members_view.token.clone(),
+                        name: members_view.name.clone(), credit: String::new(), owned: false,
+                        home: true, owner_id: 1, origin: members_view.origin().unwrap(),
+                        address: members_view.address.clone(), location: crate::plex::probe::Location::Local,
+                        ipv6: false,
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(activate));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("the activation reaches the commit boundary");
+        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
+            for p in &plan.registry {
+                assert!(super::super::execute_session_registry(p, "synthetic-client"));
+            }
+        });
+        assert!(!kept, "another account's grant was activated as a same-identity retoken");
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
+    }
+
     #[test]
     fn admin_refresh_keeps_a_granted_cached_secondary_live_when_its_probe_misses() {
         let _g = crate::testlock::serial();
@@ -4877,7 +5009,7 @@ mod tests {
         assert!(install.0.iter().any(|source| source.machine_id == "secondary"
             && source.token == "fresh-secondary-token"),
             "a still-granted cached secondary must survive a missed identity probe");
-        assert_eq!(*install.2, RosterCommit::Refresh, "an admin refresh is not a profile switch");
+        assert_eq!(*install.2, RosterCommit::Refresh { same_identity: true }, "an admin refresh is not a profile switch");
     }
 
     /// Issue #132's production half: a signed-in account whose cached roster is EMPTY (a failed

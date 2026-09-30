@@ -1294,6 +1294,25 @@ pub(crate) fn finish_roster_refresh(installed: &[ServerId]) {
     }
 }
 
+/// **Retoken across an identity edge.** Before a registration hands `machine_id`'s live slot a
+/// DIFFERENT token whose identity the caller cannot prove is the seated one (a roster listed with
+/// the account holder's token while another Home profile is seated), revoke the live token first:
+/// the new token then lands blank → live, [`super::Client::grant_epoch`] moves, and nothing
+/// claimed under the seated identity — resident art above all — carries over. The same token, or
+/// no live slot for the machine, changes nothing.
+pub(crate) fn revoke_before_foreign_retoken(machine_id: &str, token: &str) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(id) = ids().find(|&id| client_for(id).is_some_and(|c| c.machine_id() == machine_id)) else {
+        return;
+    };
+    if client_for(id).is_some_and(|c| c.revoke_unless_same(token)) {
+        if let Some(i) = id.index() {
+            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        }
+        crate::ui::idle::invalidate();
+    }
+}
+
 /// The shared commit point of [`finish_profile_switch`] and [`finish_roster_refresh`]: `installed`
 /// becomes the authoritative roster, and `current` moves to its first eligible survivor when the
 /// old one is not among them. Caller holds [`WRITE`].

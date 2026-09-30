@@ -367,6 +367,24 @@ impl Client {
         }
         self.token_gen.store(next_gen(), Relaxed);
     }
+    /// **Revoke a live token that `token` would replace**, when the caller cannot prove the two
+    /// speak for one identity: the live one is blanked, so the replacement lands across a
+    /// revocation edge and [`Client::grant_epoch`] moves exactly as for a profile switch. A blank
+    /// slot, or the same token again, is left alone. Returns whether it revoked.
+    pub(super) fn revoke_unless_same(&self, token: &str) -> bool {
+        let revoked = match self.token.write() {
+            Ok(mut g) if !g.is_empty() && g.as_str() != token => {
+                g.clear();
+                self.grant_epoch.store(next_gen(), Relaxed);
+                true
+            }
+            _ => false,
+        };
+        if revoked {
+            self.token_gen.store(next_gen(), Relaxed);
+        }
+        revoked
+    }
     /// The identity epoch of this server's credential — see the field. Unchanged by a live-to-live
     /// retoken; moved by every revocation and by the admission that follows one.
     pub(crate) fn grant_epoch(&self) -> u32 {

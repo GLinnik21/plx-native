@@ -1529,7 +1529,7 @@ mod tests {
                 machine_id: "synthetic-machine".into(), origin_url: "https://server.example.test:32400".into(),
                 address: "192.0.2.1".into(), port: 32400, token: "synthetic-token".into(),
                 tier: Some(crate::plex::probe::Location::Local), ..Default::default()
-            }, ipv6: false }], writes_durable: false,
+            }, ipv6: false, same_identity: true }], writes_durable: false,
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Background,
             authority: crate::plex::session::SaveAuthority::Routine };
         assert!(adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).admission.accepted());

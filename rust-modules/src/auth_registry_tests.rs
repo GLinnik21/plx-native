@@ -854,7 +854,7 @@ fn post_sign_out_registration_keeps_captured_login_client_id() {
     fresh.origin_url = "https://server.example.test:32400".into();
     fresh.tier = Some(probe::Location::Local);
     assert!(execute_session_registry(&owner::RegistryPlan::Activate {
-        source: fresh.clone(), ipv6: false,
+        source: fresh.clone(), ipv6: false, same_identity: true,
     }, &captured));
     let client = crate::plex::client_opt().unwrap();
     assert_eq!(client.client_id_for_test(), captured,

@@ -882,6 +882,15 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             // Same identity, refreshed credential: carry the fresh request so any later fetch of
             // this slot (a re-arm after eviction, a retry) dials with the grant now in force.
             if g.slots[i].token_gen != token_gen || key_bytes(&g.slots[i]) != key_s.as_bytes() {
+                // A parked transient failure (a 401 under the stored token, typically) was the OLD
+                // credential's answer. Its backoff says nothing about the fresh grant: make the
+                // retry due now, so the P_RETRY branch below re-arms it on this draw — through the
+                // same card-motion gate every other re-arm passes — instead of after up to 30 s.
+                if g.slots[i].state == P_RETRY && key_bytes(&g.slots[i]) != key_s.as_bytes() {
+                    g.slots[i].attempts = 0;
+                    g.slots[i].retry_at = Some(crate::app::clock::now());
+                    g.slots[i].retry_wake_sent = false;
+                }
                 set_key(&mut g.slots[i], key_s);
                 g.slots[i].token_gen = token_gen;
             }
@@ -991,7 +1000,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // 19 tiles in the owner's revocation trace).
     if trace::armed() {
         if let Some(s) = g.slots.iter().find(|s| same_art(s, srv, key_s.as_bytes())) {
-            trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "token_gen" });
+            trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "grant_epoch" });
         }
     }
     // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
@@ -2169,6 +2178,46 @@ mod tests {
             });
             assert!(kept, "re-registering the same server for the same user blanked its art ({grant})");
         }
+    }
+
+    /// A tile whose fetch under the STORED token was answered transiently (a 401 is transient, see
+    /// `transient_status`) sits in `P_RETRY` with a grown backoff. When the same user's fresh grant
+    /// re-keys that slot, the backoff belongs to the credential that failed, not to the new one:
+    /// the draw that finds it must fetch again at once, not wait out up to 30 s.
+    #[test]
+    fn a_retokened_retry_slot_fetches_with_the_fresh_grant_at_once() {
+        let (_fresh, sid, _tok) = one_server();
+        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        let src = "/library/metadata/42/thumb";
+        let stale = key_for(sid, src, 2, 2, 0);
+        {
+            let c = crate::plex::client_for(sid).unwrap();
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = c.token_gen();
+            slot.grant_epoch = c.grant_epoch();
+            set_key(slot, &stale);
+            slot.state = P_RETRY;
+            slot.attempts = 5;
+            slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
+        }
+        let again = crate::plex::register_for_test(
+            "poster-test", "127.0.0.1", 32400, "tok-plex-tv-grant-for-the-same-user", "cid-poster-test");
+        assert_eq!(again, sid);
+        let fresh = key_for(sid, src, 2, 2, 0);
+        assert_ne!(fresh, stale);
+        lookup(sid, &fresh, Touch::Draw);
+        {
+            let g = store();
+            let s = &g.slots[0];
+            assert_eq!(s.state, P_WANT, "the fresh grant waited out the old grant's backoff");
+            assert_eq!(s.attempts, 0, "the old grant's failures are not the new one's");
+            assert_eq!(key_bytes(s), fresh.as_bytes());
+        }
+        store().slots = [Pslot::ZERO; PT_CAP];
     }
 
     /// The line [`discovery_retokening_the_stored_server_keeps_its_resident_art`] must not blur:
