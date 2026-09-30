@@ -586,6 +586,17 @@ pub struct Session {
     /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub(crate) subtitle_tone: SubtitleTone,
+    /// **The client-rendered subtitle caption's text size.** Install-wide like
+    /// [`Session::subtitle_tone`]. Absence is Medium — see [`SubtitleSize`]'s own doc. Skipped at
+    /// the default so a session predating this field — committed replay fixtures included —
+    /// serializes exactly as it did before.
+    #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
+    pub(crate) subtitle_size: SubtitleSize,
+    /// **The client-rendered subtitle caption's vertical placement.** Install-wide like
+    /// [`Session::subtitle_tone`]. Absence is Low — see [`SubtitlePosition`]'s own doc. Skipped at
+    /// the default for the same reason as [`Session::subtitle_size`].
+    #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
+    pub(crate) subtitle_position: SubtitlePosition,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -665,6 +676,10 @@ struct CanonicalSessionPreferences {
     trailer_autoplay: bool,
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     subtitle_tone: SubtitleTone,
+    #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
+    subtitle_size: SubtitleSize,
+    #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
+    subtitle_position: SubtitlePosition,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
@@ -695,6 +710,8 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
+            subtitle_size: SubtitleSize::Medium,
+            subtitle_position: SubtitlePosition::Low,
             plaintext_consent: Vec::new(),
             audio_enhancements: crate::plex::AudioEnhancements::NONE,
             extensions: BTreeMap::new(),
@@ -740,6 +757,8 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
+        subtitle_size: session.subtitle_size,
+        subtitle_position: session.subtitle_position,
         plaintext_consent: session.plaintext_consent.clone(),
         audio_enhancements: session.audio_enhancements,
         extensions: BTreeMap::new(),
@@ -807,6 +826,8 @@ pub(crate) fn join_canonical(
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        subtitle_size: preferences.subtitle_size,
+        subtitle_position: preferences.subtitle_position,
         plaintext_consent: preferences.plaintext_consent,
         audio_enhancements: preferences.audio_enhancements,
         profiles,
@@ -833,6 +854,8 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        subtitle_size: preferences.subtitle_size,
+        subtitle_position: preferences.subtitle_position,
         plaintext_consent: preferences.plaintext_consent,
         audio_enhancements: preferences.audio_enhancements,
         home_pins, recent_searches,
@@ -1066,6 +1089,78 @@ impl SubtitleTone {
 
     pub(crate) fn index(self) -> u8 {
         Self::LADDER.iter().position(|&t| t == self).unwrap_or(0) as u8
+    }
+}
+
+/// The persisted subtitle text sizes, smallest first — install-wide like [`SubtitleTone`]: a
+/// legible caption size answers a fact about the PANEL and the couch distance from it, not about
+/// whoever is watching. Absence is `Medium`, which is the caption face every build before this
+/// preference drew (`ui::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
+/// every other persisted ladder here.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubtitleSize {
+    #[serde(rename = "small")]
+    Small,
+    #[default]
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "large")]
+    Large,
+    #[serde(rename = "extra_large")]
+    ExtraLarge,
+}
+
+impl SubtitleSize {
+    /// Every rung, smallest first — the order the picker lists them in.
+    pub(crate) const LADDER: [SubtitleSize; 4] = [
+        SubtitleSize::Small,
+        SubtitleSize::Medium,
+        SubtitleSize::Large,
+        SubtitleSize::ExtraLarge,
+    ];
+
+    /// An in-memory index back to a rung — out of range is `Medium`, never a neighbouring rung,
+    /// for the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub(crate) fn from_index(i: u8) -> SubtitleSize {
+        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitleSize::Medium)
+    }
+
+    pub(crate) fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&s| s == self).unwrap_or(1) as u8
+    }
+}
+
+/// The persisted subtitle vertical placements, lowest first — install-wide like [`SubtitleTone`].
+/// Absence is `Low`, which is where every build before this preference drew the caption
+/// (`ui::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text/image caption
+/// draws move with this; native ASS/SSA keeps its authored placement (`docs/ass-subtitles.md`).
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubtitlePosition {
+    #[default]
+    #[serde(rename = "low")]
+    Low,
+    #[serde(rename = "middle")]
+    Middle,
+    #[serde(rename = "high")]
+    High,
+}
+
+impl SubtitlePosition {
+    /// Every rung, lowest first — the order the picker lists them in.
+    pub(crate) const LADDER: [SubtitlePosition; 3] = [
+        SubtitlePosition::Low,
+        SubtitlePosition::Middle,
+        SubtitlePosition::High,
+    ];
+
+    /// An in-memory index back to a rung — out of range is `Low`, never a neighbouring rung, for
+    /// the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub(crate) fn from_index(i: u8) -> SubtitlePosition {
+        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitlePosition::Low)
+    }
+
+    pub(crate) fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&p| p == self).unwrap_or(0) as u8
     }
 }
 
@@ -1789,6 +1884,38 @@ where
     Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
 }
 
+/// The subtitle size is a preference too: a spelling this build does not know degrades to Medium.
+fn de_soft_subtitle_size<'de, D>(d: D) -> Result<SubtitleSize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(SubtitleSize::Medium);
+    };
+    Ok(serde_json::from_value::<SubtitleSize>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_subtitle_size(size: &SubtitleSize) -> bool {
+    *size == SubtitleSize::default()
+}
+
+/// The subtitle position is a preference too: a spelling this build does not know degrades to Low.
+fn de_soft_subtitle_position<'de, D>(d: D) -> Result<SubtitlePosition, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(SubtitlePosition::Low);
+    };
+    Ok(serde_json::from_value::<SubtitlePosition>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_subtitle_position(position: &SubtitlePosition) -> bool {
+    *position == SubtitlePosition::default()
+}
+
 /// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
 /// off rather than failing the enclosing [`Session`].
 fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::plex::AudioEnhancements, D::Error>
@@ -1949,6 +2076,26 @@ impl Session {
     pub(crate) fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
         let mut next = self.clone();
         next.subtitle_tone = tone;
+        next
+    }
+
+    pub(crate) fn subtitle_size(&self) -> SubtitleSize {
+        self.subtitle_size
+    }
+
+    pub(crate) fn with_subtitle_size(&self, size: SubtitleSize) -> Self {
+        let mut next = self.clone();
+        next.subtitle_size = size;
+        next
+    }
+
+    pub(crate) fn subtitle_position(&self) -> SubtitlePosition {
+        self.subtitle_position
+    }
+
+    pub(crate) fn with_subtitle_position(&self, position: SubtitlePosition) -> Self {
+        let mut next = self.clone();
+        next.subtitle_position = position;
         next
     }
 

@@ -67,6 +67,7 @@ fn page_with_snapshot(kind: Kind) -> PreferencesPage {
 /// Every value readout and detail line each field can show, through [`field_section`] directly.
 #[test]
 fn every_field_readout_and_detail_fits_its_column_in_every_language() {
+    let _serial = crate::testlock::serial(); // Subtitle Size/Position read the route globals below
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -80,6 +81,16 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
             check_field_section(&format!("{tag} direct_play={direct_play:?}"), &playback(Quality::Original, direct_play), &mut out);
         }
+        for size in crate::route::SubtitleSize::LADDER {
+            crate::route::restore_subtitle_size(size);
+            check_field_section(&format!("{tag} subtitle_size={size:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+        }
+        crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+        for position in crate::route::SubtitlePosition::LADDER {
+            crate::route::restore_subtitle_position(position);
+            check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+        }
+        crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
 
         check_field_section(&format!("{tag} retry row"), &FieldSectionInputs { show_retry: true, ..audio(None) }, &mut out);
 
@@ -120,7 +131,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
             let page = page_with_snapshot(kind);
             let fields: &[Field] = match kind {
-                Kind::Playback => &[Field::Quality, Field::DirectPlay],
+                Kind::Playback => &[Field::Quality, Field::DirectPlay, Field::SubtitleSize, Field::SubtitlePosition],
                 Kind::AudioSubtitles => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
             };
             for &field in fields {

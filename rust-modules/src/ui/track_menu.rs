@@ -1431,7 +1431,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let (sections, _) =
-                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -30_000, SubtitleTone::LightGrey);
+                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -60_000, SubtitleTone::LightGrey);
             let mut table = TableView::new();
             table.set_sections(sections, 0, false);
             out.extend(table.app_fit_failures(SUB_PANEL_W, language.tag()));
@@ -1749,7 +1749,7 @@ mod tests {
         assert_eq!(format_offset(100), "+0.1 s");
         assert_eq!(format_offset(-100), "-0.1 s");
         assert_eq!(format_offset(1_300), "+1.3 s");
-        assert_eq!(format_offset(-30_000), "-30.0 s");
+        assert_eq!(format_offset(-60_000), "-60.0 s");
     }
 
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**

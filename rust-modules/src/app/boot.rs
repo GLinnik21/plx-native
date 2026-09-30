@@ -675,6 +675,8 @@ pub(crate) unsafe fn construct(
         else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
     );
     crate::route::restore_direct_play_mode(session.direct_play_mode());
+    crate::route::restore_subtitle_size(session.subtitle_size());
+    crate::route::restore_subtitle_position(session.subtitle_position());
     // The subtitle tone rides the same file and the same moment: a preference, restored once.
     crate::player::restore_subtitle_tone(session.subtitle_tone());
     crate::player::restore_audio_enhancements(session.audio_enhancements());

@@ -277,7 +277,7 @@ mod tests {
     }
 
     fn sidecar_cap() -> TimingCapsule {
-        TimingCapsule::new(0, -30_000, 30_000)
+        TimingCapsule::new(0, -60_000, 60_000)
     }
 
     #[test]
@@ -320,17 +320,17 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_floor_is_0_and_the_sidecar_floor_is_minus_30s() {
+    fn the_embedded_floor_is_0_and_the_sidecar_floor_is_minus_60s() {
         assert_eq!(cap().lo, 0);
-        assert_eq!(sidecar_cap().lo, -30_000);
+        assert_eq!(sidecar_cap().lo, -60_000);
     }
 
     #[test]
     fn past_the_limit_bumps_leaves_the_value_unchanged_and_the_spring_settles_to_0() {
-        let mut c = TimingCapsule::new(30_000, 0, 30_000);
+        let mut c = TimingCapsule::new(60_000, 0, 60_000);
         let out = c.key(Key::Right { alt: false }, Edge::Down, 0);
         assert_eq!(out, Some(CapsuleOut::Bump));
-        assert_eq!(c.offset_ms(), 30_000);
+        assert_eq!(c.offset_ms(), 60_000);
         assert_ne!(c.shake.vel, 0.0);
         for _ in 0..600 {
             c.update(1.0 / 60.0);
@@ -352,9 +352,9 @@ mod tests {
 
     #[test]
     fn the_text_for_plus_zero_and_minus() {
-        assert_eq!(TimingCapsule::new(0, 0, 30_000).text(), "Original timing");
-        assert_eq!(TimingCapsule::new(300, 0, 30_000).text(), "Subtitles 0.3 s later");
-        assert_eq!(TimingCapsule::new(-300, -30_000, 30_000).text(), "Subtitles 0.3 s earlier");
+        assert_eq!(TimingCapsule::new(0, 0, 60_000).text(), "Original timing");
+        assert_eq!(TimingCapsule::new(300, 0, 60_000).text(), "Subtitles 0.3 s later");
+        assert_eq!(TimingCapsule::new(-300, -60_000, 60_000).text(), "Subtitles 0.3 s earlier");
     }
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
         let mut out = Vec::new();
         for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY")] {
             let locale = LocaleContext::resolve(language, None, Some(region), None, None);
-            for ms in [-30_000, 30_000, 0] {
+            for ms in [-60_000, 60_000, 0] {
                 let t = text_in(ms, &locale);
                 let w = ShippedMeasure.width_str(&t, theme::size::TITLE, true);
                 if w > CAPSULE_TEXT_W * HEADROOM {

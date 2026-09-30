@@ -1621,10 +1621,10 @@ fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
 /// store, which retains this much history at every offset, so a delay raised mid-playback is
 /// served at once (`subtitle_floor_ns`, and the image store's eviction order in
 /// [`push_subtitle_bitmap`]).
-pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
+pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 60_000;
 /// The earliest a SIDECAR goes. Its whole file is in memory (`sidecar`), so an advance is exactly
 /// as servable as a delay.
-pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -30_000;
+pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -60_000;
 /// The Timing capsule's step (plan `subtitle-menu-capsule` §4), read by `ui::timing_capsule` on
 /// every LEFT/RIGHT `Down`; the Subtitles menu's own Timing row no longer steps anything itself,
 /// it only opens the capsule (`ui::track_menu::TrackOk::OpenTiming`).
@@ -1638,7 +1638,7 @@ pub(crate) const SUBTITLE_OFFSET_FAST_STEP_MS: i64 = 500;
 /// player's clamp ([`set_subtitle_offset`]) both call, so the menu can never offer a step the
 /// player refuses.
 ///
-/// A sidecar gets -30..=+30 s. An EMBEDDED track (text or image) gets 0..=+30 s, a delay only:
+/// A sidecar gets -60..=+60 s. An EMBEDDED track (text or image) gets 0..=+60 s, a delay only:
 /// an advance needs cues the demuxer has not read yet, and an embedded track's packets ride the
 /// same byte-bounded A/V queues as the picture (`engine::AQ_VIDEO_BYTES`, 10 MiB — about 2 s of
 /// a 40 Mbit/s remux), so an advance would find nothing to draw. Off counts as embedded; the
@@ -1838,31 +1838,32 @@ pub(crate) fn subtitle_cue_id(now_ns: i64) -> i64 {
 }
 
 /// **The image-subtitle store's byte ceiling**, which must hold the window a delayed caption
-/// needs: from the history floor (`subtitle_floor_ns`: 30 s of the latest delay,
+/// needs: from the history floor (`subtitle_floor_ns`: 60 s of the latest delay,
 /// `SUBTITLE_OFFSET_LATEST_MS`, + 2 s behind the playhead, retained at EVERY offset so a raised
 /// delay finds its sets) to the demuxer's read position.
 ///
 /// - Read-ahead: the demuxer is bounded by the 10 MiB video queue (`engine::AQ_VIDEO_BYTES`) —
 ///   about 2 s of a 40 Mbit/s remux, 10.5 s of an 8 Mbit/s 1080p encode. Take 12 s: the window
-///   is at most 30 + 12 + 2 = 44 s.
+///   is at most 60 + 12 + 2 = 74 s.
 /// - Sets in it: a dense dialogue scene publishes about one display set with pixels per 2 s
-///   (the CLEAR between two is `close_subtitle_bitmap`, which stores nothing), so 22 sets.
+///   (the CLEAR between two is `close_subtitle_bitmap`, which stores nothing), so 37 sets.
 /// - One set: a PGS object is its text's bounding box. Two lines of large text are ~1400x150 px
 ///   on a 1920x1080 canvas and ~2800x300 px on a 3840x2160 one.
-/// - Held as RGBA (4 B/px, how this store kept them first): 22 x 0.84 MB = 18.5 MB at 1080p,
-///   and 22 x 3.36 MB = 74 MB for a 4K canvas — three times this budget.
-/// - Held indexed ([`SubRect`], 1 B/px + a 1 KiB palette): 22 x 0.21 MB = 4.6 MB at 1080p and
-///   22 x 0.84 MB = 18.5 MB for a 4K canvas, inside 24 MiB with room for other tracks' sets.
+/// - Held as RGBA (4 B/px, how this store kept them first): 37 x 0.84 MB = 31.1 MB at 1080p,
+///   and 37 x 3.36 MB = 124.3 MB for a 4K canvas — well over this budget.
+/// - Held indexed ([`SubRect`], 1 B/px + a 1 KiB palette): 37 x 0.21 MB = 7.8 MB at 1080p and
+///   37 x 0.84 MB = 31.1 MB for a 4K canvas, inside 40 MiB with room for other tracks' sets.
 ///
-/// 24 MiB is 15% of the 160 MB `requiredMemory` the app declares, the size this store already
-/// had; what changed is that the same bytes now hold four times the pixels.
+/// 40 MiB is 25% of the 160 MB `requiredMemory` the app declares — raised from the 24 MiB this
+/// store held at the old 30 s ceiling, which no longer covers a 4K PGS track's indexed worst case
+/// above now that the sync-offset ceiling itself is 60 s (`SUBTITLE_OFFSET_LATEST_MS`).
 ///
-/// The floor keeps the window at offset 0 too, where the 30 s of history is only insurance for a
+/// The floor keeps the window at offset 0 too, where the 60 s of history is only insurance for a
 /// delay the viewer has not asked for yet. Under pressure the eviction order drops a set the
 /// subtitle clock has passed FIRST ([`push_subtitle_bitmap`]), so at offset 0 that history is
-/// best-effort and never costs a set still to be shown; at +30 s nothing has passed the clock, and
+/// best-effort and never costs a set still to be shown; at +60 s nothing has passed the clock, and
 /// the arithmetic above is what holds the window.
-pub(crate) const SUB_BITMAP_BUDGET: usize = 24 * 1024 * 1024;
+pub(crate) const SUB_BITMAP_BUDGET: usize = 40 * 1024 * 1024;
 
 /// Image-subtitle store (PGS/VobSub). The demux (D) thread decodes EVERY image track while
 /// subtitles are on (so a switch between image tracks is instant — see ff.rs) and pushes each
@@ -3322,8 +3323,8 @@ mod tests {
 
     /// **Raising the delay mid-playback finds the cues already read.** The demuxer never
     /// republishes a cue, so the stores must hold the whole window the LARGEST delay could ask
-    /// for whatever the offset is now: a viewer at offset 0 who steps to +30 s wants the cue
-    /// authored 30 s ago at once, not after the window has refilled. A floor that followed the
+    /// for whatever the offset is now: a viewer at offset 0 who steps to +60 s wants the cue
+    /// authored 60 s ago at once, not after the window has refilled. A floor that followed the
     /// current offset kept 2 s of history at 0 and blanked every raised delay.
     #[test]
     fn raising_the_delay_mid_playback_finds_the_cues_already_read() {
@@ -3338,13 +3339,13 @@ mod tests {
         close_subtitle_bitmap(0, 2 * SEC);
 
         // playback goes on at offset 0 and the demuxer pushes the next cues, which prunes
-        SHARED.playpos_ns.store(31 * SEC + SEC / 2, Relaxed);
-        push_subtitle_text(0, 32 * SEC, 33 * SEC, "later".into());
-        push_subtitle_bitmap(0, 32 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
+        SHARED.playpos_ns.store(61 * SEC + SEC / 2, Relaxed);
+        push_subtitle_text(0, 62 * SEC, 63 * SEC, "later".into());
+        push_subtitle_bitmap(0, 62 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
 
         // the viewer steps straight to the latest delay: the clock is back at 1.5 s
         set_subtitle_offset(SUBTITLE_OFFSET_LATEST_MS);
-        let now = 31 * SEC + SEC / 2;
+        let now = 61 * SEC + SEC / 2;
         let text = active_subtitle(now);
         let image = active_bitmap_key(now);
 
@@ -3371,25 +3372,25 @@ mod tests {
     }
 
     /// **An advance is offered only where it can be served.** A sidecar holds its whole file, so
-    /// it takes 30 s either way; an EMBEDDED track's cues arrive through the byte-bounded A/V
+    /// it takes 60 s either way; an EMBEDDED track's cues arrive through the byte-bounded A/V
     /// queues (about 2 s ahead of the playhead at a high bitrate), so it takes a delay only. The
     /// clamp follows whichever kind is selected, including a negative offset left from a sidecar.
     #[test]
-    fn an_embedded_track_takes_no_advance_and_a_sidecar_takes_thirty_seconds() {
+    fn an_embedded_track_takes_no_advance_and_a_sidecar_takes_sixty_seconds() {
         let _g = crate::testlock::serial();
         sidecar::reset();
         set_subtitle_offset(-1_000);
         assert_eq!(subtitle_offset_ms(), 0, "an embedded track (or Off) takes no advance");
-        set_subtitle_offset(40_000);
-        assert_eq!(subtitle_offset_ms(), 30_000);
+        set_subtitle_offset(70_000);
+        assert_eq!(subtitle_offset_ms(), 60_000, "an embedded track still clamps at the new ceiling");
 
         sidecar::select_without_fetch_for_test(42);
-        set_subtitle_offset(-30_000);
-        assert_eq!(subtitle_offset_ms(), -30_000, "a sidecar advances 30 s");
+        set_subtitle_offset(-60_000);
+        assert_eq!(subtitle_offset_ms(), -60_000, "a sidecar advances 60 s");
         set_subtitle_offset(i64::MIN);
-        assert_eq!(subtitle_offset_ms(), -30_000);
+        assert_eq!(subtitle_offset_ms(), -60_000);
         set_subtitle_offset(i64::MAX);
-        assert_eq!(subtitle_offset_ms(), 30_000);
+        assert_eq!(subtitle_offset_ms(), 60_000);
 
         // the kind decides, not the value's history: the same request on an embedded track is 0
         set_subtitle_offset(-2_000);
@@ -3406,9 +3407,9 @@ mod tests {
     fn the_subtitle_clock_saturates_and_the_offset_clamps() {
         let _g = crate::testlock::serial();
         sidecar::select_without_fetch_for_test(42);
-        set_subtitle_offset(30_000);
+        set_subtitle_offset(60_000);
         assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
-        set_subtitle_offset(-30_000);
+        set_subtitle_offset(-60_000);
         assert_eq!(subtitle_clock_ns(i64::MAX), i64::MAX);
         set_subtitle_offset(0);
         sidecar::reset();
@@ -3464,18 +3465,18 @@ mod tests {
         assert_eq!(r.bytes(), 3 + 1024, "the store counts the indices and the palette");
     }
 
-    /// **The supported window fits: 30 s of delay plus the demuxer's read-ahead, of a 4K-canvas
-    /// PGS track.** The arithmetic is on `SUB_BITMAP_BUDGET`: 22 sets (a dense dialogue scene's
-    /// one set per 2 s over 44 s) of a 2800x300 object, which is two lines of text on a
+    /// **The supported window fits: 60 s of delay plus the demuxer's read-ahead, of a 4K-canvas
+    /// PGS track.** The arithmetic is on `SUB_BITMAP_BUDGET`: 37 sets (a dense dialogue scene's
+    /// one set per 2 s over 74 s) of a 2800x300 object, which is two lines of text on a
     /// 3840x2160 canvas.
     #[test]
     fn a_delayed_window_of_4k_canvas_sets_fits_the_budget() {
         let _g = crate::testlock::serial();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
-        set_subtitle_offset(30_000);
-        SHARED.playpos_ns.store(40 * SEC, Relaxed); // subtitle clock: 10 s
-        for i in 0..22 {
+        set_subtitle_offset(SUBTITLE_OFFSET_LATEST_MS);
+        SHARED.playpos_ns.store(70 * SEC, Relaxed); // subtitle clock: 10 s
+        for i in 0..37 {
             push_subtitle_bitmap(0, 10 * SEC + i * 2 * SEC, 3840, 2160, vec![rect(520, 1800, 2800, 300)]);
         }
         let kept = SHARED.sub_bitmaps.lock().unwrap().len();
@@ -3483,7 +3484,7 @@ mod tests {
         SHARED.desired_sub_idx.store(-1, Relaxed);
         SHARED.playpos_ns.store(0, Relaxed);
         set_subtitle_offset(0);
-        assert_eq!(kept, 22, "every set in the delayed window must be held");
+        assert_eq!(kept, 37, "every set in the delayed window must be held");
     }
 
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three

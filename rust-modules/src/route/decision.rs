@@ -5285,6 +5285,52 @@ pub(crate) fn set_default_quality(q: Quality) -> bool {
     saved
 }
 
+/// The client-rendered subtitle caption's text size — install-wide, like [`DIRECT_PLAY_MODE`].
+static SUBTITLE_SIZE: AtomicU8 = AtomicU8::new(1); // SubtitleSize::Medium's index
+
+pub(crate) fn subtitle_size() -> SubtitleSize {
+    SubtitleSize::from_index(SUBTITLE_SIZE.load(Ordering::Relaxed))
+}
+
+pub(crate) fn restore_subtitle_size(size: SubtitleSize) {
+    #[cfg(test)]
+    crate::testlock::assert_held("subtitle size preference");
+    SUBTITLE_SIZE.store(size.index(), Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker.
+pub(crate) fn set_subtitle_size(size: SubtitleSize) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_subtitle_size(size); crate::ui::idle::invalidate(); }
+    saved
+}
+
+/// The client-rendered subtitle caption's vertical placement — install-wide, like
+/// [`DIRECT_PLAY_MODE`]. Only the plain-text/image caption draws move with this; native ASS/SSA
+/// keeps its authored placement.
+static SUBTITLE_POSITION: AtomicU8 = AtomicU8::new(0); // SubtitlePosition::Low's index
+
+pub(crate) fn subtitle_position() -> SubtitlePosition {
+    SubtitlePosition::from_index(SUBTITLE_POSITION.load(Ordering::Relaxed))
+}
+
+pub(crate) fn restore_subtitle_position(position: SubtitlePosition) {
+    #[cfg(test)]
+    crate::testlock::assert_held("subtitle position preference");
+    SUBTITLE_POSITION.store(position.index(), Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker.
+pub(crate) fn set_subtitle_position(position: SubtitlePosition) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_subtitle_position(position); crate::ui::idle::invalidate(); }
+    saved
+}
+
 pub(crate) fn forced_direct_play(ps: &PlaybackSession) -> bool {
     ps.direct_play_mode == DirectPlayMode::Forced
 }
