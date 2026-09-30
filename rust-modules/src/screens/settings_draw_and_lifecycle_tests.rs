@@ -161,7 +161,7 @@ fn every_root_detail_line_fits_a_known_good_width() {
     let budget = MEASURE.width_str(known_good, sz, false);
 
     let mut checked = 0;
-    for sec in &page.table.sections {
+    for sec in &page.form.table.sections {
         for row in &sec.rows {
             if row.detail.is_empty() {
                 continue;

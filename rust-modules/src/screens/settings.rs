@@ -33,6 +33,7 @@ use std::borrow::Cow;
 use crate::ui::containers::stack::{Instance, NavStack};
 use crate::ui::containers::transition::Immediate;
 use crate::ui::containers::{Life, Minter};
+use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, Key,
@@ -49,7 +50,7 @@ use crate::ui::table::{Row, Section, TableView};
 use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::{theme, Painter, Rect};
 
-use super::family::{inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
+use super::family::{form_focus, inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -480,7 +481,8 @@ fn mount_page(
 /// census, as of 2026-09-07, one line per page kind, so the next reader can check it instead of
 /// trusting it:
 ///
-///  * `RootPage` → `RootState`: the selected row, Automatically Sign In, and trailer autoplay.
+///  * `RootPage` → `RootState`: the selected row's `RowKey` (identity, not position; `remembered` holds
+///    the same keys for the root), Automatically Sign In, and trailer autoplay.
 ///  * `PreferencesPage`: page/picker identity, confirmed values, pending/error presentation and
 ///    the Force acknowledgement state. See `screens::preferences::SHAPE`.
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
@@ -814,8 +816,8 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
-        // `super::family` here matches this file's own `use super::family::{inner_cx, table_focus,
-        // InnerHost, SettingsPage};` above — `family` is shared vocabulary, not a sibling screen.
+        // `super::family` here matches this file's own `use super::family::{form_focus, inner_cx,
+        // table_focus, InnerHost, SettingsPage, ALERT_GROUP};` above — `family` is shared vocabulary, not a sibling screen.
         super::family::set_palette(self.ground.palette());
         match self.kind {
             Family::Settings => {
@@ -927,27 +929,67 @@ impl Mounter<InnerHost> for RouteSurface {
 // the root page
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Action {
-    Language,
+/// A server's machine id — the identity of its "connect without encryption" row. Not
+/// [`MachineId`], which names a UI machine (`ui/machine.rs`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ServerMachineId(String);
+
+/// A root row's identity: what selection survives a rebuild by, and what a test addresses a row
+/// by. Its focus key ([`FormId::key`]) is hand-assigned below and unrelated to the row's position,
+/// so reordering the form moves no key; every key stays below `registry::BAND`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum RootId {
+    Favourites,
     Playback,
     AudioSubtitles,
-    Favourites,
-    Privacy,
-    Legal,
+    Language,
     AutoSignIn,
     TrailerAutoplay,
-    /// A server's "connect without encryption" switch — the index into
-    /// [`RootPage::plaintext_rows`].
-    Plaintext(usize),
+    /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
+    /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
+    Plaintext(ServerMachineId),
+    Privacy,
+    Legal,
     About,
+}
+
+/// The first key of the per-server switches: past every fixed [`RootId`] key.
+const PLAINTEXT_KEY_BASE: u32 = 1000;
+
+impl FormId for RootId {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            RootId::Playback => 1,
+            RootId::AudioSubtitles => 2,
+            RootId::Favourites => 3,
+            RootId::Language => 4,
+            RootId::AutoSignIn => 5,
+            RootId::TrailerAutoplay => 6,
+            RootId::Privacy => 7,
+            RootId::Legal => 8,
+            RootId::About => 9,
+            // the base; `root_form` adds the position (`item_keyed`)
+            RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
+        })
+    }
+}
+
+/// What a root row does beyond opening a page (a `Nav` row never reaches it — see
+/// [`FormTable::activate`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Action {
+    /// A `Nav` row's slot: opening its page is [`RowKind::Nav`]'s job, so nothing dispatches this.
+    Door,
+    AutoSignIn,
+    TrailerAutoplay,
+    /// A server's "connect without encryption" switch.
+    Plaintext(ServerMachineId),
 }
 
 /// The Settings root: a table of destinations, every row a door (no band; rule 9 in full).
 pub(crate) struct RootPage {
     entry: EntryId,
-    table: TableView,
-    rows: Vec<Action>,
+    form: FormTable<RootId, Action, SettingsPage>,
     state: RootState,
     session_watch: crate::plex::session::VisibleSessionWatch,
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
@@ -967,7 +1009,8 @@ pub(crate) struct RootPage {
 }
 
 struct RootState {
-    sel: i32,
+    /// The selected row's focus key — an identity, not a position.
+    sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
     language: crate::i18n::Preference,
@@ -978,7 +1021,7 @@ struct RootState {
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
+        w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -989,7 +1032,7 @@ impl LogicalState for RootState {
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
             "root sel={} auto_sign_in={} trailer_autoplay={} language={}",
-            self.sel, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
+            self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
@@ -998,8 +1041,9 @@ impl LogicalState for RootState {
 }
 
 /// One unencrypted-connection switch's plain data — see [`RootPage::plaintext_inputs`] for how
-/// this is gathered and [`root_sections`] for how it becomes a row.
+/// this is gathered and [`root_form`] for how it becomes a row.
 struct PlaintextRowInput {
+    machine: ServerMachineId,
     /// The server's own name, or the app's fallback ("Plex server") when none is known.
     name: String,
     /// `name` is a real machine name (Server text, may elide); false when it is the app's own
@@ -1010,7 +1054,7 @@ struct PlaintextRowInput {
     connected: bool,
 }
 
-/// Every argument [`root_sections`] builds the Settings root's rows from — what [`RootPage::
+/// Every argument [`root_form`] builds the Settings root's rows from — what [`RootPage::
 /// rebuild`] gathers (mostly from `crate::plex::session::peek_settled()` and its own pending-write
 /// state) before calling the pure builder, so the builder itself never reads a global and a test
 /// can drive it directly with a synthesized combination no real session may currently be in.
@@ -1028,101 +1072,130 @@ struct RootInputs {
     plaintext: Vec<PlaintextRowInput>,
 }
 
-/// The Settings root's own sections, built from plain arguments rather than `&self` — see
+/// The Settings root as a [`Form`], built from plain arguments rather than `&self` — see
 /// [`RootInputs`]. `RootPage::rebuild` gathers the inputs and calls this; the text-fit tests
 /// (`settings_text_fit_tests.rs`) call it directly, over every `RootInputs` combination worth
-/// checking, without a real signed-in session.
-fn root_sections(inputs: &RootInputs) -> (Vec<Section>, Vec<Action>) {
-    let mut actions = Vec::new();
-    let mut sections = Vec::new();
+/// checking, without a real signed-in session. Reordering the page is moving a line here.
+fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
+    let signed_in = inputs.signed_in;
     // Order: Libraries, Playback (player experience only), System (Language, Automatically Sign
     // In, Trailer autoplay), Unencrypted connections, Privacy, then About alone at the very end.
-    if inputs.signed_in {
-        // The section is Libraries and the row is Favorite libraries: the switch governs the
-        // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
-        sections.push(
-            Section::new(crate::i18n::msg::settings_libraries_section()).row(
-                Row::new(crate::i18n::msg::settings_libraries_title())
-                    .detail(crate::i18n::msg::settings_libraries_detail())
-                    .value(crate::i18n::msg::settings_libraries_count(inputs.library_count))
-                    .chevron(true),
-            ),
+    //
+    // The Libraries section is Libraries and the row is Favorite libraries: the switch governs
+    // the whole app — Home's shelves, the top tab strip and the Library's Sources picker.
+    let libraries = FormSection::new(crate::i18n::msg::settings_libraries_section())
+        .visible(signed_in)
+        .item(
+            RootId::Favourites,
+            RowKind::Nav(SettingsPage::Favourites),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_libraries_title())
+                .detail(crate::i18n::msg::settings_libraries_detail())
+                .value(crate::i18n::msg::settings_libraries_count(inputs.library_count))
+                .chevron(true),
         );
-        actions.push(Action::Favourites);
-    }
-    let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
-        Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
-    actions.push(Action::Playback);
-    if inputs.signed_in {
-        playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
-            .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
-        actions.push(Action::AudioSubtitles);
-    }
-    sections.push(playback);
-    let mut system = Section::new(crate::i18n::msg::settings_system_section());
-    system = system.row(Row::new(crate::i18n::msg::settings_language_title())
-        .detail(crate::i18n::msg::settings_language_detail())
-        .value(preference_name(inputs.language)).chevron(true));
-    actions.push(Action::Language);
-    if inputs.signed_in && inputs.multi_user {
-        system = system.row(
+    let playback = FormSection::new(crate::i18n::msg::settings_playback_section())
+        .item(
+            RootId::Playback,
+            RowKind::Nav(SettingsPage::Playback),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_playback_title())
+                .detail(crate::i18n::msg::settings_playback_detail())
+                .chevron(true),
+        )
+        .item_if(
+            signed_in,
+            RootId::AudioSubtitles,
+            RowKind::Nav(SettingsPage::AudioSubtitles),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_audio_title())
+                .detail(crate::i18n::msg::settings_audio_detail())
+                .chevron(true),
+        );
+    let system = FormSection::new(crate::i18n::msg::settings_system_section())
+        .item(
+            RootId::Language,
+            RowKind::Nav(SettingsPage::Language),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_language_title())
+                .detail(crate::i18n::msg::settings_language_detail())
+                .value(preference_name(inputs.language))
+                .chevron(true),
+        )
+        .item_if(
+            signed_in && inputs.multi_user,
+            RootId::AutoSignIn,
+            RowKind::Toggle,
+            Action::AutoSignIn,
             Row::new(crate::i18n::msg::settings_auto_sign_in_title())
                 .detail(crate::i18n::msg::settings_auto_sign_in_detail())
                 .toggle(inputs.auto_sign_in),
-        );
-        actions.push(Action::AutoSignIn);
-    }
-    if inputs.signed_in {
-        system = system.row(
+        )
+        .item_if(
+            signed_in,
+            RootId::TrailerAutoplay,
+            RowKind::Toggle,
+            Action::TrailerAutoplay,
             Row::new(crate::i18n::msg::settings_trailers_title())
                 .detail(crate::i18n::msg::settings_trailers_detail())
                 .toggle(inputs.trailer_autoplay),
         );
-        actions.push(Action::TrailerAutoplay);
-    }
-    sections.push(system);
-    if inputs.signed_in && !inputs.plaintext.is_empty() {
-        let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
+    let has_plaintext = signed_in && !inputs.plaintext.is_empty();
+    let mut plaintext = FormSection::new(crate::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
+    if has_plaintext {
         for (i, row) in inputs.plaintext.iter().enumerate() {
             let label = Row::new(&row.name);
             let label = if row.named { label.server_label() } else { label };
-            section = section.row(label
-                .detail(plaintext_question::settings_detail(row.on, row.connected)).toggle(row.on));
-            actions.push(Action::Plaintext(i));
+            plaintext = plaintext.item_keyed(
+                RootId::Plaintext(row.machine.clone()),
+                RowKey(PLAINTEXT_KEY_BASE + i as u32),
+                RowKind::Toggle,
+                Action::Plaintext(row.machine.clone()),
+                label
+                    .detail(plaintext_question::settings_detail(row.on, row.connected))
+                    .toggle(row.on),
+            );
         }
-        sections.push(section);
     }
-    sections.push(
-        Section::new(crate::i18n::msg::settings_privacy_section())
-            .row(
-                Row::new(crate::i18n::msg::settings_privacy_title())
-                    .detail(crate::i18n::msg::settings_privacy_detail())
-                    .chevron(true),
-            )
-            .row(
-                Row::new(crate::i18n::msg::settings_legal_title())
-                    .detail(crate::i18n::msg::settings_legal_detail())
-                    .chevron(true),
-            ),
-    );
-    actions.extend([Action::Privacy, Action::Legal]);
-    sections.push(
-        Section::new(crate::i18n::msg::settings_about_section()).row(
-            Row::new(crate::i18n::msg::settings_about_title())
-                .detail(crate::i18n::msg::settings_about_detail())
+    let privacy = FormSection::new(crate::i18n::msg::settings_privacy_section())
+        .item(
+            RootId::Privacy,
+            RowKind::Nav(SettingsPage::Privacy),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_privacy_title())
+                .detail(crate::i18n::msg::settings_privacy_detail())
                 .chevron(true),
-        ),
+        )
+        .item(
+            RootId::Legal,
+            RowKind::Nav(SettingsPage::Legal),
+            Action::Door,
+            Row::new(crate::i18n::msg::settings_legal_title())
+                .detail(crate::i18n::msg::settings_legal_detail())
+                .chevron(true),
+        );
+    let about = FormSection::new(crate::i18n::msg::settings_about_section()).item(
+        RootId::About,
+        RowKind::Nav(SettingsPage::About),
+        Action::Door,
+        Row::new(crate::i18n::msg::settings_about_title())
+            .detail(crate::i18n::msg::settings_about_detail())
+            .chevron(true),
     );
-    actions.push(Action::About);
-    (sections, actions)
+    Form::new()
+        .section(libraries)
+        .section(playback)
+        .section(system)
+        .section(plaintext)
+        .section(privacy)
+        .section(about)
 }
 
 impl RootPage {
     fn new(entry: EntryId, directory: crate::stores::browse::DirectoryView<'_>) -> Self {
         let mut s = Self {
             entry,
-            table: TableView::new(),
-            rows: Vec::new(),
+            form: FormTable::new(super::registry::BAND),
             session_watch: Default::default(),
             session_snapshot: Default::default(),
             pending_auto: None, pending_trailer: None,
@@ -1131,18 +1204,20 @@ impl RootPage {
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
             grant_seen: crate::plex::grant::revision(),
             state: RootState {
-                sel: 0,
+                sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
                 language: crate::i18n::Preference::System,
                 plaintext: Vec::new(),
             },
         };
-        s.rebuild(0, directory);
+        s.rebuild(directory);
         s
     }
 
-    fn rebuild(&mut self, sel: i32, directory: crate::stores::browse::DirectoryView<'_>) {
+    /// Re-derive the rows from the session, keeping focus on the row it is on BY IDENTITY (a
+    /// vanished row falls to its next, else previous, neighbour — `FormTable::set`).
+    fn rebuild(&mut self, directory: crate::stores::browse::DirectoryView<'_>) {
         if let Some(snapshot) = crate::plex::session::peek_settled() {
             self.session_snapshot = snapshot;
         }
@@ -1155,15 +1230,18 @@ impl RootPage {
         self.state.trailer_autoplay = trailer_autoplay;
         self.state.language = crate::i18n::saved_preference();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
-        let (sections, actions) = root_sections(&RootInputs {
+        let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
             auto_sign_in, trailer_autoplay, language: self.state.language, plaintext,
         });
-        self.rows = actions;
-        self.table.compact = false;
-        self.table.header_ink = theme::TEXT_READING;
-        self.table.set_sections(sections, sel, false);
-        self.table.list_focused = true;
+        let keep = self.form.selected_id().cloned();
+        self.form.table.compact = false;
+        self.form.table.header_ink = theme::TEXT_READING;
+        self.form.set(form, keep.as_ref());
+        self.form.table.list_focused = true;
+        if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
+            self.state.sel = key;
+        }
     }
 
     /// **Unencrypted connections**: one input per server the signed-in account answered
@@ -1174,7 +1252,7 @@ impl RootPage {
     /// say yes. Reads `self.session_snapshot`/`self.pending_plaintext` (the account and the
     /// switch's own optimistic-write state), and records what it found back onto
     /// `self.plaintext_rows`/`self.state.plaintext` for [`RootPage::activate`]/[`LogicalState`] —
-    /// what it returns is the plain [`PlaintextRowInput`]s [`root_sections`] (a pure builder) turns
+    /// what it returns is the plain [`PlaintextRowInput`]s [`root_form`] (a pure builder) turns
     /// into rows and [`Action::Plaintext`] entries.
     fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
         use crate::plex::session::PlaintextChoice;
@@ -1215,7 +1293,7 @@ impl RootPage {
                 let named = real_name.is_some();
                 let name = real_name.unwrap_or_else(|| crate::i18n::msg::settings_plaintext_server().to_string());
                 let connected = on && crate::plex::grant::granted_origin(&machine).is_some();
-                PlaintextRowInput { name, named, on, connected }
+                PlaintextRowInput { machine: ServerMachineId(machine), name, named, on, connected }
             })
             .collect()
     }
@@ -1228,25 +1306,33 @@ impl RootPage {
                 crate::i18n::msg::settings_title(),
                 crate::i18n::msg::settings_root_copy(),
             ),
-            &self.table,
+            &self.form.table,
             GroupId(0),
             self.entry,
         )
+        .keyed(&self.form)
     }
 
-    fn activate(&mut self, row: i32, directory: crate::stores::browse::DirectoryView<'_>,
+    /// Activate the row whose focus key is `key` (an `Activate` element or the RIGHT rule's).
+    fn activate(&mut self, key: u32, directory: crate::stores::browse::DirectoryView<'_>,
         fx: &mut Effects<'_, InnerHost>) {
-        let Some(&action) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
+        let Some(index) = self.form.index_of_key(RowKey(key)) else {
             return;
         };
+        let action = match self.form.activate(index) {
+            Some(Activation::Push(dest)) => return fx.push(Fx::Nav(NavOp::Push(dest))),
+            Some(Activation::Action(action)) => action,
+            None => return,
+        };
         match action {
+            Action::Door => {}
             Action::AutoSignIn => {
                 let on = !self.state.auto_sign_in;
                 if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
                     (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))) {
                     self.pending_auto = Some((on, ticket));
                 }
-                self.rebuild(self.table.sel, directory);
+                self.rebuild(directory);
             }
             Action::TrailerAutoplay => {
                 let on = !self.state.trailer_autoplay;
@@ -1254,11 +1340,13 @@ impl RootPage {
                     (current.trailer_autoplay() != on).then(|| current.with_trailer_autoplay(on))) {
                     self.pending_trailer = Some((on, ticket));
                 }
-                self.rebuild(self.table.sel, directory);
+                self.rebuild(directory);
             }
-            Action::Plaintext(i) => {
+            Action::Plaintext(ServerMachineId(machine)) => {
                 use crate::plex::session::PlaintextChoice;
-                let Some((machine, on)) = self.plaintext_rows.get(i).cloned() else { return };
+                let Some(on) = self.plaintext_rows.iter().find(|(m, _)| *m == machine).map(|(_, on)| *on) else {
+                    return;
+                };
                 if !on {
                     // ON asks first — the same question the sign-in and the failure read-outs
                     // put, seated on *Not now*; only its *Connect* allows (`alert_answer`).
@@ -1273,15 +1361,8 @@ impl RootPage {
                 if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
                     self.pending_plaintext = Some((machine, false));
                 }
-                self.rebuild(self.table.sel, directory);
+                self.rebuild(directory);
             }
-            Action::Playback => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Playback))),
-            Action::AudioSubtitles => fx.push(Fx::Nav(NavOp::Push(SettingsPage::AudioSubtitles))),
-            Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),
-            Action::Privacy => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Privacy))),
-            Action::Legal => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Legal))),
-            Action::About => fx.push(Fx::Nav(NavOp::Push(SettingsPage::About))),
-            Action::Language => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Language))),
         }
     }
 }
@@ -1300,7 +1381,7 @@ impl RootPage {
             fx.push(Fx::App(super::registry::AppFx::Session(cmd)));
         }
         plaintext_question::enter_group(fx, MachineId::Instance(InstanceId(0)), GroupId(0));
-        self.rebuild(self.table.sel, directory);
+        self.rebuild(directory);
         fx.invalidate(Provenance::Input);
     }
 }
@@ -1324,8 +1405,7 @@ impl Machine<InnerHost> for RootPage {
         match ev {
             ScreenEvent::Enter(_) => {
                 // a return from a child: the favourite count may have changed
-                let sel = self.table.sel;
-                self.rebuild(sel, cx.views);
+                self.rebuild(cx.views);
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
@@ -1355,19 +1435,21 @@ impl Machine<InnerHost> for RootPage {
                     self.alert.withdraw();
                 }
                 self.alert.update(t.dt());
-                if landed { self.rebuild(self.table.sel, cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
+                if landed { self.rebuild(cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
 
-                self.table
+                self.form.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                table_focus(&mut self.table, to.elem);
-                self.state.sel = self.table.sel;
+                form_focus(&mut self.form, to.elem);
+                if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
+                    self.state.sel = key;
+                }
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                self.activate(*e as i32, cx.views, fx);
+                self.activate(*e, cx.views, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(crate::ui::machine::InputEvent {
@@ -1381,8 +1463,10 @@ impl Machine<InnerHost> for RootPage {
             }) => {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
                 if let Some(k) = cx.focus.current {
-                    if self.table.row_opens(k.elem as i32) {
-                        self.activate(k.elem as i32, cx.views, fx);
+                    let opens = self.form.index_of_key(RowKey(k.elem))
+                        .is_some_and(|i| self.form.table.row_opens(i as i32));
+                    if opens {
+                        self.activate(k.elem, cx.views, fx);
                     }
                 }
                 Handled::Yes
@@ -1423,7 +1507,7 @@ impl Focusable<InnerHost> for RootPage {
             return key;
         }
         if self.alert.owns(want.elem) {
-            return FocusKey { entry: self.entry, elem: self.table.sel.max(0) as u32 };
+            return FocusKey { entry: self.entry, elem: self.state.sel.0 };
         }
         Focusable::<InnerHost>::reconcile(&self.view(), want, cx)
     }

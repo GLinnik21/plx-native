@@ -25,11 +25,16 @@
 //! The `paint(Painter)` entry points survive that deletion and are still exercised, but by owned
 //! screens choosing to draw imperatively (`screens/onboard.rs`, `screens/consent.rs`) rather than
 //! by a frame loop that owns the state; `composed_draw` is the other half and neither is dead.
+//!
+//! **Focus elements are row indices, except for a form-backed table.** `TablePart::keys` (a
+//! `ui::form::RowKeys`, i.e. a `FormTable`) makes the element a row's `RowKey`, and all five hooks
+//! plus the pointer stops translate key <-> index; without it the element is the index.
 
 use crate::ui::View;
 use std::ffi::CStr;
 
 use super::document_reader::DocumentReader;
+use super::form::{RowKey, RowKeys};
 use super::frame::Budget;
 use super::geom::{Document, IndexElem, Table};
 use super::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
@@ -126,9 +131,33 @@ pub struct TablePart<'a> {
     /// A band sits beside the table this frame: LEFT is the geometric move into it (rule 5)
     /// rather than BACK (rule 9), and DOWN off the last row finds it (rule 2).
     pub has_band: bool,
+    /// A form-backed table's row-key map. Present: a row's focus element IS its [`RowKey`] number
+    /// (a reorder moves no key) and every hook and pointer stop translates key <-> row index.
+    /// Absent: the element is the row index, as for every table not yet on a `FormTable`.
+    pub keys: Option<&'a dyn RowKeys>,
 }
 
 impl TablePart<'_> {
+    /// The element the row-index view (`geom::Table`) understands for focus element `e`; `None`
+    /// when the map does not know it (a stale key, the band's elements).
+    fn to_index<E: IndexElem>(&self, e: E) -> Option<E> {
+        match self.keys {
+            None => Some(e),
+            Some(k) => k.index_of_key(RowKey(e.index()?)).map(|i| E::of_index(i as u32)),
+        }
+    }
+
+    /// The focus element for the row-index element `e`.
+    fn to_key<E: IndexElem>(&self, e: E) -> E {
+        match self.keys {
+            None => e,
+            Some(k) => e
+                .index()
+                .and_then(|i| k.key_at(i as usize))
+                .map_or(e, |key| E::of_index(key.0)),
+        }
+    }
+
     fn view(&self) -> Table<'_> {
         Table {
             table: self.table,
@@ -167,19 +196,31 @@ where
         }
     }
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
-        Focusable::<H>::group_of(&self.view(), key, cx)
+        Focusable::<H>::group_of(&self.view(), &self.to_index(*key)?, cx)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
-        Focusable::<H>::neighbour(&self.view(), key, dir, cx)
+        let Some(elem) = self.to_index(key.elem) else {
+            return Step::Edge;
+        };
+        match Focusable::<H>::neighbour(&self.view(), FocusKey { entry: key.entry, elem }, dir, cx) {
+            Step::Move(to) => Step::Move(FocusKey { entry: to.entry, elem: self.to_key(to.elem) }),
+            Step::Edge => Step::Edge,
+        }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        Focusable::<H>::place(&self.view(), key, cx, at)
+        let mut placed = Focusable::<H>::place(&self.view(), &self.to_index(*key)?, cx, at)?;
+        placed.index = placed.index.and_then(|i| self.to_key(H::Elem::of_index(i)).index());
+        Some(placed)
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        Focusable::<H>::reconcile(&self.view(), want, cx)
+        // a key the map no longer knows settles like index 0: the first selectable row
+        let elem = self.to_index(want.elem).unwrap_or_else(|| H::Elem::of_index(0));
+        let got = Focusable::<H>::reconcile(&self.view(), FocusKey { entry: want.entry, elem }, cx);
+        FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        Focusable::<H>::seat(&self.view(), g, from, cx)
+        let got = Focusable::<H>::seat(&self.view(), g, from, cx);
+        FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
     }
 }
 
@@ -203,7 +244,7 @@ where
                     Stop {
                         key: FocusKey {
                             entry: self.entry,
-                            elem: H::Elem::of_index(i as u32),
+                            elem: self.to_key(H::Elem::of_index(i as u32)),
                         },
                         rect: r,
                         rest_rect: r,
@@ -411,9 +452,17 @@ impl<'a> TableScreen<'a> {
                 entry,
                 uncommitted: false,
                 has_band: false,
+                keys: None,
             },
             band: None,
         }
+    }
+
+    /// The table is form-backed: its focus elements are the map's [`RowKey`]s (see
+    /// [`TablePart::keys`]).
+    pub fn keyed(mut self, keys: &'a dyn RowKeys) -> Self {
+        self.table.keys = Some(keys);
+        self
     }
 
     /// The table in a frame of the screen's own (first run's `content`, not the sectioned inset).
@@ -756,6 +805,66 @@ mod tests {
         }
         t.set_sections(vec![s], 0, false);
         t
+    }
+
+    /// **A form-backed table's focus elements are its `RowKey`s, and every hook translates.** Keys
+    /// deliberately unrelated to position (30, 10, 20 down the page): the same answers as the
+    /// index-addressed table over the same rows, spelled in keys — including the pointer path's
+    /// `place` and a key the map no longer holds.
+    #[test]
+    fn a_keyed_table_part_speaks_row_keys_through_all_five_hooks() {
+        use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKind};
+        #[derive(Clone, PartialEq)]
+        struct Id(u32);
+        impl FormId for Id {
+            fn key(&self) -> RowKey {
+                RowKey(self.0)
+            }
+        }
+        let mut form = FormTable::<Id, (), ()>::new(100);
+        let mut sec = FormSection::new("Section");
+        for k in [30, 10, 20] {
+            sec = sec.item(Id(k), RowKind::Button, (), Row::new(format!("row {k}")));
+        }
+        form.set(Form::new().section(sec), None);
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let cx = cx(&m, &v);
+        let frame = RouteLayout::screen().sectioned_table();
+        let keyed = TablePart {
+            table: &form.table, frame, group: G, entry: E,
+            uncommitted: false, has_band: false, keys: Some(&form),
+        };
+        let plain = TablePart {
+            table: &form.table, frame, group: G, entry: E,
+            uncommitted: false, has_band: false, keys: None,
+        };
+        let fk = |elem: u32| FocusKey { entry: E, elem };
+        type H = FixtureHost;
+
+        assert_eq!(Focusable::<H>::group_of(&keyed, &30, &cx), Some(G));
+        assert_eq!(Focusable::<H>::group_of(&keyed, &0, &cx), None, "an index is not a key here");
+        assert_eq!(Focusable::<H>::group_of(&keyed, &99, &cx), None);
+
+        assert!(matches!(Focusable::<H>::neighbour(&keyed, fk(30), Dir::Down, &cx),
+            Step::Move(to) if to.elem == 10 && to.entry == E));
+        assert!(matches!(Focusable::<H>::neighbour(&keyed, fk(20), Dir::Up, &cx),
+            Step::Move(to) if to.elem == 10));
+        assert!(matches!(Focusable::<H>::neighbour(&keyed, fk(30), Dir::Up, &cx), Step::Edge));
+        assert!(matches!(Focusable::<H>::neighbour(&keyed, fk(20), Dir::Down, &cx), Step::Edge));
+
+        let placed = Focusable::<H>::place(&keyed, &10, &cx, At::Drawn).unwrap();
+        let by_index = Focusable::<H>::place(&plain, &1, &cx, At::Drawn).unwrap();
+        assert!(same(placed.rect, by_index.rect), "key 10 is the row the index view calls 1");
+        assert_eq!(placed.index, Some(10));
+        assert!(Focusable::<H>::place(&keyed, &1, &cx, At::Drawn).is_none());
+
+        assert_eq!(Focusable::<H>::reconcile(&keyed, fk(20), &cx).elem, 20);
+        assert_eq!(Focusable::<H>::reconcile(&keyed, fk(999), &cx).elem, 30,
+            "a key that left settles on the first row");
+
+        let from = Focusable::<H>::place(&plain, &2, &cx, At::Drawn).unwrap();
+        assert_eq!(Focusable::<H>::seat(&keyed, G, from, &cx).elem, 20, "nearest the row it left from");
+        assert_eq!(Focusable::<H>::seat(&plain, G, from, &cx).elem, 2, "the plain table still speaks indices");
     }
 
     /// Spec §10: the table screen's focus protocol AS DATA — one Column group, Seat::Remembered,

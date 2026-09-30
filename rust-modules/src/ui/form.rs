@@ -22,7 +22,8 @@
 //! Rendering is byte-identical to a hand-built `Vec<Section>`: [`Form`] produces exactly that list
 //! and hands it to the existing [`TableView`] path. Design record: `docs/settings-form.md`.
 
-// Callers land in PR 2 of the docs/settings-form.md sequence.
+// The Settings root is the first caller (PR 2 of the docs/settings-form.md sequence); the note,
+// separator, keyed-if and picker-facing halves land with their pages in PR 3-5.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::ui::table::{Row, Section, TableView};
@@ -30,6 +31,14 @@ use crate::ui::table::{Row, Section, TableView};
 /// A row's stable focus key. Hand-assigned per page, never derived from layout — see the module doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RowKey(pub u32);
+
+/// A table's row-key map, as the focus layer reads it: `TablePart` translates between the focus
+/// key an element carries (a [`RowKey`]'s number) and the row index the [`TableView`] draws.
+/// [`FormTable`] implements it; a table with no form has no map and keeps index elements.
+pub trait RowKeys {
+    fn key_at(&self, index: usize) -> Option<RowKey>;
+    fn index_of_key(&self, key: RowKey) -> Option<usize>;
+}
 
 /// A page's row id type names its keys once, so call sites do not repeat them.
 pub trait FormId {
@@ -295,5 +304,14 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
             RowKind::Nav(d) => Activation::Push(d.clone()),
             _ => Activation::Action(b.action.clone()),
         })
+    }
+}
+
+impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> RowKeys for FormTable<Id, A, Dest> {
+    fn key_at(&self, index: usize) -> Option<RowKey> {
+        Self::key_at(self, index)
+    }
+    fn index_of_key(&self, key: RowKey) -> Option<usize> {
+        Self::index_of_key(self, key)
     }
 }

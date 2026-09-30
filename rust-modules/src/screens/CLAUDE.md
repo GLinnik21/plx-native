@@ -74,10 +74,16 @@ that mixes async content with a live cursor:
 
 A screen that builds a `TableView` ships a `fit_report` test over its REAL builder (extract a pure
 builder that takes its inputs as arguments, as `preferences::field_section` and
-`settings::root_sections` do) across `i18n::SHIPPED`, asserting `TableView::app_fit_failures` is empty.
+`settings::root_form` do) across `i18n::SHIPPED`, asserting `TableView::app_fit_failures` is empty.
 Text that comes from a server or a user is marked with the `server_*` builders so it is exempt;
 never mark the app's own fallback strings. See `ui/CLAUDE.md`, "Localization and shared reading
 layout", for what to do when a string does not fit.
+
+A page on a `ui::form::FormTable` (the Settings root; the other pages migrate per `docs/settings-form.md`)
+focuses by IDENTITY: the element the engine holds, the `Fx::Remember` seat and the page's canon are
+the row's `RowKey`, never its table index, so reordering the form moves no focus key. Such a page
+answers `FocusMoved` with `family::form_focus` and draws through `TableScreen::keyed`; a page not yet
+on a form keeps `table_focus` and index elements.
 
 ## Verifying a screen change
 

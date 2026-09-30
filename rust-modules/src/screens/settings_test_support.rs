@@ -156,9 +156,21 @@ pub(super) fn multi_user_session(tag: &str) -> crate::plex::session::TempSession
     t
 }
 
-/// Signed-in with a Plex Home roster, row 4 is Automatically Sign In (after Favorite libraries,
-/// Video & playback, Audio & subtitles, Language).
-pub(super) const AUTO_SIGN_IN_ROW: u32 = 4;
+/// The focus element (the `RowKey` number) of a root row: rows are addressed by identity, never
+/// by their position in the table. Not for `RootId::Plaintext`, whose key is its position.
+pub(super) fn root_key(id: RootId) -> u32 {
+    id.key().0
+}
+
+/// Park the root's focus on `id` the way the engine would (`FocusMoved` to the row's key).
+pub(super) fn select_root(page: &mut RootPage, id: RootId) {
+    let entry = page.entry;
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    let to = FocusKey { entry, elem: root_key(id) };
+    page.step(&ScreenEvent::FocusMoved { from: None, to, by: crate::ui::screen::By::Dir }, &cx(None), &mut fx);
+}
 
 /// Run the push spring to rest on 16 ms frames — bounded, so a spring that never settles
 /// fails the test rather than hanging the suite.

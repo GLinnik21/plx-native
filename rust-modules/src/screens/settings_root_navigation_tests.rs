@@ -39,10 +39,10 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
-    // Playback / Language / Privacy / Legal / About — row 4 is About, not a switch.
+    // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
     let about = FocusKey {
         entry: EntryId(0),
-        elem: 4,
+        elem: root_key(RootId::About),
     };
     step(
         &mut s,
@@ -57,7 +57,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
     assert_eq!(
         s.inner.depth(),
         2,
-        "signed out, row 4 is About — a document push"
+        "signed out, About is a document push"
     );
     assert_eq!(name(&s), word::LEGAL);
     assert!(!crate::plex::session::peek().auto_sign_in());
@@ -77,7 +77,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
         entry: EntryId(0),
-        elem: AUTO_SIGN_IN_ROW,
+        elem: root_key(RootId::AutoSignIn),
     };
     step(
         &mut s,
@@ -120,7 +120,7 @@ fn right_on_automatically_sign_in_does_not_push() {
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
         entry: EntryId(0),
-        elem: AUTO_SIGN_IN_ROW,
+        elem: root_key(RootId::AutoSignIn),
     };
     step(
         &mut s,
@@ -212,7 +212,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
 
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 3,
+        elem: root_key(RootId::Legal),
     };
     step(
         &mut s,
@@ -299,7 +299,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
         entry: EntryId(0),
-        elem: 3,
+        elem: root_key(RootId::Legal),
     };
     step(
         &mut s,
@@ -343,7 +343,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 3,
+        elem: root_key(RootId::Legal),
     };
     for _ in 0..5 {
         step(
@@ -414,7 +414,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
     // stack that still has something UNDER its top
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 3,
+        elem: root_key(RootId::Legal),
     };
     step(
         &mut s,
@@ -513,7 +513,7 @@ fn the_logical_state_follows_the_inner_stack() {
 
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 3,
+        elem: root_key(RootId::Legal),
     };
     step(
         &mut s,
@@ -551,14 +551,14 @@ fn session_refresh_rebuilds_root_without_navigation() {
     let saved = crate::plex::session::peek();
     crate::plex::session::install_transient_for_test(true);
     let mut root = RootPage::new(EntryId(0), cx(None).views);
-    assert!(!root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)));
+    assert!(!root.form.index_of(&RootId::AutoSignIn).is_some());
     crate::plex::session::save(&saved.with_auto_sign_in(true));
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
     assert!(root.state.auto_sign_in, "a landed session must rebuild cached toggle values");
-    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+    assert!(root.form.index_of(&RootId::AutoSignIn).is_some(),
         "a landed roster must restore the multi-user row");
 }
 
@@ -571,14 +571,14 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     let ticket = crate::storage_worker::submit_retained(|| false);
     crate::storage_worker::drain_for_test();
     root.pending_auto = Some((true, ticket));
-    root.rebuild(0, cx(None).views);
+    root.rebuild(cx(None).views);
     crate::plex::session::install_transient_for_test(false);
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
     assert!(root.state.auto_sign_in, "transient completion must not erase the optimistic value");
-    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+    assert!(root.form.index_of(&RootId::AutoSignIn).is_some(),
         "transient storage must not remove the pending toggle");
     crate::plex::session::save(&saved);
     root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
@@ -611,9 +611,9 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
         &crate::plex::grant::eligible_evidence_for_test()).unwrap();
 
     let mut root = RootPage::new(EntryId(0), cx(None).views);
-    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+    let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
         .expect("an allowed server has its switch");
-    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
     assert_eq!(drawn.label, "Basement");
     assert_eq!(drawn.toggle, Some(true));
     assert_eq!(drawn.detail, "Allowed on this network. Connected without encryption.");
@@ -622,11 +622,11 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-    root.activate(row as i32, cx(None).views, &mut fx);
+    root.activate(root.form.key_at(row).unwrap().0, cx(None).views, &mut fx);
     assert_eq!(crate::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
     assert!(!crate::plex::grant::allowed_under(crate::plex::CredentialPolicy::HttpsOnly, &lan));
     assert_eq!(root.state.plaintext, vec![false], "the switch shows the answer optimistically");
-    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
     assert_eq!(drawn.toggle, Some(false));
     assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
     crate::storage_worker::drain_for_test();
@@ -641,7 +641,7 @@ fn no_unencrypted_connection_section_without_an_answer() {
     let _g = crate::testlock::serial();
     let _sess = multi_user_session("root-plaintext-none");
     let root = RootPage::new(EntryId(0), cx(None).views);
-    assert!(!root.rows.iter().any(|a| matches!(a, Action::Plaintext(_))));
+    assert!(root.form.index_of_key(RowKey(PLAINTEXT_KEY_BASE)).is_none());
     assert!(root.state.plaintext.is_empty());
 }
 
@@ -662,9 +662,9 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
         eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
     });
     let mut root = RootPage::new(EntryId(0), cx(None).views);
-    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+    let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
         .expect("an offered, never-asked server has its switch");
-    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
     assert_eq!(drawn.label, "Basement", "an offered server is named from its discovery, not the session file");
     assert_eq!(drawn.toggle, Some(false));
     assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
@@ -672,7 +672,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-    root.activate(row as i32, cx(None).views, &mut fx);
+    root.activate(root.form.key_at(row).unwrap().0, cx(None).views, &mut fx);
     assert!(root.alert.is_open(), "ON asks before anything is recorded");
     assert_eq!(root.state.plaintext, vec![false]);
     assert!(crate::plex::grant::choices(&[], &crate::plex::session::peek().account_token).is_empty(),
@@ -699,4 +699,134 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     assert_eq!(root.state.plaintext, vec![true], "the switch shows the answer optimistically");
     crate::plex::grant::reset_for_test();
     crate::plex::reset_servers_for_test();
+}
+
+fn inputs_for(signed_in: bool) -> RootInputs {
+    RootInputs {
+        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
+        language: crate::i18n::Preference::System, plaintext: Vec::new(),
+    }
+}
+
+/// **Reordering the root moves no identity.** A form that declares the same rows in a different
+/// order (About first, Language before Playback, Legal before Privacy) answers every Id-addressed
+/// question exactly as `root_form` does: the same key, the same activation. The seat a BACK
+/// restores is the row's key (`Fx::Remember` records the focused element), so it is the same
+/// too. Positions DO differ — that is what makes this a test of identity, not of layout.
+#[test]
+fn reordering_the_root_form_changes_no_id_addressed_behaviour() {
+    let build = |order: &[usize]| {
+        let mut sec = FormSection::new("All");
+        for &i in order {
+            let (id, dest, title) = [
+                (RootId::Playback, SettingsPage::Playback, "Playback"),
+                (RootId::Language, SettingsPage::Language, "Language"),
+                (RootId::Privacy, SettingsPage::Privacy, "Privacy"),
+                (RootId::Legal, SettingsPage::Legal, "Legal"),
+                (RootId::About, SettingsPage::About, "About"),
+            ][i].clone();
+            sec = sec.item(id, RowKind::Nav(dest), Action::Door, Row::new(title).chevron(true));
+        }
+        let mut t = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        t.set(Form::new().section(sec), None);
+        t
+    };
+    let natural = build(&[0, 1, 2, 3, 4]);
+    let shuffled = build(&[4, 1, 0, 3, 2]);
+    let mut moved = 0;
+    for (id, dest) in [
+        (RootId::Playback, SettingsPage::Playback), (RootId::Language, SettingsPage::Language),
+        (RootId::Privacy, SettingsPage::Privacy), (RootId::Legal, SettingsPage::Legal),
+        (RootId::About, SettingsPage::About),
+    ] {
+        let (a, b) = (natural.index_of(&id).unwrap(), shuffled.index_of(&id).unwrap());
+        moved += usize::from(a != b);
+        assert_eq!(natural.key_at(a), shuffled.key_at(b), "{id:?}: the key does not follow the layout");
+        assert_eq!(natural.key_at(a), Some(id.key()));
+        assert_eq!(natural.activate(a), Some(Activation::Push(dest)));
+        assert_eq!(shuffled.activate(b), Some(Activation::Push(dest)), "{id:?}: OK pushes the same page");
+        assert_eq!(natural.index_of_key(id.key()), Some(a));
+        assert_eq!(shuffled.index_of_key(id.key()), Some(b));
+    }
+    assert!(moved > 0, "the two orders must actually differ");
+    // and the real form's keys are unique, below the band, and unrelated to position
+    for signed_in in [false, true] {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&inputs_for(signed_in)), None);
+        let keys: Vec<u32> = (0..real.table.n_rows() as usize).filter_map(|i| real.key_at(i)).map(|k| k.0).collect();
+        assert!(keys.iter().all(|&k| k < super::super::registry::BAND));
+        if signed_in {
+            assert!(keys.windows(2).any(|w| w[0] > w[1]), "keys do not ascend with position: {keys:?}");
+        }
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "keys are unique: {keys:?}");
+    }
+}
+
+/// **BACK from each root door re-seats focus on the same row** — through the real surface: focus
+/// the door by its identity, OK pushes its page, and the pop's `Enter` seats `FocusTarget::Elem`
+/// of that same row key, which the surface also holds in `remembered`.
+#[test]
+fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-back-reseat");
+    for (id, dest) in [
+        (RootId::Favourites, SettingsPage::Favourites),
+        (RootId::Playback, SettingsPage::Playback),
+        (RootId::AudioSubtitles, SettingsPage::AudioSubtitles),
+        (RootId::Language, SettingsPage::Language),
+        (RootId::Privacy, SettingsPage::Privacy),
+        (RootId::Legal, SettingsPage::Legal),
+        (RootId::About, SettingsPage::About),
+    ] {
+        let mut s = RouteSurface::new(
+            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
+            crate::pms::HubsSnapshot::empty_for_test().view(),
+        );
+        step(&mut s, ScreenEvent::Mount, None);
+        let row = FocusKey { entry: EntryId(0), elem: root_key(id.clone()) };
+        step(&mut s, ScreenEvent::FocusMoved { from: None, to: row, by: By::Dir }, Some(row));
+        step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+        assert_eq!(s.inner.top().unwrap().arg, dest, "OK on {id:?} pushes {dest:?}");
+        assert_eq!(s.remembered.iter().map(|(_, k)| *k).collect::<Vec<_>>(), [row.elem],
+            "the seat is {id:?}'s key");
+        settle(&mut s);
+        let out = step(&mut s, back_key(), None);
+        assert_eq!(s.inner.top().unwrap().arg, SettingsPage::Root);
+        let seat = out.iter().find_map(|st| match &st.fx {
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => Some(*focus),
+            _ => None,
+        });
+        assert!(matches!(seat, Some(FocusTarget::Elem(k)) if k == row), "BACK re-seats {id:?}: {seat:?}");
+    }
+}
+
+/// A rebuild keeps focus on the row by identity; a row that disappears (sign-out drops Favorite
+/// libraries, Audio & subtitles and the switches) lands on its NEXT surviving neighbour in the
+/// old order, and the page's own state follows.
+#[test]
+fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-rebuild-identity");
+    let mut page = RootPage::new(EntryId(0), cx(None).views);
+    select_root(&mut page, RootId::Language);
+    page.rebuild(cx(None).views);
+    assert_eq!(page.form.selected_id(), Some(&RootId::Language), "a rebuild keeps the row it is on");
+    assert_eq!(page.state.sel, RootId::Language.key());
+
+    for (from, lands) in [
+        (RootId::AudioSubtitles, RootId::Language),
+        (RootId::TrailerAutoplay, RootId::Privacy),
+        (RootId::Favourites, RootId::Playback),
+        (RootId::About, RootId::About),
+    ] {
+        select_root(&mut page, from.clone());
+        assert_eq!(page.form.selected_id(), Some(&from));
+        let keep = page.form.selected_id().cloned();
+        page.form.set(root_form(&inputs_for(false)), keep.as_ref());
+        assert_eq!(page.form.selected_id(), Some(&lands), "{from:?} left: focus falls to {lands:?}");
+        page.form.set(root_form(&inputs_for(true)), None);
+    }
 }

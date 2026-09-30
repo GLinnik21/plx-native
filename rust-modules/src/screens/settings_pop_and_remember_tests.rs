@@ -99,7 +99,7 @@ fn a_pop_with_a_page_under_it_pops_the_inner_stack_and_stays_up() {
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
         entry: EntryId(7),
-        elem: 1,
+        elem: root_key(RootId::Legal),
     };
     step(
         &mut s,
@@ -146,7 +146,7 @@ fn the_remembered_seats_are_part_of_the_hash() {
     let _sess = scratch_session("surface-seat-hash");
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: root_key(RootId::Legal),
     };
 
     let mut seated = RouteSurface::new(

@@ -31,13 +31,12 @@ fn base_root_inputs() -> RootInputs {
     }
 }
 
-/// Build `inputs` through the real [`root_sections`] and collect the app-owned findings.
+/// Build `inputs` through the real [`root_form`] and collect the app-owned findings.
 fn overflowing_root(tag: &str, inputs: &RootInputs, out: &mut Vec<String>) {
-    let (sections, _) = root_sections(inputs);
-    let mut table = TableView::new();
-    table.compact = false;
-    table.set_sections(sections, 0, false);
-    overflowing(tag, &table, out);
+    let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+    form.table.compact = false;
+    form.set(root_form(inputs), None);
+    overflowing(tag, &form.table, out);
 }
 
 /// The Settings root in every `RootInputs` shape, and the Language page, through the real builders.
@@ -47,7 +46,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views).table, &mut out);
+        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views).form.table, &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).table, &mut out);
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
@@ -82,6 +81,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
                 for connected in [true, false] {
                     overflowing_root(&format!("{tag} plaintext named={named} on={on} connected={connected}"),
                         &RootInputs { plaintext: vec![PlaintextRowInput {
+                            machine: ServerMachineId("machine".into()),
                             name: if named { "some-server-machine-name-that-is-very-long".into() }
                                   else { crate::i18n::msg::settings_plaintext_server().into() },
                             named, on, connected,
