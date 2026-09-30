@@ -892,7 +892,7 @@ pub(crate) unsafe fn construct(
     // library actually matches, or there are no shelves to sweep and the scene grades nothing.
     let search_osc = !controlled && crate::dev::scenarios::searchosc_armed();
     let search_osc_last = 0u32;
-    // dev: /tmp/plxnative-settings=<root|home|privacy|legal> opens the Settings modal (and,
+    // dev: /tmp/plxnative-settings=<root|home|privacy|legal|playback|picker-quality> opens the Settings modal (and,
     // optionally, one of its real child panels) once Home is available. `settingsosc` turns
     // that settled modal into a continuous render-throughput scene: it alternates the focused
     // row and explicitly keeps the present gate awake. Without the latter an efficient,

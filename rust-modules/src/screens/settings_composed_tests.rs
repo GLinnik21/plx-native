@@ -86,14 +86,14 @@ impl Mounter<InnerHost> for SurfaceMounter {
     }
 }
 
-struct SurfaceRig {
+pub(super) struct SurfaceRig {
     mounter: SurfaceMounter,
     measure: FixtureMeasure,
     stores: crate::stores::Stores,
     directory: crate::stores::browse::DirectorySnapshot,
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
-    preference_commands: Vec<registry::PreferenceCmd>,
+    pub(super) preference_commands: Vec<registry::PreferenceCmd>,
 }
 
 impl SurfaceRig {
@@ -163,7 +163,7 @@ impl Rig<InnerHost> for SurfaceRig {
 /// what this module grades (ingest, the engine, the drain, the nav commit), and step 10
 /// is the only one it cannot run. The prepare pass still runs, which is safe: every
 /// `prepare` in this family is empty.
-fn frame(
+pub(super) fn frame(
     d: &mut Dispatcher<InnerHost>,
     rig: &mut SurfaceRig,
     ms: u32,
@@ -174,7 +174,7 @@ fn frame(
 
 /// A booted dispatcher with an `Opaque` Settings surface presented over the root page,
 /// and the surface's entry id.
-fn opened() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
+pub(super) fn opened() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
     let mut d: Dispatcher<InnerHost> = Dispatcher::new();
     let mut rig = SurfaceRig::new();
     d.request(MachineId::Nav, NavOp::Root(SettingsPage::About));
@@ -195,7 +195,7 @@ fn opened() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
 /// The surface's own `LogicalState::probe` — the path it is standing on, which is the
 /// only view of the inner stack a caller outside this file has (the container hands out
 /// `&dyn Screen`, so there is no downcast to a `RouteSurface`).
-fn path(d: &Dispatcher<InnerHost>, id: EntryId) -> String {
+pub(super) fn path(d: &Dispatcher<InnerHost>, id: EntryId) -> String {
     let mut s = String::new();
     d.nav
         .entry(id)
@@ -217,7 +217,7 @@ fn seat(d: &mut Dispatcher<InnerHost>, id: EntryId, elem: u32) {
     d.set_focus(Some(FocusKey { entry: id, elem }));
 }
 
-fn consent_opened(page: SettingsPage) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
+pub(super) fn consent_opened(page: SettingsPage) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
     consent_opened_on(page, SurfaceRig::new())
 }
 
@@ -579,8 +579,9 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
             Err(PreferenceError::Unavailable)
         } else { Ok(snapshot.clone()) } }).unwrap();
         frame(&mut d, &mut rig, 48, vec![]);
-        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
-            "the first loaded rows, including an error's Retry, must be seated");
+        let first = if fail_first { 6 } else { 0 };
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: first }),
+            "the first loaded rows, including an error's Retry (key 6), must be seated");
         if fail_first {
             frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
             let Some(PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
@@ -592,11 +593,14 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
             assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }));
         }
         frame(&mut d, &mut rig, 112, vec![key(Key::Ok, tick(112))]);
-        assert!(path(&d, id).contains("picker=Some(AudioLanguage)"),
-            "the first OK after loading must open the language picker: {}", path(&d, id));
+        assert!(path(&d, id).contains("picker DirectPlay") == false && path(&d, id).contains("picker AudioLanguage"),
+            "the first OK after loading must push the language picker: {}", path(&d, id));
         frame(&mut d, &mut rig, 128, vec![key(Key::Back, tick(128))]);
+        assert!(!path(&d, id).contains("picker "), "BACK pops the picker: {}", path(&d, id));
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }), "BACK restores the row that opened it");
         frame(&mut d, &mut rig, 144, vec![key(Key::Down, tick(144))]);
         frame(&mut d, &mut rig, 160, vec![key(Key::Ok, tick(160))]);
+        assert!(path(&d, id).contains("picker SubtitleMode"), "{}", path(&d, id));
         // The picker opens on the current mode, and OK on it changes nothing (and saves nothing):
         // move to another mode first.
         frame(&mut d, &mut rig, 168, vec![key(Key::Down, tick(168))]);
@@ -604,16 +608,16 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
         let Some(PreferenceCmd::Save { reply, .. }) = rig.preference_commands.pop() else {
             panic!("choosing a subtitle mode must ask the host to save");
         };
-        frame(&mut d, &mut rig, 192, vec![key(Key::Down, tick(192))]);
-        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 2 }));
+        assert!(path(&d, id).contains("picker SubtitleMode"), "the picker stays until the receipt is durable");
         assert!(reply.send(AccountPreferenceReply { request: Some(request.clone()),
             outcome: Ok(snapshot.clone()) }).is_ok());
         frame(&mut d, &mut rig, 208, vec![]);
-        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 2 }),
-            "an ordinary save landing must retain the user's current row");
+        frame(&mut d, &mut rig, 224, vec![]);
+        assert!(!path(&d, id).contains("picker "), "the durable receipt pops the picker: {}", path(&d, id));
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }),
+            "the list is back on the row that opened the picker");
     }
 }
-
 
 /// The warning uses engine-owned Control presses, not bare table activation. A complete OK
 /// down/up pair must confirm its focused answer, after entering through the real table flow.
@@ -635,7 +639,7 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
         frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
         assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }));
         frame(&mut d, &mut rig, 48, ok(48));
-        assert!(path(&d, id).contains("picker=Some(DirectPlay)"));
+        assert!(path(&d, id).contains("picker DirectPlay"), "{}", path(&d, id));
         frame(&mut d, &mut rig, 64, vec![key(Key::Down, tick(64))]);
         frame(&mut d, &mut rig, 80, ok(80));
         assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: registry::ALERT }),
@@ -648,7 +652,7 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
         frame(&mut d, &mut rig, 112, ok(112));
         // A Control's pressed animation may defer its commit until it has reached its dip.
         for ms in (128..=448).step_by(16) { frame(&mut d, &mut rig, ms, vec![]); }
-        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }));
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }), "the picker's Forced option");
         assert!(!path(&d, id).contains("confirm=true"), "the chosen answer closes the warning");
         if confirm {
             assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::DirectPlay {
@@ -717,7 +721,7 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
 // tests run whole frames so the engine's own per-frame reconcile is what is graded: a hand-fed
 // `FocusMoved` never sees the engine disagree with the page.
 
-fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_ms: u32) -> u32 {
+pub(super) fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_ms: u32) -> u32 {
     let mut ms = from_ms;
     for _ in 0..6 {
         ms += 16;
@@ -727,7 +731,7 @@ fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_ms: u
 }
 
 /// Walk focus to `elem` with real DOWN presses (a `set_focus` seat sends the page no `FocusMoved`).
-fn walk_to(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, mut ms: u32, elem: u32) -> u32 {
+pub(super) fn walk_to(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, mut ms: u32, elem: u32) -> u32 {
     for _ in 0..12 {
         if d.focus().map(|k| k.elem) == Some(elem) {
             return ms;

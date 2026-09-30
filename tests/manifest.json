@@ -438,6 +438,36 @@
       "comment": "The Settings root over its frozen, host-keyed ambient wash. settingsosc alternates the first two real rows and keeps the present gate continuously awake, so fps= measures the modal composition's render throughput rather than the brief duty cycle of one focus spring. Both loop= liveness and actual presented fps= must stay at or above 50/s."
     },
     {
+      "name": "settings-playback",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "playback",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "playback",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Playback page (Default Quality / Direct Play) opened through Settings: a form page whose field rows are Nav items onto the picker pages. settingsosc feeds UP/DOWN to whichever Settings page is on top, so it alternates the page's two real rows and keeps the present gate awake; the heartbeat word is the page's own (`playback`), so a boot target that stayed on the root cannot satisfy it."
+    },
+    {
+      "name": "settings-picker",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "picker",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "picker-quality",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Default Quality picker: a stack page pushed over Playback over the Settings root (`SettingsPage::boot_trail`), so BACK from it behaves as in an interactive visit. settingsosc sweeps UP/DOWN through the checked-option list, grading the picker's table and the page beneath as the family's one push spring leaves them; the word is the picker's own (`picker`)."
+    },
+    {
       "name": "settings-privacy",
       "tier": "ui",
       "route": "home",

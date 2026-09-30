@@ -251,7 +251,7 @@ impl Initial {
         }
         if s.persisted.client_id.is_empty() { return Err("missing initial identity"); }
         if self.settings.as_deref().is_some_and(|value|
-            !matches!(value, "root" | "privacy" | "legal")) {
+            !matches!(value, "root" | "privacy" | "legal" | "playback" | "picker-quality")) {
             return Err("unsupported initial Settings input");
         }
         if self.settings.is_some()

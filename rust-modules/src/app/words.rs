@@ -173,10 +173,13 @@ mod heartbeat_word_tests {
     /// harness could not tell "opened the Home-sources editor" from "opened Settings and did
     /// nothing", so a trigger that silently failed to reach Favourites still produced a scene that
     /// passed, measuring the wrong screen.
-    const FAMILY_INNER: [&str; 3] = [
+    const FAMILY_INNER: [&str; 6] = [
         crate::screens::registry::word::PRIVACY,
         crate::screens::registry::word::LEGAL,
         crate::screens::registry::word::ONBOARD,
+        crate::screens::registry::word::PLAYBACK,
+        crate::screens::registry::word::AUDIO,
+        crate::screens::registry::word::PICKER,
     ];
 
     /// **Every caller holds `crate::testlock::serial()` for its whole body**, because deriving

@@ -3,25 +3,26 @@
 //! because `ci/check-deps.sh` forbids a screen from naming a sibling screen.
 //!
 //! The sweeps are a SUM over each field's own readouts and details, never a product of fields:
-//! [`field_section`] builds the field list, [`PreferencesPage::options`] a picker level.
+//! [`field_form`] builds the field list, [`field_options`] a picker level.
 
 use super::*;
 use crate::fontcov::advances::ShippedMeasure as M;
 use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
+use crate::ui::table::{Section, TableView};
 use crate::ui::machine::Measure;
 
 fn frame_w() -> f32 {
     RouteLayout::screen().sectioned_table().w
 }
 
-fn playback(quality: Quality, direct_play: DirectPlayMode) -> FieldSectionInputs<'static> {
-    FieldSectionInputs { kind: Kind::Playback, quality, direct_play, prefs: None, busy: false, show_retry: false }
+fn playback(quality: Quality, direct_play: DirectPlayMode) -> FieldListInputs<'static> {
+    FieldListInputs { kind: Kind::Playback, quality, direct_play, prefs: None, busy: false, show_retry: false }
 }
 
-fn audio(prefs: Option<&AudioPreferences>) -> FieldSectionInputs<'_> {
-    FieldSectionInputs {
+fn audio(prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
+    FieldListInputs {
         kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
         prefs, busy: false, show_retry: false,
     }
@@ -34,13 +35,15 @@ fn table_of(section: Section) -> TableView {
     table
 }
 
-/// Build `inputs` through the real [`field_section`] and collect the app-owned findings, tagged
+/// Build `inputs` through the real [`field_form`] and collect the app-owned findings, tagged
 /// with `tag`. A finding already reported for this UI language (the tag's first word) is not
 /// repeated under a later tag: the rows a sweep does not vary repeat unchanged.
-fn check_field_section(tag: &str, inputs: &FieldSectionInputs<'_>, out: &mut Vec<String>) {
-    let (section, _, _) = field_section(inputs);
+fn check_field_section(tag: &str, inputs: &FieldListInputs<'_>, out: &mut Vec<String>) {
+    let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::new(BAND);
+    form.table.compact = false;
+    form.set(field_form(inputs), None);
     let ui_language = tag.split_whitespace().next().unwrap_or(tag);
-    for e in table_of(section).app_fit_failures(frame_w(), tag) {
+    for e in form.table.app_fit_failures(frame_w(), tag) {
         let finding = e.split_once(": ").map_or(e.as_str(), |(_, f)| f);
         if !out.iter().any(|o| o.starts_with(ui_language) && o.ends_with(finding)) {
             out.push(e);
@@ -48,23 +51,7 @@ fn check_field_section(tag: &str, inputs: &FieldSectionInputs<'_>, out: &mut Vec
     }
 }
 
-/// A `PreferencesPage` with a loaded (empty) snapshot, so `Kind::AudioSubtitles`'s picker fields
-/// are present — `options` is a page method (it folds the current value into the language list),
-/// so the picker-level test below needs a real instance rather than the free builders.
-/// `PreferenceRequest::fixture_for_test` is the account layer's own test seam for exactly this: a
-/// `PreferenceSnapshot` whose private fields this module cannot otherwise construct. The caller
-/// holds `testlock::serial()` for as long as it uses the page (the fixture asserts it, and the page
-/// reads process globals).
-fn page_with_snapshot(kind: Kind) -> PreferencesPage {
-    let user = crate::plex::session::UserRef { id: 1, uuid: "prefs-fit-fixture".into(), ..Default::default() };
-    let (_, snapshot) = crate::plex::account::PreferenceRequest::fixture_for_test(user, 0, AudioPreferences::default());
-    let mut page = PreferencesPage::new(EntryId(0), kind);
-    page.snapshot = Some(snapshot);
-    page.rebuild(0);
-    page
-}
-
-/// Every value readout and detail line each field can show, through [`field_section`] directly.
+/// Every value readout and detail line each field can show, through [`field_form`] directly.
 #[test]
 fn every_field_readout_and_detail_fits_its_column_in_every_language() {
     let _serial = crate::testlock::serial(); // Subtitle Size/Position read the route globals below
@@ -92,7 +79,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         }
         crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
 
-        check_field_section(&format!("{tag} retry row"), &FieldSectionInputs { show_retry: true, ..audio(None) }, &mut out);
+        check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 
         // Every catalog language as the Audio/Subtitle Language read-out (app data, so judged).
         let mut prefs = AudioPreferences::default();
@@ -118,7 +105,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
     crate::ui::table::assert_no_fit_failures(&out);
 }
 
-/// Every picker level's rows, through `PreferencesPage::options`, including the full language
+/// Every picker level's rows, through `field_options`, including the full language
 /// catalog once per shipped language. A picker row has the whole panel to itself, so this is a
 /// separate check from the field row's trailing value.
 #[test]
@@ -129,14 +116,14 @@ fn every_picker_level_fits_its_column_in_every_language() {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
-            let page = page_with_snapshot(kind);
-            let fields: &[Field] = match kind {
-                Kind::Playback => &[Field::Quality, Field::DirectPlay, Field::SubtitleSize, Field::SubtitlePosition],
-                Kind::AudioSubtitles => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
+            let prefs = AudioPreferences::default();
+            let fields: &[PickerKind] = match kind {
+                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition],
+                Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
             for &field in fields {
-                let current = page.current_value(field);
-                let section = page.options(field).into_iter()
+                let current = resolve_value(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+                let section = field_options(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs)).into_iter()
                     .fold(Section::new(""), |section, (label, value)| section.row(Row::new(&label).checked(value == current)));
                 out.extend(table_of(section).app_fit_failures(frame_w(), &format!("{tag} {field:?} picker")));
             }
@@ -145,7 +132,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
     crate::ui::table::assert_no_fit_failures(&out);
 }
 
-/// The Direct Play row's trailing read-out (`direct_play_readout`, the function `field_section`
+/// The Direct Play row's trailing read-out (`direct_play_readout`, the function `field_form`
 /// calls) fits beside its label without eliding either, in every language and mode. The picker
 /// keeps the long strings; `ui::table::tests::row_columns_still_elides_an_unshortened_long_value`
 /// covers a value nothing shortened.
@@ -188,7 +175,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         let mut prefs = AudioPreferences::default();
         let readouts: Vec<String> = (0..3).map(|mode| {
             prefs.subtitle_mode = mode;
-            field_readout(Field::SubtitleMode, Quality::Original, DirectPlayMode::Auto, Some(&prefs))
+            field_readout(PickerKind::SubtitleMode, Quality::Original, DirectPlayMode::Auto, Some(&prefs))
         }).collect();
         assert_eq!(readouts[0], crate::i18n::msg::settings_audio_manual(), "{}", language.tag());
         assert_eq!(readouts[1], crate::i18n::msg::settings_audio_foreign_short(), "{}", language.tag());

@@ -6,7 +6,8 @@ in three rounds by an independent model reviewer before implementation; this fil
 agreed result.
 
 **Status:** PR 1 (`ui/form.rs`) and PR 2 (keyed focus: `TablePart::keys`, `family::form_focus`; the Settings
-root on `root_form` / `FormTable`) have landed; PRs 3-5 are open. Every other page still uses index focus.
+root on `root_form` / `FormTable`) and PR 3 (one navigation path: `family::form_activate`, `SettingsPage::Picker`, `preferences::PickerPage`; the
+Playback / Audio & Subtitles field list on a `FormTable`) have landed; PRs 4-5 are open. The remaining pages still use index focus.
 
 ## Goals (owner)
 

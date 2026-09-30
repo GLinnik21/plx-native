@@ -63,6 +63,11 @@ fn settings_initial_is_typed_hashed_and_bound_to_its_trigger() {
     let decoded = Initial::from_value(encoded).unwrap();
     assert_eq!(decoded.hash(), initial.hash());
 
+    for target in ["playback", "picker-quality"] {
+        let mut deep = initial.clone();
+        deep.settings = Some(target.into());
+        assert_eq!(deep.validate(), Ok(()), "{target} is a supported initial Settings input");
+    }
     let mut bad_value = initial.clone();
     bad_value.settings = Some("other".into());
     assert_eq!(bad_value.validate(), Err("unsupported initial Settings input"));

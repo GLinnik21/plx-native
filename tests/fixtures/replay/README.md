@@ -250,3 +250,12 @@ table index, so the old `6-settings-family` recording was REFUSED at its first f
 recorded afresh (`tools/plxnative-rec import`, `anchor: true` restored by hand); the first
 recording replayed SAME in Targets and Resolve on three consecutive runs. The other two anchors
 stayed SAME untouched.
+
+The Settings form migration's third step (one navigation path; the picker is a stack page) moved
+the screen census (`SCREEN_SHAPES_PIN`): the anchors recorded against `10638452537178981056` were
+observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three, both
+modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`9770156787996859790` and passed Targets and Resolve with zero difference counters. The first
+`12-filmography-detail-return` recording diverged on two frames in Targets mode on one of three
+consecutive replays (the timing-sensitive held-surface frames noted above), so a second recording
+was taken and committed; it replayed SAME in both modes on four consecutive runs.
