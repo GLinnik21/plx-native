@@ -720,7 +720,7 @@ fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() 
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Auto);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             sess: "logical-auto".into(),
@@ -783,7 +783,7 @@ fn reselecting_the_exact_quality_does_not_fence_the_current_worker() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Auto);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-auto-720".into(),
@@ -836,7 +836,7 @@ fn subtitle_off_keeps_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-subtitle-off".into(),
@@ -883,7 +883,7 @@ fn a_direct_subtitle_change_keeps_the_original_watchdog_ticket_current() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Auto);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "https://example.invalid/source.mkv".into(),
             contract: crate::plex::EncodeContract {
@@ -921,7 +921,7 @@ fn subtitle_on_invalidates_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-subtitle-on".into(),
@@ -960,7 +960,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             url: "http://fixture.invalid/4000/master.m3u8".into(),
             tsession: "encoder-audio-change".into(),
@@ -1416,24 +1416,24 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
     };
-    reset_track_selection(Some(retry));
+    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         2_000,
         "a retry of the same item must keep the offset tuned against its subtitle",
     );
-    reset_track_selection(None);
-    assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item starts at 0");
+    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item with no remembered correction starts at 0");
 
     // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
     // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
     let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
-    reset_track_selection(Some(advanced));
+    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
     crate::player::sidecar::select_without_fetch_for_test(23);
     crate::player::reclamp_subtitle_offset();
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
-    reset_track_selection(Some(advanced));
+    reset_track_selection(crate::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     crate::player::reclamp_subtitle_offset();
     assert_eq!(
         crate::player::subtitle_offset_ms(),
@@ -1479,7 +1479,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         "a rescue must not silently restore the server-default tracks",
     );
 
-    apply_plan(&mut ps, 
+    apply_plan(&mut ps,
         Plan {
             verdict: Some(PlayVerdict::Server("temporary refusal".into())),
             ..Default::default()
@@ -2226,6 +2226,44 @@ fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_
 
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(0);
+}
+
+/// **A subtitle sync correction survives a resume of the same item.** `persist_subtitle_offset`
+/// writes it on the storage worker keyed by (server, ratingKey); a later, genuinely NEW
+/// (non-retry) request for the SAME item on the SAME server restores it before the resolve even
+/// starts (`reset_track_selection`), so the viewer never has to re-tune a file they already fixed.
+/// A different item — or the correction reset back to Original — starts at 0.
+#[test]
+fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = crate::plex::session::TempSession::new("subtitle-offset-resume");
+    session.watching("u-resume");
+    let sid = crate::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");
+    apply_plan(&mut ps, Plan::default(), "rk-resume-a");
+    swap_cur_sid_for_test(&mut ps, sid);
+
+    crate::player::set_subtitle_offset(1_800);
+    persist_subtitle_offset(&ps, 1_800);
+    crate::storage_worker::drain_for_test();
+
+    // a resume of the SAME item restores the correction before the resolve even starts
+    reset_track_selection(sid, "rk-resume-a", None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 1_800, "the same item's correction comes back");
+
+    // a DIFFERENT item on the same server has no record of its own
+    reset_track_selection(sid, "rk-resume-b", None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "another item has no record");
+
+    // setting it back to Original forgets the record
+    persist_subtitle_offset(&ps, 0);
+    crate::storage_worker::drain_for_test();
+    reset_track_selection(sid, "rk-resume-a", None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
+
+    crate::plex::reset_servers_for_test();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(0);
 }

@@ -529,6 +529,23 @@ pub struct Session {
     /// that never re-sorted anything serializes exactly as it did before the field existed.
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub library_sorts: Vec<LibrarySorts>,
+    /// **The sync-timing correction a profile last tuned for an item**, per profile, keyed by
+    /// (machine id, ratingKey) — never a track id: within one playback a track CHANGE still zeros
+    /// the live offset (`route::commit_subtitle_selection`'s own doc), so by the time this is
+    /// restored at the next resume only the item's own correction is left to remember. This is
+    /// deliberately narrower than a raw in-memory offset would suggest: [`crate::player::subtitle_offset_ms`]
+    /// is about a single live playback (never persisted whole, on purpose — see
+    /// `session_compat_tests::the_session_file_carries_no_subtitle_offset`), while this is a
+    /// per-item memory a profile builds up across resumes of the SAME file, the same way
+    /// [`Session::library_sorts`] remembers a per-library habit.
+    ///
+    /// Bounded per profile ([`SubtitleOffsets::CAP`], most recent kept), and setting the offset
+    /// back to Original (0) forgets the entry rather than recording a no-op correction.
+    ///
+    /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
+    /// that never tuned a subtitle's timing serializes exactly as it did before the field existed.
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_offsets: Vec<SubtitleOffsets>,
     /// **Every profile this television has switched to, with the credentials that switch
     /// resolved** — so the who's-watching picker can seat a household member with plex.tv
     /// unreachable. Written by the profile switch on every ONLINE success (replace-by-uuid), read
@@ -670,6 +687,8 @@ struct CanonicalSessionPreferences {
     last_library: Vec<LastLibrary>,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     library_sorts: Vec<LibrarySorts>,
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    subtitle_offsets: Vec<SubtitleOffsets>,
     #[serde(default, deserialize_with = "de_soft_hero_blur")]
     last_hero_blur: Option<[[f32; 3]; 4]>,
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
@@ -707,6 +726,7 @@ impl Default for CanonicalSessionPreferences {
             auto_sign_in: false,
             last_library: Vec::new(),
             library_sorts: Vec::new(),
+            subtitle_offsets: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
@@ -754,6 +774,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         auto_sign_in: session.auto_sign_in,
         last_library: session.last_library.clone(),
         library_sorts: session.library_sorts.clone(),
+        subtitle_offsets: session.subtitle_offsets.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
@@ -823,6 +844,7 @@ pub(crate) fn join_canonical(
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         library_sorts: preferences.library_sorts,
+        subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
@@ -851,6 +873,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         library_sorts: preferences.library_sorts,
+        subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
@@ -1717,6 +1740,67 @@ impl LibrarySorts {
     }
 }
 
+/// One profile's remembered subtitle sync-timing corrections. See [`Session::subtitle_offsets`].
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct SubtitleOffsets {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** — [`LastLibrary`]'s
+    /// convention, and for the same reason.
+    pub user: String,
+    /// Oldest first: [`SubtitleOffsets::set`] moves a re-tuned item to the end, and the cap
+    /// drops from the front.
+    #[serde(deserialize_with = "de_soft_vec")]
+    pub items: Vec<SubtitleOffsetEntry>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+}
+
+/// One item's remembered subtitle sync-timing correction, in milliseconds
+/// (`player::SUBTITLE_OFFSET_LATEST_MS`'s own unit and clamp).
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct SubtitleOffsetEntry {
+    pub machine_id: String,
+    pub rating_key: String,
+    pub offset_ms: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+}
+
+impl SubtitleOffsets {
+    /// A household corrects a handful of mistimed files; the cap keeps the public payload bounded
+    /// the same way [`LibrarySorts::CAP`] does, for the same reason.
+    pub const CAP: usize = 24;
+
+    /// This profile's remembered correction for one item, if it ever tuned one.
+    pub fn get(&self, machine_id: &str, rating_key: &str) -> Option<i64> {
+        if machine_id.is_empty() || rating_key.is_empty() {
+            return None;
+        }
+        self.items.iter().find(|e| e.machine_id == machine_id && e.rating_key == rating_key)
+            .map(|e| e.offset_ms)
+    }
+    /// Record an item's correction as the most recent, or FORGET it with `None` (the viewer set
+    /// the offset back to Original, which needs no record to be restored). Evicts the oldest
+    /// entries past [`CAP`](Self::CAP). An item with no machine id or ratingKey is never
+    /// recorded — [`LastLibrary::set`]'s reason.
+    pub fn set(&mut self, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
+        self.items.retain(|e| !(e.machine_id == machine_id && e.rating_key == rating_key));
+        let Some(offset_ms) = offset_ms else { return };
+        if machine_id.is_empty() || rating_key.is_empty() || offset_ms == 0 {
+            return;
+        }
+        self.items.push(SubtitleOffsetEntry {
+            machine_id: machine_id.to_string(),
+            rating_key: rating_key.to_string(),
+            offset_ms,
+            extensions: Default::default(),
+        });
+        let excess = self.items.len().saturating_sub(Self::CAP);
+        self.items.drain(..excess);
+    }
+}
+
 /// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`
 /// deliverable F), and what the Favorite libraries editor writes back when its one action commits.
 ///
@@ -2363,6 +2447,28 @@ impl Session {
             }
         }
         self.library_sorts.retain(|sorts| !sorts.libs.is_empty());
+    }
+
+    /// One profile's remembered subtitle sync-timing correction for one item, `None` for a
+    /// profile that never tuned one (or a different item/server).
+    pub fn subtitle_offset_for(&self, user: &str, machine_id: &str, rating_key: &str) -> Option<i64> {
+        self.subtitle_offsets.iter().find(|o| o.user == user)
+            .and_then(|o| o.get(machine_id, rating_key))
+    }
+
+    /// Record (or, with `None`, forget) one item's subtitle offset for one profile, leaving every
+    /// other profile's alone — [`Session::set_sort_for`]'s reason. A profile whose last entry is
+    /// forgotten loses its record entirely, so the list never carries empties.
+    pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
+        match self.subtitle_offsets.iter_mut().find(|o| o.user == user) {
+            Some(slot) => slot.set(machine_id, rating_key, offset_ms),
+            None => {
+                let mut fresh = SubtitleOffsets { user: user.to_string(), ..Default::default() };
+                fresh.set(machine_id, rating_key, offset_ms);
+                self.subtitle_offsets.push(fresh);
+            }
+        }
+        self.subtitle_offsets.retain(|o| !o.items.is_empty());
     }
 }
 
