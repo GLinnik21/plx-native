@@ -226,8 +226,9 @@ pub(crate) enum RosterCommit {
     /// REPLACE is revoked first (`plex::revoke_before_foreign_retoken`): another account's grant
     /// never inherits what the seated identity claimed.
     Refresh { same_identity: bool },
-    /// A profile switch (or its late roster): every live token is revoked before the new identity's
+    /// A profile switch's `Ready` seat: every live token is revoked before the new identity's
     /// grants land (`plex::revoke_for_profile_switch`), then the installed set becomes the roster.
+    /// The same request's late `ProfileRoster` is a `Refresh { same_identity: true }` of that seat.
     Switch,
 }
 
@@ -2058,9 +2059,10 @@ impl SessionMachine {
         true
     }
 
-    fn roster_plan(next: &PersistedSession, probes: &[super::SettledProbe]) -> Vec<RegistryPlan> {
+    fn roster_plan(next: &PersistedSession, probes: &[super::SettledProbe], commit: RosterCommit)
+        -> Vec<RegistryPlan> {
         let primary = next.sources.iter().position(|source| source.machine_id == next.server.machine_id);
-        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, commit: RosterCommit::Switch }];
+        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, commit }];
         plans.extend(probes.iter().cloned().map(RegistryPlan::Probe));
         plans
     }
@@ -2299,7 +2301,7 @@ impl SessionMachine {
                     delta.ready = Some(true);
                     delta.clear_error = true;
                     delta.profile_seated = true;
-                    plan.registry = Self::roster_plan(&next, probes);
+                    plan.registry = Self::roster_plan(&next, probes, RosterCommit::Switch);
                 }
             },
             Observation::ProfileRoster(progress) => {
@@ -2319,7 +2321,19 @@ impl SessionMachine {
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 if !self.state.apply_pending { plan.credentials = Some(patch); }
-                plan.registry = Self::roster_plan(&next, &progress.probes);
+                // This request's `Ready` already seated this profile and committed its roster as
+                // the `Switch` — the one revoke that change of identity owes. This late roster is
+                // for that SAME seat, and that is proven, not assumed: `matches_request` admits it
+                // only in `ProfileSeated` and only for `progress.expected == pending.expected`;
+                // the `Ready` commit stamped `pending.expected` from the seat it installed; and
+                // `observe` dropped it above unless that identity is still the persisted one. So
+                // it is a same-identity refresh — retoken in place, retire what is no longer
+                // granted — never a second switch that blanks Home's live clients seconds after
+                // they drew (owner trace 2026-09-30, who's-watching picker path).
+                debug_assert!(pending.phase == StreamPhase::ProfileSeated
+                    && pending.expected.matches(&self.state.persisted));
+                let commit = RosterCommit::Refresh { same_identity: true };
+                plan.registry = Self::roster_plan(&next, &progress.probes, commit);
             }
             Observation::Endpoint(progress) => {
                 let Some(lifecycle) = pending.lifecycle else { return false; };
@@ -4778,6 +4792,113 @@ mod tests {
         // the holder's answer does not call the seated profile's owned server its own, so it is
         // unproven (`seated_is_account_holder`) and the executor revokes before re-tokening.
         assert!(matches!(install.2, RosterCommit::Refresh { .. }), "an admin refresh is not a profile switch");
+    }
+
+    /// The who's-watching picker path: `Ready` seats the picked profile and commits its roster as
+    /// a `Switch` (the one revoke this change of identity owes), Home is drawn, and only then does
+    /// the same request's secondary `ProfileRoster` land — for the profile that is ALREADY seated
+    /// and installed. Returns the owner after the `Ready` commit (its registry executed), the
+    /// request, its epoch and the seated profile's primary source.
+    fn picker_switch_seated() -> (SessionMachine, u32, u64, crate::plex::session::SourceRef) {
+        let primary = crate::plex::session::SourceRef {
+            machine_id: "a".into(), name: "Primary A".into(), owned: true,
+            token: "kid-a-token".into(), address: "10.0.0.8".into(), port: 32400,
+            origin_url: "https://10-0-0-8.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        };
+        let user = UserRef { uuid: "u-kid".into(), title: "Kid".into(),
+            token: primary.token.clone(), ..Default::default() };
+        let persisted = PersistedSession {
+            client_id: "synthetic-client".into(), account_token: "account-token".into(),
+            server: super::super::server_ref(&primary), user: UserRef { uuid: "u-admin".into(),
+                token: "admin-token".into(), ..Default::default() },
+            home_users: vec![crate::plex::session::HomeUserRef { uuid: "u-kid".into(),
+                title: "Kid".into(), admin: false, ..Default::default() }],
+            sources: vec![primary.clone()], ..Default::default()
+        };
+        let mut init = SessionInit::captured(persisted);
+        init.phase = Phase::Switching;
+        init.users = vec![UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() }];
+        let mut owner = SessionMachine::from_init(init);
+        let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let ready = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 1, terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
+                super::super::ProfileSwitchProgress { epoch, expected,
+                    outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
+                        delta: super::super::ProfileDelta {
+                            server: super::super::server_ref(&primary),
+                            sources: vec![primary.clone()], user: user.clone(), cache: None,
+                        },
+                        probes: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(ready));
+        let (reply, plan) = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { req, epoch, arrival, plan } => Some((CommitReply {
+                req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
+            }, plan.clone())),
+            _ => None,
+        }).expect("the profile switch must commit");
+        assert!(matches!(&plan.registry[0], RegistryPlan::Install { commit: RosterCommit::Switch, .. }),
+            "seating a different profile is a switch");
+        for p in &plan.registry {
+            assert!(super::super::execute_session_registry(p, "synthetic-client"));
+        }
+        step(&mut owner, SessionEvent::Commit(reply));
+        assert_eq!(owner.state.persisted.user.uuid, "u-kid");
+        (owner, req, epoch, primary)
+    }
+
+    fn late_profile_roster(owner: &mut SessionMachine, req: u32, epoch: u64,
+        primary: &crate::plex::session::SourceRef, expected: super::super::SessionIdentity) -> CommitPlan {
+        let resources = vec![crate::plex::account::Resource { name: primary.name.clone(),
+            client_identifier: primary.machine_id.clone(), provides: "server".into(),
+            owned: true, access_token: primary.token.clone(), ..Default::default() }];
+        let roster = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 2, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileRoster(
+                super::super::ProfileRosterProgress { epoch, expected,
+                    resources, reached: vec![primary.clone()], probes: Vec::new() }))),
+        };
+        let effects = step(owner, SessionEvent::Result(roster));
+        effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("the late profile roster must commit")
+    }
+
+    /// **Blink C** (owner trace, 2026-09-30, who's-watching picker path): a SECOND `plex: 2
+    /// server(s) revoked — profile changed` 4-6 s after Home was drawn, with the picked profile
+    /// still seated — every poster `HIDDEN cause=grant_epoch`, every hub refetched. The switch's
+    /// own late `ProfileRoster` re-committed the already-seated profile as another `Switch`.
+    #[test]
+    fn a_late_profile_roster_for_the_seated_profile_keeps_resident_art() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let (mut owner, req, epoch, primary) = picker_switch_seated();
+        let sid = crate::plex::id_of_machine("a").expect("the switch installed the seated server");
+        let seated = super::super::SessionIdentity::of(&owner.state.persisted);
+        let plan = late_profile_roster(&mut owner, req, epoch, &primary, seated);
+        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
+            for p in &plan.registry {
+                assert!(super::super::execute_session_registry(p, "synthetic-client"));
+            }
+        });
+        assert!(kept, "the late roster of the already-seated profile revoked its art");
+        assert!(matches!(&plan.registry[0],
+            RegistryPlan::Install { commit: RosterCommit::Refresh { same_identity: true }, .. }),
+            "the seated profile's own roster is a same-identity refresh, not a second switch");
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
     }
 
     /// **Blink B** (owner trace, 2026-09-30, ~11.6 s into an ordinary stored-session launch):
