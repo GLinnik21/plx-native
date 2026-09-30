@@ -233,7 +233,9 @@ where
     A: Clone,
     Dest: Clone,
 {
-    match form.index_of_key(RowKey(elem)).filter(|_| elem < super::registry::BAND) {
+    let on_table = form.index_of_key(RowKey(elem)).filter(|_| elem < super::registry::BAND);
+    form.note_engine_key(on_table.map(|_| RowKey(elem)));
+    match on_table {
         Some(i) => {
             form.table.sel = i as i32;
             form.table.list_focused = true;

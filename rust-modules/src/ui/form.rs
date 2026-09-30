@@ -38,6 +38,11 @@ pub struct RowKey(pub u32);
 pub trait RowKeys {
     fn key_at(&self, index: usize) -> Option<RowKey>;
     fn index_of_key(&self, key: RowKey) -> Option<usize>;
+    /// The key the focus engine must be moved to because a rebuild landed the page on a different
+    /// row than the one the engine's last key names; `None` when they agree. The page's identity
+    /// landing wins over the engine's key until the engine's next `FocusMoved` (see
+    /// [`FormTable::note_engine_key`]).
+    fn reseat(&self) -> Option<RowKey>;
 }
 
 /// A page's row id type names its keys once, so call sites do not repeat them.
@@ -212,6 +217,13 @@ pub struct FormTable<Id, A, Dest> {
     pub table: TableView,
     bindings: Vec<Option<Binding<Id, A, Dest>>>,
     key_ceiling: u32,
+    /// The key the focus engine last reported holding. A rebuild can reassign it to another row
+    /// (a position-keyed row moves up), so it is compared by identity after [`Self::set`].
+    /// `None` while focus is off the table.
+    engine_key: Option<RowKey>,
+    /// Set by [`Self::set`] when the landed row is not the engine's row; cleared by
+    /// [`Self::note_engine_key`].
+    reseat: Option<RowKey>,
 }
 impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// `key_ceiling`: every [`RowKey`] must be below it (the page's key band; debug-asserted).
@@ -220,6 +232,8 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
             table: TableView::new(),
             bindings: Vec::new(),
             key_ceiling,
+            engine_key: None,
+            reseat: None,
         }
     }
 
@@ -249,10 +263,25 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         }
         let landing = keep.and_then(|k| self.landing_for(k, &bindings));
         self.bindings = bindings;
+        // snap, never glide: a rebuild re-derives the page, as the pre-form root did (`slide=false`)
         match landing {
-            Some(i) => self.table.set_sections(sections, i as i32, true),
+            Some(i) => self.table.set_sections(sections, i as i32, false),
             None => self.table.open_sections(sections),
         }
+        // The landing is by identity; the engine still holds the key it had. If that key no
+        // longer names the landed row (the row moved, or vanished), the landing wins.
+        let landed = self.selected_id();
+        self.reseat = self.engine_key.and_then(|held| {
+            let names = self.index_of_key(held).and_then(|i| self.id_at(i));
+            (names != landed).then(|| self.key_at(self.table.sel.max(0) as usize)).flatten()
+        });
+    }
+
+    /// Record the key the focus engine now holds (`None`: focus is off the table — the band, an
+    /// alert). Call it from the page's `FocusMoved` handler; it ends any pending [`Self::reseat`].
+    pub fn note_engine_key(&mut self, key: Option<RowKey>) {
+        self.engine_key = key.filter(|k| self.index_of_key(*k).is_some());
+        self.reseat = None;
     }
 
     /// The new index `keep` lands on, or `None` when nothing (keep or a neighbour) survives.
@@ -313,5 +342,8 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> RowKeys for FormTable<Id, A, 
     }
     fn index_of_key(&self, key: RowKey) -> Option<usize> {
         Self::index_of_key(self, key)
+    }
+    fn reseat(&self) -> Option<RowKey> {
+        self.reseat
     }
 }

@@ -710,3 +710,109 @@ fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
     assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
         "the first landed rows seat the top row, not the root's stale row {audio_row}");
 }
+
+// ---- a rebuild that moves or drops rows, through the REAL dispatcher and focus engine ----------
+//
+// The page lands by identity (`FormTable::set`); the engine keeps the KEY it last held. These
+// tests run whole frames so the engine's own per-frame reconcile is what is graded: a hand-fed
+// `FocusMoved` never sees the engine disagree with the page.
+
+fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_ms: u32) -> u32 {
+    let mut ms = from_ms;
+    for _ in 0..6 {
+        ms += 16;
+        frame(d, rig, ms, vec![]);
+    }
+    ms
+}
+
+/// Walk focus to `elem` with real DOWN presses (a `set_focus` seat sends the page no `FocusMoved`).
+fn walk_to(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, mut ms: u32, elem: u32) -> u32 {
+    for _ in 0..12 {
+        if d.focus().map(|k| k.elem) == Some(elem) {
+            return ms;
+        }
+        ms += 16;
+        frame(d, rig, ms, vec![key(Key::Down, tick(ms))]);
+    }
+    panic!("never reached {elem}: focus {:?}", d.focus());
+}
+
+fn sel_of(d: &Dispatcher<InnerHost>, id: EntryId) -> u32 {
+    let p = path(d, id);
+    let at = p.find("root sel=").unwrap_or_else(|| panic!("not on the root: {p}")) + "root sel=".len();
+    p[at..].split(' ').next().unwrap().parse().unwrap()
+}
+
+fn sign_out() {
+    crate::plex::session::save(&crate::plex::session::Session::default());
+}
+
+#[test]
+fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-signout");
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    ms = walk_to(&mut d, &mut rig, ms, root_key(RootId::TrailerAutoplay));
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::TrailerAutoplay)), "premise: signed in, on Trailer autoplay");
+    sign_out();
+    settle_frames(&mut d, &mut rig, ms);
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Privacy)),
+        "the engine follows the page's identity landing (next survivor), not row 0");
+    assert_eq!(sel_of(&d, id), root_key(RootId::Privacy), "the page and the engine agree");
+}
+
+#[test]
+fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_key() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-plaintext");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
+    let mut saved: crate::plex::session::Session = (*crate::plex::session::peek()).clone();
+    for m in ["m-a", "m-b", "m-c"] {
+        saved = saved.with_plaintext_choice(&account, m, PlaintextChoice::Allowed);
+    }
+    crate::plex::session::save(&saved);
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    let (a, b, c) = (PLAINTEXT_KEY_BASE, PLAINTEXT_KEY_BASE + 1, PLAINTEXT_KEY_BASE + 2);
+    ms = walk_to(&mut d, &mut rig, ms, b);
+    assert_eq!(d.focus().map(|k| k.elem), Some(b), "premise: focus on the second server");
+    let _ = (a, c);
+    // the first server's answer is withdrawn: B is now the FIRST switch, key 1000
+    crate::plex::session::save(&crate::plex::session::peek().with_plaintext_choice(&account, "m-a", PlaintextChoice::Undecided));
+    ms = settle_frames(&mut d, &mut rig, ms);
+    assert_eq!(d.focus().map(|k| k.elem), Some(PLAINTEXT_KEY_BASE),
+        "focus stays on m-b, which moved to the first switch; the stale key 1001 now names m-c");
+    assert_eq!(sel_of(&d, id), PLAINTEXT_KEY_BASE);
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    crate::storage_worker::drain_for_test();
+    let after = crate::plex::session::peek();
+    assert_eq!(after.plaintext_choice(&account, "m-b"), PlaintextChoice::Revoked, "OK toggled the focused server");
+    assert_eq!(after.plaintext_choice(&account, "m-c"), PlaintextChoice::Allowed, "and not the one that took its key");
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_pop_after_the_list_changed_reseats_on_the_row_the_page_landed_on() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("composed-reseat-pop");
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    ms = walk_to(&mut d, &mut rig, ms, root_key(RootId::AudioSubtitles));
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    ms = settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).contains("audio"), "premise: the Audio & subtitles page is pushed: {}", path(&d, id));
+    sign_out(); // Audio & subtitles is a signed-in row: it is gone when we come back
+    ms = settle_frames(&mut d, &mut rig, ms);
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Back, tick(ms + 16))]);
+    settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).starts_with("settings/root:"), "{}", path(&d, id));
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Language)),
+        "the stale remembered key reseats on the page's landing (next survivor), not row 0");
+    assert_eq!(sel_of(&d, id), root_key(RootId::Language));
+}

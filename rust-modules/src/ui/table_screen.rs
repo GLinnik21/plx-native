@@ -208,13 +208,21 @@ where
         }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        let mut placed = Focusable::<H>::place(&self.view(), &self.to_index(*key)?, cx, at)?;
-        placed.index = placed.index.and_then(|i| self.to_key(H::Elem::of_index(i)).index());
-        Some(placed)
+        // `Placed.index` stays an INDEX in its group (its readers seat by geometry), keyed or not
+        Focusable::<H>::place(&self.view(), &self.to_index(*key)?, cx, at)
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        // a key the map no longer knows settles like index 0: the first selectable row
-        let elem = self.to_index(want.elem).unwrap_or_else(|| H::Elem::of_index(0));
+        // a rebuild's identity landing wins over the engine's key; a key the map no longer knows
+        // settles on the table's own selection (never row 0)
+        let elem = match self.keys {
+            None => want.elem,
+            Some(k) => k
+                .reseat()
+                .and_then(|r| k.index_of_key(r))
+                .or_else(|| k.index_of_key(RowKey(want.elem.index()?)))
+                .or_else(|| usize::try_from(self.table.sel).ok())
+                .map_or_else(|| H::Elem::of_index(0), |i| H::Elem::of_index(i as u32)),
+        };
         let got = Focusable::<H>::reconcile(&self.view(), FocusKey { entry: want.entry, elem }, cx);
         FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
     }
@@ -855,7 +863,7 @@ mod tests {
         let placed = Focusable::<H>::place(&keyed, &10, &cx, At::Drawn).unwrap();
         let by_index = Focusable::<H>::place(&plain, &1, &cx, At::Drawn).unwrap();
         assert!(same(placed.rect, by_index.rect), "key 10 is the row the index view calls 1");
-        assert_eq!(placed.index, Some(10));
+        assert_eq!(placed.index, Some(1), "Placed.index stays an index in its group");
         assert!(Focusable::<H>::place(&keyed, &1, &cx, At::Drawn).is_none());
 
         assert_eq!(Focusable::<H>::reconcile(&keyed, fk(20), &cx).elem, 20);
