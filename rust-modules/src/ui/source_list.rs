@@ -406,7 +406,7 @@ mod tests {
     /// row label (`server_label`) are marked Server and exempt, EXCEPT that the accessory's app-owned
     /// `state · tier ·` lead is declared (`accessory_app_prefix`) and checked; an accessory with no
     /// handle is wholly App. The "needs a library" sub-line and the roster-refresh row are checked
-    /// too, at both surfaces' widths: the Library panel's fixed 650px
+    /// too, at both surfaces' widths: the Library panel's `MENU_MAX_W` cap
     /// (`screens::library::menu::LibraryMenu::frame`) and the Favorite libraries editor's full
     /// table width (`RouteLayout::screen().sectioned_table()`, `screens::onboard`).
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         use crate::ui::route_screen::RouteLayout;
         use crate::ui::table::TableView;
         let widths = [
-            ("library panel", 650.0),
+            ("library panel", crate::ui::table::MENU_MAX_W),
             ("favourites editor", RouteLayout::screen().sectioned_table().w),
         ];
         let groups = vec![
@@ -470,7 +470,7 @@ mod tests {
         assert!(silent.accessory_app_prefix.is_empty(), "a handle alone is all Server");
     }
 
-    /// A long machine name leaves the accessory the header's leftover (~220px on the 650px panel):
+    /// A long machine name leaves the accessory the header's leftover (~220px on the `MENU_MAX_W` panel):
     /// the app's state words, with and without a handle, must still fit it in every language.
     #[test]
     fn the_state_words_fit_beside_a_long_machine_name_in_every_language() {
@@ -488,7 +488,7 @@ mod tests {
                         let mut table = TableView::new();
                         table.compact = false;
                         table.set_sections(one_group_sections(g), 0, false);
-                        out.extend(table.app_fit_failures(650.0, &format!("{} {state:?} {handle:?}", language.tag())));
+                        out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, &format!("{} {state:?} {handle:?}", language.tag())));
                     }
                 }
             }

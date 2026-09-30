@@ -664,8 +664,8 @@ fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
 #[test]
 fn the_panel_hangs_off_its_button_and_stays_on_screen() {
     let btn = Rect::new(crate::ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
-    let r = panel_at(btn, 224.0);
-    assert_eq!(r.w, PANEL_W);
+    let r = panel_at(btn, 500.0, 224.0);
+    assert_eq!(r.w, MENU_MAX_W.min(500.0).max(MENU_MIN_W), "the panel hugs its content width");
     assert_eq!(
         r.y,
         btn.y + btn.h + BTN_GAP,
@@ -675,7 +675,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
 
     // a button low on the page flips the panel ABOVE it rather than off the bottom
     let low = Rect::new(crate::ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
-    let r = panel_at(low, 224.0);
+    let r = panel_at(low, 500.0, 224.0);
     assert!(
         r.y + r.h <= low.y - BTN_GAP + 0.01,
         "flipped above the button"
@@ -684,13 +684,13 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
 
     // a button near the right edge pulls the panel back inside the keep-out
     let right = Rect::new(SCR_W - 200.0, 300.0, 180.0, 60.0);
-    let r = panel_at(right, 224.0);
+    let r = panel_at(right, 500.0, 224.0);
     assert!(
         r.x + r.w <= SCR_W - EDGE_X + 0.01,
         "a panel must not run off the panel"
     );
     // …and a list taller than the screen is clamped rather than drawn past both edges
-    let tall = panel_at(btn, 4000.0);
+    let tall = panel_at(btn, 500.0, 4000.0);
     assert!(tall.y >= EDGE && tall.y + tall.h <= SCR_H - EDGE + 0.01);
 
     // Every one of those worst cases is inside the overscan frame — the keep-out is per AXIS
@@ -700,7 +700,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
     for (what, p) in [
         ("under", r),
         ("tall", tall),
-        ("right-edge", panel_at(right, 224.0)),
+        ("right-edge", panel_at(right, 500.0, 224.0)),
     ] {
         assert!(
             crate::ui::consts::inside_safe(p),
@@ -725,8 +725,9 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
         },
         crate::stores::metadata::MetadataStore::default().view(),
     );
-    let want = panel_at(low, p.table.measured_height());
-    let got = p.frame();
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let want = panel_at(low, p.table.measured_width(&measure), p.table.measured_height());
+    let got = p.frame(&measure);
     assert_eq!((got.x, got.y, got.w, got.h), (want.x, want.y, want.w, want.h));
 }
 
@@ -950,7 +951,7 @@ mod focus_and_hit {
     fn place_matches_the_tables_own_row_geometry() {
         let (p, ..) = two_row_panel();
         let cx = fixture_cx(None);
-        let want = p.table.row_frame(p.frame(), 1).expect("row 1 is drawn");
+        let want = p.table.row_frame(p.frame(&crate::ui::fixture::FixtureMeasure), 1).expect("row 1 is drawn");
         let placed = Focusable::<HostFixture>::place(&p, &1, &cx, At::Drawn).expect("row 1 places");
         assert_eq!(
             (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
@@ -1052,7 +1053,7 @@ mod focus_and_hit {
 /// **Every app-owned run of the *Also available* panel fits its column, in every shipped
 /// language.** Built through the real [`rows`] (from copies) and the real [`section_for`] the
 /// screen draws from; the library and a friend's name are server/user text and exempt, so what is
-/// judged is the "This account" sub-line and the runtime read-out, at [`PANEL_W`].
+/// judged is the "This account" sub-line and the runtime read-out, at the shared [`MENU_MAX_W`] cap.
 #[test]
 fn every_app_owned_run_fits_the_panel_in_every_language() {
     use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
@@ -1065,13 +1066,25 @@ fn every_app_owned_run_fits_the_panel_in_every_language() {
         list.extend([own, friend]);
     }
     let built = rows(&list, sid(0), "0");
+    // The cap check needs a fixture whose SERVER text (a friend's handle) is short: the long handle
+    // above is exempt from the ellipsis test but would count toward `measured_width`.
+    let short: Vec<_> = list.iter().cloned().map(|mut c| {
+        if c.owner.is_some() { c.owner = Some("friend".into()); }
+        c
+    }).collect();
+    let short_built = rows(&short, sid(0), "0");
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let mut table = crate::ui::table::TableView::new();
         table.compact = false;
         table.set_sections(vec![section_for(&built)], 0, false);
-        out.extend(table.app_fit_failures(PANEL_W, language.tag()));
+        let mut capped = crate::ui::table::TableView::new();
+        capped.compact = false;
+        capped.set_sections(vec![section_for(&short_built)], 0, false);
+        out.extend(capped.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+        out.extend(table.app_fit_failures(MENU_MAX_W, language.tag()));
+        out.extend(table.app_fit_failures_hugged(language.tag()));
     }
     crate::ui::table::assert_no_fit_failures(&out);
 }

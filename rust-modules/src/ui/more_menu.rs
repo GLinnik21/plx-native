@@ -90,9 +90,9 @@ pub enum Action {
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
 /// takes the appear fraction as a parameter instead of stepping its own `Popover`.
-/// The panel's width — fixed, so every row's label and value must fit it in every language
+/// The panel's width is the shared menu rule (`TableView::menu_panel_width`): it hugs the widest
+/// row, capped at `MENU_MAX_W`, and every row must fit the cap in every language
 /// (`every_row_fits_the_panel_in_every_language`).
-const PANEL_W: f32 = 448.0;
 
 pub(crate) struct MoreMenuState {
     table: TableView, // main-thread only
@@ -180,8 +180,8 @@ impl MoreMenuState {
     /// track menu is anchored to the pair beside it. Shares the track menu's right margin
     /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
     /// other does not make the panel hop.
-    fn panel_rect(&self) -> Rect {
-        let pw = PANEL_W;
+    fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        let pw = self.table.menu_panel_width(measure);
         let px = crate::ui::player_hud::CTRL_RIGHT - pw;
         let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
                                     // The ceiling was 320 while this menu held one row, and it was invisible then. With the
@@ -197,13 +197,19 @@ impl MoreMenuState {
                                     // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
                                     // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
                                     // the cap it scrolls, which is what `TableView` is for.
-        let ph = self.table.measured_height().clamp(120.0, bottom * 0.86);
+        let ph = self.panel_h();
         Rect::new(px, bottom - ph, pw, ph)
+    }
+
+    /// The panel's height alone — what `update` needs, with no measure in hand.
+    fn panel_h(&self) -> f32 {
+        let bottom = SCR_H - 316.0;
+        self.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
     pub(crate) fn update(&mut self, dt: f32) {
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_rect().h;
+        let h = self.panel_h();
         self.table.update(dt, h);
     }
 
@@ -214,7 +220,7 @@ impl MoreMenuState {
         let p = crate::ui::Painter::root()
             .alpha(appear)
             .translate(0.0, 16.0 * (1.0 - appear));
-        let r = self.panel_rect();
+        let r = self.panel_rect(measure);
         p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
         self.table.draw(p, r, measure);
     }
@@ -251,7 +257,7 @@ where
             seat: Seat::Remembered,
             reachable: AxisMask::VERTICAL,
             edge: [EdgeRule::Stop; 4],
-            extent: self.state.panel_rect(),
+            extent: self.state.panel_rect(_cx.measure),
             len: self.state.rows.len(),
             elem: ElemKind::Bare,
         });
@@ -273,13 +279,13 @@ where
             None => Step::Edge,
         }
     }
-    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()?;
-        let r = self.state.table.row_frame(self.state.panel_rect(), i as i32)?;
+        let r = self.state.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
-            clip: self.state.panel_rect(),
+            clip: self.state.panel_rect(cx.measure),
             index: Some(i),
         })
     }
@@ -308,7 +314,7 @@ where
     /// directly on the owned `MoreMenuState` from `PlayerOverlayScreen::draw` (struct doc above).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
-        let r = self.state.panel_rect();
+        let r = self.state.panel_rect(f.measure);
         for i in 0..self.state.table.n_rows() {
             if self.state.table.next_selectable(i, 0) != Some(i) {
                 continue;
@@ -452,7 +458,7 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
 /// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (pw, ph) = (PANEL_W, 320.0f32);
+    let (pw, ph) = (crate::ui::table::MENU_MAX_W, 320.0f32);
     let bottom = SCR_H - 316.0;
     out.push((
         "… overflow menu panel",
@@ -712,7 +718,7 @@ mod focus_tests {
     fn place_matches_the_tables_own_row_frame() {
         let e = EntryId(4);
         let st = three_row_menu();
-        let r = st.panel_rect();
+        let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
         let want = st.table.row_frame(r, 1);
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
@@ -738,8 +744,8 @@ mod focus_tests {
         });
     }
 
-    /// **Every row fits the panel, in every shipped language.** The panel is [`PANEL_W`] wide
-    /// whatever it lists, and a row elides its label to what the value beside it leaves — Spanish
+    /// **Every row fits the panel, in every shipped language.** The panel hugs its widest row up to
+    /// [`MENU_MAX_W`](crate::ui::table::MENU_MAX_W), and a row elides its label to what the value beside it leaves — Spanish
     /// *Estadísticas avanzadas* and Belarusian *Падрабязная статыстыка* both ended in `…` beside
     /// their *Off*. Measured with the device's whole-pixel advances.
     #[test]
@@ -750,7 +756,9 @@ mod focus_tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let menu = MoreMenuState::new(&ps);
-            out.extend(menu.table.app_fit_failures(PANEL_W, language.tag()));
+            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
         }
         crate::ui::table::assert_no_fit_failures(&out);
     }

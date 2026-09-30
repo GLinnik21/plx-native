@@ -26,6 +26,12 @@ pub(crate) const ROW_PRIMARY_SHARE: f32 = 0.6;
 /// header/accessory caller measures the drawn string directly.
 pub(crate) const HUG_MARGIN: f32 = 1.025;
 
+/// The share of a column a line may fill under the host measure (`fontcov::advances::HEADROOM`
+/// re-exports it): the measure models whole-pixel advances but not the device's kerning or
+/// hinting, so a popover panel is sized for `natural / HEADROOM` (`TableView::measured_width`)
+/// and the fit tests grade against the same figure.
+pub(crate) const HEADROOM: f32 = 0.98;
+
 /// Resolve a primary/secondary pair onto a `span`-wide line separated by `gap`, returning
 /// `(primary_w, secondary_w)`.
 ///

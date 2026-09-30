@@ -85,7 +85,6 @@ fn credit_row(c: &Credit, server_name: Option<String>) -> TRow {
         })
         .value_dim(true)
         .chevron(c.local.is_some())
-        .ticon_slot(true)
 }
 
 fn table_frame(measure: &dyn Measure) -> Rect {

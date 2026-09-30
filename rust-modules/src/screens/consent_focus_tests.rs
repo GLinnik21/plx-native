@@ -679,7 +679,10 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
                     "{name} product={product}: complete real disclosure must fit at BODY size");
             }
             assert!((frame.y + frame.h + theme::space::MD - layout.action.y).abs() < 0.01);
-            assert!(layout.content.w >= table.measured_width(&measure));
+            // `measured_width` budgets the device's headroom on top of every run; this page only
+            // needs the complete rows, so grade the raw natural widths.
+            assert!(layout.content.w >= table.measured_width(&measure) * crate::ui::fit::HEADROOM,
+                "{name} product={product}: content {} < measured {}", layout.content.w, table.measured_width(&measure));
             let band = BandPart { layout, labels: &labels, group: BAND_GROUP, entry: EntryId(1),
                 uncommitted: false, scales: [1.0, 1.0], palette: palette(), danger: None };
             let rects = band.rects(&measure);

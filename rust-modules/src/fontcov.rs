@@ -518,7 +518,7 @@ pub(crate) mod advances {
     /// device's whole-pixel advances but not its kerning or hinting quirks, so a line that clears
     /// its column by one pixel here (731 of 732 was a real Belarusian Settings candidate) is left
     /// no margin at all on the set.
-    pub(crate) const HEADROOM: f32 = 0.98;
+    pub(crate) const HEADROOM: f32 = crate::ui::fit::HEADROOM;
 
     /// A [`crate::ui::machine::Measure`] over the shipped faces' real advances.
     pub(crate) struct ShippedMeasure;

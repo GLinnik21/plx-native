@@ -50,11 +50,6 @@ use crate::ui::theme;
 use crate::ui::{Painter, Rect};
 use std::os::raw::c_int;
 
-/// The Subtitles panel's width — wider than Audio's, since a source detail line and an "N tracks"
-/// accessory need more room than a bare language name.
-const SUB_PANEL_W: f32 = 620.0;
-/// The Audio panel's width — unchanged from before the grouped Subtitles redesign.
-const AUDIO_PANEL_W: f32 = 560.0;
 
 /// One drawn row of the Audio tab, by POSITION — the Audio-tab counterpart of [`RowTarget`],
 /// which only ever describes a Subtitles row. [`TrackMenuState::build_audio`] is the only writer;
@@ -792,8 +787,10 @@ impl TrackMenuState {
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
-    fn panel_rect(&self) -> Rect {
-        let pw = if self.tab == 0 { AUDIO_PANEL_W } else { SUB_PANEL_W };
+    fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        // Each tab hugs its own rows (shared menu rule); the right edge is fixed, so switching
+        // tabs moves only the left edge.
+        let pw = self.table.menu_panel_width(measure);
         // the transport control row's own right edge — one number for the discs and both panels
         let px = crate::ui::player_hud::CTRL_RIGHT - pw;
         // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
@@ -802,10 +799,15 @@ impl TrackMenuState {
         // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
         // the bottom edge steady.
         let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
-        let top_min = 60.0;
-        let ph = self.table.measured_height().clamp(160.0, bottom - top_min);
+        let ph = self.panel_h();
         let py = bottom - ph; // ≥ top_min by construction
         Rect::new(px, py, pw, ph)
+    }
+
+    /// The panel's height alone — what `update` needs, with no measure in hand.
+    fn panel_h(&self) -> f32 {
+        let (bottom, top_min) = (SCR_H - 316.0, 60.0);
+        self.table.measured_height().clamp(160.0, bottom - top_min)
     }
 
     /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
@@ -830,7 +832,7 @@ impl TrackMenuState {
             self.poll_subtitle_state(ps, meta);
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_rect().h;
+        let h = self.panel_h();
         self.table.update(dt, h);
     }
 
@@ -841,7 +843,7 @@ impl TrackMenuState {
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, Popover::RISE * (1.0 - appear));
-        let r = self.panel_rect();
+        let r = self.panel_rect(measure);
 
         // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
         // dark card approximates it); only a hint of video shows through
@@ -885,7 +887,7 @@ where
             seat: Seat::Remembered,
             reachable: AxisMask::VERTICAL,
             edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Screen],
-            extent: self.state.panel_rect(),
+            extent: self.state.panel_rect(_cx.measure),
             len: self.state.table.n_rows().max(0) as usize,
             elem: ElemKind::Bare,
         });
@@ -907,13 +909,13 @@ where
             None => Step::Edge,
         }
     }
-    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()?;
-        let r = self.state.table.row_frame(self.state.panel_rect(), i as i32)?;
+        let r = self.state.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
-            clip: self.state.panel_rect(),
+            clip: self.state.panel_rect(cx.measure),
             index: Some(i),
         })
     }
@@ -950,7 +952,7 @@ where
     /// owned `TrackMenuState` from `PlayerOverlayScreen::draw` (see the struct doc above).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
-        let r = self.state.panel_rect();
+        let r = self.state.panel_rect(f.measure);
         for i in 0..self.state.table.n_rows() {
             if self.state.table.next_selectable(i, 0) != Some(i) {
                 continue;
@@ -1220,26 +1222,18 @@ fn lock_style_rows(sections: &mut Vec<Section>, targets: &mut Vec<RowTarget>) {
     targets.insert(note_at, RowTarget::Note);
 }
 
-/// The panel at its WIDEST and TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — both
-/// tab widths and the full `top_min`→`bottom` span, since the measured height comes from a
-/// `TableView` no host test can measure.
+/// The panel at its WIDEST ([`crate::ui::table::MENU_MAX_W`], the shared cap — either tab may hug
+/// up to it) and TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — the full
+/// `top_min`→`bottom` span, since the measured height comes from a `TableView` no host test can
+/// measure.
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (bottom, top_min) = (SCR_H - 316.0, 60.0);
-    for (name, pw) in [
-        ("track menu panel (audio)", AUDIO_PANEL_W),
-        ("track menu panel (subtitles)", SUB_PANEL_W),
-    ] {
-        out.push((
-            name,
-            Rect::new(
-                crate::ui::player_hud::CTRL_RIGHT - pw,
-                top_min,
-                pw,
-                bottom - top_min,
-            ),
-        ));
-    }
+    let pw = crate::ui::table::MENU_MAX_W;
+    out.push((
+        "track menu panel (widest)",
+        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+    ));
 }
 
 #[cfg(test)]
@@ -1408,7 +1402,7 @@ mod tests {
 
     /// **Every Subtitles-panel row fits the panel in every shipped language** — the grouped
     /// layout's section words, the kind fallbacks, the "Track N" ordinal and a region name beside
-    /// each badge, at [`SUB_PANEL_W`], measured with the device's whole-pixel advances. (A source is
+    /// each badge, against [`MENU_MAX_W`](crate::ui::table::MENU_MAX_W), measured with the device's whole-pixel advances. (A source is
     /// server text and may elide; the fixture's sources are short so only app text is judged.)
     #[test]
     fn every_subtitles_row_fits_the_panel_in_every_language() {
@@ -1434,7 +1428,9 @@ mod tests {
                 sub_layout(&subs, &offered, &names, &["rus"], 1, true, -60_000, SubtitleTone::LightGrey);
             let mut table = TableView::new();
             table.set_sections(sections, 0, false);
-            out.extend(table.app_fit_failures(SUB_PANEL_W, language.tag()));
+            out.extend(table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(table.app_fit_failures_hugged(language.tag()));
         }
         crate::ui::table::assert_no_fit_failures(&out);
     }
@@ -2443,12 +2439,13 @@ mod enhancement_menu_tests {
     ///
     /// `locales/be/widgets.json`'s `normalize_loudness` reads "Нармалізацыя гуку" ("normalization
     /// of sound") rather than the more literal "Нармалізацыя гучнасці" ("normalization of
-    /// loudness") on purpose: this test measures the literal phrase at 378px against this panel's
-    /// 369px column — 9px over — while "гуку" measures under. Re-check with this test before
-    /// changing the Belarusian string back; do not assume either phrase's width from the source
-    /// text alone.
+    /// loudness") on purpose: the literal phrase was chosen against when the Audio panel was a fixed
+    /// 560px with a 369px column, where it measured 378px (9px over) and "гуку" measured under.
+    /// This test now grades every row at the shared menu cap (`MENU_MAX_W`) and at the width the
+    /// hugged popover actually gets. Re-check with this test before changing the Belarusian
+    /// string back; do not assume either phrase's width from the source text alone.
     #[test]
-    fn enh_rows_fit_width_560_es_be() {
+    fn enh_rows_fit_menu_cap_es_be() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -2458,7 +2455,9 @@ mod enhancement_menu_tests {
                 applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
                 ..Default::default()
             });
-            out.extend(menu.table.app_fit_failures(AUDIO_PANEL_W, language.tag()));
+            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
@@ -2636,9 +2635,9 @@ mod enhancement_menu_tests {
     }
 
     /// The locked note fits the Subtitles panel in every shipped language, same discipline as
-    /// `enh_rows_fit_width_560_es_be` over the Audio panel.
+    /// `enh_rows_fit_menu_cap_es_be` over the Audio panel.
     #[test]
-    fn subtitles_locked_note_fits_width_620_es_be() {
+    fn subtitles_locked_note_fits_menu_cap_es_be() {
         use crate::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {
@@ -2650,7 +2649,9 @@ mod enhancement_menu_tests {
                 applied_burn: true,
                 ..Default::default()
             });
-            out.extend(menu.table.app_fit_failures(SUB_PANEL_W, language.tag()));
+            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
@@ -2772,7 +2773,7 @@ mod focus_tests {
     fn place_matches_the_tables_own_row_frame() {
         let e = EntryId(5);
         let st = three_row_menu();
-        let r = st.panel_rect();
+        let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
         let want = st.table.row_frame(r, 2);
         let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
