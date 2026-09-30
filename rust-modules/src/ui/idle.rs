@@ -136,6 +136,14 @@ thread_local! {
     /// to the page.
     static SCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 
+    /// Page motion that is NOT decorative: [`PAGE_MOVING`] minus every spring stepped inside a
+    /// [`decorative`] region. The page-freeze's quiescence test reads this one
+    /// ([`page_layout_moving`]); everything that needs to know whether the page's PIXELS changed
+    /// keeps reading `PAGE_MOVING`. Same thread-local rationale as `MOVING`.
+    static PAGE_LAYOUT_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many [`decorative`] regions are open right now.
+    static DECOR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
     /// This frame's `dt`, stamped once by [`frame_begin`]. [`note_spring`] needs it to convert a
     /// velocity into "distance this frame", which is the only form in which a velocity can be
     /// judged visible. Same thread-local rationale as `MOVING`.
@@ -248,8 +256,32 @@ pub(crate) fn note_spring(pos: f32, target: f32, vel: f32) {
         MOVING.with(|m| m.set(true));
         if SCOPE_DEPTH.with(|d| d.get()) == 0 {
             PAGE_MOVING.with(|m| m.set(true));
+            if DECOR_DEPTH.with(|d| d.get()) == 0 {
+                PAGE_LAYOUT_MOVING.with(|m| m.set(true));
+            }
         }
     }
+}
+
+/// Run `f` — a page's DECORATIVE springs (a colour dissolve under the page, an in-place focus pop)
+/// — so that their motion still wakes the present gate and still counts as page motion for every
+/// pixel-facing reader ([`page_moving`]), but does not count toward [`page_layout_moving`].
+///
+/// The page-freeze holds a route's snapshot until the page stops moving so that first poster
+/// admission can settle behind it; a spring that decorates the page and moves neither layout nor
+/// the card grid must not be able to hold that snapshot for the whole
+/// `PAGE_QUIESCENCE_HOLD_MAX_MS` cap. Declare it here rather than special-casing a screen in the
+/// transition code. Does not nest with [`MotionScope`] semantics: it is independent of them.
+pub(crate) fn decorative<T>(f: impl FnOnce() -> T) -> T {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            DECOR_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        }
+    }
+    DECOR_DEPTH.with(|d| d.set(d.get() + 1));
+    let _g = Guard;
+    f()
 }
 
 /// Whether a spring at `pos` heading for `target` with `vel` is visibly at rest — the exact test
@@ -436,6 +468,7 @@ pub(crate) fn wake() {
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
+    PAGE_LAYOUT_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
     let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
     MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
@@ -607,6 +640,13 @@ pub(crate) fn present_moving() -> bool {
 #[inline]
 pub(crate) fn page_moving() -> bool {
     PAGE_MOVING.with(|m| m.get())
+}
+
+/// Did a page spring OUTSIDE every [`MotionScope`] AND outside every [`decorative`] region report
+/// motion this frame? The page-freeze's "is the page quiescent" question.
+#[inline]
+pub(crate) fn page_layout_moving() -> bool {
+    PAGE_LAYOUT_MOVING.with(|m| m.get())
 }
 
 /// `now` of the last frame that had something to change — see [`LAST_CHANGE`]. Simulator only.
