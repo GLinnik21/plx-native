@@ -2052,6 +2052,45 @@ fn a_rejected_claim_after_an_accepted_one_restores_the_stream_that_plays() {
     cleanup(&mut ps);
 }
 
+/// Finding: the NativeAudio fallback landing changes `ps.stream_acodec` (`stage_native_audio`)
+/// AFTER the claim snapshot was captured, so `finish_route_action` published the OLD codec as the
+/// applied projection and a later rejected claim restored the wrong `stream_acodec` over an Engine
+/// playing the picked track.
+#[test]
+fn a_rejected_claim_after_a_native_audio_landing_restores_the_codec_that_plays() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Refuse);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
+    assert_eq!(ps.stream_acodec, "ac3", "the fixture starts on the AC3 track");
+    commit_audio_selection(&mut ps, a2());
+    let claimed = claim_route_action().expect("a queued user action");
+    assert!(matches!(
+        execute_retranscode_claim(&mut ps, &claimed, 60, -1, 0),
+        RetranscodeClaimDispatch::Pending
+    ));
+    let mut landed = None;
+    wait_until("the worker's landing", || {
+        landed = take_ready_retranscode_claim(&mut ps);
+        landed.is_some()
+    });
+    let (action, tail, ..) = landed.unwrap();
+    assert_eq!(tail, ClaimTail::NativeAudio, "the primary was refused and the pick runs natively");
+    assert_eq!(ps.stream_acodec, "eac3");
+    settle(&mut ps, &action, tail);
+
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
+    request_user_route_intent(&ps, UserRouteIntent::Retranscode);
+    let second = claim_route_action().expect("a queued user action");
+    assert!(finish_route_action(&mut ps, &second, RouteApplyResult::Rejected));
+
+    assert_eq!(ps.stream_acodec, "eac3", "a rejection restored the pre-pick codec over the Engine that plays the pick");
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// Finding: the old encoder was stopped inside the worker's attempt, seconds before the landing
 /// reloads — the engine (paused at the claim offset) was still reading a stream PMS had just
 /// killed. It must stay alive until the landing is installed, and be stopped only after.

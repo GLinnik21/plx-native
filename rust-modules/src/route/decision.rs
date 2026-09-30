@@ -8003,6 +8003,13 @@ pub(crate) fn take_ready_retranscode_claim(
             }
         }
         RetranscodeClaimResult::NativeAudio { ordinal, codec } => {
+            // `stage_native_audio` moves `ps.stream_acodec`, which the claim-time snapshot
+            // (captured before the worker ran) does not know: publish the codec that plays, or a
+            // later rejected claim restores the old one over the picked track. It touches no
+            // other projection field (the desired audio index and cues live outside it).
+            if let Some(snapshot) = landing.action.claim_snapshot.as_mut() {
+                snapshot.projection.stream_acodec = codec.clone();
+            }
             crate::player::stage_native_audio(ps, ordinal, &codec);
             ClaimTail::NativeAudio
         }
