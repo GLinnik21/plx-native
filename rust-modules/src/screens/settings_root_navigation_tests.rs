@@ -39,10 +39,10 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
-    // Privacy / Legal / About — row 2 is About, not a switch.
+    // Playback / Language / Privacy / Legal / About — row 4 is About, not a switch.
     let about = FocusKey {
         entry: EntryId(0),
-        elem: 2,
+        elem: 4,
     };
     step(
         &mut s,
@@ -57,7 +57,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
     assert_eq!(
         s.inner.depth(),
         2,
-        "signed out, row 2 is About — a document push"
+        "signed out, row 4 is About — a document push"
     );
     assert_eq!(name(&s), word::LEGAL);
     assert!(!crate::plex::session::peek().auto_sign_in());
@@ -193,8 +193,8 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
 }
 
 /// **The remembered-focus round trip (spec §7.3 step 4).** Signed out, the root's rows are
-/// Privacy & data / Legal notices / About PlxNative (`bridge.rs`'s own comment on the same
-/// fixture: "Favourites is absent signed out"), so row 1 is Legal notices. The engine seats
+/// Video & playback / Language / Privacy & data / Legal notices / About PlxNative (signed out
+/// there is no Favourites row), so row 3 is Legal notices. The engine seats
 /// focus there, OK pushes the index, and a BACK must hand focus back to THAT row — not row 0
 /// — which is the one thing `bridge.rs`'s word-only assertions cannot see from outside `app/`.
 #[test]
@@ -212,7 +212,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
 
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: 3,
     };
     step(
         &mut s,
@@ -299,7 +299,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: 3,
     };
     step(
         &mut s,
@@ -343,7 +343,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: 3,
     };
     for _ in 0..5 {
         step(
@@ -414,7 +414,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
     // stack that still has something UNDER its top
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: 3,
     };
     step(
         &mut s,
@@ -513,7 +513,7 @@ fn the_logical_state_follows_the_inner_stack() {
 
     let legal_row = FocusKey {
         entry: EntryId(0),
-        elem: 1,
+        elem: 3,
     };
     step(
         &mut s,

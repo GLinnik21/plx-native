@@ -1035,6 +1035,8 @@ struct RootInputs {
 fn root_sections(inputs: &RootInputs) -> (Vec<Section>, Vec<Action>) {
     let mut actions = Vec::new();
     let mut sections = Vec::new();
+    // Order: Libraries, Playback (player experience only), System (Language, Automatically Sign
+    // In, Trailer autoplay), Unencrypted connections, Privacy, then About alone at the very end.
     if inputs.signed_in {
         // The section is Libraries and the row is Favorite libraries: the switch governs the
         // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
@@ -1047,33 +1049,21 @@ fn root_sections(inputs: &RootInputs) -> (Vec<Section>, Vec<Action>) {
             ),
         );
         actions.push(Action::Favourites);
-        if !inputs.plaintext.is_empty() {
-            let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
-            for (i, row) in inputs.plaintext.iter().enumerate() {
-                let label = Row::new(&row.name);
-                let label = if row.named { label.server_label() } else { label };
-                section = section.row(label
-                    .detail(plaintext_question::settings_detail(row.on, row.connected)).toggle(row.on));
-                actions.push(Action::Plaintext(i));
-            }
-            sections.push(section);
-        }
     }
-    sections.push(
-        Section::new(crate::i18n::msg::settings_privacy_section())
-            .row(
-                Row::new(crate::i18n::msg::settings_privacy_title())
-                    .detail(crate::i18n::msg::settings_privacy_detail())
-                    .chevron(true),
-            )
-            .row(
-                Row::new(crate::i18n::msg::settings_legal_title())
-                    .detail(crate::i18n::msg::settings_legal_detail())
-                    .chevron(true),
-            ),
-    );
-    actions.extend([Action::Privacy, Action::Legal]);
+    let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
+        Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
+    actions.push(Action::Playback);
+    if inputs.signed_in {
+        playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
+            .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
+        actions.push(Action::AudioSubtitles);
+    }
+    sections.push(playback);
     let mut system = Section::new(crate::i18n::msg::settings_system_section());
+    system = system.row(Row::new(crate::i18n::msg::settings_language_title())
+        .detail(crate::i18n::msg::settings_language_detail())
+        .value(preference_name(inputs.language)).chevron(true));
+    actions.push(Action::Language);
     if inputs.signed_in && inputs.multi_user {
         system = system.row(
             Row::new(crate::i18n::msg::settings_auto_sign_in_title())
@@ -1090,25 +1080,40 @@ fn root_sections(inputs: &RootInputs) -> (Vec<Section>, Vec<Action>) {
         );
         actions.push(Action::TrailerAutoplay);
     }
-    system = system.row(
-        Row::new(crate::i18n::msg::settings_about_title())
-            .detail(crate::i18n::msg::settings_about_detail())
-            .chevron(true),
-    );
-    system = system.row(Row::new(crate::i18n::msg::settings_language_title())
-        .detail(crate::i18n::msg::settings_language_detail())
-        .value(preference_name(inputs.language)).chevron(true));
     sections.push(system);
-    actions.extend([Action::About, Action::Language]);
-    let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
-        Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
-    actions.push(Action::Playback);
-    if inputs.signed_in {
-        playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
-            .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
-        actions.push(Action::AudioSubtitles);
+    if inputs.signed_in && !inputs.plaintext.is_empty() {
+        let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
+        for (i, row) in inputs.plaintext.iter().enumerate() {
+            let label = Row::new(&row.name);
+            let label = if row.named { label.server_label() } else { label };
+            section = section.row(label
+                .detail(plaintext_question::settings_detail(row.on, row.connected)).toggle(row.on));
+            actions.push(Action::Plaintext(i));
+        }
+        sections.push(section);
     }
-    sections.push(playback);
+    sections.push(
+        Section::new(crate::i18n::msg::settings_privacy_section())
+            .row(
+                Row::new(crate::i18n::msg::settings_privacy_title())
+                    .detail(crate::i18n::msg::settings_privacy_detail())
+                    .chevron(true),
+            )
+            .row(
+                Row::new(crate::i18n::msg::settings_legal_title())
+                    .detail(crate::i18n::msg::settings_legal_detail())
+                    .chevron(true),
+            ),
+    );
+    actions.extend([Action::Privacy, Action::Legal]);
+    sections.push(
+        Section::new(crate::i18n::msg::settings_about_section()).row(
+            Row::new(crate::i18n::msg::settings_about_title())
+                .detail(crate::i18n::msg::settings_about_detail())
+                .chevron(true),
+        ),
+    );
+    actions.push(Action::About);
     (sections, actions)
 }
 

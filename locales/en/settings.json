@@ -59,6 +59,10 @@
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
   },
+  "settings.about.section": {
+    "value": "About",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.section"
+  },
   "settings.about.detail": {
     "value": "Version, copyright and project information.",
     "description": "Settings, account, onboarding or privacy UI: settings.about.detail"

@@ -232,3 +232,12 @@ recorded afresh on the unchanged shape `10638452537178981056` (schema 3) — old
 anchor whose shape has not moved refuses both `rerecord` (shape unchanged) and `rebaseline`
 (anchors always refuse it) — and passed Targets and Resolve with zero difference counters. The
 closed alphabet did not move.
+
+The Settings root reorder (Libraries, Playback, System, Unencrypted connections, Privacy, About)
+moved recorded behaviour without moving the shape: the signed-out root is now Playback, Language,
+Privacy, Legal, About, so `6-settings-family`'s scripted keys (`tests/focusfp.sh` flow 6) start
+with two DOWNs to reach Privacy, and the new "About" section header entered the measurement
+table (`ABOUT` joined the closed alphabet's literals). The anchor was recorded afresh on the
+unchanged shape (`tools/plxnative-rec import`, `anchor: true` restored by hand). Two of the four
+fresh recordings diverged on replay by one to three frames at a timing-dependent frame; the one
+committed replayed SAME in Targets and Resolve on three consecutive runs.
