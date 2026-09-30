@@ -17,6 +17,7 @@
 //! The hold's own pause and resume call [`super::pause`]/[`super::resume`] directly and so never
 //! count as a viewer press.
 
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Mutex;
 
 /// One live hold. `serial` names the claim it belongs to.
@@ -29,14 +30,19 @@ struct Hold {
 
 static HOLD: Mutex<Option<Hold>> = Mutex::new(None);
 
+/// The live hold's serial (`0` = none; claim serials are never 0, see `route::plan::next_generation`).
+/// [`super::state`] asks [`active`] on every call and a frame makes many, so the idle answer is
+/// this one load rather than a lock. Only [`store`] writes it, under `HOLD`'s guard.
+static SERIAL: AtomicU64 = AtomicU64::new(0);
+
 fn slot() -> std::sync::MutexGuard<'static, Option<Hold>> {
     HOLD.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What [`take`] hands the landing: whether to give play back once the claim has settled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Landing {
-    restore_play: bool,
+/// Replace the hold and its mirrored serial together.
+fn store(guard: &mut Option<Hold>, hold: Option<Hold>) {
+    *guard = hold;
+    SERIAL.store(hold.map_or(0, |h| h.serial), Relaxed);
 }
 
 /// A retranscode claim was dispatched to its worker: hold presentation at the claim offset.
@@ -48,7 +54,7 @@ pub(crate) fn engage(pa: &mut super::adapter::PlayerAdapter, serial: u64) {
     if held {
         super::log("claim hold: paused at the claim offset while the server prepares the new stream");
     }
-    *slot() = Some(Hold { serial, restore_play: held });
+    store(&mut slot(), Some(Hold { serial, restore_play: held }));
 }
 
 /// A viewer transport press (Play, Pause or the toggle): the viewer's choice outranks the hold, so
@@ -62,8 +68,8 @@ pub(crate) fn note_user_transport() {
 /// Whether a hold for a claim that is still in flight is up (the spinner's condition). A hold left
 /// behind by a torn-down or superseded claim answers false through `route::claim_is_applying`.
 pub(crate) fn active() -> bool {
-    let serial = slot().map(|h| h.serial);
-    serial.is_some_and(crate::route::claim_is_applying)
+    let serial = SERIAL.load(Relaxed);
+    serial != 0 && crate::route::claim_is_applying(serial)
 }
 
 /// Whether the transport is paused BY the hold (a live hold that owes the viewer a Play back),
@@ -71,27 +77,31 @@ pub(crate) fn active() -> bool {
 /// `resume_if_paused` — must not mistake this pause for theirs: the toggle would resume a stream
 /// the hold is keeping still, and a seek-side resume would play the flight's seconds again.
 pub(crate) fn owns_pause() -> bool {
+    if SERIAL.load(Relaxed) == 0 {
+        return false;
+    }
     let hold = *slot();
     hold.is_some_and(|h| h.restore_play && crate::route::claim_is_applying(h.serial))
 }
 
-/// Take the hold belonging to `serial` at its landing. A hold for any other serial is left alone
-/// (it is stale and the next [`engage`] overwrites it).
-pub(crate) fn take(serial: u64) -> Option<Landing> {
+/// Take the hold belonging to `serial` at its landing, answering whether it owes the viewer a Play
+/// back ([`release`]). A hold for any other serial is left alone (it is stale and the next
+/// [`engage`] overwrites it).
+pub(crate) fn take(serial: u64) -> bool {
     let mut guard = slot();
     match *guard {
         Some(hold) if hold.serial == serial => {
-            *guard = None;
-            Some(Landing { restore_play: hold.restore_play })
+            store(&mut guard, None);
+            hold.restore_play
         }
-        _ => None,
+        _ => false,
     }
 }
 
 /// Give play back after the claim settled and its tail ran (a rejection leaves the same Engine
 /// running; an accepted claim has already reloaded, the reload having kept the pause).
-pub(crate) fn release(pa: &mut super::adapter::PlayerAdapter, landing: Option<Landing>) {
-    if landing.is_some_and(|l| l.restore_play) && !super::resume(pa) {
+pub(crate) fn release(pa: &mut super::adapter::PlayerAdapter, restore_play: bool) {
+    if restore_play && !super::resume(pa) {
         super::log("claim hold: could not give play back after the claim settled");
     }
 }
@@ -99,13 +109,13 @@ pub(crate) fn release(pa: &mut super::adapter::PlayerAdapter, landing: Option<La
 /// Test-only: stand a hold up for `serial` without a live Engine.
 #[cfg(test)]
 pub(crate) fn hold_for_test(serial: u64, restore_play: bool) {
-    *slot() = Some(Hold { serial, restore_play });
+    store(&mut slot(), Some(Hold { serial, restore_play }));
 }
 
 /// Drop any hold without touching the transport: the playback it belonged to is gone (teardown
 /// resets the transport itself).
 pub(crate) fn clear() {
-    *slot() = None;
+    store(&mut slot(), None);
 }
 
 #[cfg(all(test, feature = "hostsim"))]
@@ -261,7 +271,7 @@ mod tests {
     fn a_stale_landing_leaves_the_transport_alone() {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
-        assert_eq!(take(8), None, "another claim's landing does not own this hold");
+        assert!(!take(8), "another claim's landing does not own this hold");
         release(&mut rig.pa, take(8));
         assert!(TX.paused.load(Acquire));
         clear();

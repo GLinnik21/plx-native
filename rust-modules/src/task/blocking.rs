@@ -31,10 +31,10 @@ impl Drop for FrameScope {
 
 pub(crate) struct AllowBlocking { _label: super::watchdog::LabelScope }
 /// Explicit exceptions belong at user actions, with a reason and follow-up at the call site. See
-/// `route::decision`'s `retranscode_as` and the `ClaimPrimary::ReleaseToDirect` arm of
-/// `execute_retranscode_claim` for the two call sites this repo currently has, both labelled
-/// "pending split" — the recovery arm (`recover_auto_to_original_for`/`admit_original_part`/
-/// `admit_or_plain_remux`) still runs its PMS I/O on the frame thread and is the next one to move.
+/// `route::decision`'s `pending_split_block` for the frame-thread PMS calls this repo currently
+/// excepts, all labelled "pending split" — the recovery arm
+/// (`recover_auto_to_original_for`/`admit_original_part`/`admit_or_plain_remux`) is the next one
+/// to move off the frame thread.
 pub(crate) fn allow_blocking(reason: &'static BlockingLabel) -> AllowBlocking {
     assert!(!reason.text.is_empty());
     ALLOWED.with(|depth| depth.set(depth.get() + 1));

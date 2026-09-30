@@ -97,7 +97,8 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Seria
     let _ = take_pending_original();
     // A worker landing (or a presentation hold) a previous test left behind — a test that panicked
     // mid-flight leaves both — belongs to nothing this test owns.
-    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    drop(take_claim_landing());
+    clear_injected_fault();
     crate::player::claim_hold::clear();
     // Establish the idle projection before resetting the reducer: its applied snapshot must
     // describe this test's empty route, not the previous test's final encoder.  Quality is
