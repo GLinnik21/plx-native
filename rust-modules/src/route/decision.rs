@@ -7433,12 +7433,18 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
         pass: crate::plex::serverinfo::subscription_of(cur_sid(ps)),
         base: ps.auto_original.as_ref(),
         carried: ps.cur_audio.as_ref(),
-        subtitle_effect: match ps.cur_sub_sid {
-            0 => SubtitleEffect::None,
-            _ if ps.cur_sub_sidecar => SubtitleEffect::Sidecar,
-            _ => SubtitleEffect::Embedded,
-        },
+        subtitle_effect: subtitle_effect_of(ps),
         refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+    }
+}
+
+/// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
+/// embedded track the server would have to burn to keep. Two session fields, read in place.
+fn subtitle_effect_of(ps: &PlaybackSession) -> SubtitleEffect {
+    match ps.cur_sub_sid {
+        0 => SubtitleEffect::None,
+        _ if ps.cur_sub_sidecar => SubtitleEffect::Sidecar,
+        _ => SubtitleEffect::Embedded,
     }
 }
 
@@ -7447,7 +7453,7 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 /// separately because the note's WORDING needs to tell "no subtitle" apart from "an unaffected
 /// sidecar" even though both share the same [`EnhancementRoute::Remux`].
 pub(crate) fn live_subtitle_effect(ps: &PlaybackSession) -> SubtitleEffect {
-    facts(ps).subtitle_effect
+    subtitle_effect_of(ps)
 }
 
 /// **Is the live route itself an applied Burn (M7)?** A Burn forces `remux: false` to get PMS to
@@ -7459,10 +7465,7 @@ pub(crate) fn live_subtitle_effect(ps: &PlaybackSession) -> SubtitleEffect {
 pub(crate) fn live_is_own_burn(ps: &PlaybackSession) -> bool {
     ps.cur_enhancement == EnhancementOutcome::Applied
         && ps.cur_contract.audio.any()
-        && !ps.cur_contract.remux
-        && !ps.cur_contract.no_video_copy
-        && ps.cur_contract.ceiling.is_none()
-        && ps.cur_contract.delivery == crate::plex::TranscodeDelivery::ProgressiveMkv
+        && ps.cur_contract == enhanced_remux_contract(ps.cur_contract.audio, true)
 }
 
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to

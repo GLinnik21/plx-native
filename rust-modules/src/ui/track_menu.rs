@@ -45,7 +45,7 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::table::{Badge, Row, Section, TableView};
+use crate::ui::table::{row_mut_in, Badge, Row, Section, TableView};
 use crate::ui::theme;
 use crate::ui::{Painter, Rect};
 use std::os::raw::c_int;
@@ -303,24 +303,30 @@ impl TrackMenuState {
     /// every open) and the live poll below (PR #309 field report) derive the SAME pair the same
     /// way — the desync that report caught was exactly two readers of this answer drifting apart.
     fn derive_active(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (c_int, c_int) {
-        match tracks(meta) {
-            Some(t) => {
-                let asid = crate::route::cur_audio_sid(ps);
-                let audio = (asid > 0)
-                    .then(|| t.audio.iter().position(|s| s.id == asid))
-                    .flatten()
-                    .or_else(|| t.audio.iter().position(|s| s.default))
-                    .unwrap_or(0) as c_int;
-                let ssid = crate::route::cur_sub_sid(ps);
-                let sub = (ssid > 0)
-                    .then(|| t.subs.iter().position(|s| s.id == ssid))
-                    .flatten()
-                    .map(|i| i as c_int)
-                    .unwrap_or(-1);
-                (audio, sub)
-            }
-            None => (0, -1),
-        }
+        (Self::derive_active_audio(ps, meta), Self::derive_active_sub(ps, meta))
+    }
+
+    /// The Audio tab's half of [`Self::derive_active`].
+    fn derive_active_audio(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
+        let Some(t) = tracks(meta) else { return 0 };
+        let asid = crate::route::cur_audio_sid(ps);
+        (asid > 0)
+            .then(|| t.audio.iter().position(|s| s.id == asid))
+            .flatten()
+            .or_else(|| t.audio.iter().position(|s| s.default))
+            .unwrap_or(0) as c_int
+    }
+
+    /// The Subtitles tab's half of [`Self::derive_active`] — what the live poll scans alone, the
+    /// audio half being discarded there.
+    fn derive_active_sub(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
+        let Some(t) = tracks(meta) else { return -1 };
+        let ssid = crate::route::cur_sub_sid(ps);
+        (ssid > 0)
+            .then(|| t.subs.iter().position(|s| s.id == ssid))
+            .flatten()
+            .map(|i| i as c_int)
+            .unwrap_or(-1)
     }
 
     /// [`Self::derive_active`] on every open — the menu can never show a stale or desynced
@@ -349,7 +355,7 @@ impl TrackMenuState {
     /// instead of snapping to the active track, the same fix `rebuild_audio` applies for the Audio
     /// tab's own poll.
     fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        let (_, live_sub) = Self::derive_active(ps, meta);
+        let live_sub = Self::derive_active_sub(ps, meta);
         let locked = crate::route::live_is_own_burn(ps);
         if live_sub == self.active_sub && locked == self.sub_style_locked {
             return;
@@ -1173,12 +1179,6 @@ fn table_sections(
     (sections, targets)
 }
 
-/// One row, by GLOBAL index, across every section — the plain [`Vec<Section>`] counterpart to
-/// [`TableView::row_mut`], for editing a row before it is ever handed to a `TableView`.
-fn row_mut_at(sections: &mut [Section], gi: usize) -> Option<&mut Row> {
-    sections.iter_mut().flat_map(|s| s.rows.iter_mut()).nth(gi)
-}
-
 /// Insert `row` at GLOBAL index `gi`, into whichever section actually spans that position — the
 /// plain-`Vec<Section>` counterpart of a `TableView` insert, needed because [`lock_style_rows`]
 /// runs before the sections are ever handed to a `TableView`.
@@ -1204,11 +1204,11 @@ fn lock_style_rows(sections: &mut Vec<Section>, targets: &mut Vec<RowTarget>) {
         return; // no Color row was built at all — nothing to lock
     };
     if let Some(timing_idx) = targets.iter().position(|t| *t == RowTarget::Timing) {
-        if let Some(row) = row_mut_at(sections, timing_idx) {
+        if let Some(row) = row_mut_in(sections, timing_idx) {
             row.dim = true;
         }
     }
-    if let Some(row) = row_mut_at(sections, color_idx) {
+    if let Some(row) = row_mut_in(sections, color_idx) {
         row.dim = true;
     }
     let note_at = color_idx + 1;
@@ -1285,7 +1285,7 @@ mod tests {
         store
     }
 
-    fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> metadata::Stream {
+    pub(super) fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> metadata::Stream {
         metadata::Stream {
             id,
             index,
@@ -2479,14 +2479,7 @@ mod enhancement_menu_tests {
     /// `subtitle_effect` — the Subtitles-tab counterpart of [`audio_tab`].
     fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
         let (ps, _sid) = enhancement_test_session(route);
-        let store = super::tests::store_with(vec![crate::metadata::Stream {
-            id: 999,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "subrip".into(),
-            ..Default::default()
-        }]);
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
         let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         (menu, ps)
     }
@@ -2563,14 +2556,7 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        let store = super::tests::store_with(vec![crate::metadata::Stream {
-            id: 999,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "subrip".into(),
-            ..Default::default()
-        }]);
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
 
         let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).unwrap();
         menu.focus_row(timing_i as c_int);
@@ -2594,14 +2580,7 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        let store = super::tests::store_with(vec![crate::metadata::Stream {
-            id: 999,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "subrip".into(),
-            ..Default::default()
-        }]);
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
         let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).unwrap();
         menu.focus_row(off_i as c_int);
         match menu.on_ok(store.view()) {
@@ -2649,14 +2628,7 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        let store = super::tests::store_with(vec![crate::metadata::Stream {
-            id: 999,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "subrip".into(),
-            ..Default::default()
-        }]);
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
         menu.update(0.016, &ps_after, store.view());
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");

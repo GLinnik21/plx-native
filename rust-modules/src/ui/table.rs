@@ -235,6 +235,12 @@ impl Section {
     }
 }
 
+/// One row by GLOBAL index across `sections` — [`TableView::row_mut`]'s lookup for a list that has
+/// not been handed to a [`TableView`] yet (`track_menu`'s style-lock pass edits its sections first).
+pub(crate) fn row_mut_in(sections: &mut [Section], gi: usize) -> Option<&mut Row> {
+    sections.iter_mut().flat_map(|s| s.rows.iter_mut()).nth(gi)
+}
+
 /// A [`Row::separator`]'s row height. The hairline sits on its centre line, so this IS the gap
 /// between the two groups it divides — a gap between stacked blocks comes from a `space` rung, so
 /// it is the rung, not a hand-tuned number.
@@ -1192,7 +1198,7 @@ impl TableView {
     /// Subtitles panel's Color value), so a press re-writes that row alone instead of rebuilding
     /// every section. `None` past the end. The caller must not change the row's height class.
     pub(crate) fn row_mut(&mut self, gi: i32) -> Option<&mut Row> {
-        usize::try_from(gi).ok().and_then(|gi| self.sections.iter_mut().flat_map(|s| s.rows.iter_mut()).nth(gi))
+        usize::try_from(gi).ok().and_then(|gi| row_mut_in(&mut self.sections, gi))
     }
 
     fn rows_at(&self, gi: i32) -> &Row {
