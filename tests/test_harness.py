@@ -3188,6 +3188,20 @@ class AbrTraceMetrics(unittest.TestCase):
         files = run.triggers_for_case(case)
         self.assertIn(("plxnative-menupick", "0,boost"), files)
 
+    def test_subtitle_op_names_a_track_not_a_row(self):
+        """`subtitle_text_srt` once hard-coded row 3, which became the Color row (`menupick: row 3
+        already active -- no commit`). A `track` op derives the row in the app from the panel's own
+        row map; `row` still passes through verbatim."""
+        case = {"rk": "1", "operations": [{"op": "play"}, {"op": "subtitle", "tab": 1, "track": 0}]}
+        self.assertIn(("plxnative-menupick", "1,track:0"), run.triggers_for_case(case))
+        case["operations"][1] = {"op": "subtitle", "tab": 1, "row": 3}
+        self.assertIn(("plxnative-menupick", "1,3"), run.triggers_for_case(case))
+        with open(os.path.join(os.path.dirname(__file__), "manifest.json")) as fh:
+            manifest = json.load(fh)
+        rows = [op for c in manifest["cases"] for op in c.get("operations", [])
+                if op.get("op") == "subtitle" and "row" in op]
+        self.assertEqual(rows, [], "a hard-coded subtitle-menu row drifts; use `track`")
+
     def test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable(self):
         """issue #266 PR4 review: EVERY case forces the persisted preference at boot (default
         `off`), so a case's starting preference never depends on what an earlier case's pick left

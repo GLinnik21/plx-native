@@ -1901,7 +1901,7 @@
       "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
       "title": "episode · hevc 4K HDR10 / e-ac3 · embedded subtitle picked mid-play — the enhancement burns it in instead of dropping it (issue #266 M7)",
-      "comment": "The device-level proof of M7's whole point, the opposite of audio_enhancement_withheld_under_subtitle: boots with Normalize Loudness forced ON (`audio_enhancements_boot: \"loudness\"`) against a candidate with no subtitle yet, so the cold-start route is the ordinary enhanced remux and the FIRST `enhancement: applied boost=0 loudness=1` line is logged before the first frame — proving the preference alone is not blocked. The live `subtitle` op then picks an embedded (in-container) text track, which `route::plan::enhancement_availability` now answers `Offered(EnhancementRoute::Burn)` for (never Hidden, never a silent drop): `route::decision::reconcile_enhancement` asks the server for a forced re-encode carrying subtitleStreamID=<id>&subtitles=burn alongside the SAME DSP params, which op_audio_enhancement_burn grades as a SECOND `enhancement: applied .. loudness=1` line plus a post-pick stream that is the explicit burn shape (subtitleStreamID + subtitles=burn), not the enhancement's ordinary start.mkv remux, and no client-rendered sub cue afterward (the subtitle is baked into the picture, not drawn twice). **Not runnable against the public synthetic fixture alone**: `episode_hevc_4k_hdr10_eac3` in `tests/fixtures/make_fixtures.py` still carries no embedded subtitle track, so `row` depends on a contributor's private `tests/manifest.local.json` mapping this shape to a real library item that has one; that mapping exists and this case has run against it.",
+      "comment": "The device-level proof of M7's whole point, the opposite of audio_enhancement_withheld_under_subtitle: boots with Normalize Loudness forced ON (`audio_enhancements_boot: \"loudness\"`) against a candidate with no subtitle yet, so the cold-start route is the ordinary enhanced remux and the FIRST `enhancement: applied boost=0 loudness=1` line is logged before the first frame — proving the preference alone is not blocked. The live `subtitle` op then picks an embedded (in-container) text track, which `route::plan::enhancement_availability` now answers `Offered(EnhancementRoute::Burn)` for (never Hidden, never a silent drop): `route::decision::reconcile_enhancement` asks the server for a forced re-encode carrying subtitleStreamID=<id>&subtitles=burn alongside the SAME DSP params, which op_audio_enhancement_burn grades as a SECOND `enhancement: applied .. loudness=1` line plus a post-pick stream that is the explicit burn shape (subtitleStreamID + subtitles=burn), not the enhancement's ordinary start.mkv remux, and no client-rendered sub cue afterward (the subtitle is baked into the picture, not drawn twice). **Not runnable against the public synthetic fixture alone**: `episode_hevc_4k_hdr10_eac3` in `tests/fixtures/make_fixtures.py` still carries no embedded subtitle track, so the picked track depends on a contributor's private `tests/manifest.local.json` mapping this shape to a real library item that has one; that mapping exists and this case has run against it.",
       "covers": [
         "audio-enhancement-burn",
         "audio-enhancement-subtitle-reroute"
@@ -1914,7 +1914,7 @@
         {
           "op": "subtitle",
           "tab": 1,
-          "row": 1,
+          "track": 0,
           "burn": true
         }
       ],
@@ -1950,7 +1950,7 @@
         {
           "op": "subtitle",
           "tab": 1,
-          "row": 3
+          "track": 0
         }
       ],
       "expect": {
@@ -1984,7 +1984,7 @@
         {
           "op": "subtitle",
           "tab": 1,
-          "row": 1,
+          "track": 0,
           "image": true
         }
       ],

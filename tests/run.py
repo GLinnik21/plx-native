@@ -1118,7 +1118,7 @@ def triggers_for_case(case, url_base=None):
         elif kind == "audio_switch":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
-            files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
+            files.append(("plxnative-menupick", f'{op["tab"]},{subtitle_menupick_target(op)}'))
         elif kind == "audio_enhancement":
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
             # appended after the audio tracks (`track_menu.rs`'s `build_audio`). `menupick` names
@@ -3890,6 +3890,17 @@ def op_audio_enhancement_burn(lines):
                        f"subtitles) :: {late_cue.strip()}")
     return True, (f"enhancement re-applied as an explicit burn, DSP preserved :: "
                   f"{hit.strip()} / {redact(stream.strip())}")
+
+
+def subtitle_menupick_target(op):
+    """The `plxnative-menupick` second field for a `subtitle` op. `"track": N` names the N-th
+    (0-based) TRACK row of the Subtitles panel in display order (`TrackMenuState::
+    row_for_sub_target`), so the case survives the panel gaining or losing rows -- a hand-written
+    `"row"` went stale once (`subtitle_text_srt` picked row 3, which became the Color row and
+    committed nothing). `"row"` remains for a case that really means an absolute row."""
+    if "track" in op:
+        return f'track:{int(op["track"])}'
+    return str(op["row"])
 
 
 def op_subtitle(lines):

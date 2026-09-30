@@ -348,16 +348,17 @@ impl PlayerOverlayScreen {
     }
 
     /// Resolve `/tmp/plxnative-menupick`'s second field to an absolute row: a plain row number
-    /// parses as itself (the original contract); otherwise, on the Audio tab only, it is tried as
-    /// a NAMED target (`"boost"`/`"loudness"`) through
-    /// [`crate::ui::track_menu::TrackMenuState::row_for_audio_target`]. `None` when neither
-    /// applies — an unparseable number, a name on the Subtitles tab, or an unrecognized name.
+    /// parses as itself (the original contract); otherwise it is tried as a NAMED target: the Audio
+    /// tab's `"boost"`/`"loudness"` through
+    /// [`crate::ui::track_menu::TrackMenuState::row_for_audio_target`], the Subtitles tab's
+    /// `"track:N"` through `row_for_sub_target`. `None` when neither applies — an unparseable
+    /// number, a name on the wrong tab, or an unrecognized name.
     pub(crate) fn resolve_menupick_row(&self, target: &str) -> Option<c_int> {
         if let Ok(row) = target.parse::<c_int>() {
             return Some(row);
         }
         match &self.panel {
-            Panel::Tracks(p) => p.row_for_audio_target(target),
+            Panel::Tracks(p) => p.row_for_audio_target(target).or_else(|| p.row_for_sub_target(target)),
             _ => None,
         }
     }

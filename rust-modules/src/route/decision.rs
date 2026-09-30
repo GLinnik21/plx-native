@@ -2288,6 +2288,9 @@ fn drive_encoder_cleanup(sid: ServerId) -> bool {
     for check in checks {
         let fallback = check.clone();
         if !crate::task::spawn_small("abr-cleanup", move || run_encoder_cleanup_check(check)) {
+            let _block = crate::task::allow_blocking(
+                const { &crate::task::BlockingLabel::new("encoder cleanup check (worker thread refused)") },
+            );
             run_encoder_cleanup_check(fallback);
         }
     }
@@ -4254,6 +4257,9 @@ fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
     })
     .is_none()
     {
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        );
         let _ = client.transcode_stop(&encoder);
     }
 }
@@ -4276,6 +4282,9 @@ fn retire_hls_encoder_keep_source(ps: &PlaybackSession, encoder: String) {
     })
     .is_none()
     {
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
+        );
         let _ = client.transcode_stop_physical(&encoder);
     }
 }
@@ -4822,6 +4831,9 @@ pub(crate) fn scrobble_stop(
         // Thread refusal is extraordinarily rare, but dropping the old reporter handle and
         // opening the stop fence would recreate the exact new-before-old race. Pay the old
         // synchronous cost on this failure path and preserve ordering.
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("scrobble stop (worker thread refused)") },
+        );
         let work = { work.lock().unwrap_or_else(|e| e.into_inner()).take() };
         if let Some(work) = work {
             work.run();
@@ -6102,6 +6114,9 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
     }) {
         // Thread creation failure is rarer than cancellation and must not turn into a permanent
         // server allocation. The normal path above keeps this network work off the main thread.
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
+        );
         for identity in resources.identities {
             let _ = client.transcode_stop(&identity);
         }

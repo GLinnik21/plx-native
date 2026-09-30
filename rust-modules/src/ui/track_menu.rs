@@ -398,6 +398,23 @@ impl TrackMenuState {
         self.audio_targets.iter().position(|t| *t == target).map(|i| i as c_int)
     }
 
+    /// Resolve a NAMED Subtitles-tab target to its absolute table row, for the
+    /// `/tmp/plxnative-menupick` trigger: `"track:N"` is the N-th (0-based) TRACK row in display
+    /// order, skipping Off, Timing, Color and the footnote. A hand-written row number drifts every
+    /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
+    /// the Color row); reading the position back through [`Self::targets`], the same map
+    /// [`Self::on_ok`] dispatches on, cannot. `None` for an unrecognized name or an N past the
+    /// last track.
+    pub(crate) fn row_for_sub_target(&self, name: &str) -> Option<c_int> {
+        let n: usize = name.strip_prefix("track:")?.trim().parse().ok()?;
+        self.targets
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t, RowTarget::Sub(_)))
+            .nth(n)
+            .map(|(row, _)| row as c_int)
+    }
+
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
@@ -1560,6 +1577,28 @@ mod tests {
         menu.rebuild(&ps, store.view(), 1, false);
         assert_eq!(menu.targets.get(menu.sel() as usize).copied(), Some(RowTarget::Sub(1)));
         assert_eq!(menu.sel(), sel_for_targets(&menu.targets, 1));
+    }
+
+    /// `row_for_sub_target("track:N")` names the N-th TRACK row, never Off/Timing/Color: the
+    /// `subtitle_text_srt` manifest case once hard-coded row 3, which stopped being a track when
+    /// the panel's layout changed (it resolved to Color and committed nothing).
+    #[test]
+    fn row_for_sub_target_finds_track_rows_and_skips_off_timing_and_color() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = store_with(vec![
+            stream(1, 0, "English", "eng", "A"),
+            stream(2, 1, "French", "fra", "B"),
+        ]);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec![]);
+        let row_of = |t: RowTarget| menu.targets.iter().position(|x| *x == t).map(|r| r as c_int);
+        assert_eq!(menu.row_for_sub_target("track:0"), row_of(RowTarget::Sub(0)));
+        assert_eq!(menu.row_for_sub_target("track:1"), row_of(RowTarget::Sub(1)));
+        assert!(menu.row_for_sub_target("track:0").unwrap() >= 1, "row 0 is Off");
+        assert_eq!(menu.row_for_sub_target("track:2"), None, "past the last track");
+        assert_eq!(menu.row_for_sub_target("boost"), None);
+        assert_eq!(menu.row_for_sub_target("track:x"), None);
     }
 
     // ---- track_menu: sidecar, tone and Timing rows dispatch to their own outcomes -------------
