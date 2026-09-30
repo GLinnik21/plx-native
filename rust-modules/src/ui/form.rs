@@ -19,6 +19,17 @@
 //! picker lists reach past a hundred rows and a scan of that is cheaper than a hash; the
 //! operation-count test in `form_tests.rs` pins the bound.
 //!
+//! Three more things a declared row carries for pages that drill in (the player's track menu, and
+//! Settings pages 3-5 of the sequence): a [`RowKind::Nav`] row gets the drill-in chevron when it is
+//! built; a [`RowKind::Choice`] row declared with [`FormSection::choice`] derives its checkmark from
+//! a current-value predicate instead of a hand-set flag; and an item can be
+//! [`FormSection::disabled`] — drawn dim, still focusable (the viewer can land on it and read why),
+//! and never activated by [`FormTable::activate`], so OK and RIGHT cannot act on it and no caller
+//! carries its own guard. A table is (re)installed by one of FOUR operations — [`FormTable::set`]
+//! (Settings' snap), [`FormTable::open`], [`FormTable::refresh`], [`FormTable::restore`] — because
+//! "the page changed", "the same page's data changed" and "a page came back" want different scroll
+//! and pill behaviour. Design record: `docs/player-submenus.md`.
+//!
 //! Rendering is byte-identical to a hand-built `Vec<Section>`: [`Form`] produces exactly that list
 //! and hands it to the existing [`TableView`] path. Design record: `docs/settings-form.md`.
 
@@ -74,6 +85,8 @@ pub struct Binding<Id, A, Dest> {
     pub key: RowKey,
     pub kind: RowKind<Dest>,
     pub action: A,
+    /// Set by [`FormSection::disabled`]: [`FormTable::activate`] answers `None`.
+    pub disabled: bool,
 }
 
 enum Slot<Id, A, Dest> {
@@ -87,6 +100,9 @@ pub struct FormSection<Id, A, Dest> {
     head: Section,
     visible: bool,
     slots: Vec<Slot<Id, A, Dest>>,
+    /// The last declaration was an `_if` that held nothing back: a trailing [`Self::disabled`]
+    /// then refers to an item that does not exist and must not fall onto the one before it.
+    skipped: bool,
 }
 impl<Id, A, Dest> FormSection<Id, A, Dest> {
     pub fn new(header: impl Into<String>) -> Self {
@@ -99,7 +115,13 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
             head,
             visible: true,
             slots: Vec::new(),
+            skipped: false,
         }
+    }
+    /// The one place a slot is appended, so `skipped` cannot outlive the declaration it describes.
+    fn push(&mut self, slot: Slot<Id, A, Dest>) {
+        self.skipped = false;
+        self.slots.push(slot);
     }
     /// `false` drops the whole section (header included) from the built table.
     pub fn visible(mut self, v: bool) -> Self {
@@ -115,19 +137,39 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         action: A,
         row: Row,
     ) -> Self {
-        self.slots.push(Slot::Item(
+        // a drill-in row always reads as one: the chevron comes from the kind, never a second call
+        // (an explicit trailing icon the caller chose stays)
+        let row = match (&kind, row.ticon) {
+            (RowKind::Nav(_), None) => row.chevron(true),
+            _ => row,
+        };
+        self.push(Slot::Item(
             Binding {
                 id,
                 key,
                 kind,
                 action,
+                disabled: false,
             },
             row,
         ));
         self
     }
+    /// Mark the item just declared DISABLED when `cond` holds: drawn dim ([`Row::dim`]), still
+    /// focusable, and never activated ([`FormTable::activate`] answers `None` for OK and RIGHT
+    /// alike). A no-op when the last slot is not an item, and when the last declaration was an
+    /// [`Self::item_if`] / [`Self::item_keyed_if`] that was skipped: `.item_if(false, …)
+    /// .disabled(true)` ("dim it during this state") must not dim the row BEFORE the one that was
+    /// never declared.
+    pub fn disabled(mut self, cond: bool) -> Self {
+        if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
+            b.disabled = true;
+            row.dim = true;
+        }
+        self
+    }
     pub fn item_keyed_if(
-        self,
+        mut self,
         cond: bool,
         id: Id,
         key: RowKey,
@@ -138,17 +180,18 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         if cond {
             self.item_keyed(id, key, kind, action, row)
         } else {
+            self.skipped = true;
             self
         }
     }
     /// The grouping hairline: consumes a layout index, never focusable, never bound.
     pub fn separator(mut self) -> Self {
-        self.slots.push(Slot::Inert(Row::separator()));
+        self.push(Slot::Inert(Row::separator()));
         self
     }
     /// A one-line informational note: consumes a layout index, never focusable, never bound.
     pub fn note(mut self, text: impl Into<String>) -> Self {
-        self.slots.push(Slot::Inert(Row::note(text)));
+        self.push(Slot::Inert(Row::note(text)));
         self
     }
 }
@@ -158,11 +201,19 @@ impl<Id: FormId, A, Dest> FormSection<Id, A, Dest> {
         let key = id.key();
         self.item_keyed(id, key, kind, action, row)
     }
+    /// A [`RowKind::Choice`] row whose checkmark is derived, not hand-set: it is checked when
+    /// `is_current(&id)` holds, so a picker declares its rows once and passes the page's current
+    /// value as a predicate at build.
+    pub fn choice(self, id: Id, action: A, row: Row, is_current: impl Fn(&Id) -> bool) -> Self {
+        let row = row.checked(is_current(&id));
+        self.item(id, RowKind::Choice, action, row)
+    }
     /// [`Self::item`] when `cond` holds, else nothing.
-    pub fn item_if(self, cond: bool, id: Id, kind: RowKind<Dest>, action: A, row: Row) -> Self {
+    pub fn item_if(mut self, cond: bool, id: Id, kind: RowKind<Dest>, action: A, row: Row) -> Self {
         if cond {
             self.item(id, kind, action, row)
         } else {
+            self.skipped = true;
             self
         }
     }
@@ -242,8 +293,65 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// Selection: `keep` present in the new form keeps its row. A `keep` that vanished lands on the
     /// nearest surviving selectable row in the OLD order (the next one after it, else the previous).
     /// `keep == None` (or nothing survives) opens on [`TableView::opening_row`], so a menu never
-    /// starts on a destructive row.
+    /// starts on a destructive row. The pill snaps and the scroll returns to the top; for a page
+    /// that keeps its scroll use [`Self::refresh`], to reinstate a saved one [`Self::restore`].
     pub fn set(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>) {
+        let (sections, bindings) = self.check(form);
+        let landing = keep.and_then(|k| self.landing_for(k, &bindings));
+        self.bindings = bindings;
+        // snap, never glide: a rebuild re-derives the page, as the pre-form root did (`slide=false`)
+        match landing {
+            Some(i) => self.table.set_sections(sections, i as i32, false),
+            None => self.table.open_sections(sections),
+        }
+        self.reseat_after_install();
+    }
+
+    /// **Open** a page: snap the pill, scroll to the top and focus `initial` when the form has it,
+    /// else [`TableView::opening_row`] (never a destructive row). Unlike [`Self::set`] there is no
+    /// old order to fall back through: a page's initial focus is an explicit id the caller chose,
+    /// and a missing one is simply "no initial".
+    pub fn open(&mut self, form: Form<Id, A, Dest>, initial: Option<&Id>) {
+        let (sections, bindings) = self.check(form);
+        let at = initial.and_then(|id| Self::position_of(&bindings, id));
+        self.bindings = bindings;
+        match at {
+            Some(i) => self.table.set_sections(sections, i as i32, false),
+            None => self.table.open_sections(sections),
+        }
+        self.reseat_after_install();
+    }
+
+    /// **Refresh** the page in place: the same page whose data changed (a live poll added a row).
+    /// The scroll and the pill are kept, the selection is restored by the id it was on (falling
+    /// back through the old order as [`Self::set`] does) and the pill SLIDES to it, so a row
+    /// appearing above the viewer moves the highlight rather than teleporting it.
+    pub fn refresh(&mut self, form: Form<Id, A, Dest>) {
+        let (sections, bindings) = self.check(form);
+        let keep = self.selected_id().cloned();
+        let landing = keep.and_then(|k| self.landing_for(&k, &bindings));
+        self.bindings = bindings;
+        self.table.set_sections_or_open(sections, landing.map(|i| i as i32), true);
+        self.reseat_after_install();
+    }
+
+    /// **Restore** a saved view: the page returning from a drill-in. Selection snaps to `id` (else
+    /// [`TableView::opening_row`]) and the scroll is put back at `scroll` (see
+    /// [`TableView::scroll_pos`]), so the list comes back exactly as it was left.
+    pub fn restore(&mut self, form: Form<Id, A, Dest>, id: Option<&Id>, scroll: f32) {
+        let (sections, bindings) = self.check(form);
+        let at = id.and_then(|id| Self::position_of(&bindings, id));
+        self.bindings = bindings;
+        self.table.restore_sections(sections, at.map(|i| i as i32), scroll);
+        self.reseat_after_install();
+    }
+
+    fn position_of(new: &[Option<Binding<Id, A, Dest>>], id: &Id) -> Option<usize> {
+        new.iter().position(|b| b.as_ref().is_some_and(|b| &b.id == id))
+    }
+
+    /// Build the form and, in debug builds, assert its ids and keys are unique and below the ceiling.
+    fn check(&self, form: Form<Id, A, Dest>) -> (Vec<Section>, Vec<Option<Binding<Id, A, Dest>>>) {
         let (sections, bindings) = form.build();
         #[cfg(debug_assertions)]
         {
@@ -261,15 +369,12 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
                 }
             }
         }
-        let landing = keep.and_then(|k| self.landing_for(k, &bindings));
-        self.bindings = bindings;
-        // snap, never glide: a rebuild re-derives the page, as the pre-form root did (`slide=false`)
-        match landing {
-            Some(i) => self.table.set_sections(sections, i as i32, false),
-            None => self.table.open_sections(sections),
-        }
-        // The landing is by identity; the engine still holds the key it had. If that key no
-        // longer names the landed row (the row moved, or vanished), the landing wins.
+        (sections, bindings)
+    }
+
+    /// The landing is by identity; the engine still holds the key it had. If that key no longer
+    /// names the landed row (the row moved, or vanished), the landing wins.
+    fn reseat_after_install(&mut self) {
         let landed = self.selected_id();
         self.reseat = self.engine_key.and_then(|held| {
             let names = self.index_of_key(held).and_then(|i| self.id_at(i));
@@ -326,9 +431,9 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
             .and_then(|i| self.id_at(i))
     }
     /// What activating the row at `index` asks for: `Push(dest)` for a Nav item, else the action.
-    /// `None` for an inert slot or an index off the end.
+    /// `None` for an inert slot, an index off the end, or a [`FormSection::disabled`] item.
     pub fn activate(&self, index: usize) -> Option<Activation<A, Dest>> {
-        let b = self.binding(index)?;
+        let b = self.binding(index).filter(|b| !b.disabled)?;
         Some(match &b.kind {
             RowKind::Nav(d) => Activation::Push(d.clone()),
             _ => Activation::Action(b.action.clone()),

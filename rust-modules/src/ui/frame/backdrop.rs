@@ -1613,6 +1613,30 @@ mod tests {
         assert!(!surface(Rect::new(-100.0, -100.0, 10.0, 10.0)).unwrap().draw);
     }
 
+    /// A `ClipScope` (what `TableView::draw` opens) must reach the discovery walk's clip exactly as
+    /// `Painter::clip` does, and hand it back on drop.
+    #[test]
+    fn a_clip_scope_clips_the_discovery_walk_and_restores_it() {
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        for scoped in [true, false] {
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = crate::ui::Painter::root();
+                if scoped {
+                    let _clip = crate::ui::screen::ClipScope::open_in(p, Rect::new(0.0, 0.0, 5.0, 5.0));
+                    declare_glass(p, rect(100.0));
+                } else {
+                    declare_glass(p, rect(100.0));
+                }
+            }
+            sources.borrow_mut().resolve();
+            assert_eq!(sources.borrow().entries.is_empty(), scoped, "scoped={scoped}");
+            commit(&sources);
+        }
+    }
+
     #[test]
     fn an_asset_replaced_in_the_same_texture_name_changes_its_identity() {
         let _guard = crate::testlock::serial();

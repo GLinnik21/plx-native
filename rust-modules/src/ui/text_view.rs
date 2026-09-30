@@ -458,6 +458,12 @@ impl<'a> TextView<'a> {
         Wrapped { lines, widths, truncated }
     }
 
+    /// how many lines the text wraps to at `width` (at least 1) — the count [`Self::measure_h`]
+    /// multiplies by the pitch, for a caller that owns its own row height.
+    pub fn line_count(&self, width: f32) -> usize {
+        self.wrap(width).lines.len().max(1)
+    }
+
     /// the height this occupies when wrapped to `width` (line count × pitch).
     pub fn measure_h(&self, width: f32) -> f32 {
         self.wrap(width).lines.len().max(1) as f32 * self.line_h()

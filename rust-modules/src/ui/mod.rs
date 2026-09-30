@@ -131,8 +131,10 @@ static GUARD_RECOVERED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// covered by construction instead of by its author remembering.
 ///
 /// The `Err` arm **must** release the GL scissor. [`Painter::clip`] is global GL state that its
-/// user pairs with a [`Painter::clip_clear`] at the end of the same draw (`TableView::draw` is the
-/// one user today) — a panic between the two skips the clear, and every subsequent frame in the
+/// user pairs with a [`Painter::clip_clear`] at the end of the same draw (a bare pair is what
+/// `TableView::draw` used to be; it now holds a [`screen::ClipScope`], whose drop restores the
+/// enclosing scissor, but the argument below holds for any remaining bare pair) — a panic
+/// between the two skips the clear, and every subsequent frame in the
 /// process would then be silently scissored to whatever rect the dying screen last set, with
 /// nothing downstream able to tell why the UI went partly blank. This unwind is the only place
 /// that can see it happened, so this is the only place that can repair it.
