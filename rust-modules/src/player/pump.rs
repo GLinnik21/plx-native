@@ -701,6 +701,36 @@ fn rearm_carried_seek(carried: Option<i64>) {
     }
 }
 
+/// The shared shape of the two prepared-route tails: settle the action, cross or carry the seek,
+/// log the transition, run `reload`, re-arm the carried seek. `label` names the transition in the
+/// log and `detail` is anything it adds after the label.
+fn land_prepared_route(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    pending_seek: i64,
+    user_target: i64,
+    (label, detail): (&str, &str),
+    reload: impl FnOnce(&mut crate::route::PlaybackSession, &mut super::adapter::PlayerAdapter, i64) -> super::engine::ReloadOutcome,
+) {
+    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared) {
+        // A teardown or a fresh playback request superseded this action while the worker ran (see
+        // `finish_route_action`'s own doc on its `bool` return) — `ps` may already belong to a
+        // different item. Reloading onto it now would be exactly the corruption the mailbox-clearing
+        // fix exists to prevent.
+        super::log(&format!("route transition: {label} landing superseded; not reloading"));
+        return;
+    }
+    let carried_seek = commit_or_carry_seek(pending_seek);
+    super::log(&format!(
+        "route transition: {label}{detail} at {}s{}",
+        user_target / 1_000_000_000,
+        if pending_seek >= 0 { " + seek" } else { "" },
+    ));
+    settle_reload(reload(ps, pa, user_target), &format!("{label} reload"));
+    rearm_carried_seek(carried_seek);
+}
+
 /// A prepared transcode route: settle the action, cross the seek, reload onto it.
 fn retranscode_tail(
     ps: &mut crate::route::PlaybackSession,
@@ -709,25 +739,7 @@ fn retranscode_tail(
     pending_seek: i64,
     user_target: i64,
 ) {
-    let secs = user_target / 1_000_000_000;
-    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared) {
-        // A teardown or a fresh playback request superseded this action while the worker ran (see
-        // `finish_route_action`'s own doc on its `bool` return) — `ps` may already belong to a
-        // different item. Reloading onto it now would be exactly the corruption the mailbox-clearing
-        // fix exists to prevent.
-        super::log("route transition: user retranscode landing superseded; not reloading");
-        return;
-    }
-    let carried_seek = commit_or_carry_seek(pending_seek);
-    super::log(&format!(
-        "route transition: user retranscode at {secs}s{}",
-        if pending_seek >= 0 { " + seek" } else { "" },
-    ));
-    settle_reload(
-        super::engine::reload_transcode(ps, pa, user_target),
-        "user retranscode reload",
-    );
-    rearm_carried_seek(carried_seek);
+    land_prepared_route(ps, pa, action, pending_seek, user_target, ("user retranscode", ""), super::engine::reload_transcode);
 }
 
 /// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
@@ -739,21 +751,15 @@ fn native_audio_tail(
     user_target: i64,
 ) {
     let idx = SHARED.desired_audio_idx.load(Relaxed);
-    if !crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared) {
-        super::log("route transition: native audio landing superseded; not reloading");
-        return;
-    }
-    let carried_seek = commit_or_carry_seek(pending_seek);
-    super::log(&format!(
-        "route transition: native audio idx={idx} at {}s{}",
-        user_target / 1_000_000_000,
-        if pending_seek >= 0 { " + seek" } else { "" },
-    ));
-    settle_reload(
-        super::engine::switch_audio_native(ps, pa, idx, user_target),
-        "native audio reload",
+    land_prepared_route(
+        ps,
+        pa,
+        action,
+        pending_seek,
+        user_target,
+        ("native audio", &format!(" idx={idx}")),
+        |ps, pa, target| super::engine::switch_audio_native(ps, pa, idx, target),
     );
-    rearm_carried_seek(carried_seek);
 }
 
 /// A staged Original trial: its PendingOriginal already owns the phase, so there is no
@@ -1784,25 +1790,35 @@ mod tests {
         assert!(!rebuffer_request_is_current(false, 10_000, 10_000));
     }
 
+    /// Run one claim landing's seek settlement the way the tails do: the viewer pressed `pressed`
+    /// (if anything) during the flight, the claim was built with `pending_seek`, then the reload
+    /// resets the mailbox. Returns what was carried, the mailbox after the re-arm, and whether the
+    /// reducer still owed the seek intent.
+    fn run_carry(pending_seek: i64, pressed: Option<i64>) -> (Option<i64>, i64, bool) {
+        let _serial = crate::testlock::serial();
+        TX.reset();
+        crate::route::reject_user_seek();
+        if let Some(target) = pressed {
+            crate::route::note_user_seek_intent(target);
+            TX.seek_to_ns.store(target, Release);
+        }
+        let carried = commit_or_carry_seek(pending_seek);
+        TX.reset_for_reload();
+        rearm_carried_seek(carried);
+        let landed = TX.seek_to_ns.load(Relaxed);
+        let still_owed = crate::route::commit_user_seek();
+        TX.reset();
+        crate::route::reject_user_seek();
+        (carried, landed, still_owed)
+    }
+
     /// Finding: a seek pressed during a claim's flight, when NO seek was pending at claim time
     /// (`pending_seek < 0`), was dropped — `commit_or_carry_seek` returned `None` for every
     /// negative `pending_seek`, and the reload's `TX.reset_for_reload()` then cleared the press.
     #[test]
     fn a_seek_pressed_mid_flight_lands_after_the_reload_when_none_was_pending_at_claim_time() {
-        let _serial = crate::testlock::serial();
-        TX.reset();
-        crate::route::reject_user_seek();
         let target = 40_000_000_000;
-        crate::route::note_user_seek_intent(target);
-        TX.seek_to_ns.store(target, Release);
-
-        let carried = commit_or_carry_seek(-1);
-        TX.reset_for_reload();
-        rearm_carried_seek(carried);
-        let landed = TX.seek_to_ns.load(Relaxed);
-        let intent_still_owed = crate::route::commit_user_seek();
-        TX.reset();
-        crate::route::reject_user_seek();
+        let (_, landed, intent_still_owed) = run_carry(-1, Some(target));
         assert_eq!(landed, target, "the mid-flight seek was cleared by the reload instead of carried");
         assert!(intent_still_owed, "the seek intent stays owed for the pump's own seek branch to commit");
     }
@@ -1810,19 +1826,7 @@ mod tests {
     /// A seek pressed AFTER the claim captured an older one supersedes it: carried, not committed.
     #[test]
     fn a_fresher_seek_than_the_claims_is_carried_past_the_reload() {
-        let _serial = crate::testlock::serial();
-        TX.reset();
-        crate::route::reject_user_seek();
-        crate::route::note_user_seek_intent(50_000_000_000);
-        TX.seek_to_ns.store(50_000_000_000, Release);
-
-        let carried = commit_or_carry_seek(30_000_000_000);
-        TX.reset_for_reload();
-        rearm_carried_seek(carried);
-        let landed = TX.seek_to_ns.load(Relaxed);
-        let owed = crate::route::commit_user_seek();
-        TX.reset();
-        crate::route::reject_user_seek();
+        let (_, landed, owed) = run_carry(30_000_000_000, Some(50_000_000_000));
         assert_eq!(landed, 50_000_000_000);
         assert!(owed);
     }
@@ -1831,20 +1835,8 @@ mod tests {
     /// the intent is committed (settled) rather than carried.
     #[test]
     fn the_claims_own_seek_is_committed_not_carried() {
-        let _serial = crate::testlock::serial();
-        TX.reset();
-        crate::route::reject_user_seek();
         let target = 30_000_000_000;
-        crate::route::note_user_seek_intent(target);
-        TX.seek_to_ns.store(target, Release);
-
-        let carried = commit_or_carry_seek(target);
-        TX.reset_for_reload();
-        rearm_carried_seek(carried);
-        let landed = TX.seek_to_ns.load(Relaxed);
-        let still_owed = crate::route::commit_user_seek();
-        TX.reset();
-        crate::route::reject_user_seek();
+        let (carried, landed, still_owed) = run_carry(target, Some(target));
         assert_eq!(carried, None);
         assert_eq!(landed, -1, "nothing is re-armed: the reload lands AT the claim's target");
         assert!(!still_owed, "the exact-match commit settled the intent");
@@ -1853,10 +1845,8 @@ mod tests {
     /// No seek anywhere: nothing to carry, nothing to commit.
     #[test]
     fn no_seek_at_all_carries_nothing() {
-        let _serial = crate::testlock::serial();
-        TX.reset();
-        crate::route::reject_user_seek();
-        assert_eq!(commit_or_carry_seek(-1), None);
-        assert!(!crate::route::commit_user_seek());
+        let (carried, _, still_owed) = run_carry(-1, None);
+        assert_eq!(carried, None);
+        assert!(!still_owed);
     }
 }

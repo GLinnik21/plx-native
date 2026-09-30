@@ -167,14 +167,8 @@ fn claim(ps: &mut PlaybackSession) -> (ClaimedRouteAction, ClaimTail) {
                 // test already drives, then apply it exactly as `take_ready_retranscode_claim`
                 // would.
                 RetranscodeClaimDispatch::Pending => {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    loop {
-                        if let Some((_, tail, _, _)) = take_ready_retranscode_claim(ps) {
-                            break tail;
-                        }
-                        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+                    let (_, tail, ..) = await_landing(ps, "retranscode claim worker never landed");
+                    tail
                 }
             }
         }
@@ -286,6 +280,16 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
+/// Drain a claim worker's landing the way the pump does on a later frame, waiting for it to post.
+fn await_landing(ps: &mut PlaybackSession, what: &str) -> (ClaimedRouteAction, ClaimTail, i64, i64) {
+    let mut landed = None;
+    wait_until(what, || {
+        landed = take_ready_retranscode_claim(ps);
+        landed.is_some()
+    });
+    landed.expect("wait_until returns only once a landing was drained")
+}
+
 fn landing_posted() -> bool {
     RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
@@ -363,14 +367,7 @@ fn claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pic
     // still waiting on the (deliberately slow) `/decision` response.
     begin_engine_teardown(true);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (action, tail, ..) = loop {
-        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
-            break landing;
-        }
-        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let (action, tail, ..) = await_landing(&mut ps, "retranscode claim worker never landed");
     assert!(
         matches!(tail, ClaimTail::Rejected(_)),
         "a ticket invalidated mid-flight must discard the claim, got {tail:?}",
@@ -391,14 +388,8 @@ fn claim_ticket_invalidated_while_worker_in_flight_is_discarded_then_a_fresh_pic
     let tail2 = match dispatch2 {
         RetranscodeClaimDispatch::Sync(tail) => tail,
         RetranscodeClaimDispatch::Pending => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                if let Some((_, tail, _, _)) = take_ready_retranscode_claim(&mut ps) {
-                    break tail;
-                }
-                assert!(std::time::Instant::now() < deadline, "second worker never landed");
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            let (_, tail, ..) = await_landing(&mut ps, "second worker never landed");
+            tail
         }
     };
     assert_eq!(tail2, ClaimTail::Retranscode, "the second, current pick must still apply");
@@ -627,14 +618,7 @@ fn claim_frees_the_frame_thread_pms_call_runs_on_a_worker() {
     // The worker landed on its own thread (FrameScope's depth is thread-local and starts at 0
     // there), so it was free to block on the loopback fixture; the frame thread above never did.
     // Drain the mailbox exactly the way the pump does on a later frame.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (action, tail, ..) = loop {
-        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
-            break landing;
-        }
-        assert!(std::time::Instant::now() < deadline, "retranscode claim worker never landed");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let (action, tail, ..) = await_landing(&mut ps, "retranscode claim worker never landed");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
@@ -645,7 +629,7 @@ fn claim_frees_the_frame_thread_pms_call_runs_on_a_worker() {
 
 /// A refused spawn (the OS could not create the worker thread) must settle exactly like a
 /// refused decision: `ControlPhase` returns to `Stable` and the session is untouched, never left
-/// stuck in `Applying` forever. `force_next_retranscode_spawn_refusal` is a test-only seam
+/// stuck in `Applying` forever. `Fault::SpawnRefusal` is a test-only seam
 /// (`spawn_small`'s stack size is fixed, so the `unsatisfiable stack` trick `task::tests` uses is
 /// not reachable here) that makes `spawn_retranscode_claim` report refusal without actually
 /// spawning — see its doc comment in `route::decision` for why this mirrors
@@ -659,7 +643,7 @@ fn a_refused_spawn_settles_like_a_refused_decision_not_a_stuck_applying() {
     assert!(toggle(&mut ps, PREF));
     let action = claim_route_action().expect("a queued user action");
 
-    force_next_retranscode_spawn_refusal();
+    inject_next_fault(Fault::SpawnRefusal);
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     let tail = match dispatch {
         RetranscodeClaimDispatch::Sync(tail) => tail,
@@ -1858,14 +1842,8 @@ fn legacy_primary_rejection_keeps_the_legacy_rejected_label() {
     let tail = match dispatch {
         RetranscodeClaimDispatch::Sync(tail) => tail,
         RetranscodeClaimDispatch::Pending => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                if let Some((_, tail, _, _)) = take_ready_retranscode_claim(&mut ps) {
-                    break tail;
-                }
-                assert!(std::time::Instant::now() < deadline, "worker never landed");
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            let (_, tail, ..) = await_landing(&mut ps, "worker never landed");
+            tail
         }
     };
     assert_eq!(
@@ -1897,16 +1875,7 @@ fn commit_track_inside_a_frame_does_not_trip_the_blocking_guard() {
     let _frame = crate::task::FrameScope::enter();
     commit_audio_selection(&mut ps, a3()); // native pick: PUT must not run inline here
     drop(_frame);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let idle = !SELECTION_WORKER_RUNNING.load(Ordering::Acquire)
-            && SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if idle {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "selection worker never drained");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    wait_until("the selection worker to drain", selection_queue_idle);
     let requests = live.finish();
     assert!(
         requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "audioStreamID") == Some("13")),
@@ -1929,18 +1898,11 @@ fn a_worker_panic_still_releases_applying_instead_of_hanging_forever() {
     install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
     assert!(toggle(&mut ps, PREF));
     let action = claim_route_action().expect("a queued user action");
-    force_next_retranscode_worker_panic();
+    inject_next_fault(Fault::WorkerPanic);
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (action, tail, ..) = loop {
-        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
-            break landing;
-        }
-        assert!(std::time::Instant::now() < deadline, "a panicked worker left Applying stuck");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let (action, tail, ..) = await_landing(&mut ps, "a panicked worker left Applying stuck");
     assert_eq!(tail, ClaimTail::Rejected(RETRANSCODE_WORKER_PANICKED));
     settle(&mut ps, &action, tail);
     assert_eq!(phase(), ControlPhase::Stable, "the panic must still release the reducer");
@@ -1984,14 +1946,7 @@ fn a_second_edit_queued_mid_flight_does_not_get_marked_as_the_first_claims_landi
     let second_revision = desired_contract_revision();
     assert_ne!(first_revision, second_revision, "the second edit really did advance the contract");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (action, tail, ..) = loop {
-        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
-            break landing;
-        }
-        assert!(std::time::Instant::now() < deadline, "first claim worker never landed");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let (action, tail, ..) = await_landing(&mut ps, "first claim worker never landed");
     assert_eq!(tail, ClaimTail::Retranscode, "the first claim's own attempt still applies");
     settle(&mut ps, &action, tail);
     assert_eq!(
@@ -2024,12 +1979,7 @@ fn a_rejected_claim_after_an_accepted_one_restores_the_stream_that_plays() {
         execute_retranscode_claim(&mut ps, &claimed, 60, -1, 0),
         RetranscodeClaimDispatch::Pending
     ));
-    let mut landed = None;
-    wait_until("the worker's landing", || {
-        landed = take_ready_retranscode_claim(&mut ps);
-        landed.is_some()
-    });
-    let (action, tail, ..) = landed.unwrap();
+    let (action, tail, ..) = await_landing(&mut ps, "the worker's landing");
     assert_eq!(tail, ClaimTail::Retranscode);
     settle(&mut ps, &action, tail);
     let (live_url, live_tsession) = (ps.url.clone(), ps.tsession.clone());
@@ -2070,12 +2020,7 @@ fn a_rejected_claim_after_a_native_audio_landing_restores_the_codec_that_plays()
         execute_retranscode_claim(&mut ps, &claimed, 60, -1, 0),
         RetranscodeClaimDispatch::Pending
     ));
-    let mut landed = None;
-    wait_until("the worker's landing", || {
-        landed = take_ready_retranscode_claim(&mut ps);
-        landed.is_some()
-    });
-    let (action, tail, ..) = landed.unwrap();
+    let (action, tail, ..) = await_landing(&mut ps, "the worker's landing");
     assert_eq!(tail, ClaimTail::NativeAudio, "the primary was refused and the pick runs natively");
     assert_eq!(ps.stream_acodec, "eac3");
     settle(&mut ps, &action, tail);
@@ -2126,8 +2071,8 @@ fn the_replaced_encoder_stays_alive_until_the_landing_is_installed() {
 }
 
 /// Finding: an engine failure (`load_failed` / `demux_io_failed` / `demux_failed`) while a claim's
-/// worker owned `Applying` was only RECORDED (`deferred_engine_failure`) for `finish_route_action`
-/// to publish — but the pump returns on the failure before it ever drains the landing, so the phase
+/// worker owned `Applying` was only RECORDED for `finish_route_action` to publish — but the pump
+/// returns on the failure before it ever drains the landing, so the phase
 /// stayed `Applying`, `claim_hold::active()` stayed true and `state()` drew the Buffering spinner
 /// forever instead of the error read-out.
 #[test]
@@ -2242,7 +2187,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
         },
         pending_seek: -1,
         user_target: 0,
-        result: RetranscodeClaimResult::Retranscode {
+        result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
             qsess: qsess.to_owned(),
             url: String::new(),
             vcodec: "hevc".into(),
@@ -2252,13 +2197,12 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
             ticket,
             client,
             superseded: String::new(),
-        },
+        }),
     };
 
     // Arm 1: the phase is no longer `Applying(serial)` (a teardown/new request superseded it).
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
-    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(landing("stale-phase-session", worker_ticket(), 1));
+    post_claim_landing(landing("stale-phase-session", worker_ticket(), 1));
     {
         let _frame = crate::task::FrameScope::enter();
         assert!(take_ready_retranscode_claim(&mut ps).is_none());
@@ -2270,8 +2214,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
     let stale = replace_active_encoder_for(&starting, "stale-ticket-session").expect("commit");
     replace_active_encoder_for(&stale, "concurrent-abr-session").expect("concurrent commit");
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(2);
-    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(landing("stale-ticket-session", stale, 2));
+    post_claim_landing(landing("stale-ticket-session", stale, 2));
     {
         let _frame = crate::task::FrameScope::enter();
         let (_, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing posted above");
@@ -2310,14 +2253,7 @@ fn transcode_seek_refuses_while_an_unrelated_claim_is_in_flight() {
         "a seek reaching in during another claim's flight must be refused, not silently corrupt it",
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (action, tail, ..) = loop {
-        if let Some(landing) = take_ready_retranscode_claim(&mut ps) {
-            break landing;
-        }
-        assert!(std::time::Instant::now() < deadline, "claim worker never landed");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let (action, tail, ..) = await_landing(&mut ps, "claim worker never landed");
     assert_eq!(tail, ClaimTail::Retranscode, "the seek attempt above must not have disturbed it");
     settle(&mut ps, &action, tail);
     assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
@@ -2367,11 +2303,11 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
         claim_snapshot: None,
     };
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(action.serial);
-    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(RetranscodeClaimLanding {
+    post_claim_landing(RetranscodeClaimLanding {
         action: action.clone(),
         pending_seek: -1,
         user_target: 0,
-        result: RetranscodeClaimResult::Retranscode {
+        result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
             qsess: "leaked-worker-session".to_string(),
             url: format!(
                 "http://127.0.0.1:{}/video/:/transcode/universal/start.mkv?session=leaked-worker-session",
@@ -2384,7 +2320,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
             ticket: leaked_ticket,
             client: cur_client(&ps).expect("install() registered this session's server"),
             superseded: String::new(),
-        },
+        }),
     });
 
     let before_tsession = ps.tsession.clone();
@@ -2440,16 +2376,7 @@ fn a_deferred_audio_pick_replayed_from_settle_route_start_does_not_trip_the_bloc
     assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
     drop(_frame);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let idle = !SELECTION_WORKER_RUNNING.load(Ordering::Acquire)
-            && SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if idle {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "selection worker never drained");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    wait_until("the selection worker to drain", selection_queue_idle);
     let requests = live.finish();
     assert!(
         requests.iter().any(|r| r.starts_with("PUT") && query_param(r, "audioStreamID") == Some("13")),

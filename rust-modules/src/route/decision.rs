@@ -751,12 +751,6 @@ impl ClaimedRouteAction {
     }
 }
 
-/// Whether the claim with this serial is still the one `ControlPhase` is waiting on: false after a
-/// teardown, a fresh playback request or its own settlement.
-pub(crate) fn claim_is_applying(serial: u64) -> bool {
-    control_phase_is_applying(serial)
-}
-
 /// See [`ClaimedRouteAction::claim_snapshot`]. `projection` is intentionally not `Debug` (it embeds
 /// [`AutoOriginalCandidate`], which carries no derive) — the manual impl below reports the two
 /// scalar fields, which are what a log line about a stale claim actually wants.
@@ -2008,10 +2002,11 @@ pub(crate) fn claim_in_flight() -> bool {
 }
 
 /// Whether `ControlPhase` is still `Applying(serial)` for exactly this serial — the "owns" check a
-/// worker landing must pass before it may touch `PlaybackSession`. A landing for a superseded
-/// serial (teardown, a fresh playback request, or a later claim already in flight) must be
-/// dropped rather than applied; see `take_ready_retranscode_claim`.
-fn control_phase_is_applying(serial: u64) -> bool {
+/// worker landing must pass before it may touch `PlaybackSession`, and the player's presentation
+/// hold's test that its claim is still flying. False after a teardown, a fresh playback request or
+/// the claim's own settlement: a landing for a superseded serial (or a later claim already in
+/// flight) must be dropped rather than applied; see `take_ready_retranscode_claim`.
+pub(crate) fn claim_is_applying(serial: u64) -> bool {
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase == ControlPhase::Applying(serial)
 }
 
@@ -3345,9 +3340,7 @@ pub(crate) fn fallback_auto_to_hls_for(
 ) -> Option<String> {
     // Frame-thread PMS I/O, out of scope for this change (see `execute_retranscode_claim`'s doc):
     // the automatic ABR watchdog's own encoder rebuild, same call graph as `transcode_seek`'s.
-    let _block = crate::task::allow_blocking(
-        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
-    );
+    let _block = pending_split_block();
     if forced_direct_play(ps) { return None; }
     if !is_worker_ticket_current(expected) {
         return None;
@@ -3593,9 +3586,7 @@ pub(crate) fn recover_auto_to_original_for(
     // whether this call came from the user claim path, the automatic ABR watchdog, or a plain
     // seek. This guard is per-call, not per-caller, so it covers all three without duplicating it
     // at each call site.
-    let _block = crate::task::allow_blocking(
-        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
-    );
+    let _block = pending_split_block();
     let automatic = cause == RecoveryCause::Automatic;
     if forced_direct_play(ps) { return None; }
     // One handoff owns both the unproven replacement and the retained client-side HLS route until
@@ -4247,21 +4238,17 @@ fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
         return;
     }
     let Some(client) = cur_client(ps) else { return };
-    let worker = encoder.clone();
-    if crate::task::spawn_small_keeping("abr-original-stop", move || {
-        let ok = client.transcode_stop(&worker);
-        crate::player::log(&format!(
-            "abr: retired superseded encoder after Original handoff ok={}",
-            ok as i32
-        ));
-    })
-    .is_none()
-    {
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
-        );
-        let _ = client.transcode_stop(&encoder);
-    }
+    stop_encoder_off_thread(
+        "abr-original-stop",
+        const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        move || {
+            let ok = client.transcode_stop(&encoder);
+            crate::player::log(&format!(
+                "abr: retired superseded encoder after Original handoff ok={}",
+                ok as i32
+            ));
+        },
+    );
 }
 
 /// The raw Part already exact-reuses `encoder`'s Streaming Resource. Stop only the physical HLS
@@ -4272,21 +4259,17 @@ fn retire_hls_encoder_keep_source(ps: &PlaybackSession, encoder: String) {
         return;
     }
     let Some(client) = cur_client(ps) else { return };
-    let worker = encoder.clone();
-    if crate::task::spawn_small_keeping("abr-original-physical-stop", move || {
-        let ok = client.transcode_stop_physical(&worker);
-        crate::player::log(&format!(
-            "abr: stopped HLS encoder while retaining Original resource ok={}",
-            ok as i32
-        ));
-    })
-    .is_none()
-    {
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
-        );
-        let _ = client.transcode_stop_physical(&encoder);
-    }
+    stop_encoder_off_thread(
+        "abr-original-physical-stop",
+        const { &crate::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
+        move || {
+            let ok = client.transcode_stop_physical(&encoder);
+            crate::player::log(&format!(
+                "abr: stopped HLS encoder while retaining Original resource ok={}",
+                ok as i32
+            ));
+        },
+    );
 }
 /// true while this playback is a server transcode (a live transcode session exists). Cheap
 /// in-place check — the pump polls it every tick, so no String clone here.
@@ -5036,9 +5019,7 @@ pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Opti
     // Frame-thread PMS I/O, out of scope for this change (see `execute_retranscode_claim`'s doc):
     // a seek during transcode rebuilds the physical encoder synchronously, same as the automatic
     // ABR watchdog's own call into `retranscode_as`.
-    let _block = crate::task::allow_blocking(
-        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
-    );
+    let _block = pending_split_block();
     if forced_direct_play(ps) { return None; }
     if transcode_session(ps).is_empty() {
         return None;
@@ -5806,9 +5787,28 @@ struct QueuedSelection {
     sub: i64,
 }
 
-static SELECTION_QUEUE: std::sync::Mutex<std::collections::VecDeque<QueuedSelection>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
-static SELECTION_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+/// The pending selection PUTs and whether a worker is draining them. One lock covers both, so the
+/// worker deciding to exit and a `queue_put_selection` deciding whether to spawn one cannot
+/// interleave: either the push lands before the worker's final empty check, or it sees the worker
+/// already gone and spawns its own.
+struct SelectionQueue {
+    pending: std::collections::VecDeque<QueuedSelection>,
+    worker_running: bool,
+}
+
+static SELECTION_QUEUE: std::sync::Mutex<SelectionQueue> =
+    std::sync::Mutex::new(SelectionQueue { pending: std::collections::VecDeque::new(), worker_running: false });
+
+fn selection_queue() -> std::sync::MutexGuard<'static, SelectionQueue> {
+    SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Test-only: every queued PUT has been sent and no worker is still draining.
+#[cfg(test)]
+fn selection_queue_idle() -> bool {
+    let queue = selection_queue();
+    !queue.worker_running && queue.pending.is_empty()
+}
 
 /// Same PUT as [`put_selection`], run on a worker instead of the frame thread
 /// (`commit_audio_selection`/`commit_subtitle_selection` are both reached from
@@ -5821,32 +5821,27 @@ pub(super) fn queue_put_selection(sid: ServerId, part: i64, aud: i64, sub: i64) 
     if part <= 0 {
         return;
     }
-    SELECTION_QUEUE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push_back(QueuedSelection { sid, part, aud, sub });
-    if !SELECTION_WORKER_RUNNING.swap(true, Ordering::AcqRel) {
+    let spawn = {
+        let mut queue = selection_queue();
+        queue.pending.push_back(QueuedSelection { sid, part, aud, sub });
+        !std::mem::replace(&mut queue.worker_running, true)
+    };
+    if spawn {
         spawn_selection_worker();
     }
 }
 
 fn spawn_selection_worker() {
     let spawned = crate::task::spawn_small("put-selection", || loop {
-        let next = SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
-        let Some(req) = next else {
-            // Nothing left right now. Publish that before re-checking, so a `queue_put_selection`
-            // racing this exact instant either sees the flag still down (and spawns a fresh worker
-            // of its own) or loses the swap below to this loop picking its request back up — either
-            // way the request is not stranded.
-            SELECTION_WORKER_RUNNING.store(false, Ordering::Release);
-            if SELECTION_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        let req = {
+            let mut queue = selection_queue();
+            let Some(req) = queue.pending.pop_front() else {
+                // Nothing left: retire under the same lock the push takes, so a racing
+                // `queue_put_selection` either pushed before this check or spawns a fresh worker.
+                queue.worker_running = false;
                 break;
-            }
-            if SELECTION_WORKER_RUNNING.swap(true, Ordering::AcqRel) {
-                // Someone else already relaunched a worker for what's left.
-                break;
-            }
-            continue;
+            };
+            req
         };
         put_selection(req.sid, req.part, req.aud, req.sub);
     });
@@ -5854,7 +5849,7 @@ fn spawn_selection_worker() {
         // The OS refused the thread. Drop the running flag so a later `queue_put_selection` gets a
         // chance to retry, rather than leaving every future selection stranded in the queue behind
         // a flag nobody will ever clear.
-        SELECTION_WORKER_RUNNING.store(false, Ordering::Release);
+        selection_queue().worker_running = false;
     }
 }
 
@@ -7124,27 +7119,34 @@ struct RetranscodeClaimInputs {
     carried_audio: Option<CarriedAudio>,
 }
 
+/// What one accepted `/decision` attempt produced: the session the worker started and committed
+/// as the route's encoder, and everything the main thread needs to install, retire or discard it.
+struct AppliedRetranscode {
+    qsess: String,
+    url: String,
+    vcodec: String,
+    acodec: String,
+    contract: crate::plex::EncodeContract,
+    enhancement: EnhancementOutcome,
+    /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
+    /// worker actually committed the route. `take_ready_retranscode_claim` re-checks it against
+    /// the CURRENT route before applying: the worker's own ticket check ran before this commit,
+    /// so a route change landing in the gap between the commit and the main thread draining the
+    /// mailbox would otherwise go unnoticed.
+    ticket: WorkerTicket,
+    /// The server that owns `qsess`, so a landing discarded as stale
+    /// ([`discard_retranscode_claim_slot`]) can stop the session it just started.
+    client: &'static crate::plex::Client,
+    /// The encoder session the route was playing before this attempt replaced it (empty when
+    /// there was none). NOT stopped by the attempt: the stream it feeds is still the one on
+    /// screen until the landing reloads, so the caller retires it only after that reload
+    /// (see [`retire_superseded_encoder`]).
+    superseded: String,
+}
+
 /// What one `/decision` attempt produced.
 enum RetranscodeWorkerOutcome {
-    Applied {
-        qsess: String,
-        url: String,
-        vcodec: String,
-        acodec: String,
-        contract: crate::plex::EncodeContract,
-        enhancement: EnhancementOutcome,
-        /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
-        /// worker actually committed the route. `take_ready_retranscode_claim` re-checks it against
-        /// the CURRENT route before applying: the worker's own ticket check ran before this commit,
-        /// so a route change landing in the gap between the commit and the main thread draining the
-        /// mailbox would otherwise go unnoticed.
-        ticket: WorkerTicket,
-        /// The encoder session the route was playing before this attempt replaced it (empty when
-        /// there was none). NOT stopped by the attempt: the stream it feeds is still the one on
-        /// screen until the landing reloads, so the caller retires it only after that reload
-        /// (see [`retire_superseded_encoder`]).
-        superseded: String,
-    },
+    Applied(AppliedRetranscode),
     Refused,
 }
 
@@ -7182,8 +7184,19 @@ fn retranscode_fallback_codecs(
     }
 }
 
-/// One `put_selection` + `/decision` attempt, gated on `inputs.expected` throughout — the exact
-/// network body `retranscode_as` used to run inline on the frame thread. Pure with respect to
+/// The PUT that drives the encode and the burn, sent once per claim BEFORE its first
+/// [`try_retranscode`] attempt: every attempt of a claim shares `inputs`, so a fallback attempt
+/// would send the identical PUT again. Skipped for a stale ticket, exactly as the attempt's own
+/// gate refuses to start.
+fn select_streams_for_encode(inputs: &RetranscodeClaimInputs) {
+    if is_worker_ticket_current(&inputs.expected) {
+        put_selection(inputs.sid, inputs.part_id, inputs.audio_sid, inputs.subtitle_sid);
+    }
+}
+
+/// One `/decision` attempt, gated on `inputs.expected` throughout — the network body
+/// `retranscode_as` used to run inline on the frame thread, less the selection PUT
+/// ([`select_streams_for_encode`]). Pure with respect to
 /// `PlaybackSession` (never sees one): everything it needs is in `inputs`/`contract`, and
 /// everything it decides is returned rather than written, so it may run on
 /// [`crate::task::spawn_small`] as well as synchronously.
@@ -7198,7 +7211,6 @@ fn try_retranscode(
         delivery, ceiling, audio, ..
     } = contract;
     let (fallback_vcodec, fallback_acodec) = retranscode_fallback_codecs(inputs, &contract);
-    put_selection(inputs.sid, inputs.part_id, inputs.audio_sid, inputs.subtitle_sid); // drives encode + burn
     let qsess = next_encoder_session(&inputs.namespace);
     let sp = transcode_spec(
         &inputs.rk,
@@ -7264,7 +7276,7 @@ fn try_retranscode(
         "retranscode rk={} audio={} sub={} offset={} -> transcode start",
         inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    RetranscodeWorkerOutcome::Applied {
+    RetranscodeWorkerOutcome::Applied(AppliedRetranscode {
         qsess,
         url,
         vcodec: output_codecs.0,
@@ -7272,8 +7284,9 @@ fn try_retranscode(
         contract,
         enhancement,
         ticket: replacement_ticket,
+        client: inputs.client,
         superseded,
-    }
+    })
 }
 
 /// Snapshot everything [`try_retranscode`] needs off `ps`, or `None` for exactly the reasons
@@ -7314,24 +7327,16 @@ fn prepare_retranscode_inputs(
 }
 
 /// The fields a successful attempt changes, on a projection rather than on the session: the one
-/// list [`install_retranscode_outcome`] writes to `ps` AND [`take_ready_retranscode_claim`] writes
-/// to the claim's snapshot, so the reducer's restore point can never describe a stream the claim
-/// already replaced.
-fn apply_retranscode_outcome_to_projection(
-    p: &mut AppliedRouteProjection,
-    qsess: String,
-    url: String,
-    vcodec: String,
-    acodec: String,
-    contract: crate::plex::EncodeContract,
-    enhancement: EnhancementOutcome,
-) {
-    p.contract = contract;
-    p.enhancement = enhancement;
-    p.tsession = qsess;
-    p.url = url;
-    p.stream_vcodec = vcodec;
-    p.stream_acodec = acodec;
+/// list [`install_retranscode_outcome`] writes to `ps` AND [`advance_claim_snapshot`] writes to the
+/// claim's snapshot, so the reducer's restore point can never describe a stream the claim already
+/// replaced.
+fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjection, applied: &AppliedRetranscode) {
+    p.contract = applied.contract;
+    p.enhancement = applied.enhancement;
+    p.tsession = applied.qsess.clone();
+    p.url = applied.url.clone();
+    p.stream_vcodec = applied.vcodec.clone();
+    p.stream_acodec = applied.acodec.clone();
     p.stream_fps = 0.0;
     p.stream_dovi = crate::metadata::Dovi::NONE;
     p.stream_dv_decision = crate::metadata::DvDecision::NONE;
@@ -7342,17 +7347,9 @@ fn apply_retranscode_outcome_to_projection(
 /// `cur_enhancement` only after PMS accepted it — the applied enhancement is never written at the
 /// selection (I9) — same rule `retranscode_as` always followed, now shared by the sync and worker
 /// paths.
-fn install_retranscode_outcome(
-    ps: &mut PlaybackSession,
-    qsess: String,
-    url: String,
-    vcodec: String,
-    acodec: String,
-    contract: crate::plex::EncodeContract,
-    enhancement: EnhancementOutcome,
-) {
+fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &AppliedRetranscode) {
     let mut projection = route_projection(ps);
-    apply_retranscode_outcome_to_projection(&mut projection, qsess, url, vcodec, acodec, contract, enhancement);
+    apply_retranscode_outcome_to_projection(&mut projection, applied);
     install_route_projection(ps, &projection);
     let s = &*ps;
     // Logged HERE, where the outcome actually becomes the session's, and not in the worker: a
@@ -7360,9 +7357,19 @@ fn install_retranscode_outcome(
     // that never took effect.
     log_enhancement_outcome(
         Some((s.stream_vcodec.as_str(), s.stream_acodec.as_str())),
-        enhancement,
-        contract.audio,
+        applied.enhancement,
+        applied.contract.audio,
     );
+}
+
+/// Frame-thread PMS I/O which has not moved to a worker yet: the automatic ABR watchdog's encoder
+/// rebuild, a seek during a transcode, the Original recovery's admission probe. A deliberate,
+/// labelled exception to the frame-thread blocking guard, not a fresh regression; see
+/// [`execute_retranscode_claim`]'s doc for what did move.
+fn pending_split_block() -> crate::task::AllowBlocking {
+    crate::task::allow_blocking(
+        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+    )
 }
 
 /// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
@@ -7378,18 +7385,17 @@ fn retranscode_as(
 ) -> Option<String> {
     let inputs = prepare_retranscode_inputs(ps, expected, offset_secs)?;
     let outcome = {
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
-        );
+        let _block = pending_split_block();
+        select_streams_for_encode(&inputs);
         try_retranscode(&inputs, contract)
     };
     match outcome {
-        RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, superseded, .. } => {
-            install_retranscode_outcome(ps, qsess, url.clone(), vcodec, acodec, contract, enhancement);
+        RetranscodeWorkerOutcome::Applied(applied) => {
+            install_retranscode_outcome(ps, &applied);
             // The caller reloads onto the new stream next; the old encoder is stopped without
             // waiting for PMS to answer, as `retranscode_as` always did.
-            stop_encoder_session(inputs.client, superseded);
-            Some(url)
+            stop_encoder_session(applied.client, applied.superseded);
+            Some(applied.url)
         }
         RetranscodeWorkerOutcome::Refused => None,
     }
@@ -7744,23 +7750,7 @@ enum RetranscodeFallback {
 
 /// The worker's verdict, applied to `PlaybackSession` by [`take_ready_retranscode_claim`].
 enum RetranscodeClaimResult {
-    Retranscode {
-        qsess: String,
-        url: String,
-        vcodec: String,
-        acodec: String,
-        contract: crate::plex::EncodeContract,
-        enhancement: EnhancementOutcome,
-        /// Carried from [`RetranscodeWorkerOutcome::Applied`] so [`take_ready_retranscode_claim`]
-        /// can re-check route ownership at drain time, and so a landing discarded as stale
-        /// ([`discard_retranscode_claim_slot`]) can stop the session it just started.
-        ticket: WorkerTicket,
-        client: &'static crate::plex::Client,
-        /// The encoder the route was playing before this attempt (see
-        /// [`RetranscodeWorkerOutcome::Applied::superseded`]): retired after the reload on an
-        /// accepted landing, and stopped together with `qsess` on a discarded one.
-        superseded: String,
-    },
+    Retranscode(AppliedRetranscode),
     NativeAudio { ordinal: i32, codec: String },
     Rejected(&'static str),
 }
@@ -7778,6 +7768,29 @@ struct RetranscodeClaimLanding {
 
 static RETRANSCODE_CLAIM_SLOT: std::sync::Mutex<Option<RetranscodeClaimLanding>> =
     std::sync::Mutex::new(None);
+/// Whether [`RETRANSCODE_CLAIM_SLOT`] holds a landing. The pump drains the slot every frame of a
+/// playing stream and almost always finds it empty, so that answer is this one load, not a lock.
+/// Written only by [`post_claim_landing`] and [`take_claim_landing`], under the slot's guard.
+static RETRANSCODE_CLAIM_LANDED: AtomicBool = AtomicBool::new(false);
+
+/// Publish a landing for the frame thread's next drain.
+fn post_claim_landing(landing: RetranscodeClaimLanding) {
+    let mut slot = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = Some(landing);
+    RETRANSCODE_CLAIM_LANDED.store(true, Ordering::Release);
+}
+
+/// Take whatever landing is posted, or `None` — without touching the lock when nothing is. The one
+/// way out of the slot: the drain, the teardown's discard and the tests' reset all come through
+/// here, so the flag cannot drift from the slot.
+fn take_claim_landing() -> Option<RetranscodeClaimLanding> {
+    if !RETRANSCODE_CLAIM_LANDED.load(Ordering::Acquire) {
+        return None;
+    }
+    let mut slot = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    RETRANSCODE_CLAIM_LANDED.store(false, Ordering::Release);
+    slot.take()
+}
 
 /// The worker body: try the primary attempt, and on refusal run whichever fallback the claim owes
 /// — all off the frame thread, all before anything reaches [`RETRANSCODE_CLAIM_SLOT`].
@@ -7786,10 +7799,9 @@ fn run_retranscode_claim_worker(
     primary_contract: crate::plex::EncodeContract,
     fallback: RetranscodeFallback,
 ) -> RetranscodeClaimResult {
-    if let RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket, superseded } =
-        try_retranscode(inputs, primary_contract)
-    {
-        return RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client, superseded };
+    select_streams_for_encode(inputs);
+    if let RetranscodeWorkerOutcome::Applied(applied) = try_retranscode(inputs, primary_contract) {
+        return RetranscodeClaimResult::Retranscode(applied);
     }
     match fallback {
         RetranscodeFallback::RejectWith(reason) => RetranscodeClaimResult::Rejected(reason),
@@ -7797,9 +7809,7 @@ fn run_retranscode_claim_worker(
             RetranscodeClaimResult::NativeAudio { ordinal, codec }
         }
         RetranscodeFallback::Retranscode(contract) => match try_retranscode(inputs, contract) {
-            RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket, superseded } => {
-                RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client, superseded }
-            }
+            RetranscodeWorkerOutcome::Applied(applied) => RetranscodeClaimResult::Retranscode(applied),
             RetranscodeWorkerOutcome::Refused => RetranscodeClaimResult::Rejected(LEGACY_REJECTED),
         },
     }
@@ -7810,29 +7820,44 @@ fn run_retranscode_claim_worker(
 // force `spawn_with` to fail is not reachable from here. This is the same shape of seam
 // `storage_worker::Writer::start_refused` uses for the analogous case: an explicit, test-only
 // override, checked only in `cfg(test)` builds, so the shipping path is exactly `spawn_small`.
+/// Test-only: a one-shot fault [`spawn_retranscode_claim`] injects into itself, so a test can grade
+/// its failure paths without exhausting the OS thread table or crashing inside `try_retranscode`.
 #[cfg(test)]
-thread_local! {
-    static FORCE_RETRANSCODE_SPAWN_REFUSAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fault {
+    /// The next spawn reports refusal without spawning.
+    SpawnRefusal,
+    /// The next worker panics right before it would otherwise run.
+    WorkerPanic,
 }
 
-/// Test-only: make the next [`spawn_retranscode_claim`] on THIS thread report refusal without
-/// actually spawning, so a test can grade the no-stuck-`Applying` path without needing to exhaust
-/// the OS thread table.
+/// The armed fault. Process-wide rather than thread-local: `WorkerPanic` is consumed on the
+/// freshly spawned worker thread, not the test's own.
 #[cfg(test)]
-pub(super) fn force_next_retranscode_spawn_refusal() {
-    FORCE_RETRANSCODE_SPAWN_REFUSAL.with(|f| f.set(true));
+static NEXT_FAULT: std::sync::Mutex<Option<Fault>> = std::sync::Mutex::new(None);
+
+/// Test-only: arm `fault` for the next [`spawn_retranscode_claim`].
+#[cfg(test)]
+pub(super) fn inject_next_fault(fault: Fault) {
+    *NEXT_FAULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(fault);
 }
 
-/// A process-wide flag (not thread-local — the worker body it is checked from runs on a freshly
-/// spawned thread, not the test's own) that makes the next worker panic right before it would
-/// otherwise run, so a test can grade [`spawn_retranscode_claim`]'s panic-safety guard without
-/// needing a real crash inside `try_retranscode`.
+/// Test-only: consume the armed fault if it is `fault`, and answer whether it was.
 #[cfg(test)]
-static FORCE_RETRANSCODE_WORKER_PANIC: AtomicBool = AtomicBool::new(false);
+fn take_fault(fault: Fault) -> bool {
+    let mut armed = NEXT_FAULT.lock().unwrap_or_else(|e| e.into_inner());
+    if *armed == Some(fault) {
+        *armed = None;
+        true
+    } else {
+        false
+    }
+}
 
+/// Test-only: disarm whatever fault a test left behind.
 #[cfg(test)]
-pub(super) fn force_next_retranscode_worker_panic() {
-    FORCE_RETRANSCODE_WORKER_PANIC.store(true, Ordering::SeqCst);
+pub(super) fn clear_injected_fault() {
+    *NEXT_FAULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 fn spawn_retranscode_claim(
@@ -7844,41 +7869,22 @@ fn spawn_retranscode_claim(
     fallback: RetranscodeFallback,
 ) -> bool {
     #[cfg(test)]
-    if FORCE_RETRANSCODE_SPAWN_REFUSAL.with(|f| f.replace(false)) {
+    if take_fault(Fault::SpawnRefusal) {
         return false;
     }
     crate::task::spawn_small("retranscode-claim", move || {
-        // If `run_retranscode_claim_worker` panics, this guard's `Drop` still posts a `Rejected`
-        // landing so `ControlPhase::Applying` cannot get stuck forever waiting on a mailbox entry
-        // that will now never arrive. `mem::forget`ing it on the success path is what lets the
-        // normal landing win instead of a duplicate rejection.
-        struct PostRejectedOnPanic {
-            action: Option<ClaimedRouteAction>,
-            pending_seek: i64,
-            user_target: i64,
-        }
-        impl Drop for PostRejectedOnPanic {
-            fn drop(&mut self) {
-                if let Some(action) = self.action.take() {
-                    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(RetranscodeClaimLanding {
-                            action,
-                            pending_seek: self.pending_seek,
-                            user_target: self.user_target,
-                            result: RetranscodeClaimResult::Rejected(RETRANSCODE_WORKER_PANICKED),
-                        });
-                }
+        // catch_unwind OUTSIDE the mailbox write, like the resolve worker: a panicking attempt must
+        // still land (as a `Rejected`) or `ControlPhase::Applying` waits forever for a mailbox
+        // entry that will now never arrive.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if take_fault(Fault::WorkerPanic) {
+                panic!("forced retranscode worker panic (test)");
             }
-        }
-        let mut guard = PostRejectedOnPanic { action: Some(action), pending_seek, user_target };
-        #[cfg(test)]
-        if FORCE_RETRANSCODE_WORKER_PANIC.swap(false, Ordering::SeqCst) {
-            panic!("forced retranscode worker panic (test)");
-        }
-        let result = run_retranscode_claim_worker(&inputs, primary_contract, fallback);
-        let action = guard.action.take().expect("guard action populated above");
-        *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(RetranscodeClaimLanding { action, pending_seek, user_target, result });
+            run_retranscode_claim_worker(&inputs, primary_contract, fallback)
+        }))
+        .unwrap_or(RetranscodeClaimResult::Rejected(RETRANSCODE_WORKER_PANICKED));
+        post_claim_landing(RetranscodeClaimLanding { action, pending_seek, user_target, result });
     })
 }
 
@@ -7887,44 +7893,50 @@ fn spawn_retranscode_claim(
 /// the one that's playing — a full teardown or a fresh playback request — since a landing that
 /// arrives after that point belongs to a session nothing on screen refers to any more.
 fn discard_retranscode_claim_slot() {
-    let landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(RetranscodeClaimLanding {
-        result: RetranscodeClaimResult::Retranscode { qsess, client, superseded, .. },
-        ..
-    }) = landing
+    if let Some(RetranscodeClaimLanding { result: RetranscodeClaimResult::Retranscode(applied), .. }) =
+        take_claim_landing()
     {
-        stop_discarded_landing(client, qsess, superseded);
+        stop_discarded_landing(applied);
+    }
+}
+
+/// Run a server-side encoder stop on a short-lived worker, so the frame thread never waits on
+/// PMS; if the OS refuses the thread the stop still happens, inline and declared as `refused`,
+/// because a session left running is a leak on the server. `stop` runs at most once.
+fn stop_encoder_off_thread(
+    thread: &str,
+    refused: &'static crate::task::BlockingLabel,
+    stop: impl Fn() + Clone + Send + 'static,
+) {
+    let inline = stop.clone();
+    if crate::task::spawn_small_keeping(thread, move || stop()).is_none() {
+        let _block = crate::task::allow_blocking(refused);
+        inline();
     }
 }
 
 /// Stop an encoder session without waiting on PMS: the frame thread reaches every caller of this
 /// (a teardown, a fresh playback request, a stale drain, the reload's retirement), and
-/// `transcode_stop` is a blocking round trip. Runs on a short-lived worker; if the OS refuses the
-/// thread the stop still happens, inline and declared, because a session left running is a leak
-/// on the server.
+/// `transcode_stop` is a blocking round trip.
 fn stop_encoder_session(client: &'static crate::plex::Client, session: String) {
     if session.is_empty() {
         return;
     }
-    let worker_session = session.clone();
-    if crate::task::spawn_small_keeping("retranscode-stop", move || {
-        let _ = client.transcode_stop(&worker_session);
-    })
-    .is_none()
-    {
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
-        );
-        let _ = client.transcode_stop(&session);
-    }
+    stop_encoder_off_thread(
+        "retranscode-stop",
+        const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        move || {
+            let _ = client.transcode_stop(&session);
+        },
+    );
 }
 
 /// A landing that will never install: stop what the worker started AND the encoder it replaced —
 /// the worker committed the new session as the route's encoder, so nothing else owns the old one
 /// any more and it would otherwise run on the server unowned.
-fn stop_discarded_landing(client: &'static crate::plex::Client, qsess: String, superseded: String) {
-    stop_encoder_session(client, qsess);
-    stop_encoder_session(client, superseded);
+fn stop_discarded_landing(applied: AppliedRetranscode) {
+    stop_encoder_session(applied.client, applied.qsess);
+    stop_encoder_session(applied.client, applied.superseded);
 }
 
 /// The encoder an ACCEPTED landing replaced, waiting for the reload that moves the Engine off it.
@@ -7944,6 +7956,19 @@ pub(crate) fn retire_superseded_encoder() {
     }
 }
 
+/// Move a claim's restore point onto the stream its landing installs. The reducer's restore point
+/// must describe the stream the landing installs, not the one it replaces:
+/// `claim_snapshot.projection` was captured BEFORE the worker ran, and publishing it as-is made a
+/// later rejected claim reinstate the old route over an Engine playing the new one. Only the fields
+/// `advance` names move; the snapshot keeps its revision, quality and every selection that was
+/// current when the claim was built (a second edit queued mid-flight has already advanced `ps`,
+/// and must not be recorded as applied). A claim settled in its own frame carries no snapshot.
+fn advance_claim_snapshot(action: &mut ClaimedRouteAction, advance: impl FnOnce(&mut AppliedRouteProjection)) {
+    if let Some(snapshot) = action.claim_snapshot.as_mut() {
+        advance(&mut snapshot.projection);
+    }
+}
+
 /// Drained once a frame by the pump, before it tries to claim a fresh action (a claim stays
 /// `Applying` — see `claim_route_action` — for as long as this mailbox is empty, so nothing else
 /// can race it). Applies the worker's session-projection fields, exactly where `retranscode_as`
@@ -7953,63 +7978,43 @@ pub(crate) fn retire_superseded_encoder() {
 pub(crate) fn take_ready_retranscode_claim(
     ps: &mut PlaybackSession,
 ) -> Option<(ClaimedRouteAction, ClaimTail, i64, i64)> {
-    let mut landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let mut landing = take_claim_landing()?;
     // This landing's `ps`/route ownership is only valid if the exact action it was claimed for is
     // still the one `ControlPhase` is waiting on. `begin_engine_teardown(false)`/
     // `begin_playback_request` already clear the mailbox on their own transitions, but the worker
     // which built this landing could still have posted it in the gap between that clear and this
     // drain — `ps` may by then belong to an entirely different item, so nothing here may touch it.
-    if !control_phase_is_applying(landing.action.serial) {
-        if let RetranscodeClaimResult::Retranscode { qsess, client, superseded, .. } = landing.result {
-            stop_discarded_landing(client, qsess, superseded);
+    if !claim_is_applying(landing.action.serial) {
+        if let RetranscodeClaimResult::Retranscode(applied) = landing.result {
+            stop_discarded_landing(applied);
         }
         return None;
     }
     let tail = match landing.result {
-        RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client, superseded } => {
+        RetranscodeClaimResult::Retranscode(applied) => {
             // The worker's own `replace_active_encoder_for`/`replace_active_hls_for` check ran
             // before it committed; re-check here against the ticket it actually got back, since a
             // same-item route change (a concurrent ABR commit) can still move the route in the gap
             // between that commit and this drain (finding: "the mailbox is never... generation
             // checked"). A stale landing must not install a session projection nothing points at
             // any more, and must stop the encoder session it started instead of leaking it.
-            if is_worker_ticket_current(&ticket) {
-                // The reducer's restore point must describe the stream this landing installs, not
-                // the one it replaces: `claim_snapshot.projection` was captured BEFORE the worker
-                // ran, and publishing it as-is made a later rejected claim reinstate the old
-                // route over an Engine playing the new one. Only the fields the attempt changes
-                // move; the snapshot keeps its revision, quality and every selection that was
-                // current when the claim was built (a second edit queued mid-flight has already
-                // advanced `ps`, and must not be recorded as applied).
-                if let Some(snapshot) = landing.action.claim_snapshot.as_mut() {
-                    apply_retranscode_outcome_to_projection(
-                        &mut snapshot.projection,
-                        qsess.clone(),
-                        url.clone(),
-                        vcodec.clone(),
-                        acodec.clone(),
-                        contract,
-                        enhancement,
-                    );
-                }
-                install_retranscode_outcome(ps, qsess, url, vcodec, acodec, contract, enhancement);
-                if !superseded.is_empty() {
-                    *SUPERSEDED_ENCODER.lock().unwrap_or_else(|e| e.into_inner()) = Some((client, superseded));
+            if is_worker_ticket_current(&applied.ticket) {
+                advance_claim_snapshot(&mut landing.action, |p| apply_retranscode_outcome_to_projection(p, &applied));
+                install_retranscode_outcome(ps, &applied);
+                if !applied.superseded.is_empty() {
+                    *SUPERSEDED_ENCODER.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((applied.client, applied.superseded));
                 }
                 ClaimTail::Retranscode
             } else {
-                stop_discarded_landing(client, qsess, superseded);
+                stop_discarded_landing(applied);
                 ClaimTail::Rejected(RETRANSCODE_REJECTED)
             }
         }
         RetranscodeClaimResult::NativeAudio { ordinal, codec } => {
-            // `stage_native_audio` moves `ps.stream_acodec`, which the claim-time snapshot
-            // (captured before the worker ran) does not know: publish the codec that plays, or a
-            // later rejected claim restores the old one over the picked track. It touches no
-            // other projection field (the desired audio index and cues live outside it).
-            if let Some(snapshot) = landing.action.claim_snapshot.as_mut() {
-                snapshot.projection.stream_acodec = codec.clone();
-            }
+            // `stage_native_audio` moves `ps.stream_acodec`; it touches no other projection field
+            // (the desired audio index and cues live outside it).
+            advance_claim_snapshot(&mut landing.action, |p| p.stream_acodec = codec.clone());
             crate::player::stage_native_audio(ps, ordinal, &codec);
             ClaimTail::NativeAudio
         }
