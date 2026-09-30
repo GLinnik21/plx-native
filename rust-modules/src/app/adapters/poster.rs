@@ -389,20 +389,24 @@ fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
     }
 }
 
-/// Does this slot hold the art `srv` was asked for under `key`?
-///
 /// The store's whole identity rule, extracted because it is the one thing a second server can
 /// break invisibly: with the key alone, server B's card is served from A's slot — same texture,
-/// wrong picture, and the wrong token on the fetch that filled it. The `u16` compare goes first
-/// because this runs for every slot of every probe of every visible tile, and it is the half that
-/// can reject without touching the [`PT_KEYLEN`]-byte array.
+/// wrong picture, and the wrong token on the fetch that filled it. The `srv` compare goes first
+/// because this runs for every slot of every probe of every visible tile.
+///
 /// Does `s` hold the same PICTURE `key` asks for — same server, same request once its credential
 /// is set aside? The token is part of the request bytes (a worker fetches exactly the key), but it
 /// is not part of what the server returns: two grants for one identity get the same pixels. So a
 /// resident slot answers a draw whose key differs only in `X-Plex-Token`, and [`lookup`] re-keys
 /// it; whether the IDENTITY behind that token still matches is [`Pslot::grant_epoch`]'s question.
 fn same_art(s: &Pslot, srv: ServerId, key: &[u8]) -> bool {
-    s.state != P_EMPTY && s.srv == srv && sans_token(key_bytes(s)) == sans_token(key)
+    if s.state == P_EMPTY || s.srv != srv {
+        return false;
+    }
+    // One memcmp settles the common case (an unchanged credential); only a key that differs pays
+    // for the two token scans.
+    let held = key_bytes(s);
+    held == key || sans_token(held) == sans_token(key)
 }
 
 /// `key` without its trailing credential. [`crate::plex::Client::with_token`] appends
@@ -881,12 +885,13 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         if g.slots[i].cache_gen == cache_gen && g.slots[i].grant_epoch == grant_epoch && same_art(&g.slots[i], srv, key_s.as_bytes()) {
             // Same identity, refreshed credential: carry the fresh request so any later fetch of
             // this slot (a re-arm after eviction, a retry) dials with the grant now in force.
-            if g.slots[i].token_gen != token_gen || key_bytes(&g.slots[i]) != key_s.as_bytes() {
+            let key_changed = key_bytes(&g.slots[i]) != key_s.as_bytes();
+            if g.slots[i].token_gen != token_gen || key_changed {
                 // A parked transient failure (a 401 under the stored token, typically) was the OLD
                 // credential's answer. Its backoff says nothing about the fresh grant: make the
                 // retry due now, so the P_RETRY branch below re-arms it on this draw — through the
                 // same card-motion gate every other re-arm passes — instead of after up to 30 s.
-                if g.slots[i].state == P_RETRY && key_bytes(&g.slots[i]) != key_s.as_bytes() {
+                if g.slots[i].state == P_RETRY && key_changed {
                     g.slots[i].attempts = 0;
                     g.slots[i].retry_at = Some(crate::app::clock::now());
                     g.slots[i].retry_wake_sent = false;

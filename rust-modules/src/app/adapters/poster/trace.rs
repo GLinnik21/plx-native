@@ -36,15 +36,17 @@ pub(super) const LINE_CAP: u32 = 4000;
 
 /// The opaque identity of a drawn image: what the draw asked for, never the built request.
 pub(super) fn draw_id(srv: u16, path: &str, w: i32, h: i32, png: bool) -> u64 {
-    let mut s = std::collections::hash_map::DefaultHasher::new();
-    (srv, path, w, h, png).hash(&mut s);
-    s.finish()
+    hash_of(&(srv, path, w, h, png))
 }
 
 /// The opaque identity of the built request (the source's store key).
 pub(super) fn key_id(srv: u16, key: &[u8]) -> u64 {
+    hash_of(&(srv, key))
+}
+
+fn hash_of(v: &impl Hash) -> u64 {
     let mut s = std::collections::hash_map::DefaultHasher::new();
-    (srv, key).hash(&mut s);
+    v.hash(&mut s);
     s.finish()
 }
 
@@ -289,8 +291,11 @@ fn log_all(lines: Vec<String>) {
 
 pub(super) fn begin_frame() {
     if !armed() { return; }
-    with(|_, _, _| ());
-    if let Some(g) = TRACE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { g.frame += 1; }
+    TRACE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(|| Global { t: Tracker::default(), frame: 0 })
+        .frame += 1;
 }
 pub(super) fn set_current(id: u64) {
     CURRENT.with(|c| c.set(id));
