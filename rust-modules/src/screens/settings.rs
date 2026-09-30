@@ -997,6 +997,121 @@ impl LogicalState for RootState {
     }
 }
 
+/// One unencrypted-connection switch's plain data — see [`RootPage::plaintext_inputs`] for how
+/// this is gathered and [`root_sections`] for how it becomes a row.
+struct PlaintextRowInput {
+    /// The server's own name, or the app's fallback ("Plex server") when none is known.
+    name: String,
+    /// `name` is a real machine name (Server text, may elide); false when it is the app's own
+    /// fallback string, which is App text and must never elide.
+    named: bool,
+    on: bool,
+    /// Whether a grant carries the server right now, stated quietly in the detail line.
+    connected: bool,
+}
+
+/// Every argument [`root_sections`] builds the Settings root's rows from — what [`RootPage::
+/// rebuild`] gathers (mostly from `crate::plex::session::peek_settled()` and its own pending-write
+/// state) before calling the pure builder, so the builder itself never reads a global and a test
+/// can drive it directly with a synthesized combination no real session may currently be in.
+struct RootInputs {
+    signed_in: bool,
+    /// A one-person account already skips the profile picker; only a multi-user account is ever
+    /// shown the Automatically Sign In switch.
+    multi_user: bool,
+    library_count: i64,
+    auto_sign_in: bool,
+    trailer_autoplay: bool,
+    language: crate::i18n::Preference,
+    /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
+    /// an answered/offered plaintext question.
+    plaintext: Vec<PlaintextRowInput>,
+}
+
+/// The Settings root's own sections, built from plain arguments rather than `&self` — see
+/// [`RootInputs`]. `RootPage::rebuild` gathers the inputs and calls this; the text-fit tests
+/// (`settings_text_fit_tests.rs`) call it directly, over every `RootInputs` combination worth
+/// checking, without a real signed-in session.
+fn root_sections(inputs: &RootInputs) -> (Vec<Section>, Vec<Action>) {
+    let mut actions = Vec::new();
+    let mut sections = Vec::new();
+    if inputs.signed_in {
+        // The section is Libraries and the row is Favorite libraries: the switch governs the
+        // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
+        sections.push(
+            Section::new(crate::i18n::msg::settings_libraries_section()).row(
+                Row::new(crate::i18n::msg::settings_libraries_title())
+                    .detail(crate::i18n::msg::settings_libraries_detail())
+                    .value(crate::i18n::msg::settings_libraries_count(inputs.library_count))
+                    .chevron(true),
+            ),
+        );
+        actions.push(Action::Favourites);
+        if !inputs.plaintext.is_empty() {
+            let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
+            for (i, row) in inputs.plaintext.iter().enumerate() {
+                let label = Row::new(&row.name);
+                let label = if row.named { label.server_label() } else { label };
+                section = section.row(label
+                    .detail(plaintext_question::settings_detail(row.on, row.connected)).toggle(row.on));
+                actions.push(Action::Plaintext(i));
+            }
+            sections.push(section);
+        }
+    }
+    sections.push(
+        Section::new(crate::i18n::msg::settings_privacy_section())
+            .row(
+                Row::new(crate::i18n::msg::settings_privacy_title())
+                    .detail(crate::i18n::msg::settings_privacy_detail())
+                    .chevron(true),
+            )
+            .row(
+                Row::new(crate::i18n::msg::settings_legal_title())
+                    .detail(crate::i18n::msg::settings_legal_detail())
+                    .chevron(true),
+            ),
+    );
+    actions.extend([Action::Privacy, Action::Legal]);
+    let mut system = Section::new(crate::i18n::msg::settings_system_section());
+    if inputs.signed_in && inputs.multi_user {
+        system = system.row(
+            Row::new(crate::i18n::msg::settings_auto_sign_in_title())
+                .detail(crate::i18n::msg::settings_auto_sign_in_detail())
+                .toggle(inputs.auto_sign_in),
+        );
+        actions.push(Action::AutoSignIn);
+    }
+    if inputs.signed_in {
+        system = system.row(
+            Row::new(crate::i18n::msg::settings_trailers_title())
+                .detail(crate::i18n::msg::settings_trailers_detail())
+                .toggle(inputs.trailer_autoplay),
+        );
+        actions.push(Action::TrailerAutoplay);
+    }
+    system = system.row(
+        Row::new(crate::i18n::msg::settings_about_title())
+            .detail(crate::i18n::msg::settings_about_detail())
+            .chevron(true),
+    );
+    system = system.row(Row::new(crate::i18n::msg::settings_language_title())
+        .detail(crate::i18n::msg::settings_language_detail())
+        .value(preference_name(inputs.language)).chevron(true));
+    sections.push(system);
+    actions.extend([Action::About, Action::Language]);
+    let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
+        Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
+    actions.push(Action::Playback);
+    if inputs.signed_in {
+        playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
+            .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
+        actions.push(Action::AudioSubtitles);
+    }
+    sections.push(playback);
+    (sections, actions)
+}
+
 impl RootPage {
     fn new(entry: EntryId, directory: crate::stores::browse::DirectoryView<'_>) -> Self {
         let mut s = Self {
@@ -1034,77 +1149,11 @@ impl RootPage {
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
         self.state.language = crate::i18n::saved_preference();
-
-        let mut actions = Vec::new();
-        let mut sections = Vec::new();
-        if signed_in {
-            let n = directory.pinned_count();
-            // The section is Libraries and the row is Favorite libraries: the switch governs the
-            // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
-            sections.push(
-                Section::new(crate::i18n::msg::settings_libraries_section()).row(
-                    Row::new(crate::i18n::msg::settings_libraries_title())
-                        .detail(crate::i18n::msg::settings_libraries_detail())
-                        .value(crate::i18n::msg::settings_libraries_count(n as i64))
-                        .chevron(true),
-                ),
-            );
-            actions.push(Action::Favourites);
-            if let Some(servers) = self.plaintext_section(&mut actions) {
-                sections.push(servers);
-            }
-        }
-        sections.push(
-            Section::new(crate::i18n::msg::settings_privacy_section())
-                .row(
-                    Row::new(crate::i18n::msg::settings_privacy_title())
-                        .detail(crate::i18n::msg::settings_privacy_detail())
-                        .chevron(true),
-                )
-                .row(
-                    Row::new(crate::i18n::msg::settings_legal_title())
-                        .detail(crate::i18n::msg::settings_legal_detail())
-                        .chevron(true),
-                ),
-        );
-        actions.extend([Action::Privacy, Action::Legal]);
-        let mut system = Section::new(crate::i18n::msg::settings_system_section());
-        // A one-person account already skips the picker; the switch only changes a multi-user boot.
-        if signed_in && multi_user {
-            system = system.row(
-                Row::new(crate::i18n::msg::settings_auto_sign_in_title())
-                    .detail(crate::i18n::msg::settings_auto_sign_in_detail())
-                    .toggle(auto_sign_in),
-            );
-            actions.push(Action::AutoSignIn);
-        }
-        if signed_in {
-            system = system.row(
-                Row::new(crate::i18n::msg::settings_trailers_title())
-                    .detail(crate::i18n::msg::settings_trailers_detail())
-                    .toggle(trailer_autoplay),
-            );
-            actions.push(Action::TrailerAutoplay);
-        }
-        system = system.row(
-            Row::new(crate::i18n::msg::settings_about_title())
-                .detail(crate::i18n::msg::settings_about_detail())
-                .chevron(true),
-        );
-        system = system.row(Row::new(crate::i18n::msg::settings_language_title())
-            .detail(crate::i18n::msg::settings_language_detail())
-            .value(preference_name(self.state.language)).chevron(true));
-        sections.push(system);
-        actions.extend([Action::About, Action::Language]);
-        let mut playback = Section::new(crate::i18n::msg::settings_playback_section()).row(
-            Row::new(crate::i18n::msg::settings_playback_title()).detail(crate::i18n::msg::settings_playback_detail()).chevron(true));
-        actions.push(Action::Playback);
-        if signed_in {
-            playback = playback.row(Row::new(crate::i18n::msg::settings_audio_title())
-                .detail(crate::i18n::msg::settings_audio_detail()).chevron(true));
-            actions.push(Action::AudioSubtitles);
-        }
-        sections.push(playback);
+        let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
+        let (sections, actions) = root_sections(&RootInputs {
+            signed_in, multi_user, library_count: directory.pinned_count() as i64,
+            auto_sign_in, trailer_autoplay, language: self.state.language, plaintext,
+        });
         self.rows = actions;
         self.table.compact = false;
         self.table.header_ink = theme::TEXT_READING;
@@ -1112,14 +1161,17 @@ impl RootPage {
         self.table.list_focused = true;
     }
 
-    /// **Unencrypted connections**: one switch per server the signed-in account answered
+    /// **Unencrypted connections**: one input per server the signed-in account answered
     /// crate::i18n::msg::settings_plaintext_question() for (`grant::choices` — this session's answers over the
     /// session file's, for THIS account only), so an allowed one is here to turn off again — and,
     /// switched off, one per server discovery offers the question for that nobody has answered
     /// (`grant::offers`), so a signed-in person whose server went plaintext-only has a place to
-    /// say yes. The detail line states what the switch means first, then — quietly — whether a
-    /// grant carries the server right now; `None` when there is nothing to show.
-    fn plaintext_section(&mut self, actions: &mut Vec<Action>) -> Option<Section> {
+    /// say yes. Reads `self.session_snapshot`/`self.pending_plaintext` (the account and the
+    /// switch's own optimistic-write state), and records what it found back onto
+    /// `self.plaintext_rows`/`self.state.plaintext` for [`RootPage::activate`]/[`LogicalState`] —
+    /// what it returns is the plain [`PlaintextRowInput`]s [`root_sections`] (a pure builder) turns
+    /// into rows and [`Action::Plaintext`] entries.
+    fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
         use crate::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
         let answered = crate::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
@@ -1141,29 +1193,26 @@ impl RootPage {
                 None => {}
             }
         }
-        self.plaintext_rows = rows;
-        self.state.plaintext = self.plaintext_rows.iter().map(|(_, on)| *on).collect();
-        if self.plaintext_rows.is_empty() {
-            return None;
-        }
-        let mut section = Section::new(crate::i18n::msg::settings_plaintext_section());
+        self.plaintext_rows = rows.clone();
+        self.state.plaintext = rows.iter().map(|(_, on)| *on).collect();
         let offers = crate::plex::grant::offers();
-        for (i, (machine, on)) in self.plaintext_rows.iter().enumerate() {
-            // An offered server was never reached, so the session file does not know it yet:
-            // the name discovery settled with comes first.
-            let name = offers
-                .iter()
-                .find(|o| o.machine_id == *machine && !o.name.is_empty())
-                .map(|o| o.name.as_str())
-                .or_else(|| sess.sources.iter()
-                    .find(|s| s.machine_id == *machine && !s.name.is_empty())
-                    .map(|s| s.name.as_str()))
-                .unwrap_or(crate::i18n::msg::settings_plaintext_server());
-            let connected = *on && crate::plex::grant::granted_origin(machine).is_some();
-            section = section.row(Row::new(name).detail(plaintext_question::settings_detail(*on, connected)).toggle(*on));
-            actions.push(Action::Plaintext(i));
-        }
-        Some(section)
+        rows.into_iter()
+            .map(|(machine, on)| {
+                // An offered server was never reached, so the session file does not know it yet:
+                // the name discovery settled with comes first.
+                let real_name = offers
+                    .iter()
+                    .find(|o| o.machine_id == machine && !o.name.is_empty())
+                    .map(|o| o.name.clone())
+                    .or_else(|| sess.sources.iter()
+                        .find(|s| s.machine_id == machine && !s.name.is_empty())
+                        .map(|s| s.name.clone()));
+                let named = real_name.is_some();
+                let name = real_name.unwrap_or_else(|| crate::i18n::msg::settings_plaintext_server().to_string());
+                let connected = on && crate::plex::grant::granted_origin(&machine).is_some();
+                PlaintextRowInput { name, named, on, connected }
+            })
+            .collect()
     }
 
     fn view(&self) -> TableScreen<'_> {

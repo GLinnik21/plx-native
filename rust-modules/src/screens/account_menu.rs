@@ -163,6 +163,22 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
         .unwrap_or(Action::None)
 }
 
+/// The menu's header text and its one section, from the account's name (if it has one) and the
+/// action rows — pure, so the text-fit suite drives the real builder. A named account's own name
+/// is user text (the managed profile or the roster owner), so it is a `server_header`; the
+/// fallback "Account" label is this app's own word for a nameless signed-in account.
+fn menu_section(name: Option<&str>, rows: &[Action]) -> (String, Section) {
+    let header = name.map_or_else(|| crate::i18n::msg::settings_account_title().to_string(), str::to_string);
+    let mut sec = Section::new(header.clone());
+    if name.is_some() {
+        sec = sec.server_header();
+    }
+    for a in rows {
+        sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)).destructive(destructive(*a)));
+    }
+    (header, sec)
+}
+
 /// Top-left popover, tucked under the profile chip.
 ///
 /// `px` is the app's own side margin: it was a literal 80, which sat 16px outside the 5% overscan
@@ -227,11 +243,8 @@ impl AccountMenuScreen {
         let acc = sess.account(cur.as_ref());
         self.switch_refused = switch_refused;
         self.rows = rows_for(&acc, switch_refused);
-        self.header = acc.name.unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string());
-        let mut sec = Section::new(self.header.clone());
-        for a in self.rows {
-            sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)).destructive(destructive(*a)));
-        }
+        let (header, sec) = menu_section(acc.name.as_deref(), self.rows);
+        self.header = header;
         // small one-word action list — BODY labels, not menu-size HEADLINE bold
         self.table.compact = true;
         // The action that was focused keeps its row when it survives the rebuild; otherwise (the
@@ -859,5 +872,28 @@ mod tests {
         assert_eq!(action_at(no_switch, 0), Action::SignOut);
         assert_eq!(action_at(no_switch, 1), Action::Settings);
         assert_eq!(action_at(no_switch, 2), Action::None);
+    }
+
+    /// **Every app-owned run of the account menu fits its panel, in every shipped language.** Built
+    /// through the real [`menu_section`] over every action the menu can ever offer (the lab-only
+    /// diagnostics row included), for a named account (the header is the user's own name, exempt)
+    /// and a nameless one (the header is this app's own "Account" word, judged), in the same
+    /// compact table and 440px panel `build`/`panel_rect` draw.
+    #[test]
+    fn every_app_owned_run_fits_the_panel_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let all = [Action::ChangeProfile, Action::SignIn, Action::SignOut, Action::Settings, Action::SendDiagnostics];
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            for name in [None, Some("a-managed-profile-with-a-very-long-name")] {
+                let (_, sec) = menu_section(name, &all);
+                let mut table = TableView::new();
+                table.compact = true;
+                table.set_sections(vec![sec], 0, false);
+                out.extend(table.app_fit_failures(panel_rect(&table).w, &format!("{} name={name:?}", language.tag())));
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

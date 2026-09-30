@@ -685,8 +685,12 @@
     "description": "Settings, consent or sign-in UI: settings.audio.manual"
   },
   "settings.audio.foreign": {
-    "value": "When audio isn't in my language",
-    "description": "Settings, consent or sign-in UI: settings.audio.foreign"
+    "value": "When audio isn't in the subtitle language",
+    "description": "Subtitles picker option: show subtitles when the audio that plays is not in the Subtitle language"
+  },
+  "settings.audio.foreign.short": {
+    "value": "When audio isn't in the subtitle language",
+    "description": "Settings, consent or sign-in UI: the trailing value beside the 'Subtitles' row for the 'when audio isn't in the subtitle language' mode (not the picker, which uses the long settings.audio.foreign string). It must still name the subtitle language; the long form fits in English."
   },
   "settings.audio.always": {
     "value": "Always",
@@ -696,17 +700,33 @@
     "value": "Prefer non-forced subtitles",
     "description": "Settings, consent or sign-in UI: settings.audio.prefer_regular"
   },
+  "settings.audio.prefer_regular.short": {
+    "value": "Prefer non-forced",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.prefer_regular string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
   "settings.audio.prefer_forced": {
     "value": "Prefer forced subtitles",
     "description": "Settings, consent or sign-in UI: settings.audio.prefer_forced"
+  },
+  "settings.audio.prefer_forced.short": {
+    "value": "Prefer forced",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.prefer_forced string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
   },
   "settings.audio.only_forced": {
     "value": "Only forced subtitles",
     "description": "Settings, consent or sign-in UI: settings.audio.only_forced"
   },
+  "settings.audio.only_forced.short": {
+    "value": "Forced only",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.only_forced string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
   "settings.audio.only_regular": {
     "value": "Only non-forced subtitles",
     "description": "Settings, consent or sign-in UI: settings.audio.only_regular"
+  },
+  "settings.audio.only_regular.short": {
+    "value": "Non-forced only",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.only_regular string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
   },
   "settings.audio.original": {
     "value": "Original",
@@ -721,12 +741,12 @@
     "description": "Settings, consent or sign-in UI: settings.audio.not_set"
   },
   "settings.playback.overridden": {
-    "value": "Overridden by Force Direct Play: Original quality.",
-    "description": "Settings, consent or sign-in UI: settings.playback.overridden"
+    "value": "Forced Direct Play: original quality.",
+    "description": "Sub-line under the Default Quality row while Force Direct Play is on. One line, no wrap (about 580px at most in Belarusian): keep it short and say the same thing in every language."
   },
   "settings.audio.selection_off": {
-    "value": "Automatic selection is off in Plex. Choosing a language enables it.",
-    "description": "Settings, consent or sign-in UI: settings.audio.selection_off"
+    "value": "Automatic selection is off. Choosing a language enables it.",
+    "description": "Sub-line under the Audio Language row when Plex's automatic audio selection is off. One line, no wrap (about 670px at most): keep it short and say the same thing in every language."
   },
   "settings.audio.retry": {
     "value": "Retry",
@@ -750,7 +770,11 @@
   },
   "settings.playback.forced": {
     "value": "Force Direct Play (advanced)",
-    "description": "Settings, consent or sign-in UI: settings.playback.forced"
+    "description": "Long picker label for the forced Direct Play mode; the row beside 'Direct Play' shows settings.playback.forced.short instead. Same grammatical form as settings.playback.auto and settings.playback.disabled. Must fit the picker row (about 757px in Belarusian)."
+  },
+  "settings.playback.forced.short": {
+    "value": "Forced",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Direct Play' label on its row (not the picker, which still uses the long settings.playback.forced string). Must match the grammatical gender/form of the sibling values settings.playback.auto and settings.playback.disabled, since all three describe the same mode noun."
   },
   "settings.playback.disabled": {
     "value": "Disabled",
@@ -790,7 +814,7 @@
   },
   "settings.plaintext.allowed": {
     "value": "Allowed on this network when a secure connection fails.",
-    "description": "Settings, consent or sign-in UI: settings.plaintext.allowed"
+    "description": "Sub-line under a server's unencrypted-connection switch when it is on but no plaintext connection is in use. One line, no wrap (about 685px at most): keep it short."
   },
   "settings.login.continue_unsaved": {
     "value": "Continue",

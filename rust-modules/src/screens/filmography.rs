@@ -65,6 +65,29 @@ fn route_layout(measure: &dyn Measure) -> RouteLayout {
     )
 }
 
+/// One credit's row: the title, then the role and (when the film is on one of the viewer's own
+/// servers) that server's name as the sub-line, then the year — or this app's own dash — as the
+/// trailing value. Pure, so the text-fit suite drives the real builder. The title, the role and the
+/// server name are all catalog/server text (`server_*`); the dash is this app's.
+fn credit_row(c: &Credit, server_name: Option<String>) -> TRow {
+    let sub = match server_name {
+        Some(name) if c.role.is_empty() => name,
+        Some(name) => format!("{} · {}", c.role, name),
+        None => c.role.clone(),
+    };
+    TRow::new(c.title.clone())
+        .server_label()
+        .detail(sub)
+        .server_detail()
+        .value(match c.year {
+            0 => "—".to_string(),
+            year => year.to_string(),
+        })
+        .value_dim(true)
+        .chevron(c.local.is_some())
+        .ticon_slot(true)
+}
+
 fn table_frame(measure: &dyn Measure) -> Rect {
     let l = route_layout(measure);
     let top = l.sectioned_table().y + STRIP_BAND - crate::ui::table::TOP_PAD;
@@ -513,28 +536,17 @@ impl FilmographyScreen {
     }
 
     fn sync_rows(&mut self, sel: usize, slide: bool) {
-        let rows: Vec<TRow> =
-            self.rows()
-                .iter()
-                .map(|c| {
-                    let sub = match c.local.as_ref().and_then(|(sid, _)| {
-                        crate::plex::server_facts(*sid).map(|f| f.name.clone())
-                    }) {
-                        Some(name) if c.role.is_empty() => name,
-                        Some(name) => format!("{} · {}", c.role, name),
-                        None => c.role.clone(),
-                    };
-                    TRow::new(c.title.clone())
-                        .detail(sub)
-                        .value(match c.year {
-                            0 => "—".to_string(),
-                            year => year.to_string(),
-                        })
-                        .value_dim(true)
-                        .chevron(c.local.is_some())
-                        .ticon_slot(true)
-                })
-                .collect();
+        let rows: Vec<TRow> = self
+            .rows()
+            .iter()
+            .map(|c| {
+                let server_name = c
+                    .local
+                    .as_ref()
+                    .and_then(|(sid, _)| crate::plex::server_facts(*sid).map(|f| f.name.clone()));
+                credit_row(c, server_name)
+            })
+            .collect();
         self.table.tall_rows(true);
         let mut section = Section::new("");
         section.rows = rows;
@@ -1739,5 +1751,32 @@ mod tests {
         assert!(remounted
             .credit_by_identity("Writer", "catalog-Written")
             .is_some());
+    }
+
+    /// **A credit row's app-owned text fits the filmography table in every shipped language.**
+    /// Built through the real [`credit_row`] at the real [`table_frame`] width, over a credit with
+    /// a year, one without (the app's own dash), and one on a local server with a role. Title, role
+    /// and server name are server text, so what is judged is the trailing value.
+    #[test]
+    fn every_credit_row_fits_the_table_in_every_language() {
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let credits = [
+            credit("A Film With A Rather Long Title Indeed", "An Unusually Long Role Name", 2020, None),
+            credit("Undated", "", 0, None),
+            credit("On My Server", "Actor", 1999, Some((ServerId::UNSET, "1"))),
+        ];
+        let w = table_frame(&ShippedMeasure).w;
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let mut section = Section::new("");
+            section.rows = credits.iter().map(|c| credit_row(c, c.local.as_ref().map(|_| "home-server".to_string()))).collect();
+            let mut table = TableView::new();
+            table.tall_rows(true);
+            table.set_sections(vec![section], 0, false);
+            out.extend(table.app_fit_failures(w, language.tag()));
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

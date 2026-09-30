@@ -490,6 +490,9 @@ pub(crate) const HEADING_SOURCE_PAD: f32 = theme::space::XS;
 ///
 /// The flow is PURE — it takes no font metric, which is also why the host suite can drive it: the
 /// per-run baseline drop is resolved in [`draw_heading`], from the very `sz`/`bold` handed out here.
+///
+/// Not `ui::fit::two_runs`: the runs are a sequential server-text flow, each placed after the last,
+/// not a primary/secondary pair competing for one span.
 pub(crate) fn heading_flow(
     title: &str,
     source: &str,

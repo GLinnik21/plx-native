@@ -72,6 +72,13 @@ that mixes async content with a live cursor:
 `library/` reports whether the focus STOP moved so a press can be cancelled on hover;
 `home/`, `person` and `search` still carry that gap. It is a known hole, not a pattern to copy.
 
+A screen that builds a `TableView` ships a `fit_report` test over its REAL builder (extract a pure
+builder that takes its inputs as arguments, as `preferences::field_section` and
+`settings::root_sections` do) across `i18n::SHIPPED`, asserting `TableView::app_fit_failures` is empty.
+Text that comes from a server or a user is marked with the `server_*` builders so it is exempt;
+never mark the app's own fallback strings. See `ui/CLAUDE.md`, "Localization and shared reading
+layout", for what to do when a string does not fit.
+
 ## Verifying a screen change
 
 Captures are the check — see the `ui-sim` and `which-tier` skills, and `../ui/CLAUDE.md`'s

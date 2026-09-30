@@ -207,8 +207,26 @@ pub(crate) const LANGUAGES: &[Language] = &[
     Language { code: "zh-TW", name: "臺語" },
 ];
 
-/// Preserve unfamiliar account values verbatim, including region codes from newer clients.
+/// Codes Plex Web's own catalog still lists but marks `[deprecated]`, each with the entry that
+/// replaced it. An old account can still carry one, so it stays in [`LANGUAGES`] (the recorded
+/// membership); it is just never offered ([`picker`]) or shown under its deprecated name
+/// ([`label`] reads the replacement's).
+const DEPRECATED: &[(&str, &str)] = &[("pb", "pt-BR")];
+
+/// `code`, or the code that replaced it when Plex has deprecated it. Unfamiliar codes pass through.
+pub(crate) fn canonical(code: &str) -> &str {
+    DEPRECATED.iter().find(|(old, _)| *old == code).map_or(code, |(_, new)| new)
+}
+
+/// The catalog a picker offers: every entry except the deprecated ones.
+pub(crate) fn picker() -> impl Iterator<Item = &'static Language> {
+    LANGUAGES.iter().filter(|language| canonical(language.code) == language.code)
+}
+
+/// Preserve unfamiliar account values verbatim, including region codes from newer clients. A
+/// deprecated code reads as its replacement's name, never with the catalog's `[deprecated]` suffix.
 pub(crate) fn label(code: &str) -> &str {
+    let code = canonical(code);
     LANGUAGES.iter().find(|language| language.code == code).map_or(code, |language| language.name)
 }
 
@@ -223,6 +241,17 @@ mod tests {
         assert_eq!(codes.len(), LANGUAGES.len());
         assert!(LANGUAGES.iter().all(|v| matches!(v.code.len(), 2 | 5) && !v.name.is_empty()));
         assert!(!["xx", "xn", "es-419"].iter().any(|v| codes.contains(v)));
+    }
+
+    #[test]
+    fn a_deprecated_code_is_never_offered_and_reads_as_its_replacement() {
+        assert!(LANGUAGES.iter().any(|v| v.code == "pb"), "the recorded catalog keeps it");
+        assert!(picker().all(|v| v.code != "pb" && !v.name.contains("[deprecated]")));
+        assert_eq!(picker().count(), LANGUAGES.len() - DEPRECATED.len());
+        assert_eq!(canonical("pb"), "pt-BR");
+        assert_eq!(canonical("pt-BR"), "pt-BR");
+        assert_eq!(label("pb"), "Português Brasileiro");
+        assert!(DEPRECATED.iter().all(|(_, new)| picker().any(|v| v.code == *new)));
     }
 
     #[test]

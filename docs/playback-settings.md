@@ -33,9 +33,9 @@ remain authoritative if a save fails; the screen provides Retry. Responses for a
 or an obsolete preference revision cannot replace newer settings.
 
 Audio **Original** clears the preferred language while enabling automatic selection. Subtitle
-mode offers manual selection, foreign audio, and always; **No preference** clears only the
+mode offers manual selection, "when audio isn't in the subtitle language", and always; **No preference** clears only the
 subtitle language. Existing PMS item selections take precedence, followed by explicit show
-preferences and then account defaults. Foreign-audio mode compares with the selected audio.
+preferences and then account defaults. That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
 Account defaults do not introduce subtitle burning when playback starts as a transcode.
 
 PMS can keep using an earlier account preference until its own copy updates. The UI explains

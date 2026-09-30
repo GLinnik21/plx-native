@@ -6,7 +6,7 @@
 //! (`route_screen::RoutePush`, the surface's own), sliding in and out exactly like a pushed page.
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
-use crate::plex::account::{PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
+use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
 use crate::route::{DirectPlayMode, Quality};
 use crate::ui::decision_prompt::{DecisionPrompt, PromptStep};
 use crate::ui::frame::Budget;
@@ -181,41 +181,10 @@ impl PreferencesPage {
         } else { false }
     }
     fn current_value(&self, field: Field) -> Value {
-        let p = self.snapshot.as_ref().map(|s| &s.preferences);
-        match field {
-            Field::Quality => Value::Quality(self.state.quality),
-            Field::DirectPlay => Value::DirectPlay(self.state.direct_play),
-            Field::AudioLanguage => Value::Language(p.and_then(|p| p.stated_language.clone()).unwrap_or_default()),
-            Field::SubtitleLanguage => Value::Language(p.and_then(|p| p.subtitle_language.clone()).unwrap_or_default()),
-            Field::SubtitleMode => Value::Mode(p.map_or(0, |p| p.subtitle_mode)),
-            Field::ForcedSubtitles => Value::Forced(p.map_or(0, |p| p.subtitle_forced)),
-        }
+        resolve_value(field, self.state.quality, self.state.direct_play, self.snapshot.as_ref().map(|s| &s.preferences))
     }
     fn options(&self, field: Field) -> Vec<(String, Value)> {
-        match field {
-            Field::Quality => crate::route::available_quality_ladder().iter()
-                .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
-            Field::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
-                .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
-            Field::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
-                .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
-            Field::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
-                .into_iter().enumerate().map(|(i, s)| (s.into(), Value::Forced(i as i64))).collect(),
-            Field::AudioLanguage | Field::SubtitleLanguage => {
-                let mut result = vec![(if field == Field::AudioLanguage { crate::i18n::msg::settings_audio_original() } else { crate::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
-                result.extend(crate::plex::languages::LANGUAGES.iter()
-                    .map(|l| (l.name.to_string(), Value::Language(l.code.to_string()))));
-                let current = self.current_value(field);
-                if !result.iter().any(|(_, v)| *v == current) {
-                    if let Value::Language(code) = current { result.push((code.clone(), Value::Language(code))); }
-                }
-                result
-            }
-        }
-    }
-    fn value_label(&self, field: Field) -> String {
-        let current = self.current_value(field);
-        self.options(field).into_iter().find(|(_, v)| *v == current).map_or_else(|| crate::i18n::msg::settings_audio_not_set().into(), |(s, _)| s)
+        field_options(field, self.state.quality, self.state.direct_play, self.snapshot.as_ref().map(|s| &s.preferences))
     }
     fn rebuild(&mut self, selected: i32) {
         self.state.quality = crate::route::quality();
@@ -225,27 +194,11 @@ impl PreferencesPage {
         self.state.alert_scroll = self.alert.scroll_target_bits();
         self.state.values.clear(); self.actions.clear();
         // The field list is rebuilt at every level: it is the parent a picker slides over.
-        let mut section = Section::new("");
-        let fields: &[Field] = match self.state.kind {
-            Kind::Playback => &[Field::Quality, Field::DirectPlay],
-            Kind::AudioSubtitles if self.snapshot.is_some() => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
-            _ => &[],
-        };
-        let mut list_values = Vec::new(); let mut list_actions = Vec::new();
-        for &field in fields {
-            let value = self.value_label(field);
-            let mut row = Row::new(field.title()).value(&value).chevron(true).dim(self.state.busy);
-            if field == Field::Quality && self.state.direct_play == DirectPlayMode::Forced {
-                row = row.detail(crate::i18n::msg::settings_playback_overridden());
-            }
-            if field == Field::AudioLanguage && self.snapshot.as_ref().is_some_and(|s| s.preferences.auto_select_audio == Some(false)) {
-                row = row.detail(crate::i18n::msg::settings_audio_selection_off());
-            }
-            section = section.row(row); list_values.push(value); list_actions.push(Action::Open(field));
-        }
-        if self.state.kind == Kind::AudioSubtitles && !self.state.busy && !self.state.status.is_empty() {
-            section = section.row(Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail())); list_actions.push(Action::Retry);
-        }
+        let (section, list_values, list_actions) = field_section(&FieldSectionInputs {
+            kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
+            prefs: self.snapshot.as_ref().map(|s| &s.preferences), busy: self.state.busy,
+            show_retry: !self.state.status.is_empty(),
+        });
         let list_sel = if self.state.picker.is_some() { self.parent_row } else { selected };
         for table in [&mut self.table, &mut self.picker_table] {
             table.compact = false; table.header_ink = theme::TEXT_READING; table.list_focused = true;
@@ -279,6 +232,14 @@ impl PreferencesPage {
                 self.rebuild(selected as i32); self.focus(fx, GroupId(0));
             }
             Action::Pick(value) => {
+                // OK on the checked row is not a change. Compared against the CANONICAL current
+                // value, so a stored deprecated code (`pb`) is not rewritten to `pt-BR` on the
+                // user's account by a pick that changed nothing.
+                if self.state.picker.is_some_and(|field| self.current_value(field) == value) {
+                    self.close_picker(fx);
+                    fx.invalidate(crate::ui::present::Provenance::Input);
+                    return;
+                }
                 if value == Value::DirectPlay(DirectPlayMode::Forced) && self.state.direct_play != DirectPlayMode::Forced {
                     self.alert.open(crate::i18n::msg::settings_playback_force_question_c(), crate::i18n::msg::settings_playback_force_body());
                     self.state.confirming = true; self.state.affirmative = false;
@@ -355,8 +316,122 @@ impl PreferencesPage {
         true
     }
 }
+/// `Field`'s current [`Value`] from the two locally-saved settings plus the account preferences, if
+/// loaded. Free rather than a page method so [`field_section`] needs no page and no globals.
+fn resolve_value(field: Field, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> Value {
+    match field {
+        Field::Quality => Value::Quality(quality),
+        Field::DirectPlay => Value::DirectPlay(direct_play),
+        // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
+        Field::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
+        Field::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
+        Field::SubtitleMode => Value::Mode(prefs.map_or(0, |p| p.subtitle_mode)),
+        Field::ForcedSubtitles => Value::Forced(prefs.map_or(0, |p| p.subtitle_forced)),
+    }
+}
+/// `Field`'s picker options.
+fn field_options(field: Field, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> Vec<(String, Value)> {
+    match field {
+        Field::Quality => crate::route::available_quality_ladder().iter()
+            .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
+        Field::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
+            .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
+        Field::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
+            .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
+        Field::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
+            .into_iter().enumerate().map(|(i, s)| (s.into(), Value::Forced(i as i64))).collect(),
+        Field::AudioLanguage | Field::SubtitleLanguage => {
+            let mut result = vec![(if field == Field::AudioLanguage { crate::i18n::msg::settings_audio_original() } else { crate::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
+            result.extend(crate::plex::languages::picker()
+                .map(|l| (l.name.to_string(), Value::Language(l.code.to_string()))));
+            let current = resolve_value(field, quality, direct_play, prefs);
+            if !result.iter().any(|(_, v)| *v == current) {
+                if let Value::Language(code) = current { result.push((code.clone(), Value::Language(code))); }
+            }
+            result
+        }
+    }
+}
+/// The trailing read-out `Field`'s row shows for its current value. Direct Play and Forced
+/// Subtitles show a short form of the picker's label ([`direct_play_readout`], [`forced_readout`]),
+/// as does the Subtitles mode row's foreign-audio option; every other field shows the picker's own
+/// label.
+fn field_readout(field: Field, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> String {
+    match field {
+        Field::DirectPlay => direct_play_readout(direct_play).into(),
+        Field::ForcedSubtitles => forced_readout(prefs.map_or(0, |p| p.subtitle_forced)).into(),
+        // Only the foreign-audio mode has a short form (es does not fit beside the label); the
+        // other two modes show the picker's own label.
+        Field::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => crate::i18n::msg::settings_audio_foreign_short().into(),
+        _ => {
+            let current = resolve_value(field, quality, direct_play, prefs);
+            field_options(field, quality, direct_play, prefs).into_iter().find(|(_, v)| *v == current)
+                .map_or_else(|| crate::i18n::msg::settings_audio_not_set().into(), |(s, _)| s)
+        }
+    }
+}
+/// The inputs [`field_section`] builds a `Kind`'s field list from, so the builder reads no global.
+struct FieldSectionInputs<'a> {
+    kind: Kind,
+    quality: Quality,
+    direct_play: DirectPlayMode,
+    /// The signed-in account's audio/subtitle preferences, once a snapshot has loaded.
+    prefs: Option<&'a AudioPreferences>,
+    busy: bool,
+    /// Show the Retry row: the account kind has a non-empty status message and nothing is in flight.
+    show_retry: bool,
+}
+/// The page's field-list [`Section`] with each row's read-out and the row actions, built from
+/// [`FieldSectionInputs`] alone.
+fn field_section(inputs: &FieldSectionInputs<'_>) -> (Section, Vec<String>, Vec<Action>) {
+    let mut section = Section::new("");
+    let fields: &[Field] = match inputs.kind {
+        Kind::Playback => &[Field::Quality, Field::DirectPlay],
+        Kind::AudioSubtitles if inputs.prefs.is_some() => &[Field::AudioLanguage, Field::SubtitleMode, Field::SubtitleLanguage, Field::ForcedSubtitles],
+        _ => &[],
+    };
+    let mut values = Vec::new();
+    let mut actions = Vec::new();
+    for &field in fields {
+        let value = field_readout(field, inputs.quality, inputs.direct_play, inputs.prefs);
+        let mut row = Row::new(field.title()).value(&value).chevron(true).dim(inputs.busy);
+        if field == Field::Quality && inputs.direct_play == DirectPlayMode::Forced {
+            row = row.detail(crate::i18n::msg::settings_playback_overridden());
+        }
+        if field == Field::AudioLanguage && inputs.prefs.is_some_and(|p| p.auto_select_audio == Some(false)) {
+            row = row.detail(crate::i18n::msg::settings_audio_selection_off());
+        }
+        section = section.row(row);
+        values.push(value);
+        actions.push(Action::Open(field));
+    }
+    if inputs.kind == Kind::AudioSubtitles && !inputs.busy && inputs.show_retry {
+        section = section.row(Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail()));
+        actions.push(Action::Retry);
+    }
+    (section, values, actions)
+}
 fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
+}
+/// The Direct Play row's trailing read-out. `mode_label`'s Forced string is long enough to squeeze
+/// the row's label, so Forced alone takes the short form; the picker lists the full strings.
+fn direct_play_readout(mode: DirectPlayMode) -> &'static str {
+    match mode {
+        DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced_short(),
+        _ => mode_label(mode),
+    }
+}
+/// The Forced Subtitles row's trailing read-out, per option in `field_options` order: a short form
+/// of the picker's sentence. An unknown value reads as "Not set".
+fn forced_readout(value: i64) -> &'static str {
+    match value {
+        0 => crate::i18n::msg::settings_audio_prefer_regular_short(),
+        1 => crate::i18n::msg::settings_audio_prefer_forced_short(),
+        2 => crate::i18n::msg::settings_audio_only_forced_short(),
+        3 => crate::i18n::msg::settings_audio_only_regular_short(),
+        _ => crate::i18n::msg::settings_audio_not_set(),
+    }
 }
 impl Machine<InnerHost> for PreferencesPage {
     type Ev = ScreenEvent<InnerHost>;
@@ -586,7 +661,7 @@ mod tests {
         let page = PreferencesPage::new(EntryId(0), Kind::Playback);
         for field in [Field::AudioLanguage, Field::SubtitleLanguage] {
             let options = page.options(field);
-            assert_eq!(options.len(), crate::plex::languages::LANGUAGES.len() + 1);
+            assert_eq!(options.len(), crate::plex::languages::picker().count() + 1);
             assert_eq!(options[0].1, Value::Language(String::new()));
             assert!(options.len() > 100);
         }
@@ -616,6 +691,36 @@ mod tests {
         assert!(page.submenu.resting(false));
         assert_eq!(page.leaving, None, "…and is released once the spring settles");
     }
+    /// A page with a loaded account snapshot whose stated audio language is the deprecated `pb`, and
+    /// the audio-language picker open. Returns the emitted effects of activating row `pick`.
+    fn pick_audio_language(pick: impl Fn(&[(String, Value)]) -> usize) -> Vec<crate::ui::machine::Stamped<InnerHost>> {
+        let user = crate::plex::session::UserRef { id: 1, uuid: "prefs-noop-pick".into(), ..Default::default() };
+        let prefs = AudioPreferences { stated_language: Some("pb".into()), ..Default::default() };
+        let (request, snapshot) = crate::plex::account::PreferenceRequest::fixture_for_test(user, 0, prefs);
+        let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles);
+        page.request = Some(request);
+        page.snapshot = Some(snapshot);
+        page.rebuild(0);
+        let audio_row = page.actions.iter().position(|a| matches!(a, Action::Open(Field::AudioLanguage))).unwrap();
+        with_fx(|fx| page.activate(audio_row, fx));
+        let row = pick(&page.options(Field::AudioLanguage));
+        let mut emitted = Vec::new(); let mut present = Present::new();
+        page.activate(row, &mut Effects::new(&mut emitted, MachineId::Instance(InstanceId(0)), &mut present));
+        emitted
+    }
+    fn preference_commands(emitted: &[crate::ui::machine::Stamped<InnerHost>]) -> usize {
+        emitted.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Preferences(_)))).count()
+    }
+    /// OK on the row that is already checked is not a change and must not write to the account —
+    /// least of all the canonicalised `pt-BR` in place of the stored deprecated `pb`.
+    #[test]
+    fn picking_the_already_current_value_writes_nothing_and_a_different_one_still_does() {
+        let _serial = crate::testlock::serial();
+        let current = pick_audio_language(|opts| opts.iter().position(|(_, v)| *v == Value::Language("pt-BR".into())).unwrap());
+        assert_eq!(preference_commands(&current), 0, "a no-op pick must not emit a preference command");
+        let other = pick_audio_language(|opts| opts.iter().position(|(_, v)| *v == Value::Language("fr".into())).unwrap());
+        assert_eq!(preference_commands(&other), 1, "a different pick still saves");
+    }
     #[test]
     fn picker_back_restores_parent_row_without_saving() {
         let _serial = crate::testlock::serial();
@@ -627,3 +732,7 @@ mod tests {
         assert!(page.pending.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "preferences_text_fit_tests.rs"]
+mod text_fit_tests;

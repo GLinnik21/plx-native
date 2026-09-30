@@ -346,7 +346,7 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   the FAVOURITES of the type being browsed. **On Home** is a toggle — the word `On`/`Off` at the
   trailing edge, OK flips, the list stays open.
   Grouped by server: header = machine, accessory = person. The last favourite library uses `value_dim`;
-  an unreachable server's whole group dims at .52, header included. "Check for new shares" sits last
+  an unreachable server's whole group dims at .52, header included. "Check for shared libraries" sits last
   under a separator. Rejecting the popover also withdraws both of the flags this doc raised about
   `account_menu.rs`'s static arrays and its close-before-acting OK.
 - **B — the tab strip carries NOTHING new.** A pill is a **type**, always bare; it grows by missing
@@ -729,7 +729,7 @@ Four places, all recorded so the next reader does not "fix" them back:
 `screens/onboard.rs` (`ui/onboard.rs` before phase 5b, 2026-09-07) mounts `ui::source_list` — the SAME row-model builder the Library toolbar's Sources
 panel uses, extracted out of `ui/library.rs` for exactly this reason. It differs by two arguments,
 not by a second builder: every library rather than the browsed type's (`browse::all_source_rows` —
-there is no tab bar here to be scoped to), and no *Check for new shares* tail.
+there is no tab bar here to be scoped to), and no *Check for shared libraries* tail.
 
 Its outer geometry is the shared `ui::route_screen::RouteLayout`: the same measured narrative
 column, section-label anchor, content column and bottom action slot used by Settings, Privacy and

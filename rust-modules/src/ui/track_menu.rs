@@ -1412,8 +1412,7 @@ mod tests {
     /// server text and may elide; the fixture's sources are short so only app text is judged.)
     #[test]
     fn every_subtitles_row_fits_the_panel_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let mut subs = vec![
             stream(1, 0, "Russian", "rus", "forced, DVD R5"),
             stream(2, 1, "Russian", "rus", "Netflix"),
@@ -1429,16 +1428,15 @@ mod tests {
         let offered: Vec<usize> = (0..subs.len()).collect();
         let names = TrackNames::new();
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let (sections, _) =
                 sub_layout(&subs, &offered, &names, &["rus"], 1, true, -30_000, SubtitleTone::LightGrey);
             let mut table = TableView::new();
             table.set_sections(sections, 0, false);
-            out.extend(table.elided_rows(SUB_PANEL_W, &ShippedMeasure, HEADROOM)
-                .into_iter().map(|e| format!("{}: {e}", language.tag())));
+            out.extend(table.app_fit_failures(SUB_PANEL_W, language.tag()));
         }
-        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 
     /// **The pseudo-locale sweep of the grouped Subtitles panel**: every header, accessory, label,
@@ -2385,8 +2383,8 @@ mod enhancement_menu_tests {
     /// prose the viewer who HAS them ever reads.
     #[test]
     fn enh_locale_values_never_mention_plex_pass() {
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for value in [
                 crate::i18n::msg::widgets_tracks_boost_dialog(),
@@ -2451,25 +2449,19 @@ mod enhancement_menu_tests {
     /// text alone.
     #[test]
     fn enh_rows_fit_width_560_es_be() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in SHIPPED {
             let _g = crate::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (menu, ps) = audio_tab(EnhTestFixture {
                 applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
                 ..Default::default()
             });
-            out.extend(
-                menu.table
-                    .elided_rows(AUDIO_PANEL_W, &ShippedMeasure, HEADROOM)
-                    .into_iter()
-                    .map(|e| format!("{}: {e}", language.tag())),
-            );
+            out.extend(menu.table.app_fit_failures(AUDIO_PANEL_W, language.tag()));
             teardown(&ps);
         }
-        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 
     // ---- M7 follow-up: the Subtitles tab under a live Burn ------------------------------------
@@ -2647,7 +2639,6 @@ mod enhancement_menu_tests {
     /// `enh_rows_fit_width_560_es_be` over the Audio panel.
     #[test]
     fn subtitles_locked_note_fits_width_620_es_be() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
         use crate::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {
@@ -2659,15 +2650,10 @@ mod enhancement_menu_tests {
                 applied_burn: true,
                 ..Default::default()
             });
-            out.extend(
-                menu.table
-                    .elided_rows(SUB_PANEL_W, &ShippedMeasure, HEADROOM)
-                    .into_iter()
-                    .map(|e| format!("{}: {e}", language.tag())),
-            );
+            out.extend(menu.table.app_fit_failures(SUB_PANEL_W, language.tag()));
             teardown(&ps);
         }
-        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }
 

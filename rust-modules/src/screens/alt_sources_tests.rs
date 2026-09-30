@@ -306,6 +306,7 @@ fn ok_navigates_to_another_copy_and_never_to_the_one_you_are_on() {
     let row = |s: u16, rk: &str| AltRow {
         label: String::new(),
         detail: String::new(),
+        own_detail: true,
         value: None,
         badge: None,
         checked: false,
@@ -1046,4 +1047,31 @@ mod focus_and_hit {
             Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
         ));
     }
+}
+
+/// **Every app-owned run of the *Also available* panel fits its column, in every shipped
+/// language.** Built through the real [`rows`] (from copies) and the real [`section_for`] the
+/// screen draws from; the library and a friend's name are server/user text and exempt, so what is
+/// judged is the "This account" sub-line and the runtime read-out, at [`PANEL_W`].
+#[test]
+fn every_app_owned_run_fits_the_panel_in_every_language() {
+    use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+    let mut list = Vec::new();
+    for (i, dur_ms) in [0_i64, 60_000, 7_020_000, 360_000_000].into_iter().enumerate() {
+        let mut own = copy(i as u16, "Movies", "", &format!("{i}"), "4k");
+        own.dur_ms = dur_ms;
+        let mut friend = copy(i as u16 + 10, "Films", "a-friend-with-a-long-plex-handle", &format!("{}", i + 10), "1080");
+        friend.dur_ms = dur_ms;
+        list.extend([own, friend]);
+    }
+    let built = rows(&list, sid(0), "0");
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let mut table = crate::ui::table::TableView::new();
+        table.compact = false;
+        table.set_sections(vec![section_for(&built)], 0, false);
+        out.extend(table.app_fit_failures(PANEL_W, language.tag()));
+    }
+    crate::ui::table::assert_no_fit_failures(&out);
 }

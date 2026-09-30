@@ -595,6 +595,9 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
         frame(&mut d, &mut rig, 128, vec![key(Key::Back, tick(128))]);
         frame(&mut d, &mut rig, 144, vec![key(Key::Down, tick(144))]);
         frame(&mut d, &mut rig, 160, vec![key(Key::Ok, tick(160))]);
+        // The picker opens on the current mode, and OK on it changes nothing (and saves nothing):
+        // move to another mode first.
+        frame(&mut d, &mut rig, 168, vec![key(Key::Down, tick(168))]);
         frame(&mut d, &mut rig, 176, vec![key(Key::Ok, tick(176))]);
         let Some(PreferenceCmd::Save { reply, .. }) = rig.preference_commands.pop() else {
             panic!("choosing a subtitle mode must ask the host to save");

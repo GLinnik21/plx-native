@@ -1757,4 +1757,52 @@ mod tests {
             _ => unreachable!(),
         }
     }
+
+    /// **Every action row of every item menu fits its panel, in every shipped language.** The
+    /// panel grows to its content ([`panel_at`] clamps `measured_width` between [`PANEL_MIN_W`] and
+    /// the safe width), so what this guards is the CEILING: no verb may be longer than the widest
+    /// panel the screen will ever draw. Built through the real [`build_with`], [`build_episode`]
+    /// and [`build_season`] over every item kind, watch state, Continue Watching and trailer
+    /// combination, in the same compact table `build_rows` seats, measured with the device's
+    /// whole-pixel advances. No row carries server text; the parent title only rides an action.
+    #[test]
+    fn every_action_row_fits_the_widest_panel_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        // The panel hugs its content, so it always fits itself; the widest it may ever grow to
+        // ([`panel_at`]'s ceiling) is the width a verb can actually be held to.
+        let widest = SCR_W - 2.0 * EDGE_X;
+        let marks = [PosterMark::None, PosterMark::InProgress, PosterMark::Watched];
+        let trailer = crate::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
+        // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.
+        let all_menus = || {
+            let mut menus: Vec<(String, Section)> = Vec::new();
+            for kind in 0..=3 {
+                for mark in marks {
+                    for from_deck in [false, true] {
+                        for with_trailer in [false, true] {
+                            let t = with_trailer.then_some(&trailer);
+                            menus.push((format!("card kind={kind} {mark:?} deck={from_deck} trailer={with_trailer}"),
+                                build_with(&item(kind, mark), from_deck, t).0));
+                        }
+                    }
+                }
+            }
+            for mark in marks {
+                menus.push((format!("episode {mark:?}"), build_episode("1", mark).0));
+                menus.push((format!("season {mark:?}"), build_season("1", mark).0));
+            }
+            menus
+        };
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            for (name, sec) in all_menus() {
+                let mut table = TableView::new();
+                table.compact = true;
+                table.set_sections(vec![sec], 0, false);
+                out.extend(table.app_fit_failures(widest, &format!("{} {name}", language.tag())));
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
 }

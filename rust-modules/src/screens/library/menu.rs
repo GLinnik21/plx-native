@@ -205,6 +205,8 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
             sort.default_desc
         };
         let mut row = Row::new(&sort.title).checked(active);
+        // The server advertises every sort's title; the client-side Plays entry is the app's own.
+        if sort.key != crate::browse::PLAYS_SORT_KEY { row = row.server_label(); }
         if active {
             row = row.ticon(if sort_desc {
                 crate::ui::icons::Icon::ChevronDown
@@ -266,11 +268,14 @@ fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
     let mut section = Section::new(crate::i18n::msg::browse_library_filter())
         .row(Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched));
-    if genres_supported { section = section.row(
-            Row::new(crate::i18n::msg::browse_library_genre())
-                .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
-                .chevron(true),
-        ); }
+    if genres_supported {
+        let mut row = Row::new(crate::i18n::msg::browse_library_genre())
+            .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
+            .chevron(true);
+        // A chosen genre is the server's tag title; "All" is the app's.
+        if genre.is_some() { row = row.server_value(); }
+        section = section.row(row);
+    }
     let mut stamp = Stamp::default();
     stamp.tag(9);
     stamp.bool(genres_supported);
@@ -307,7 +312,7 @@ fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft
         if active {
             selected = (i + 1) as i32;
         }
-        section = section.row(Row::new(&genre.title).checked(active));
+        section = section.row(Row::new(&genre.title).checked(active).server_label());
         stamp.tag(11);
         stamp.str(&genre.id);
         stamp.str(&genre.title);
@@ -1172,19 +1177,51 @@ mod tests {
     /// whole-pixel advances at the popover's fixed width.
     #[test]
     fn every_type_row_fits_the_popover_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for kind in [SecKind::Movie, SecKind::Show] {
                 let draft = type_draft(kind, LibraryType::Collections);
                 let mut table = TableView::new();
                 table.set_sections(draft.sections, draft.selected, false);
-                out.extend(table.elided_rows(650.0, &ShippedMeasure, HEADROOM)
-                    .into_iter().map(|e| format!("{} {kind:?}: {e}", language.tag())));
+                out.extend(table.app_fit_failures(650.0, &format!("{} {kind:?}", language.tag())));
             }
         }
-        assert!(out.is_empty(), "TYPE rows the popover would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
+    /// — through the real drafts, with server sort/genre titles marked and exempt. Sort covers the
+    /// client-side Plays entry (app text); Filter covers both the "All" value and a chosen genre.
+    #[test]
+    fn every_sort_filter_and_genre_row_fits_the_popover_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let sorts = vec![
+            SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
+            SortEntry { key: crate::browse::PLAYS_SORT_KEY.into(), desc_key: String::new(),
+                title: crate::i18n::msg::browse_library_plays().into(), default_desc: true },
+        ];
+        let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            let drafts = [
+                ("sort asc", sort_draft(&sorts, 1, false)),
+                ("sort desc", sort_draft(&sorts, 0, true)),
+                ("filter all", filter_draft(false, None, true)),
+                ("filter genre", filter_draft(true, Some(&genres[0]), true)),
+                ("filter no genres", filter_draft(false, None, false)),
+                ("genre all", genre_draft(&genres, None)),
+                ("genre one", genre_draft(&genres, Some(&genres[0]))),
+            ];
+            for (name, draft) in drafts {
+                let mut table = TableView::new();
+                table.set_sections(draft.sections, draft.selected, false);
+                out.extend(table.app_fit_failures(650.0, &format!("{tag} {name}")));
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

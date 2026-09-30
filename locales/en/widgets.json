@@ -96,11 +96,11 @@
   },
   "widgets.source.needs_library": {
     "value": "The app needs one library",
-    "description": "Server/library availability, connection type, or library-picker action."
+    "description": "Sub-line under the last remaining library row in the Library panel. One line, no wrap (about 400px at most in Spanish, 450px in Belarusian): keep it short."
   },
   "widgets.source.new_shares": {
-    "value": "Check for new shares",
-    "description": "Server/library availability, connection type, or library-picker action."
+    "value": "Check for shared libraries",
+    "description": "Row in the Library panel that re-checks the account for newly shared libraries. A row label in a 527px column, no wrap: keep it short."
   },
   "widgets.source.unauthorized": {
     "value": "Not authorized",

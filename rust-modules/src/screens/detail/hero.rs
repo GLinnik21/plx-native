@@ -712,6 +712,8 @@ struct FactsFit {
     elide: bool,
 }
 
+// Not `ui::fit::two_runs`: this is a drop cascade (extent, then credit, then elide) over several
+// runs, not one primary/secondary pair.
 fn facts_fit(has_credit: bool, budget: f32, mut width: impl FnMut(FactsFit) -> f32) -> FactsFit {
     let mut fit = FactsFit {
         extent: true,

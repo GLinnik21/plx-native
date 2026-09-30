@@ -39,6 +39,7 @@ pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the ma
 pub(crate) mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets — geometry IS `place`
 pub(crate) mod tile; // RESTRUCTURE (spec §10): the library's item abstraction for a shelf tile
 pub(crate) mod document_reader;
+pub(crate) mod fit; // one declared-priority primitive for a line with two competing runs (`two_runs`)
 pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub(crate) mod focus; // RESTRUCTURE (spec §7.3): the focus ENGINE — one owner of focus, the golden tables
 pub mod fmt; // shared duration/clock display formatters
