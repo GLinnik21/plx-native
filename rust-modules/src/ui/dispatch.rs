@@ -715,6 +715,13 @@ where
             && self.top_screen().map(|s| s.render()) == Some(super::screen::RenderStrategy::VideoPlane)
     }
 
+    /// Whether this frame may show the page as a frozen image at all: a freezing transition, a
+    /// snapshot texture to hold it, and no video plane under it.
+    fn page_image_possible(&self, video_plane: bool) -> bool {
+        !video_plane && self.nav.tabs.stack.transition.freezes_page()
+            && self.page_snapshot.available()
+    }
+
     /// ONE frame (§3.3): the ten steps in order.
     pub fn frame(
         &mut self,
@@ -1177,16 +1184,27 @@ where
     pub(crate) fn backdrop_layers(&self, page_alpha: f32) -> Vec<super::frame::backdrop::Layer> {
         use super::frame::backdrop::{Layer, Z, canvas};
         let mut layers = Vec::new();
-        if self.page_snapshot.valid() && self.nav.modals.host_policy().1 == HostRender::Live {
+        let transition = &self.nav.tabs.stack.transition;
+        let valid = self.page_snapshot.valid();
+        let eligible = self.page_image_possible(self.video_plane_frame());
+        if (valid || eligible) && self.nav.modals.host_policy().1 == HostRender::Live {
             if let Some(entry) = self.nav.top_page() {
                 let mut image = self.page_image;
-                let paint = image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
-                    self.nav.tabs.stack.transition.page_alpha(), self.last_tick.ms, true,
+                let paint = image.plan(entry.id, transition.in_flight(),
+                    transition.page_alpha(), self.last_tick.ms, valid,
                     self.page_quiescent);
                 if let Some(alpha) = paint.frozen_alpha() {
                     layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(),
                         blocks: !paint.draws_live(),
                         revision: self.page_snapshot.revision(), composite_alpha: Some(alpha) });
+                } else if eligible && paint == super::containers::transition::PagePaint::Capture {
+                    // A capture frame: the source walk draws the page live at full alpha and the
+                    // visible pass shows it at the dip alpha; publishing that alpha keeps the
+                    // glass source and the page it sits on one picture. Not blocking: the live
+                    // page beneath IS the source this frame.
+                    layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(), blocks: false,
+                        revision: self.page_snapshot.revision(),
+                        composite_alpha: Some(transition.page_alpha()) });
                 }
             }
         }
@@ -1239,8 +1257,8 @@ where
         if !crate::gfx::blur_source_pass() { rig.clear_opaque_region(); }
         let parts = self.parts(tick);
         let source_pass = backdrop::source_walk() || crate::gfx::blur_source_pass();
-        let eligible = pages && host_render == HostRender::Live && !video_plane
-            && self.nav.tabs.stack.transition.freezes_page() && self.page_snapshot.available();
+        let eligible = pages && host_render == HostRender::Live
+            && self.page_image_possible(video_plane);
         let page_quiescent = self.page_quiescent
             && !crate::text::prewarm_pending()
             && !self.present.page_moving()
@@ -1353,16 +1371,23 @@ where
                         super::containers::transition::PageCapture::begin(page_snapshot.as_mut())
                     } else { None };
                     let capture = capture_guard.is_some();
-                    // Source/declaration walks never capture or paint a live page underneath a
-                    // held image. A missing image is captured by the visible pass, at full alpha.
+                    // Source/declaration walks never capture, and never paint a live page under a
+                    // HELD image; the one live page a source walk draws is on a Capture frame,
+                    // where no image exists yet. The visible pass captures it, at full alpha.
                     let visible_live = paint.draws_live()
                         || (paint == PagePaint::Capture && !capture && !source_pass);
-                    let render_page = capture || visible_live;
+                    // …which leaves the CAPTURE frames with no image to replay, so a source walk
+                    // draws the page about to be captured, live at full alpha; the dip alpha rides
+                    // the glass composite as for a held image (`backdrop_layers`). Drawing nothing
+                    // left the blur replay to filter the PREVIOUS source on the floor frame.
+                    let source_capture = paint == PagePaint::Capture && source_pass;
+                    let render_page = capture || visible_live || source_capture;
                     if render_page {
+                        let full_alpha = capture || source_capture;
                         let mut page_navigation = navigation;
-                        if capture { page_navigation.page_alpha = 1.0; }
+                        if full_alpha { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
-                        if !capture { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
+                        if !full_alpha { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
                         backdrop::draw_span("page", || inst.screen.draw(&mut f));
                         report.drawn.push(inst.id);
                         let drawn_stops = f.into_stops();

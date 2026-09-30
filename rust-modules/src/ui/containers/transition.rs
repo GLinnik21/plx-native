@@ -11,11 +11,13 @@
 //!   `Motion` from inside `tick`. The dispatcher uses [`PageImage`] to capture the outgoing page
 //!   once, reuses the same snapshot texture for the incoming page at the floor, and draws only
 //!   that image during Out/In. Captures render at full alpha; the dip belongs to the textured quad.
+//!   On the two CAPTURE frames (the first, and the floor) a glass source walk has no image yet, so
+//!   it draws the page being captured live at full alpha; the dip alpha rides the glass composite.
 //!   Shared chrome remains a separate live layer. Existing snapshot fences pause the ramp while
 //!   the GPU completes a capture (bounded by `gfx::SNAPSHOT_DEFER_MAX`). After In, the image stays
 //!   held while the destination reports page-owned motion or first-frame resource work. At visual
 //!   quiescence the dispatcher takes one full-alpha replacement capture off-screen, presents that
-//!   image, then switches to identical live output on the following frame. No frame draws a live
+//!   image, then switches to identical live output on the following frame. No VISIBLE frame draws a live
 //!   page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
 //!   settles. Screen/input/lifecycle state continues ticking behind the held image.
 //! - [`RoutePush`] — the Settings family's push: commit is immediate, BOTH levels are drawn, and a

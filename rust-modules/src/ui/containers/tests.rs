@@ -1552,6 +1552,8 @@ struct CountingSnapshot {
     begins: std::rc::Rc<std::cell::Cell<u32>>,
     /// The fixture [`draw_order`](crate::ui::fixture::draw_order) tick of the latest image draw.
     drawn_at: std::rc::Rc<std::cell::Cell<usize>>,
+    /// The alpha that image draw composited at.
+    drawn_alpha: std::rc::Rc<std::cell::Cell<f32>>,
 }
 impl super::transition::PageSnapshot for CountingSnapshot {
     fn available(&self) -> bool { true }
@@ -1562,7 +1564,10 @@ impl super::transition::PageSnapshot for CountingSnapshot {
         true
     }
     fn finish(&mut self) { self.valid = true; }
-    fn draw(&self, _alpha: f32, _clear: bool) { self.drawn_at.set(crate::ui::fixture::draw_order()); }
+    fn draw(&self, alpha: f32, _clear: bool) {
+        self.drawn_at.set(crate::ui::fixture::draw_order());
+        self.drawn_alpha.set(alpha);
+    }
     fn release(&mut self) { self.valid = false; }
 }
 
@@ -1629,7 +1634,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     let _guard = crate::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
-    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: Default::default() });
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), ..Default::default() });
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
     d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true); // outgoing capture
@@ -1679,7 +1684,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
     let image_drawn = std::rc::Rc::new(std::cell::Cell::new(0));
-    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: image_drawn.clone() });
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: image_drawn.clone(), ..Default::default() });
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
     d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true); // outgoing capture
@@ -1741,6 +1746,69 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
         d.draw(&mut rig, true);
     }
     assert!(screen(&d).0 > floor_draw, "the replacement capture draws the page");
+}
+
+/// **The tab bar's glass samples the page the frame shows, on EVERY frame of a route dip.**
+///
+/// Reported from the television as a blink when Home's `Movies` pill was pressed: the bar dropped
+/// to a dark track over the hero and then, on the first frame of the grey Library, wore Home's warm
+/// frosted hero. Both are CAPTURE frames — the dip's first frame (outgoing page) and its floor
+/// (incoming page) — where the page image does not exist until the visible pass takes it. The
+/// source walks drew no page at all there, so the blur's direct replay painted nothing and the
+/// chain re-blurred its own scratch target: the previous source, i.e. the OLD page. And no layer
+/// published the dip's alpha, so that stale source was composited at full weight over a page drawn
+/// at the floor's alpha 0.
+///
+/// This drives the product's frame protocol (`app::run`: layers, the source walk below the chrome
+/// band, then the visible walk) through a whole dip and requires, per frame: the source walk puts
+/// the page under the bar (live or as its image), and the composite alpha the glass is told is
+/// the alpha the visible pass drew the page image at.
+#[test]
+fn every_dip_frame_gives_the_bar_glass_the_page_it_shows_at_its_alpha() {
+    let _guard = crate::testlock::serial();
+    use crate::ui::frame::backdrop::{self, Sources, Z};
+    let (mut d, mut rig) = frozen_fixture();
+    let drawn_at = std::rc::Rc::new(std::cell::Cell::new(0));
+    let drawn_alpha = std::rc::Rc::new(std::cell::Cell::new(1.0));
+    d.page_snapshot = Box::new(CountingSnapshot {
+        drawn_at: drawn_at.clone(),
+        drawn_alpha: drawn_alpha.clone(),
+        ..Default::default()
+    });
+    let mut glass = crate::ui::frame::glass::GlassPlan::new();
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
+    let mut dip_frames = 0;
+    for i in 0..40u32 {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap, false);
+        let in_flight = d.nav.tabs.stack.transition.in_flight();
+        let composite = d.backdrop_layers(1.0).into_iter()
+            .filter(|layer| layer.z < Z::CHROME)
+            .find_map(|layer| layer.composite_alpha);
+        // The direct blur job: replay everything below the chrome band.
+        let before = (page_draw_order(&d), drawn_at.get());
+        {
+            let _source = backdrop::enter(sources.clone(), Z::CHROME);
+            d.draw_with_glass_below(&mut rig, &mut glass, true, Z::CHROME);
+        }
+        let source_painted = (page_draw_order(&d), drawn_at.get()) != before;
+        let image_before = drawn_at.get();
+        d.draw(&mut rig, true);
+        let image_alpha = (drawn_at.get() != image_before).then(|| drawn_alpha.get());
+        if !in_flight {
+            continue;
+        }
+        dip_frames += 1;
+        assert!(source_painted,
+            "frame {i}: the glass source walk drew no page under the bar, so the blur re-filters a stale source");
+        if let Some(alpha) = image_alpha {
+            assert_eq!(composite, Some(alpha),
+                "frame {i}: the page image drew at alpha {alpha} but the glass composites its source at {composite:?}");
+        }
+    }
+    assert!(dip_frames >= 8, "premise: the dip ran ({dip_frames} frames)");
+    assert_eq!(d.top_arg(), Some(&FixtureArg::Page(7)));
 }
 
 #[test]

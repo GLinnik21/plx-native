@@ -2,9 +2,10 @@
 //!
 //! Capture jobs follow visible dependencies, not every retained entry: a lower glass hidden by a
 //! frozen or opaque replacement cannot force an upper band onto the inline-framebuffer path. The
-//! direct replay includes that replacement and any live dim above it. Held PageDip images also
-//! split stable content revision from composite alpha. Their full-alpha filtered source is reused
-//! through the fade; `gfx` applies the changing alpha over the constant app ground at composite
+//! direct replay includes that replacement and any live dim above it. The PageDip page layer (a
+//! held image, or a capture frame whose source walk draws the page live) also splits stable
+//! content revision from composite alpha. Its full-alpha filtered source is reused through the
+//! fade; `gfx` applies the changing alpha over the constant app ground at composite
 //! time, while geometry or snapshot-content revision still invalidates normally.
 use crate::ui::Rect;
 
@@ -30,8 +31,9 @@ pub(crate) struct Layer {
     pub blocks: bool,
     pub revision: u64,
     /// Composite-only opacity for an otherwise stable full-alpha source. `None` for ordinary
-    /// layers; held page images use this so filtering keys on content while composition tracks
-    /// the PageDip fade independently.
+    /// layers; the PageDip page layer (a held image, or a capture frame whose source walk
+    /// draws the page live) uses this so filtering keys on content while composition tracks the
+    /// PageDip fade independently.
     pub composite_alpha: Option<f32>,
 }
 #[derive(Clone, Copy, Debug)]

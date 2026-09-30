@@ -5246,6 +5246,13 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             // is laid inside this box rather than across the whole allocation.
             glEnable(GL_SCISSOR_TEST);
             glScissor(0, 0, tw, th);
+            // **The replay starts on the app ground, never on what the target last held.** `a`
+            // is the tap chain's ping-pong target, so a scene that paints nothing under the
+            // region (the dip's capture frames) would publish the previous source's blur as this
+            // one's. Scissored and first in the pass: free on a tiler.
+            let (cr, cg, cb) = crate::ui::theme::CLEAR_RGB;
+            glClearColor(cr, cg, cb, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
             // The same triple the viewport just took, so `Painter::clip` lands on the same pixels.
             CLIP_TARGET = Some((vx, vy, c.gw as f32 / SCR_W / step as f32, tw, th));
             // Authored-space bounds for the draw-call cull. `reg` is already what the region was
