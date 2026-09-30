@@ -839,6 +839,9 @@ fn pair(f: &mut Flow, pr: &Pair, x: f32, w: f32) {
 /// One track line — the name left, its detail right, on ONE baseline. Drawn as two runs into the
 /// same band rather than through two `Flow::run` calls, so the two halves cannot pick up different
 /// feather alphas and read as the broken clip `table.rs` warns about.
+///
+/// Not `ui::fit::two_runs`: both runs are server track names/details, so nothing here is app text
+/// whose fit must be guaranteed.
 fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
     const NAME_FRAC: f32 = 0.42;
     if !f.measure && f.visible(VALUE_H) {

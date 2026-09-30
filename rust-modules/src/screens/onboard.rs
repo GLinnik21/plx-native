@@ -1823,4 +1823,29 @@ mod tests {
             "the row's activation does not read, let alone consume, the pill's own arm record"
         );
     }
+
+    /// **The Favorite libraries table's app-owned text fits its column, in every shipped
+    /// language**, for both mountings (first run and Settings), through the screen's own
+    /// `rebuild` (so the real `source_list::sections` output and the real `sectioned_table`
+    /// width). Server and library names are marked `server_*` by that builder and exempt.
+    #[test]
+    fn every_favourites_row_fits_its_column_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let _g = crate::testlock::serial();
+        let frame_w = RouteLayout::screen().sectioned_table().w;
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let mut browse = BrowseFixture::new();
+            browse.seed_two_sources();
+            let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
+            let first = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+            let inside = OnboardScreen::settings(EntryId(0), browse.capture());
+            for (mounting, screen) in [("first run", &first), ("settings", &inside)] {
+                assert!(screen.table.n_rows() > 0, "the fixture must put rows in the table");
+                out.extend(screen.table.app_fit_failures(frame_w, &format!("{} {mounting}", language.tag())));
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
 }

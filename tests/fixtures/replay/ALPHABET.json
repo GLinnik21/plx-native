@@ -1,7 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
-    "localization": "locales/en/settings.json names the Language destination (Language, its detail line and System default); locales/en/browse.json browse.person.credits pluralises the Filmography count, measured word by word as it wraps; i18n/mod.rs LocaleContext formats dates as ICU YMD short with a full year, and controlled System resolves to en-US, so tests/mock_pms.py's 2011-03-14 reads 3/14/2011.",
+    "localization": "ui/table.rs TableView draw elides each section header (uppercased, at CAPTION) through the Measure, so the Settings root's seven headers (Playback, Privacy, Legal, System, Information, Reporting, On this TV, from locales/en/settings.json) enter the measurement table in capitals; locales/en/settings.json names the Language destination (Language, its detail line and System default); locales/en/browse.json browse.person.credits pluralises the Filmography count, measured word by word as it wraps; i18n/mod.rs LocaleContext formats dates as ICU YMD short with a full year, and controlled System resolves to en-US, so tests/mock_pms.py's 2011-03-14 reads 3/14/2011.",
     "playback_settings": "plex/session.rs DirectPlayMode serializes auto/forced/disabled. screens/settings.rs supplies the added Playback destinations, detail lines and root copy.",
     "controlled_content": "app/bootstrap/effects.rs and bootstrap/stores.rs name content/metadata; metadata.rs MarkerKind/RatingArt; person.rs seed_dev_credits and filmography name the finite departments. tests/mock_pms.py builds people thumb paths, plex GUIDs from sname, two-sname mkv filenames, a four-sname tagline and en/eng/srt/mkv media values. ContentReq::PreviewStop and ContentPanel::{About,Bio} serialize preview_stop/about/bio; the other preview/panel discriminators are object keys.",
     "effect_and_machine_names": "rust-modules/src/app/recorder.rs: Recplay::effect Fx match and machine_name exhaustive MachineId match",
@@ -56,6 +56,13 @@
     "forced",
     "disabled",
     "Playback",
+    "INFORMATION",
+    "LEGAL",
+    "ON THIS TV",
+    "PLAYBACK",
+    "PRIVACY",
+    "REPORTING",
+    "SYSTEM",
     "Video & playback",
     "Audio & subtitles",
     "Default quality and Direct Play.",

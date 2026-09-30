@@ -486,8 +486,8 @@ mod tests {
 
     #[test]
     fn every_contribution_locale_preserves_the_canonical_address() {
-        use crate::i18n::{LocaleContext, Preference};
-        for preference in [Preference::En, Preference::Es, Preference::Be] {
+        use crate::i18n::{LocaleContext, SHIPPED};
+        for preference in SHIPPED {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let caption = crate::i18n::msg::settings_language_contribute_body_in(&locale);
             assert!(!caption.contains("github.com"), "only the caption is translated");
@@ -1097,16 +1097,15 @@ mod tests {
     /// device's whole-pixel advances (see `settings_text_fit_tests.rs` for the Settings root).
     #[test]
     fn every_legal_row_fits_its_column_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let frame_w = crate::ui::route_screen::RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            out.extend(LegalIndex::new(EntryId(0)).table.elided_rows(frame_w, &ShippedMeasure, HEADROOM)
-                .into_iter().map(|e| format!("{tag}: {e}")));
+            let table = &LegalIndex::new(EntryId(0)).table;
+            out.extend(table.app_fit_failures(frame_w, tag));
         }
-        assert!(out.is_empty(), "rows the television would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

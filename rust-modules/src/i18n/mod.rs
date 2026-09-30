@@ -17,6 +17,9 @@ pub(crate) enum Preference {
     Es,
     Be,
 }
+/// Every language the app ships, `System` excluded — the grid a text-fit test sums over.
+#[cfg(test)]
+pub(crate) const SHIPPED: [Preference; 3] = [Preference::En, Preference::Es, Preference::Be];
 impl<'de> Deserialize<'de> for Preference {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;

@@ -7,6 +7,7 @@
 //! metadata: the caller builds the sections, drives selection, and reads `sel` back — so the
 //! same widget serves the in-player track menu and the Settings, Privacy and Legal surfaces.
 #![allow(dead_code)]
+use crate::ui::fit;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
@@ -32,9 +33,23 @@ impl Badge {
     }
 }
 
+/// Who wrote a text slot: the app's own catalog, or a server/user that can send anything (a machine
+/// name, a plex.tv handle, a library someone else named). App text never elides at shipped sizes in
+/// any shipped language; server text may overflow, so [`app_fit_failures`](TableView::app_fit_failures)
+/// ignores it. Every slot defaults to `App`; a caller opts a slot into `Server`, so a forgotten
+/// mark reports an overflow rather than hiding it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Origin {
+    #[default]
+    App,
+    Server,
+}
+
 pub struct Row {
     pub label: String,
+    pub label_origin: Origin,
     pub detail: String, // optional sub-line ("" = none)
+    pub detail_origin: Origin,
     pub badges: Vec<Badge>,
     pub checked: bool, // shows the leading checkmark (the ACTIVE item)
     /// A **switch** rather than a choice: `Some(on)` states itself as the word `On`/`Off` at the
@@ -46,6 +61,7 @@ pub struct Row {
     /// `On`/`Off` — a row whose value is a word rather than a state ("English", "Title"). Wins over
     /// `toggle` if both are somehow set.
     pub value: Option<String>,
+    pub value_origin: Origin,
     /// Quieten the read-out a further step (the value is context rather than the point).
     pub value_dim: bool,
     /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
@@ -76,11 +92,14 @@ impl Row {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            label_origin: Origin::default(),
             detail: String::new(),
+            detail_origin: Origin::default(),
             badges: Vec::new(),
             checked: false,
             toggle: None,
             value: None,
+            value_origin: Origin::default(),
             value_dim: false,
             ticon: None,
             ticon_slot: false,
@@ -113,6 +132,22 @@ impl Row {
         self.checked = v;
         self
     }
+    /// Mark [`Self::label`] as server/user text (a machine name, a library someone else named) —
+    /// see [`Origin`].
+    pub fn server_label(mut self) -> Self {
+        self.label_origin = Origin::Server;
+        self
+    }
+    /// Mark [`Self::detail`] as server/user text — see [`Row::server_label`].
+    pub fn server_detail(mut self) -> Self {
+        self.detail_origin = Origin::Server;
+        self
+    }
+    /// Mark [`Self::value`] as server/user text — see [`Row::server_label`].
+    pub fn server_value(mut self) -> Self {
+        self.value_origin = Origin::Server;
+        self
+    }
     /// Mark this row a SWITCH at the given state — see [`Row::toggle`].
     pub fn toggle(mut self, on: bool) -> Self {
         self.toggle = Some(on);
@@ -136,6 +171,11 @@ impl Row {
             (None, Some(on)) => Some(if on { crate::i18n::msg::widgets_toggle_on() } else { crate::i18n::msg::widgets_toggle_off() }),
             (None, None) => None,
         }
+    }
+    /// [`Origin`] of [`Self::readout`]: a switch's `On`/`Off` word is always app text.
+    #[cfg(test)]
+    fn readout_origin(&self) -> Origin {
+        if self.value.is_some() { self.value_origin } else { Origin::App }
     }
     pub fn detail(mut self, d: impl Into<String>) -> Self {
         self.detail = d.into();
@@ -195,12 +235,20 @@ impl Row {
 
 pub struct Section {
     pub header: String, // "" = no header row
+    pub header_origin: Origin,
     /// Right-aligned accessory on the HEADER line — a second fact about the group, one rung down
     /// and in the header's own dim ink ("Dolby Atmos"; the Sources list's owner handle beside a
-    /// machine name). It is the last run on that line and is **elided** to [`ACCESSORY_W`], so a
-    /// long plex.tv handle truncates on a character instead of colliding with the header or
-    /// widening the panel — the rows below it are never touched.
+    /// machine name). It is the last run on that line and is **elided** to the width
+    /// [`TableView::header_columns`] resolves for it (its natural width capped at [`ACCESSORY_W`],
+    /// and what the header leaves of the span), so a long plex.tv handle truncates on a character
+    /// instead of colliding with the header or widening the panel — the rows below it are never
+    /// touched.
     pub accessory: String,
+    pub accessory_origin: Origin,
+    /// The app-owned LEADING part of a [`Origin::Server`] accessory (the Sources list's
+    /// `Not reachable ·` before a handle), which must fit its resolved column even though the
+    /// whole run may not. Empty when the accessory is wholly one origin. Only the fit report reads it.
+    pub accessory_app_prefix: String,
     /// Dim the WHOLE group — header, accessory and every row — at one alpha.
     ///
     /// Deliberately not [`Row::dim`] applied row by row: a row's dim is an ink role, and the state
@@ -215,13 +263,32 @@ impl Section {
     pub fn new(header: impl Into<String>) -> Self {
         Self {
             header: header.into(),
+            header_origin: Origin::default(),
             accessory: String::new(),
+            accessory_origin: Origin::default(),
+            accessory_app_prefix: String::new(),
             dim: false,
             rows: Vec::new(),
         }
     }
     pub fn accessory(mut self, a: impl Into<String>) -> Self {
         self.accessory = a.into();
+        self
+    }
+    /// Mark [`Self::header`] as server/user text (a machine name) — see [`Origin`].
+    pub fn server_header(mut self) -> Self {
+        self.header_origin = Origin::Server;
+        self
+    }
+    /// Mark [`Self::accessory`] as server/user text (a plex.tv handle) — see [`Origin`].
+    pub fn server_accessory(mut self) -> Self {
+        self.accessory_origin = Origin::Server;
+        self
+    }
+    /// Declare the app-owned leading part of a [`Self::server_accessory`], text included in
+    /// [`Self::accessory`] — see [`Section::accessory_app_prefix`].
+    pub fn accessory_app_prefix(mut self, p: impl Into<String>) -> Self {
+        self.accessory_app_prefix = p.into();
         self
     }
     /// Dim the whole group at [`GROUP_DIM_A`] — see [`Section::dim`].
@@ -330,17 +397,50 @@ fn edge_alpha(ink_bot: f32, vis_bot: f32, pad: f32) -> f32 {
 
 /// A row's two text columns as [`TableView::row_columns`] resolves them: the primary label's (and
 /// its sub-line's) width, and the trailing value's, which the value is elided to.
-/// The share of a row's text span the primary label is guaranteed (up to its natural width)
-/// when a trailing value does not fit beside it — see [`TableView::row_columns`].
-const LABEL_SHARE: f32 = 0.6;
-/// The label's measured width is hugged with this factor (the text-fit tests' own 2% headroom,
-/// `fontcov::advances::HEADROOM`, plus a hair) so the label it keeps is truly whole on the set.
-const LABEL_HUG_MARGIN: f32 = 1.025;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RowColumns {
     pub label_w: f32,
     pub value_w: f32,
+}
+
+/// Which text slot a [`FitIssue`] names.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FitRole {
+    Label,
+    Detail,
+    Value,
+    Header,
+    Accessory,
+}
+
+/// One text slot [`TableView::fit_report`] found would end in an ellipsis at its resolved column.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct FitIssue {
+    pub role: FitRole,
+    pub origin: Origin,
+    pub text: String,
+    pub natural: f32,
+    pub budget: f32,
+}
+#[cfg(test)]
+impl FitIssue {
+    fn describe(&self) -> String {
+        format!("{:?} {:?} is {:.0}px in a {:.0}px column", self.role, self.text, self.natural, self.budget)
+    }
+}
+
+/// Slack, in px, when comparing a resolved column with a run's natural width: `fit::two_runs`
+/// derives the secondary as `span - primary - gap`, which float rounding can leave a hair under the
+/// width it was given.
+#[cfg(test)]
+const FIT_EPS: f32 = 0.01;
+
+/// Fail a text-fit test with every finding [`TableView::app_fit_failures`] collected.
+#[cfg(test)]
+pub(crate) fn assert_no_fit_failures(out: &[String]) {
+    assert!(out.is_empty(), "text the television would end in an ellipsis:\n  {}", out.join("\n  "));
 }
 const ACCESSORY_ICON_W: f32 = 26.0;
 /// The trailing read-out's WEIGHT: `size::LABEL` **bold**, which is what the `PlxNative Design
@@ -611,23 +711,75 @@ impl TableView {
         width.ceil()
     }
 
-    /// Every row label or sub-line that a `frame_w`-wide panel would end in an ellipsis, with
-    /// `headroom` of each row's label budget to spare — for the per-language text-fit tests, which
-    /// measure with the device's own advances (`fontcov::advances::ShippedMeasure`).
+    /// Every text slot (label, detail sub-line, trailing value, section header, section accessory)
+    /// that a `frame_w`-wide table would end in an ellipsis, with `headroom` of its resolved column
+    /// to spare, each tagged with its [`Origin`]. Measure with the device's own advances
+    /// (`fontcov::advances::ShippedMeasure`).
+    ///
+    /// Label and Detail are checked against their column shrunk by `headroom`. Value, Header and
+    /// Accessory are the secondary run of a `two_runs` pair, which resolves a fitting secondary to
+    /// exactly its natural width, so shrinking the column would fail every fitting run. Those roles
+    /// instead re-resolve the pair with EVERY run's natural width divided by `headroom` (glyphs
+    /// running wider than the measure predicts, the primary still claiming its share first) and
+    /// report the secondary only if its own inflated width no longer fits.
     #[cfg(test)]
-    pub(crate) fn elided_rows(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<String> {
+    pub(crate) fn fit_report(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<FitIssue> {
         let (size, bold) = self.label_style();
         let mut out = Vec::new();
-        for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| !r.sep) {
-            let budget = self.label_width(row, frame_w, measure) * headroom;
-            for (text, size, bold) in [(&row.label, size, bold), (&row.detail, theme::size::CAPTION, false)] {
-                let w = measure.width_str(text, size, bold);
-                if w > budget {
-                    out.push(format!("{text:?} is {w:.0}px in a {budget:.0}px column"));
+        for section in &self.sections {
+            if !section.header.is_empty() {
+                let header_text = section.header.to_uppercase();
+                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false);
+                let (header_w, accessory_w) = Self::header_columns(section, frame_w, measure, headroom);
+                if header_w + FIT_EPS < header_nat / headroom {
+                    out.push(FitIssue { role: FitRole::Header, origin: section.header_origin, text: header_text, natural: header_nat, budget: header_w });
+                }
+                if !section.accessory.is_empty() {
+                    let accessory_nat = measure.width_str(&section.accessory, theme::size::MICRO, false).min(ACCESSORY_W);
+                    if accessory_w + FIT_EPS < accessory_nat / headroom {
+                        out.push(FitIssue { role: FitRole::Accessory, origin: section.accessory_origin, text: section.accessory.clone(), natural: accessory_nat, budget: accessory_w });
+                    }
+                    if !section.accessory_app_prefix.is_empty() {
+                        let prefix_nat = measure.width_str(&section.accessory_app_prefix, theme::size::MICRO, false);
+                        if accessory_w + FIT_EPS < prefix_nat / headroom {
+                            out.push(FitIssue { role: FitRole::Accessory, origin: Origin::App, text: section.accessory_app_prefix.clone(), natural: prefix_nat, budget: accessory_w });
+                        }
+                    }
+                }
+            }
+            for row in section.rows.iter().filter(|r| !r.sep) {
+                let label_budget = self.row_columns(row, frame_w, measure).label_w * headroom;
+                let lw = measure.width_str(&row.label, size, bold);
+                if lw > label_budget {
+                    out.push(FitIssue { role: FitRole::Label, origin: row.label_origin, text: row.label.clone(), natural: lw, budget: label_budget });
+                }
+                let dw = measure.width_str(&row.detail, theme::size::CAPTION, false);
+                if dw > label_budget {
+                    out.push(FitIssue { role: FitRole::Detail, origin: row.detail_origin, text: row.detail.clone(), natural: dw, budget: label_budget });
+                }
+                if let Some(value) = row.readout() {
+                    let value_nat = measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0);
+                    let value_w = self.row_columns_under(row, frame_w, measure, headroom).value_w;
+                    if value_w + FIT_EPS < value_nat / headroom {
+                        out.push(FitIssue { role: FitRole::Value, origin: row.readout_origin(), text: value.to_string(), natural: value_nat, budget: value_w });
+                    }
                 }
             }
         }
         out
+    }
+
+    /// [`Self::fit_report`] at the device's advances and headroom, reduced to the [`Origin::App`]
+    /// findings as `"{tag}: {finding}"` lines. A server-owned overflow is not this app's text to
+    /// fix; a caller that wants it too reads `fit_report` directly.
+    #[cfg(test)]
+    pub(crate) fn app_fit_failures(&self, frame_w: f32, tag: &str) -> Vec<String> {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        self.fit_report(frame_w, &ShippedMeasure, HEADROOM)
+            .iter()
+            .filter(|i| i.origin == Origin::App)
+            .map(|i| format!("{tag}: {}", i.describe()))
+            .collect()
     }
 
     fn label_style(&self) -> (std::os::raw::c_int, bool) {
@@ -657,32 +809,75 @@ impl TableView {
     /// compression resistance, measured rather than assumed from English lengths.
     ///
     /// When both runs fit, the value takes its natural width and the label (with its sub-line)
-    /// every pixel left, as it always did. When they do not, the LABEL is the primary read: it
-    /// keeps its natural width up to [`LABEL_SHARE`] of the row's text span, and the value gives
-    /// way first, elided to what is left. The label only yields below its natural width once it
-    /// alone would take more than that share — and then the value still keeps the rest.
+    /// every pixel left. When they do not, the LABEL is the primary read: it keeps its natural
+    /// width up to [`fit::ROW_PRIMARY_SHARE`] of the row's text span and the value gives way first,
+    /// elided to what is left (see [`fit::two_runs`]).
     pub(crate) fn row_columns(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> RowColumns {
+        self.row_columns_under(row, frame_w, measure, 1.0)
+    }
+
+    /// [`Self::row_columns`] with both natural widths divided by `headroom` — `1.0` renders, and
+    /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
+    /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
+    fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> RowColumns {
         let fixed = Self::trailing_width(row, measure) - Self::value_slot(row, measure);
         let span = (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - fixed).max(0.0);
         let Some(value) = row.readout() else {
             return RowColumns { label_w: span, value_w: 0.0 };
         };
-        let value_nat = measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0);
         let (size, bold) = self.label_style();
-        // hugged with a margin: a measure models whole-pixel advances but not the device's
-        // kerning/hinting, so a label kept at exactly its measured width can still elide on the set
-        let label_nat = (measure.width_str(&row.label, size, bold) * LABEL_HUG_MARGIN).ceil();
-        let slot = value_nat + ACCESSORY_GAP;
-        if label_nat + slot <= span {
-            return RowColumns { label_w: span - slot, value_w: value_nat };
-        }
-        let label_w = (span - slot).max(label_nat.min(span * LABEL_SHARE));
-        RowColumns { label_w, value_w: (span - label_w - ACCESSORY_GAP).max(0.0) }
+        let (label_w, value_w) = fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
+            primary_nat: (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil() / headroom,
+            secondary_nat: measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0) / headroom,
+            primary_share: fit::ROW_PRIMARY_SHARE,
+        });
+        RowColumns { label_w, value_w }
     }
 
     /// The trailing value's natural slot (run + its gap), `0` for a row without one.
     fn value_slot(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
         row.readout().map_or(0.0, |v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP)
+    }
+
+    /// A [`Section::header`]'s (uppercased, as drawn) and [`Section::accessory`]'s columns, the
+    /// header band's counterpart of [`Self::row_columns_under`]: the header is the primary, the
+    /// accessory (pre-capped at [`ACCESSORY_W`]) the secondary, so both elide on their own side of
+    /// the gap and never overlap. Without an accessory the header keeps the whole span.
+    ///
+    /// **A SERVER header yields to app-owned accessory text.** When the header is
+    /// [`Origin::Server`] and the accessory is app text (or leads with an
+    /// [`Section::accessory_app_prefix`]), the roles swap: the accessory is the primary, guaranteed
+    /// at least that app text's width (hugged, like a row label), and the server header elides
+    /// first. The accessory then elides only its server tail.
+    fn header_columns(section: &Section, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> (f32, f32) {
+        let span = (frame_w - 2.0 * CONTENT_X).max(0.0);
+        if section.accessory.is_empty() {
+            return (span, 0.0);
+        }
+        let header_nat = measure.width_str(&section.header.to_uppercase(), theme::size::CAPTION, false) / headroom;
+        let accessory_nat = measure.width_str(&section.accessory, theme::size::MICRO, false).min(ACCESSORY_W) / headroom;
+        let app_text = if !section.accessory_app_prefix.is_empty() {
+            Some(section.accessory_app_prefix.as_str())
+        } else if section.accessory_origin == Origin::App {
+            Some(section.accessory.as_str())
+        } else {
+            None
+        };
+        let Some(app_text) = app_text.filter(|_| section.header_origin == Origin::Server) else {
+            return fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
+                primary_nat: header_nat,
+                secondary_nat: accessory_nat,
+                primary_share: fit::ROW_PRIMARY_SHARE,
+            });
+        };
+        let floor = (measure.width_str(app_text, theme::size::MICRO, false) * fit::HUG_MARGIN).ceil() / headroom;
+        let share = floor.max(span * (1.0 - fit::ROW_PRIMARY_SHARE)) / span.max(1.0);
+        let (accessory_w, header_w) = fit::two_runs(span, ACCESSORY_GAP, fit::Pair {
+            primary_nat: accessory_nat.max(floor),
+            secondary_nat: header_nat,
+            primary_share: share.min(1.0),
+        });
+        (header_w, accessory_w)
     }
 
     /// How opaque a row spanning `y..y + h` is drawn at the viewport's bottom edge `vis_bot`.
@@ -934,7 +1129,11 @@ impl TableView {
                         (text_right - content_x).max(0.0),
                         baseline - cap_top,
                     );
-                    if let Ok(cs) = CString::new(sec.header.to_uppercase()) {
+                    let (header_w, accessory_w) = Self::header_columns(sec, frame.w, measure, 1.0);
+                    let header_text = crate::text::elide_by(&sec.header.to_uppercase(), header_w, false, |t| {
+                        measure.width_str(t, hsz, false)
+                    });
+                    if let Ok(cs) = CString::new(header_text) {
                         Label::new(cs.as_ptr(), hsz, self.header_ink)
                             .v(VAlign::CapTop)
                             .draw(p, header_band);
@@ -947,7 +1146,7 @@ impl TableView {
                         // (`TableView.prompt.md`). At CAPTION the two were the same size and a
                         // plex.tv handle read as loud as the machine it hangs off.
                         let asz = theme::size::MICRO;
-                        let a = crate::text::elide_by(&sec.accessory, ACCESSORY_W, false, |t| {
+                        let a = crate::text::elide_by(&sec.accessory, accessory_w, false, |t| {
                             measure.width_str(t, asz, false)
                         });
                         if let Ok(ac) = CString::new(a) {
@@ -1509,5 +1708,79 @@ mod tests {
             }
             assert!(crossed > 0, "the premise: rows do cross the bottom edge at {frame_h}");
         }
+    }
+
+    /// A long (uppercased) header and its right-aligned accessory never claim overlapping pixels,
+    /// for any header/accessory pair.
+    #[test]
+    fn a_long_header_never_overlaps_its_accessory() {
+        use crate::ui::fixture::FixtureMeasure;
+        let frame_w = 700.0;
+        let long_header = "a machine name so long it would eat the whole header band by itself";
+        let cases = [
+            (long_header, "owner@example.com"),
+            (long_header, "x"),
+            ("short", "a handle also long enough to matter here"),
+            ("S", ""),
+        ];
+        for (header, accessory) in cases {
+            let sec = Section::new(header).accessory(accessory);
+            let (header_w, accessory_w) = TableView::header_columns(&sec, frame_w, &FixtureMeasure, 1.0);
+            let span = frame_w - 2.0 * CONTENT_X;
+            assert!(header_w >= 0.0 && accessory_w >= 0.0, "{header:?}/{accessory:?}: negative column");
+            if accessory.is_empty() {
+                assert_eq!(accessory_w, 0.0);
+                continue;
+            }
+            assert!(
+                header_w + ACCESSORY_GAP + accessory_w <= span + 0.01,
+                "{header:?}/{accessory:?}: header_w={header_w} + gap + accessory_w={accessory_w} overruns the {span}px band — they would overlap",
+            );
+        }
+    }
+
+    /// `row_columns`' fallback for a value nothing shortened: the value is elided to what is left
+    /// beside its label, but never to nothing.
+    #[test]
+    fn row_columns_still_elides_an_unshortened_long_value() {
+        use crate::fontcov::advances::ShippedMeasure as M;
+        use crate::ui::machine::Measure;
+        use crate::ui::route_screen::RouteLayout;
+        let frame_w = RouteLayout::screen().sectioned_table().w;
+        // Too long to fit beside its label.
+        const LONG_VALUE: &str = "This value is deliberately far too long to sit beside its label";
+        let mut table = TableView::new();
+        table.compact = false;
+        let rows = [
+            Row::new("Quality").value("Not set").chevron(true),
+            Row::new("Direct Play").value(LONG_VALUE).chevron(true),
+        ];
+        table.set_sections(vec![rows.into_iter().fold(Section::new(""), Section::row)], 0, false);
+        let direct_play_row = &table.sections[0].rows[1];
+        let cols = table.row_columns(direct_play_row, frame_w, &M);
+        let natural = M.width_str(LONG_VALUE, theme::size::LABEL, true);
+        assert!(cols.value_w < natural, "the premise: the long value does not fit beside its label");
+        assert!(cols.value_w > 0.0, "a value keeps a visible slot");
+    }
+
+    /// `fit_report` does not flag a short value that fits, and still flags one that does not.
+    #[test]
+    fn fit_report_does_not_flag_a_short_value_that_fits() {
+        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        let frame_w = 700.0;
+        let mut table = TableView::new();
+        table.compact = false;
+        let rows = [
+            Row::new("Unwatched only").value("Off"),
+            Row::new("Direct Play").value(
+                "This value is deliberately far too long to sit beside its label in a 700px frame",
+            ),
+        ];
+        table.set_sections(vec![rows.into_iter().fold(Section::new(""), Section::row)], 0, false);
+        let issues = table.fit_report(frame_w, &M, HEADROOM);
+        let short_flagged = issues.iter().any(|i| i.role == FitRole::Value && i.text == "Off");
+        assert!(!short_flagged, "a short value that fits must not be reported: {issues:?}");
+        let long_flagged = issues.iter().any(|i| i.role == FitRole::Value && i.text.starts_with("This value"));
+        assert!(long_flagged, "a genuinely too-long value must still be reported: {issues:?}");
     }
 }

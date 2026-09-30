@@ -2679,7 +2679,7 @@ impl SecKind {
 /// directly, sorting movies by their view count and shows by their own. An unrecognised key
 /// 500s the whole listing, which is why [`with_plays_sort`] never sends this for a kind that
 /// hasn't been proven to accept it.
-const PLAYS_SORT_KEY: &str = "viewCount";
+pub(crate) const PLAYS_SORT_KEY: &str = "viewCount";
 
 /// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
 /// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant

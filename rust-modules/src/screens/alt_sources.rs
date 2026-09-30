@@ -208,6 +208,9 @@ pub(crate) struct AltRow {
     pub(crate) label: String,
     /// whose copy it is: `"This account"` / `"friend"`
     pub(crate) detail: String,
+    /// `detail` is this app's own "This account" word (`true`), not another person's name (`false`,
+    /// user text) — which of the two the sub-line's text-fit check may hold to account.
+    pub(crate) own_detail: bool,
     /// the runtime, for the row's trailing read-out — `None` for a copy the server sent no
     /// duration for, which then says nothing rather than "0 min"
     pub(crate) value: Option<String>,
@@ -267,6 +270,7 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
             AltRow {
                 label: c.library.clone(),
                 detail: who.to_string(),
+                own_detail: c.owner.is_none(),
                 // a copy the server sent no duration for leaves the read-out slot EMPTY rather
                 // than claiming "0 min" — the same rule the sub-line's dangling separator followed
                 // while the runtime was part of it
@@ -278,6 +282,28 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
             }
         })
         .collect()
+}
+
+/// The panel's one section, built from the resolved rows alone (pure, so the text-fit suite drives
+/// it). A row's four content places: the tick is WHICH copy you are on, the label WHICH LIBRARY (a
+/// server's name), the sub-line WHOSE (another person's name, or this app's "This account"), the
+/// read-out HOW LONG and the badge WHAT YOU GET.
+fn section_for(rows: &[AltRow]) -> Section {
+    let mut sec = Section::new("");
+    for r in rows {
+        let mut row = Row::new(r.label.clone()).server_label().detail(r.detail.clone()).checked(r.checked);
+        if !r.own_detail {
+            row = row.server_detail();
+        }
+        if let Some(v) = &r.value {
+            row = row.value(v.clone());
+        }
+        if let Some(b) = &r.badge {
+            row = row.badge(Badge::Text(b.clone()));
+        }
+        sec = sec.row(row);
+    }
+    sec
 }
 
 /// What OK on the highlighted row does.
@@ -366,31 +392,16 @@ impl AltSourcesScreen {
         if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
             self.rows = self.live_rows(meta);
         }
-        let mut sec = Section::new("");
         let mut sel = match sel_mode {
             Sel::Keep => self.table.sel.max(0),
             Sel::OnTheCopyYouAreOn => 0,
         };
-        for (i, r) in self.rows.iter().enumerate() {
-            // all four of the cell's content places, which is what the row has to say: the tick is
-            // WHICH copy you are on, the label WHICH LIBRARY, the sub-line WHOSE, the read-out HOW
-            // LONG and the badge WHAT YOU GET. The runtime used to be a dotted second half of the
-            // sub-line, which left the read-out slot empty and made the one fact that lines up down
-            // the panel the one buried mid-string.
-            let mut row = Row::new(r.label.clone())
-                .detail(r.detail.clone())
-                .checked(r.checked);
-            if let Some(v) = &r.value {
-                row = row.value(v.clone());
-            }
-            if let Some(b) = &r.badge {
-                row = row.badge(Badge::Text(b.clone()));
-            }
-            sec = sec.row(row);
-            if r.checked && matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
+        if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
+            if let Some(i) = self.rows.iter().position(|r| r.checked) {
                 sel = i as i32;
             }
         }
+        let sec = section_for(&self.rows);
         sel = sel.min((self.rows.len() as i32 - 1).max(0));
         // rows carry a sub-line — the track menu's size class, not the account popover's
         self.table.compact = false;

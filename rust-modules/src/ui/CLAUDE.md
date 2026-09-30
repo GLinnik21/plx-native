@@ -77,6 +77,48 @@ Do not add a separate reader outline or keycap hint. Route crumbs already name t
 read-only alert panels retain their dismissal hint. Contribution caption and URL lines are centered
 on the QR allocation.
 
+**Text fit is a rule about who owns the text, and it is tested, not eyeballed.** App-owned text
+(`i18n::msg`, `plex::languages` names, `Quality::label`) never elides in any shipped language
+(`i18n::SHIPPED`: en, es, be) at the shipped sizes; server- and user-owned text (machine names,
+handles, profile names, titles) may. `ui::table` types that at the call site with
+`Origin { App, Server }` per text slot, defaulting to App; `Row::server_label`/`server_detail`/
+`server_value` and `Section::server_header`/`server_accessory` mark a slot Server. There is no
+string classifier — a fallback the app itself invents ("Plex server") is App and must not be
+marked. What a row does when its text does not fit is decided by its role:
+
+| role | app text that doesn't fit | server text |
+|---|---|---|
+| trailing value | a `*.short` readout key (`settings.playback.forced.short`, `forced_readout`); the picker keeps the long string. Never stacked into the grey sub-line: it would read as a description | elides |
+| label, detail, header | rewrite the translation shorter (all three languages say the same thing) | elides |
+| prose (alerts, consent) | wraps | wraps |
+
+`ui::fit::two_runs` is THE declared priority for a line with two runs: the primary is guaranteed
+its natural width up to its share of the span, the secondary always keeps the rest (never zero
+unless the span is tiny), and when both fit the secondary takes exactly its natural width. Rows
+use it (label primary, `ROW_PRIMARY_SHARE`, hugged by `HUG_MARGIN`); so do section headers against
+their accessory (uppercased header primary, accessory pre-capped at `ACCESSORY_W`). Sequential
+flows, drop cascades and single-run elisions (`card_row` headings, hero facts, track names) are
+deliberately not migrated — see the note at each site.
+
+`TableView::fit_report(frame_w, &Measure, HEADROOM) -> Vec<FitIssue>` (test-only) resolves every
+label, detail, value, header and accessory column and reports what would end in an ellipsis. Label
+and Detail use the draw's own column, shrunk by the headroom; Value, Header and Accessory are
+re-resolved at natural widths inflated by `1/HEADROOM`, since a fitting secondary sits at exactly
+its natural width. A `Section::accessory_app_prefix` declares the app-owned lead of a Server
+accessory (`Not reachable ·` before a handle) so it is still checked. Tests call
+`TableView::app_fit_failures(frame_w, tag)`, which runs it with
+`fontcov::advances::ShippedMeasure` (whole-pixel advances, the way the device sums them; the
+simulator's fractional advances hide overflows) and keeps the `Origin::App` findings, then
+`assert_no_fit_failures`.
+
+Adaptive text size or kerning is not used to make text fit. Type sits on named size rungs, the
+CAPTION 24 rung is the legibility floor at TV distance, and every extra size costs another glyph
+cache. A string that does not fit is rewritten or given a short key.
+
+**Known unchecked surfaces** (no `fit_report` covers them yet): action pills, crumbs and tabs in
+`app/chrome.rs`, the player HUD, `up_next`, chapters, and card-row names such as profile names.
+Do not read their absence from a test as a pass.
+
 ## The architecture (restructure spec v4)
 
 The owner's goal, verbatim from the spec: *"the application's behaviour is described by several

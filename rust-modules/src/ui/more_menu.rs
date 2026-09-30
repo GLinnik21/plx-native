@@ -744,16 +744,14 @@ mod focus_tests {
     /// their *Off*. Measured with the device's whole-pixel advances.
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let ps = crate::route::PlaybackSession::default();
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let menu = MoreMenuState::new(&ps);
-            out.extend(menu.table.elided_rows(PANEL_W, &ShippedMeasure, HEADROOM)
-                .into_iter().map(|e| format!("{}: {e}", language.tag())));
+            out.extend(menu.table.app_fit_failures(PANEL_W, language.tag()));
         }
-        assert!(out.is_empty(), "rows the menu would end in an ellipsis:\n  {}", out.join("\n  "));
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

@@ -65,7 +65,7 @@ pub(crate) enum SrcAction {
 /// The panel's does. **The first-run route's does not**, and that is a design call rather than an
 /// omission: a share that arrives later must not reopen a first-run screen, so there is nothing
 /// for a refresh to be FOR there — it appears unpinned in the Library chip's list, "which is where
-/// 'Check for new shares' already lives" (`Shared Sources.dc.html` §F).
+/// 'Check for shared libraries' already lives" (`Shared Sources.dc.html` §F).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Tail {
     Recheck,
@@ -95,7 +95,7 @@ fn state_word(s: SourceState) -> Option<&'static str> {
 /// It has to read as a different KIND of fault from [`unreachable`], because it has a different
 /// remedy and the wrong word costs the user an evening — "not reachable" sends somebody to look at
 /// a router for something no router was ever part of. The remedy is in this same panel, one row
-/// down: *Check for new shares* is the `/api/v2/resources` refetch that reissues the per-(user,
+/// down: *Check for shared libraries* is the `/api/v2/resources` refetch that reissues the per-(user,
 /// server) `accessToken`, which is why this run does not have to carry an instruction as well.
 fn unauthorized() -> &'static str { crate::i18n::msg::widgets_source_unauthorized() }
 /// Did not answer at all — refused, timed out, or unresolvable.
@@ -162,19 +162,42 @@ fn usable(g: &SrcGroup) -> bool {
 /// worst misleading: "Not reachable · Relay · friend" reads as three problems where there is one,
 /// and the tier that failed is not a fact about the server the user is being asked to look at.
 fn accessory(g: &SrcGroup) -> String {
+    let (words, handle) = accessory_parts(g);
+    match (words.is_empty(), handle) {
+        (_, "") => words,
+        (true, h) => h.to_string(),
+        (false, h) => format!("{words} \u{b7} {h}"),
+    }
+}
+
+/// [`accessory`]'s two owners: the APP's `state · tier` words and the SERVER's handle.
+fn accessory_parts(g: &SrcGroup) -> (String, &str) {
     let tier = (g.state == SourceState::Reachable)
         .then(|| g.tier.and_then(tier_word))
         .flatten();
-    let runs = [
-        state_word(g.state),
-        tier,
-        (!g.handle.is_empty()).then_some(g.handle.as_str()),
-    ];
-    runs.iter()
+    let words = [state_word(g.state), tier]
+        .iter()
         .flatten()
         .copied()
         .collect::<Vec<_>>()
-        .join(" \u{b7} ")
+        .join(" \u{b7} ");
+    (words, g.handle.as_str())
+}
+
+/// The group header's [`Section`] accessory, ownership marked. Without a handle the whole run is
+/// app text and is fit-checked as such. With one the whole run is Server (a 34-character handle may
+/// elide), but the app-owned `state · tier ·` lead is declared so the fit report still proves it
+/// fits the resolved column.
+fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
+    let (words, handle) = accessory_parts(g);
+    let sec = sec.accessory(accessory(g));
+    if handle.is_empty() {
+        sec
+    } else if words.is_empty() {
+        sec.server_accessory()
+    } else {
+        sec.server_accessory().accessory_app_prefix(format!("{words} \u{b7}"))
+    }
 }
 
 /// Build the list.
@@ -206,11 +229,11 @@ pub(crate) fn sections(
         // is named, and the reason every other surface can say only the handle. A group that is not
         // working also SAYS so there, and says it FIRST — see [`accessory`]. It is a state in the
         // same register as the rows' own `On`/`Off`.
-        let mut sec = Section::new(g.name.clone())
-            .accessory(accessory(g))
-            .dim(!usable(g));
+        let sec = Section::new(g.name.clone())
+            .server_header();
+        let mut sec = header_accessory(sec, g).dim(!usable(g));
         for r in mine {
-            let mut row = Row::new(r.title.clone());
+            let mut row = Row::new(r.title.clone()).server_label();
             row = match level {
                 Level::Browse => row.checked(r.current).detail(r.count_line.clone()),
                 Level::OnHome => row
@@ -377,4 +400,99 @@ mod tests {
     }
 
     include!("source_list_contract_tests.rs");
+
+    /// **Every app-owned text this builder draws fits its column, in every shipped language** —
+    /// the group header (`server_header`), a handle-bearing accessory (`server_accessory`) and the
+    /// row label (`server_label`) are marked Server and exempt, EXCEPT that the accessory's app-owned
+    /// `state · tier ·` lead is declared (`accessory_app_prefix`) and checked; an accessory with no
+    /// handle is wholly App. The "needs a library" sub-line and the roster-refresh row are checked
+    /// too, at both surfaces' widths: the Library panel's fixed 650px
+    /// (`screens::library::menu::LibraryMenu::frame`) and the Favorite libraries editor's full
+    /// table width (`RouteLayout::screen().sectioned_table()`, `screens::onboard`).
+    #[test]
+    fn every_app_owned_run_fits_its_column_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use crate::ui::route_screen::RouteLayout;
+        use crate::ui::table::TableView;
+        let widths = [
+            ("library panel", 650.0),
+            ("favourites editor", RouteLayout::screen().sectioned_table().w),
+        ];
+        let groups = vec![
+            SrcGroup { name: "a-very-long-shared-server-machine-name".into(), handle: "a-long-plex-tv-handle-string".into(),
+                state: SourceState::Unauthorized, tier: None },
+            SrcGroup { name: "home-nas".into(), handle: String::new(), state: SourceState::InsecureOnly, tier: None },
+            SrcGroup { name: "friends-server".into(), handle: "friend".into(), state: SourceState::Reachable, tier: Some(Location::Relay) },
+        ];
+        let rows = vec![
+            crate::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "185 films".into(),
+                pinned: false, last_pinned: false, current: false },
+            crate::browse::SrcRow { src: 1, section: 1, title: "TV Shows".into(), count_line: "40 shows".into(),
+                pinned: true, last_pinned: true, current: false },
+            crate::browse::SrcRow { src: 2, section: 2, title: "Home Videos".into(), count_line: "12 films".into(),
+                pinned: true, last_pinned: false, current: true },
+        ];
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            for (surface, w) in widths {
+                for (level_name, level, tail) in [("browse", Level::Browse, Tail::Recheck), ("on_home", Level::OnHome, Tail::None)] {
+                    let (secs, _) = sections(level, &groups, &rows, tail);
+                    let mut table = TableView::new();
+                    table.compact = false;
+                    table.set_sections(secs, 0, false);
+                    out.extend(table.app_fit_failures(w, &format!("{tag} {surface} {level_name}")));
+                }
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
+
+    fn one_group_sections(g: SrcGroup) -> Vec<Section> {
+        let rows = vec![crate::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "1 film".into(),
+            pinned: true, last_pinned: false, current: false }];
+        sections(Level::Browse, &[g], &rows, Tail::None).0
+    }
+
+    /// **Who owns the accessory.** No handle: the whole run is the app's `state · tier` words, so
+    /// it is App and checked. A handle: Server, but the app-owned lead is declared so the fit
+    /// report still checks it.
+    #[test]
+    fn a_handleless_accessory_is_app_text_and_a_handle_keeps_its_app_lead_checked() {
+        use crate::ui::table::Origin;
+        let bare = &one_group_sections(group(SourceState::Unreachable, None, ""))[0];
+        assert_eq!(bare.accessory_origin, Origin::App);
+        let owned = &one_group_sections(group(SourceState::Unreachable, None, "friend"))[0];
+        assert_eq!(owned.accessory_origin, Origin::Server);
+        assert_eq!(owned.accessory_app_prefix, "Not reachable \u{b7}");
+        let silent = &one_group_sections(group(SourceState::Reachable, None, "friend"))[0];
+        assert!(silent.accessory_app_prefix.is_empty(), "a handle alone is all Server");
+    }
+
+    /// A long machine name leaves the accessory the header's leftover (~220px on the 650px panel):
+    /// the app's state words, with and without a handle, must still fit it in every language.
+    #[test]
+    fn the_state_words_fit_beside_a_long_machine_name_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use crate::ui::table::TableView;
+        let name = "a-very-long-shared-server-machine-name-that-keeps-going";
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            for state in [SourceState::InsecureOnly, SourceState::Unreachable, SourceState::Unauthorized] {
+                for tier in [None, Some(Location::Relay)] {
+                    for handle in ["", "a-long-plex-tv-handle-string"] {
+                        let mut g = group(state, tier, handle);
+                        g.name = name.into();
+                        let mut table = TableView::new();
+                        table.compact = false;
+                        table.set_sections(one_group_sections(g), 0, false);
+                        out.extend(table.app_fit_failures(650.0, &format!("{} {state:?} {handle:?}", language.tag())));
+                    }
+                }
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
 }
