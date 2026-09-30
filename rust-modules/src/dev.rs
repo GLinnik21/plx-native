@@ -58,7 +58,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 31] = [
+const DIAG: [&str; 32] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -114,7 +114,13 @@ const DIAG: [&str; 31] = [
     // `stall_ceiling_ms` gates arm it under every fps scene, and a scene whose gate moved the boot
     // away from the screen it grades would fail as "never entered this screen".
     "plxnative-framedrop",
+    // The poster pipeline's observers: the cache counters and the per-image timeline
+    // (`app/adapters/poster/trace.rs`). Both only READ the store and write log lines, and the boot
+    // they exist to trace is the owner's everyday one — who's-watching picker, then Home. A
+    // non-DIAG trigger suppresses that picker, so the trace would observe a different boot from
+    // the one it was armed to explain.
     "plxnative-imagecache-stats",
+    "plxnative-imgtrace",
     "plxnative-imagecache-bypass",
     // The deterministic RECORDER and its replay trigger (`ui/rec.rs`, NOT YET IN THE TREE — reserved
     // here first so the recorder cannot land as a non-DIAG trigger and move the boot screen out
@@ -1194,6 +1200,33 @@ mod tests {
         assert!(super::armed_triggers_in(&root).is_empty());
         std::fs::write(root.join("plxnative-home"), b"").unwrap();
         assert_eq!(super::armed_triggers_in(&root), vec!["plxnative-home"]);
+    }
+
+    /// The poster pipeline's two observers — the per-image timeline and the cache counters — must
+    /// see the boot they were armed on. Armed as ordinary triggers they suppressed the
+    /// who's-watching picker, so the picker → Home path (the owner's everyday boot) could not be
+    /// traced at all.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_poster_observers_are_never_armed_triggers() {
+        let _serial = crate::testlock::serial();
+        let root = std::env::temp_dir().join(format!(".plx-poster-observers-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = Cleanup(root.clone());
+        for name in ["plxnative-imgtrace", "plxnative-imagecache-stats"] {
+            std::fs::write(root.join(name), b"").unwrap();
+        }
+        // `is_armed_trigger` is the predicate `any_trigger_present` (the picker suppression) applies
+        // to each runtime entry; `armed_triggers_in` lists DIAG files too, by design.
+        let armed: Vec<String> = std::fs::read_dir(&root).unwrap().filter_map(|e| e.ok())
+            .filter(super::is_armed_trigger)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(armed.is_empty(), "a poster observer counts as an armed trigger: {armed:?}");
     }
 
     /// A DIRECTORY whose name matches the trigger prefix must not read as an armed trigger.
