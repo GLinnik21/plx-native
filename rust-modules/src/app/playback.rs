@@ -398,7 +398,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
 /// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
 /// stay-paused variant. Written out four separate times in this file before it had a name.
 pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
-    if paused() {
+    if super::lifecycle::viewer_paused() {
         set_transport_paused(pa, false);
     }
 }
@@ -557,7 +557,7 @@ pub(crate) fn player_requests(
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
             PlayerReq::Transport(play) => {
-                set_transport_paused(pa, super::lifecycle::transport_target(play, paused()));
+                set_transport_paused(pa, super::lifecycle::transport_target(play, super::lifecycle::viewer_paused()));
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, HUD_LINGER_MS);
                     player.publish();

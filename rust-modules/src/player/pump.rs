@@ -676,16 +676,20 @@ fn run_claim_tail(
 /// the fresher value to re-arm into `TX.seek_to_ns` after the reload resets it
 /// (`TX::reset_for_reload`), or `None` if there is nothing to carry.
 fn commit_or_carry_seek(pending_seek: i64) -> Option<i64> {
-    if pending_seek < 0 {
-        return None;
-    }
     let current = TX.seek_to_ns.load(Relaxed);
-    if current == pending_seek {
-        crate::route::commit_user_seek();
-        None
-    } else {
-        Some(current)
+    // Anything on the mailbox that is not exactly the target this claim was built for is a press
+    // the claim never saw — including the first press of the flight when NO seek was pending at
+    // claim time (`pending_seek < 0`), which the reload's `TX.reset_for_reload()` would otherwise
+    // clear. Its reducer intent (`pending_seek_ns`) is left owed: the pump's own seek branch
+    // commits it when it applies the re-armed target.
+    if current >= 0 && current != pending_seek {
+        return Some(current);
     }
+    if pending_seek >= 0 {
+        // The reload lands AT the claim's own seek: cross it in the reducer now.
+        crate::route::commit_user_seek();
+    }
+    None
 }
 
 /// Restore a fresher seek target carried past a reload by [`commit_or_carry_seek`]. The pump's
@@ -913,6 +917,9 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             // accepted claim's reload has kept the pause, so the Play lands on the NEW stream.
             let hold = super::claim_hold::take(action.serial());
             let replaced = run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+            // The reload (if any) has moved the Engine onto the new stream; only now is the
+            // encoder it replaced safe to stop.
+            crate::route::retire_superseded_encoder();
             super::claim_hold::release(pa, hold);
             if replaced {
                 return;
@@ -1576,6 +1583,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
 #[cfg(test)]
 mod tests {
     use super::{
+        commit_or_carry_seek, rearm_carried_seek, TX,
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
         OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
@@ -1774,5 +1782,81 @@ mod tests {
             "a completed and feedable segment removed the underflow the old request described",
         );
         assert!(!rebuffer_request_is_current(false, 10_000, 10_000));
+    }
+
+    /// Finding: a seek pressed during a claim's flight, when NO seek was pending at claim time
+    /// (`pending_seek < 0`), was dropped — `commit_or_carry_seek` returned `None` for every
+    /// negative `pending_seek`, and the reload's `TX.reset_for_reload()` then cleared the press.
+    #[test]
+    fn a_seek_pressed_mid_flight_lands_after_the_reload_when_none_was_pending_at_claim_time() {
+        let _serial = crate::testlock::serial();
+        TX.reset();
+        crate::route::reject_user_seek();
+        let target = 40_000_000_000;
+        crate::route::note_user_seek_intent(target);
+        TX.seek_to_ns.store(target, Release);
+
+        let carried = commit_or_carry_seek(-1);
+        TX.reset_for_reload();
+        rearm_carried_seek(carried);
+        let landed = TX.seek_to_ns.load(Relaxed);
+        let intent_still_owed = crate::route::commit_user_seek();
+        TX.reset();
+        crate::route::reject_user_seek();
+        assert_eq!(landed, target, "the mid-flight seek was cleared by the reload instead of carried");
+        assert!(intent_still_owed, "the seek intent stays owed for the pump's own seek branch to commit");
+    }
+
+    /// A seek pressed AFTER the claim captured an older one supersedes it: carried, not committed.
+    #[test]
+    fn a_fresher_seek_than_the_claims_is_carried_past_the_reload() {
+        let _serial = crate::testlock::serial();
+        TX.reset();
+        crate::route::reject_user_seek();
+        crate::route::note_user_seek_intent(50_000_000_000);
+        TX.seek_to_ns.store(50_000_000_000, Release);
+
+        let carried = commit_or_carry_seek(30_000_000_000);
+        TX.reset_for_reload();
+        rearm_carried_seek(carried);
+        let landed = TX.seek_to_ns.load(Relaxed);
+        let owed = crate::route::commit_user_seek();
+        TX.reset();
+        crate::route::reject_user_seek();
+        assert_eq!(landed, 50_000_000_000);
+        assert!(owed);
+    }
+
+    /// The exact-match path: the claim's own seek is still the newest, so the reload crosses it and
+    /// the intent is committed (settled) rather than carried.
+    #[test]
+    fn the_claims_own_seek_is_committed_not_carried() {
+        let _serial = crate::testlock::serial();
+        TX.reset();
+        crate::route::reject_user_seek();
+        let target = 30_000_000_000;
+        crate::route::note_user_seek_intent(target);
+        TX.seek_to_ns.store(target, Release);
+
+        let carried = commit_or_carry_seek(target);
+        TX.reset_for_reload();
+        rearm_carried_seek(carried);
+        let landed = TX.seek_to_ns.load(Relaxed);
+        let still_owed = crate::route::commit_user_seek();
+        TX.reset();
+        crate::route::reject_user_seek();
+        assert_eq!(carried, None);
+        assert_eq!(landed, -1, "nothing is re-armed: the reload lands AT the claim's target");
+        assert!(!still_owed, "the exact-match commit settled the intent");
+    }
+
+    /// No seek anywhere: nothing to carry, nothing to commit.
+    #[test]
+    fn no_seek_at_all_carries_nothing() {
+        let _serial = crate::testlock::serial();
+        TX.reset();
+        crate::route::reject_user_seek();
+        assert_eq!(commit_or_carry_seek(-1), None);
+        assert!(!crate::route::commit_user_seek());
     }
 }

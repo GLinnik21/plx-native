@@ -1293,7 +1293,7 @@ pub(crate) unsafe fn key_ok(
                 super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
-            let np = !paused();
+            let np = !super::lifecycle::viewer_paused();
             if np {
                 if set_transport_paused(pa, true) {
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {

@@ -1041,13 +1041,6 @@ pub(super) struct PlayerControl {
     start_deferred: Option<(u64, DeferredOriginalEffects)>,
     pending_original: Option<PendingOriginal>,
     timeline: Option<TimelineProjection>,
-    /// A terminal engine failure ([`fail_current_engine`]) arrived while a claim's worker owned
-    /// `Applying`. The worker never touches `PlaybackSession` and has no route-failure vocabulary
-    /// of its own, so the failure cannot publish `Failed` immediately without racing the claim it
-    /// interrupted; recording it here is what lets [`take_ready_retranscode_claim`] apply it the
-    /// moment the claim would otherwise settle, instead of quietly publishing `Prepared`/`Stable`
-    /// over a source that already died.
-    deferred_engine_failure: bool,
 }
 
 /// The physical stream the demux worker has committed, including the HLS declaration that has to
@@ -1080,7 +1073,6 @@ static PLAYER_CONTROL: std::sync::Mutex<PlayerControl> = std::sync::Mutex::new(P
     start_deferred: None,
     pending_original: None,
     timeline: None,
-    deferred_engine_failure: false,
 });
 
 fn advance_route(active: &mut ActiveEncoderState) {
@@ -1246,7 +1238,6 @@ fn begin_playback_request() -> bool {
     control.displaced_pick = false;
     control.pending_auto = None;
     control.pending_seek_ns = None;
-    control.deferred_engine_failure = false;
     if let Some(fallback) = fallback {
         control.resolve_fallback = Some(fallback);
     }
@@ -1516,10 +1507,6 @@ pub(crate) fn finish_route_action(ps: &mut PlaybackSession, action: &ClaimedRout
         return false;
     }
     if result == RouteApplyResult::Prepared {
-        if control.deferred_engine_failure {
-            apply_deferred_engine_failure_locked(&mut control, action.serial);
-            return false;
-        }
         // A claim whose PMS half ran on a worker carries the revision/quality/projection it was
         // BUILT from (finding: a second edit queued mid-flight must not get marked applied — see
         // `execute_retranscode_claim`'s capture of `ClaimSnapshot`). Every other claim settles
@@ -1546,25 +1533,10 @@ pub(crate) fn finish_route_action(ps: &mut PlaybackSession, action: &ClaimedRout
         install_route_projection(ps, &applied);
     }
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    if control.deferred_engine_failure {
-        apply_deferred_engine_failure_locked(&mut control, action.serial);
-    } else if control.phase == ControlPhase::Applying(action.serial) {
+    if control.phase == ControlPhase::Applying(action.serial) {
         control.phase = ControlPhase::Stable;
     }
     true
-}
-
-/// Publish a deferred [`fail_current_engine`] the moment the claim which hid it behind `Applying`
-/// would otherwise settle. Mirrors `fail_current_engine`'s own `Applying` cleanup, using the exact
-/// serial that action already reserved instead of minting a fresh one.
-fn apply_deferred_engine_failure_locked(control: &mut PlayerControl, serial: u64) {
-    control.engine_epoch = next_generation(control.engine_epoch);
-    control.media_epoch = next_generation(control.media_epoch);
-    control.pending_auto = None;
-    control.start_deferred = None;
-    control.timeline = None;
-    control.phase = ControlPhase::Failed(serial);
-    control.deferred_engine_failure = false;
 }
 
 /// Return the pending route-start transaction while the reducer is between preparation and a
@@ -1928,6 +1900,7 @@ pub(crate) fn drain_route_start_results(ps: &mut PlaybackSession) {
 /// Revoke the Engine/media tickets and expose Failed as one reducer edge rather than changing only
 /// the UI playback enum while automatic workers still believe the route is publishable.
 pub(crate) fn fail_current_engine() {
+    let mut was_applying = false;
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     let serial = match control.phase {
         ControlPhase::Preparing(serial)
@@ -1946,14 +1919,17 @@ pub(crate) fn fail_current_engine() {
         },
         ControlPhase::Failed(_) | ControlPhase::Idle | ControlPhase::Stopping => return,
         ControlPhase::Resolving => return,
-        // A claim's worker owns this phase and has no route-failure vocabulary of its own (it
-        // never touches `PlaybackSession`). Record the failure instead of publishing it now — a
-        // stray `Failed` here would race whichever `Prepared`/`Rejected` the claim settles with.
-        // `take_ready_retranscode_claim` applies it the moment this exact claim would otherwise
-        // land.
-        ControlPhase::Applying(_) => {
-            control.deferred_engine_failure = true;
-            return;
+        // A claim's worker owns this phase, and the Engine it was going to reload just died. The
+        // failure is published NOW under the claim's own serial: the pump returns on a terminal
+        // failure before it ever drains a landing, so a failure parked behind `Applying` would
+        // leave the phase (and the claim hold's spinner) in flight forever instead of reaching
+        // the error read-out. The claim's late landing is safe: `take_ready_retranscode_claim`
+        // discards any landing whose serial is no longer `Applying`, stopping the encoder it
+        // started, and the epoch bump below refuses the worker's own commit if it has not made
+        // one yet.
+        ControlPhase::Applying(serial) => {
+            was_applying = true;
+            serial
         }
     };
     control.engine_epoch = next_generation(control.engine_epoch);
@@ -1962,6 +1938,11 @@ pub(crate) fn fail_current_engine() {
     control.start_deferred = None;
     control.timeline = None;
     control.phase = ControlPhase::Failed(serial);
+    drop(control);
+    if was_applying {
+        // The claim's presentation hold (`player::claim_hold`) has nothing left to give back to.
+        crate::player::claim_hold::clear();
+    }
 }
 
 /// Invalidate the workers belonging to the Engine being torn down. Pending explicit contracts are
@@ -1985,8 +1966,7 @@ pub(crate) fn begin_engine_teardown(for_reload: bool) {
         control.pending_seek_ns = None;
         control.phase = ControlPhase::Stopping;
         control.timeline = None;
-        control.deferred_engine_failure = false;
-    } else {
+        } else {
         control.phase = match control.phase {
             ControlPhase::Starting(serial, _) => {
                 // The physical attempt being torn down can still publish from its media thread.
@@ -2065,6 +2045,13 @@ pub(crate) fn pending_user_route_intent(intent: UserRouteIntent) -> bool {
         == Some(intent)
 }
 
+/// Test-only: put the reducer in `Applying(serial)` without a real claim, for a test that owns a
+/// presentation hold (`player::claim_hold`) and needs its serial to name a claim still flying.
+#[cfg(test)]
+pub(crate) fn force_applying_for_test(serial: u64) {
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(serial);
+}
+
 #[cfg(test)]
 pub(crate) fn reset_player_control_for_test(ps: &PlaybackSession) {
     let projection = route_projection(ps);
@@ -2093,7 +2080,6 @@ pub(crate) fn reset_player_control_for_test(ps: &PlaybackSession) {
     control.start_deferred = None;
     control.pending_original = None;
     control.timeline = None;
-    control.deferred_engine_failure = false;
 }
 
 /// **Candidate encoder names are allocated HERE, process-globally, and that is the whole point.**
@@ -7138,6 +7124,11 @@ enum RetranscodeWorkerOutcome {
         /// so a route change landing in the gap between the commit and the main thread draining the
         /// mailbox would otherwise go unnoticed.
         ticket: WorkerTicket,
+        /// The encoder session the route was playing before this attempt replaced it (empty when
+        /// there was none). NOT stopped by the attempt: the stream it feeds is still the one on
+        /// screen until the landing reloads, so the caller retires it only after that reload
+        /// (see [`retire_superseded_encoder`]).
+        superseded: String,
     },
     Refused,
 }
@@ -7240,14 +7231,15 @@ fn try_retranscode(
         let _ = inputs.client.transcode_stop(&qsess);
         return RetranscodeWorkerOutcome::Refused;
     };
-    if !inputs.expected.encoder().is_empty() && inputs.expected.encoder() != qsess {
-        // Already off the frame thread wherever this runs now (worker or, for the still-inline
-        // sync callers, wrapped in `allow_blocking`) — no need for `retranscode_as`'s old nested
-        // `spawn_small_keeping` just to avoid blocking main.
-        let _ = inputs.client.transcode_stop(inputs.expected.encoder());
-    }
+    // The encoder this replaces keeps running: it still feeds the engine on screen (paused at the
+    // claim offset, for a claimed retranscode) until the landing reloads onto `qsess`. Stopping it
+    // here killed the live stream seconds early, and on the synchronous callers put one more
+    // blocking round trip on the frame thread.
+    let superseded = Some(inputs.expected.encoder())
+        .filter(|old| !old.is_empty() && *old != qsess)
+        .map(str::to_owned)
+        .unwrap_or_default();
     let enhancement = classify_outcome(Some(&decision), inputs.carried_audio.as_ref(), audio);
-    log_enhancement_outcome(Some((output_codecs.0.as_str(), output_codecs.1.as_str())), enhancement, audio);
     // NEVER log the URL. `transcode_start_url` ends in `X-Plex-Token=…`, and this line is reached
     // by an ordinary audio-track switch — so the app's own support channel ("send us
     // /tmp/plxnative-events.log") was asking users to paste a live PMS credential into a public
@@ -7265,6 +7257,7 @@ fn try_retranscode(
         contract,
         enhancement,
         ticket: replacement_ticket,
+        superseded,
     }
 }
 
@@ -7305,6 +7298,31 @@ fn prepare_retranscode_inputs(
     })
 }
 
+/// The fields a successful attempt changes, on a projection rather than on the session: the one
+/// list [`install_retranscode_outcome`] writes to `ps` AND [`take_ready_retranscode_claim`] writes
+/// to the claim's snapshot, so the reducer's restore point can never describe a stream the claim
+/// already replaced.
+fn apply_retranscode_outcome_to_projection(
+    p: &mut AppliedRouteProjection,
+    qsess: String,
+    url: String,
+    vcodec: String,
+    acodec: String,
+    contract: crate::plex::EncodeContract,
+    enhancement: EnhancementOutcome,
+) {
+    p.contract = contract;
+    p.enhancement = enhancement;
+    p.tsession = qsess;
+    p.url = url;
+    p.stream_vcodec = vcodec;
+    p.stream_acodec = acodec;
+    p.stream_fps = 0.0;
+    p.stream_dovi = crate::metadata::Dovi::NONE;
+    p.stream_dv_decision = crate::metadata::DvDecision::NONE;
+    p.stream_immersive = false;
+}
+
 /// Install a successful attempt's session projection. Publishes `cur_contract` and
 /// `cur_enhancement` only after PMS accepted it — the applied enhancement is never written at the
 /// selection (I9) — same rule `retranscode_as` always followed, now shared by the sync and worker
@@ -7318,16 +7336,18 @@ fn install_retranscode_outcome(
     contract: crate::plex::EncodeContract,
     enhancement: EnhancementOutcome,
 ) {
-    let s = &mut *ps;
-    s.cur_contract = contract;
-    s.cur_enhancement = enhancement;
-    s.tsession = qsess;
-    s.url = url;
-    s.stream_vcodec = vcodec;
-    s.stream_acodec = acodec;
-    s.stream_fps = 0.0;
-    clear_output_dv(s);
-    s.stream_immersive = false;
+    let mut projection = route_projection(ps);
+    apply_retranscode_outcome_to_projection(&mut projection, qsess, url, vcodec, acodec, contract, enhancement);
+    install_route_projection(ps, &projection);
+    let s = &*ps;
+    // Logged HERE, where the outcome actually becomes the session's, and not in the worker: a
+    // landing that goes stale before the drain must not print "enhancement: applied" for a route
+    // that never took effect.
+    log_enhancement_outcome(
+        Some((s.stream_vcodec.as_str(), s.stream_acodec.as_str())),
+        enhancement,
+        contract.audio,
+    );
 }
 
 /// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
@@ -7349,8 +7369,11 @@ fn retranscode_as(
         try_retranscode(&inputs, contract)
     };
     match outcome {
-        RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, .. } => {
+        RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, superseded, .. } => {
             install_retranscode_outcome(ps, qsess, url.clone(), vcodec, acodec, contract, enhancement);
+            // The caller reloads onto the new stream next; the old encoder is stopped without
+            // waiting for PMS to answer, as `retranscode_as` always did.
+            stop_encoder_session(inputs.client, superseded);
             Some(url)
         }
         RetranscodeWorkerOutcome::Refused => None,
@@ -7718,6 +7741,10 @@ enum RetranscodeClaimResult {
         /// ([`discard_retranscode_claim_slot`]) can stop the session it just started.
         ticket: WorkerTicket,
         client: &'static crate::plex::Client,
+        /// The encoder the route was playing before this attempt (see
+        /// [`RetranscodeWorkerOutcome::Applied::superseded`]): retired after the reload on an
+        /// accepted landing, and stopped together with `qsess` on a discarded one.
+        superseded: String,
     },
     NativeAudio { ordinal: i32, codec: String },
     Rejected(&'static str),
@@ -7744,10 +7771,10 @@ fn run_retranscode_claim_worker(
     primary_contract: crate::plex::EncodeContract,
     fallback: RetranscodeFallback,
 ) -> RetranscodeClaimResult {
-    if let RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket } =
+    if let RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket, superseded } =
         try_retranscode(inputs, primary_contract)
     {
-        return RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client };
+        return RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client, superseded };
     }
     match fallback {
         RetranscodeFallback::RejectWith(reason) => RetranscodeClaimResult::Rejected(reason),
@@ -7755,8 +7782,8 @@ fn run_retranscode_claim_worker(
             RetranscodeClaimResult::NativeAudio { ordinal, codec }
         }
         RetranscodeFallback::Retranscode(contract) => match try_retranscode(inputs, contract) {
-            RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket } => {
-                RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client }
+            RetranscodeWorkerOutcome::Applied { qsess, url, vcodec, acodec, contract, enhancement, ticket, superseded } => {
+                RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client: inputs.client, superseded }
             }
             RetranscodeWorkerOutcome::Refused => RetranscodeClaimResult::Rejected(LEGACY_REJECTED),
         },
@@ -7846,8 +7873,59 @@ fn spawn_retranscode_claim(
 /// arrives after that point belongs to a session nothing on screen refers to any more.
 fn discard_retranscode_claim_slot() {
     let landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(RetranscodeClaimLanding { result: RetranscodeClaimResult::Retranscode { qsess, client, .. }, .. }) = landing {
-        let _ = client.transcode_stop(&qsess);
+    if let Some(RetranscodeClaimLanding {
+        result: RetranscodeClaimResult::Retranscode { qsess, client, superseded, .. },
+        ..
+    }) = landing
+    {
+        stop_discarded_landing(client, qsess, superseded);
+    }
+}
+
+/// Stop an encoder session without waiting on PMS: the frame thread reaches every caller of this
+/// (a teardown, a fresh playback request, a stale drain, the reload's retirement), and
+/// `transcode_stop` is a blocking round trip. Runs on a short-lived worker; if the OS refuses the
+/// thread the stop still happens, inline and declared, because a session left running is a leak
+/// on the server.
+fn stop_encoder_session(client: &'static crate::plex::Client, session: String) {
+    if session.is_empty() {
+        return;
+    }
+    let worker_session = session.clone();
+    if crate::task::spawn_small_keeping("retranscode-stop", move || {
+        let _ = client.transcode_stop(&worker_session);
+    })
+    .is_none()
+    {
+        let _block = crate::task::allow_blocking(
+            const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        );
+        let _ = client.transcode_stop(&session);
+    }
+}
+
+/// A landing that will never install: stop what the worker started AND the encoder it replaced —
+/// the worker committed the new session as the route's encoder, so nothing else owns the old one
+/// any more and it would otherwise run on the server unowned.
+fn stop_discarded_landing(client: &'static crate::plex::Client, qsess: String, superseded: String) {
+    stop_encoder_session(client, qsess);
+    stop_encoder_session(client, superseded);
+}
+
+/// The encoder an ACCEPTED landing replaced, waiting for the reload that moves the Engine off it.
+/// Written by [`take_ready_retranscode_claim`] once the landing is installed; read by
+/// [`retire_superseded_encoder`] after the pump has run the claim's tail.
+static SUPERSEDED_ENCODER: std::sync::Mutex<Option<(&'static crate::plex::Client, String)>> =
+    std::sync::Mutex::new(None);
+
+/// Stop the encoder an accepted claim replaced. The pump calls this AFTER the claim's reload, not
+/// at the landing: until the reload the Engine (held at the claim offset) is still reading that
+/// stream, and stopping it early kills the picture the viewer is looking at. A no-op when no
+/// landing left one.
+pub(crate) fn retire_superseded_encoder() {
+    let pending = SUPERSEDED_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some((client, session)) = pending {
+        stop_encoder_session(client, session);
     }
 }
 
@@ -7860,20 +7938,20 @@ fn discard_retranscode_claim_slot() {
 pub(crate) fn take_ready_retranscode_claim(
     ps: &mut PlaybackSession,
 ) -> Option<(ClaimedRouteAction, ClaimTail, i64, i64)> {
-    let landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let mut landing = RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     // This landing's `ps`/route ownership is only valid if the exact action it was claimed for is
     // still the one `ControlPhase` is waiting on. `begin_engine_teardown(false)`/
     // `begin_playback_request` already clear the mailbox on their own transitions, but the worker
     // which built this landing could still have posted it in the gap between that clear and this
     // drain — `ps` may by then belong to an entirely different item, so nothing here may touch it.
     if !control_phase_is_applying(landing.action.serial) {
-        if let RetranscodeClaimResult::Retranscode { qsess, client, .. } = &landing.result {
-            let _ = client.transcode_stop(qsess);
+        if let RetranscodeClaimResult::Retranscode { qsess, client, superseded, .. } = landing.result {
+            stop_discarded_landing(client, qsess, superseded);
         }
         return None;
     }
     let tail = match landing.result {
-        RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client } => {
+        RetranscodeClaimResult::Retranscode { qsess, url, vcodec, acodec, contract, enhancement, ticket, client, superseded } => {
             // The worker's own `replace_active_encoder_for`/`replace_active_hls_for` check ran
             // before it committed; re-check here against the ticket it actually got back, since a
             // same-item route change (a concurrent ABR commit) can still move the route in the gap
@@ -7881,10 +7959,31 @@ pub(crate) fn take_ready_retranscode_claim(
             // checked"). A stale landing must not install a session projection nothing points at
             // any more, and must stop the encoder session it started instead of leaking it.
             if is_worker_ticket_current(&ticket) {
+                // The reducer's restore point must describe the stream this landing installs, not
+                // the one it replaces: `claim_snapshot.projection` was captured BEFORE the worker
+                // ran, and publishing it as-is made a later rejected claim reinstate the old
+                // route over an Engine playing the new one. Only the fields the attempt changes
+                // move; the snapshot keeps its revision, quality and every selection that was
+                // current when the claim was built (a second edit queued mid-flight has already
+                // advanced `ps`, and must not be recorded as applied).
+                if let Some(snapshot) = landing.action.claim_snapshot.as_mut() {
+                    apply_retranscode_outcome_to_projection(
+                        &mut snapshot.projection,
+                        qsess.clone(),
+                        url.clone(),
+                        vcodec.clone(),
+                        acodec.clone(),
+                        contract,
+                        enhancement,
+                    );
+                }
                 install_retranscode_outcome(ps, qsess, url, vcodec, acodec, contract, enhancement);
+                if !superseded.is_empty() {
+                    *SUPERSEDED_ENCODER.lock().unwrap_or_else(|e| e.into_inner()) = Some((client, superseded));
+                }
                 ClaimTail::Retranscode
             } else {
-                let _ = client.transcode_stop(&qsess);
+                stop_discarded_landing(client, qsess, superseded);
                 ClaimTail::Rejected(RETRANSCODE_REJECTED)
             }
         }

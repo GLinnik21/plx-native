@@ -133,6 +133,13 @@ something.
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
   (`app::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
+  While the hold's pause stands the viewer's transport reads see PLAYING (`lifecycle::viewer_paused`,
+  `claim_hold::owns_pause`): the OK toggle means Pause and a seek's `resume_if_paused` leaves the
+  hold alone (its seek is carried past the reload by `pump::commit_or_carry_seek`, including a
+  seek pressed mid-flight when none was pending at claim time). An engine failure during the
+  flight publishes `Failed` at once (`fail_current_engine`) and clears the hold, so the error
+  read-out shows instead of a spinner. The encoder a claim replaces is NOT stopped by the worker:
+  the pump retires it (`route::retire_superseded_encoder`) after the reload.
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
   The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
   on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;

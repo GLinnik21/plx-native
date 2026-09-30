@@ -29,6 +29,16 @@ pub(crate) fn transport_target(play: Option<bool>, paused: bool) -> bool {
     }
 }
 
+/// The transport state the VIEWER sees and their next press toggles.
+///
+/// A claim's presentation hold (`player::claim_hold`) pauses the stream too, but that pause is the
+/// hold's loan, not the viewer's: while it stands the viewer sees a spinner over a playing intent,
+/// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
+/// resume leaves the stream held until the landing.
+pub(crate) fn viewer_paused() -> bool {
+    paused() && !crate::player::claim_hold::owns_pause()
+}
+
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
 /// gate at the same accepted native boundary; keeping a second commit here used to leave a window
 /// in which deadline accounting still treated an already-accepted Pause as active playback.

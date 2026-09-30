@@ -215,17 +215,30 @@ fn decisions(requests: &[String]) -> Vec<&String> {
 /// so a concurrent, main-thread route event started from the test can land inside that window
 /// without racing thread start-up.
 fn slow_live(delay: std::time::Duration) -> Live {
+    slow_live_logged(delay).0
+}
+
+/// [`slow_live`] plus a request log the test can read WHILE the fixture runs (the ordinary
+/// `Live::finish` only hands the requests back once the fixture is stopped). Each request line is
+/// pushed before its response is written, so a client that has been answered can rely on the log
+/// already holding the line: a "was X stopped yet?" assertion never races the fixture's own
+/// bookkeeping.
+type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+fn slow_live_logged(delay: std::time::Duration) -> (Live, RequestLog) {
     assert!(crate::net::global_init() && crate::curlio::available());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();
     let (done, stop) = std::sync::mpsc::channel();
+    let log: RequestLog = Default::default();
+    let shared = log.clone();
     let server = std::thread::spawn(move || {
-        let mut requests = Vec::new();
         loop {
             match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
+                    shared.lock().unwrap_or_else(|e| e.into_inner()).push(line.clone());
                     if line.contains("/decision?") && line.contains("hasMDE=1") {
                         write_json(&mut socket, MDE_DIRECTPLAY);
                     } else if line.contains("/decision?") {
@@ -234,7 +247,6 @@ fn slow_live(delay: std::time::Duration) -> Live {
                     } else {
                         write_json(&mut socket, EMPTY_MC);
                     }
-                    requests.push(line);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if stop.try_recv().is_ok() {
@@ -245,12 +257,37 @@ fn slow_live(delay: std::time::Duration) -> Live {
                 Err(e) => panic!("fixture accept: {e}"),
             }
         }
-        requests
+        shared.lock().unwrap_or_else(|e| e.into_inner()).clone()
     });
     let sid = crate::plex::register_for_test("enh-live-slow", "127.0.0.1", port, "token", "enh-client");
     crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
     crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
-    Live { sid, port, done, server }
+    (Live { sid, port, done, server }, log)
+}
+
+/// Whether the fixture has been asked to stop `session` (an encoder's transcode session id).
+fn stop_seen(log: &RequestLog, session: &str) -> bool {
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|r| r.contains("/video/:/transcode/universal/stop") && r.contains(&format!("session={session}")))
+}
+
+/// Any encoder stop at all (for a session whose id the worker minted).
+fn any_stop_seen(log: &RequestLog) -> bool {
+    log.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|r| r.contains("/video/:/transcode/universal/stop"))
+}
+
+fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+fn landing_posted() -> bool {
+    RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 /// A server whose every live `/decision` (not the `hasMDE=1` probe) answers `generalDecisionCode
@@ -1967,6 +2004,141 @@ fn a_second_edit_queued_mid_flight_does_not_get_marked_as_the_first_claims_landi
     cleanup(&mut ps);
 }
 
+/// Finding: `claim_snapshot.projection` was built from `ps` BEFORE the worker ran, and
+/// `finish_route_action` published it as the applied projection — so after an ACCEPTED claim the
+/// reducer's restore point still described the stream that was just replaced, and a later REJECTED
+/// claim reinstalled the old direct-play url / tsession / enhancement over an engine that plays the
+/// new stream (leaking its encoder).
+#[test]
+fn a_rejected_claim_after_an_accepted_one_restores_the_stream_that_plays() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(ps.tsession.is_empty(), "the fixture starts on a direct route");
+    assert!(toggle(&mut ps, PREF));
+    // The landing's OWN action, as the pump settles it: it carries the claim-time snapshot that
+    // `claim()` (which settles the original, snapshot-less action) never exercises.
+    let claimed = claim_route_action().expect("a queued user action");
+    assert!(matches!(
+        execute_retranscode_claim(&mut ps, &claimed, 60, -1, 0),
+        RetranscodeClaimDispatch::Pending
+    ));
+    let mut landed = None;
+    wait_until("the worker's landing", || {
+        landed = take_ready_retranscode_claim(&mut ps);
+        landed.is_some()
+    });
+    let (action, tail, ..) = landed.unwrap();
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    let (live_url, live_tsession) = (ps.url.clone(), ps.tsession.clone());
+    assert!(!live_tsession.is_empty(), "the accepted claim installed the new encoder");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+
+    // The reload started the new Engine: the reducer is Stable again. A later claim is REJECTED.
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
+    request_user_route_intent(&ps, UserRouteIntent::Retranscode);
+    let second = claim_route_action().expect("a queued user action");
+    assert!(finish_route_action(&mut ps, &second, RouteApplyResult::Rejected));
+
+    assert_eq!(ps.tsession, live_tsession, "a rejection restored the pre-claim encoder session");
+    assert_eq!(ps.url, live_url, "a rejection restored the pre-claim url");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied, "the enhancement that plays was un-applied");
+    assert_eq!(ps.cur_contract.audio, PREF);
+    assert_eq!(ps.cur_audio.as_ref().map(|a| a.sid), Some(a1().sid));
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Finding: the old encoder was stopped inside the worker's attempt, seconds before the landing
+/// reloads — the engine (paused at the claim offset) was still reading a stream PMS had just
+/// killed. It must stay alive until the landing is installed, and be stopped only after.
+#[test]
+fn the_replaced_encoder_stays_alive_until_the_landing_is_installed() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(20));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    assert_eq!(worker_ticket().encoder(), "enh-remux-1", "the fixture's playing encoder");
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    assert!(matches!(
+        execute_retranscode_claim(&mut ps, &action, 60, -1, 0),
+        RetranscodeClaimDispatch::Pending
+    ));
+    wait_until("the worker's landing", landing_posted);
+    assert!(
+        !stop_seen(&log, "enh-remux-1"),
+        "the playing stream's encoder was stopped before its replacement landed: {:?}",
+        log.lock().unwrap_or_else(|e| e.into_inner()),
+    );
+
+    let (action, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing");
+    assert_eq!(tail, ClaimTail::Retranscode);
+    settle(&mut ps, &action, tail);
+    // The pump reloads onto the new stream, THEN retires the one it replaced.
+    retire_superseded_encoder();
+    wait_until("the replaced encoder's stop", || stop_seen(&log, "enh-remux-1"));
+
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Finding: an engine failure (`load_failed` / `demux_io_failed` / `demux_failed`) while a claim's
+/// worker owned `Applying` was only RECORDED (`deferred_engine_failure`) for `finish_route_action`
+/// to publish — but the pump returns on the failure before it ever drains the landing, so the phase
+/// stayed `Applying`, `claim_hold::active()` stayed true and `state()` drew the Buffering spinner
+/// forever instead of the error read-out.
+#[test]
+fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
+    use crate::player::PlaybackState;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(80));
+    install(&mut ps, &live, Delivery::Remux(NONE), a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let action = claim_route_action().expect("a queued user action");
+    assert!(matches!(
+        execute_retranscode_claim(&mut ps, &action, 60, -1, 0),
+        RetranscodeClaimDispatch::Pending
+    ));
+    crate::player::claim_hold::hold_for_test(action.serial(), true);
+    assert!(crate::player::claim_hold::active(), "during the flight the spinner is up");
+
+    // What the pump does on a terminal failure.
+    fail_current_engine();
+    crate::player::SHARED.pb_state.store(PlaybackState::Error as u8, std::sync::atomic::Ordering::Relaxed);
+
+    assert!(matches!(phase(), ControlPhase::Failed(_)), "the failure was hidden behind Applying: {:?}", phase());
+    assert!(!crate::player::claim_hold::active(), "the hold's spinner outlived the failure");
+    assert_eq!(crate::player::state(&ps), PlaybackState::Error);
+
+    // The worker lands late: the drain discards it (the pump never reaches the drain after a
+    // failure, so the teardown's `discard_retranscode_claim_slot` is what would find it) and the
+    // encoder it started is stopped rather than leaked.
+    wait_until("the worker's landing", landing_posted);
+    let before = ps.tsession.clone();
+    assert!(take_ready_retranscode_claim(&mut ps).is_none(), "a landing for a failed engine was applied");
+    assert_eq!(ps.tsession, before);
+    // Whatever encoder the worker managed to start before the failure revoked its ticket is
+    // stopped, not leaked (a worker that noticed in time never asked for one).
+    let asked_for_an_encoder = log
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|r| r.contains("/decision?") && !r.contains("hasMDE=1"));
+    if asked_for_an_encoder {
+        wait_until("the failed claim's encoder to be stopped", || any_stop_seen(&log));
+    }
+
+    crate::player::SHARED.pb_state.store(PlaybackState::Idle as u8, std::sync::atomic::Ordering::Relaxed);
+    crate::player::claim_hold::clear();
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// Finding: the mailbox used to survive a full teardown/fresh playback request untouched, so a
 /// slow claim's landing from the OLD item could apply to whatever plays next. `begin_playback_request`
 /// now discards any landing still sitting in the slot before it does anything else.
@@ -1974,7 +2146,7 @@ fn a_second_edit_queued_mid_flight_does_not_get_marked_as_the_first_claims_landi
 fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let live = slow_live(std::time::Duration::from_millis(150));
+    let (live, log) = slow_live_logged(std::time::Duration::from_millis(150));
     install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
     assert!(toggle(&mut ps, PREF));
     let action = claim_route_action().expect("a queued user action");
@@ -1983,15 +2155,16 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
 
     // Wait for the worker to actually post its landing before tearing the item down, so this
     // exercises the mailbox-clearing itself rather than a claim that never got the chance to run.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
-        assert!(std::time::Instant::now() < deadline, "worker never landed");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    wait_until("the worker's landing", landing_posted);
 
-    // Back, then a fresh playback request for a different item.
-    begin_engine_teardown(false);
-    assert!(begin_playback_request());
+    // Back, then a fresh playback request for a different item. Both run on the frame thread, so
+    // the encoder stop the discard owes the landing must not block it (`FrameScope` panics a
+    // blocking call outside `allow_blocking`).
+    {
+        let _frame = crate::task::FrameScope::enter();
+        begin_engine_teardown(false);
+        assert!(begin_playback_request());
+    }
     assert!(
         RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
         "the old item's landing must not survive into the new playback",
@@ -2000,6 +2173,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
         take_ready_retranscode_claim(&mut ps).is_none(),
         "nothing is left to apply to the new session",
     );
+    wait_until("the discarded landing's encoder to be stopped", || any_stop_seen(&log));
 
     live.finish();
     reset_player_control_for_test(&mut ps);
@@ -2007,6 +2181,67 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     crate::player::restore_audio_enhancements(NONE);
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
+}
+
+/// The two stale arms of `take_ready_retranscode_claim` (the claim's own phase moved on; the
+/// ticket went stale in the drain gap) both stop the encoder session the worker started. They run
+/// on the frame thread, where a synchronous `transcode_stop` is a blocking PMS call.
+#[test]
+fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (live, log) = slow_live_logged(std::time::Duration::ZERO);
+    install(&mut ps, &live, Delivery::Direct, a1(), None, 0);
+    let client = cur_client(&ps).expect("install() registered this session's server");
+    let landing = |qsess: &str, ticket: WorkerTicket, serial: u64| RetranscodeClaimLanding {
+        action: ClaimedRouteAction {
+            serial,
+            ticket: ticket.clone(),
+            intent: RouteIntent::User(UserRouteIntent::Retranscode),
+            displaced_pick: false,
+            claim_snapshot: None,
+        },
+        pending_seek: -1,
+        user_target: 0,
+        result: RetranscodeClaimResult::Retranscode {
+            qsess: qsess.to_owned(),
+            url: String::new(),
+            vcodec: "hevc".into(),
+            acodec: "ac3".into(),
+            contract: crate::plex::EncodeContract::default(),
+            enhancement: EnhancementOutcome::Off,
+            ticket,
+            client,
+            superseded: String::new(),
+        },
+    };
+
+    // Arm 1: the phase is no longer `Applying(serial)` (a teardown/new request superseded it).
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
+    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(landing("stale-phase-session", worker_ticket(), 1));
+    {
+        let _frame = crate::task::FrameScope::enter();
+        assert!(take_ready_retranscode_claim(&mut ps).is_none());
+    }
+    wait_until("the stale-phase encoder stop", || stop_seen(&log, "stale-phase-session"));
+
+    // Arm 2: the claim still owns the phase but its ticket went stale in the drain gap.
+    let starting = worker_ticket();
+    let stale = replace_active_encoder_for(&starting, "stale-ticket-session").expect("commit");
+    replace_active_encoder_for(&stale, "concurrent-abr-session").expect("concurrent commit");
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(2);
+    *RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(landing("stale-ticket-session", stale, 2));
+    {
+        let _frame = crate::task::FrameScope::enter();
+        let (_, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing posted above");
+        assert_eq!(tail, ClaimTail::Rejected(RETRANSCODE_REJECTED));
+    }
+    wait_until("the stale-ticket encoder stop", || stop_seen(&log, "stale-ticket-session"));
+
+    live.finish();
+    cleanup(&mut ps);
 }
 
 /// Finding: `transcode_seek`/`commit_user_seek` used to run for an unrelated claim's own seek
@@ -2107,6 +2342,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
             enhancement: EnhancementOutcome::Off,
             ticket: leaked_ticket,
             client: cur_client(&ps).expect("install() registered this session's server"),
+            superseded: String::new(),
         },
     });
 
