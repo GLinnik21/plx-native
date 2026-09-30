@@ -778,3 +778,52 @@ fn a_readout_whose_back_leaves_the_app_offers_no_back_pill() {
     assert_eq!(Focusable::<SessionHost>::group_of(&s, &READOUT_BACK, &c), None);
     assert!(Focusable::<SessionHost>::group_of(&s, &FOOTER, &c).is_some(), "Sign out is still there");
 }
+
+/// **A correct PIN goes from the pad to Home — the picker is never shown again.** Owner's TV
+/// video, 2026-09-30: after the last digit the who's-watching roster reappeared (placeholder
+/// circles, then loaded avatars, then fading out) for ~270 ms before Home. The Session publishes
+/// `Ready` at the accepted epoch and the app keeps this route mounted until the owner handoff
+/// (`app/bridge.rs`'s `Phase::Ready => {}` arm), then roots Home through a page transition that
+/// fades THIS screen out. Retiring the pad on `Ready` exposed the roster for that whole window.
+/// The pad must stay up, still verifying, until the route leaves; a later `Profiles` read at the
+/// same epoch (the flow came back) still takes it down through the ordinary door.
+#[test]
+fn a_correct_pin_keeps_the_pad_up_until_the_route_leaves_for_home() {
+    // `select_profile` advances the flow epoch, so the ACK names 300 while the picker read 299.
+    let picker = snapshot_at(299, Phase::Profiles, vec![user("Open", false), user("Locked", true)]);
+    let profiles = snapshot_at(300, Phase::Profiles, vec![user("Open", false), user("Locked", true)]);
+    let switching = snapshot_at(300, Phase::Switching, vec![user("Open", false), user("Locked", true)]);
+    let ready = snapshot_at(300, Phase::Ready, vec![user("Open", false), user("Locked", true)]);
+    let mut screen = ProfilesScreen::new(EntryId(3), picker.read());
+    submit_locked(&mut screen, 1, InstanceId(17));
+    accept_selection(&mut screen, 1, 300, &switching);
+    let tick = |ms| ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+    step_ev_with(&mut screen, &tick(16), None, &switching, InstanceId(17));
+    assert!(screen.pad.open && screen.pad.submitting);
+
+    for ms in [32, 48, 64] {
+        let (_, effects) = step_ev_with(&mut screen, &tick(ms), None, &ready, InstanceId(17));
+        assert!(
+            screen.pad.open,
+            "Ready must not close the pad and reveal the roster under it (ms={ms})"
+        );
+        assert!(screen.pad.submitting, "the pad keeps its verifying spinner (ms={ms})");
+        assert!(screen.state.pad_open, "the published state still says the pad is up (ms={ms})");
+        assert!(
+            effects.iter().all(|st| !matches!(
+                st.fx,
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(_)))
+            )),
+            "no focus re-seat onto the roster while the route hands off (ms={ms})"
+        );
+    }
+
+    // The flow falling back to the picker at the same epoch still takes the pad down.
+    let (_, effects) = step_ev_with(&mut screen, &tick(80), None, &profiles, InstanceId(17));
+    assert!(!screen.pad.open, "a Profiles read after Ready retires the pad");
+    assert!(screen.pending_selection.is_none());
+    assert!(effects.iter().any(|st| matches!(
+        st.fx,
+        Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+    )));
+}

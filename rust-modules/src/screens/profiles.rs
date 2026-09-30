@@ -69,8 +69,10 @@
 //! onto the roster underneath. **Closing it must not leave a verdict from the last attempt
 //! following a fresh picker onto the screen.** Every door out of the pad emits typed
 //! [`auth::SessionCmd::DismissPinError`] through [`ProfilesScreen::close_pad`]; the mounter emits
-//! the same command beside a fresh constructor. A rejected PIN is the one exception that keeps the
-//! pad up (the dot row flashes red and the entry restarts) rather than closing it.
+//! the same command beside a fresh constructor. A rejected PIN keeps the pad up (the dot row
+//! flashes red and the entry restarts) rather than closing it, and so does an ACCEPTED one: on
+//! `Ready` the pad stays up, still verifying, until the route leaves for Home — closing it there
+//! exposed the roster for the whole handoff (`reconcile_selection`'s `Ready` arm).
 //!
 //! **A pointer click "outside the pad" has no generic answer here and has to be built by hand.**
 //! Unlike a `Popover` on the `ModalStack` (whose `on_miss(style)` policy the container itself
@@ -1158,13 +1160,19 @@ impl ProfilesScreen {
                     self.sync_pin_state();
                 }
             }
+            // **A correct PIN leaves on the pad, never on the roster.** `Ready` is not the moment
+            // the route changes: the app keeps this route mounted until the owner handoff
+            // (`app/bridge.rs`'s `Phase::Ready => {}` arm) and then roots Home through a page
+            // transition that fades THIS screen out. Retiring the pad here showed the whole
+            // who's-watching roster for that window — placeholder circles, avatars loading, then
+            // fading — between the last digit and Home (owner's TV video, 2026-09-30). So the pad
+            // stays up, still verifying, and the selection stays accepted: the route leaving
+            // retires this instance, and a flow that comes back (a `Profiles` read, or a newer
+            // epoch) takes the pad down through the arms above.
+            Phase::Ready if pad && self.pad.open => {}
             Phase::Ready => {
                 self.pending_selection = None;
-                if pad && self.pad.open {
-                    self.retire_pad(false, fx);
-                } else {
-                    self.sync_pin_state();
-                }
+                self.sync_pin_state();
             }
             _ => {}
         }
