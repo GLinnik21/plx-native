@@ -4,7 +4,7 @@ Design record for the multi-page Subtitles / Audio popover (Other languages, per
 Style pickers) and the table, form and clip primitives it stands on. Planned with an independent
 model reviewer over several rounds; this file keeps the decisions and their reasons.
 
-**Status:** PR 1 (table groundwork) is what this repository has; PRs 2-5 are open.
+**Status:** PR 1 (table groundwork) and PR 2a (the track menu on keyed forms, no visible change) are what this repository has; 2b (pages, Style pickers, nav keys) and PRs 3-5 are open.
 
 ## Behaviour
 
@@ -95,7 +95,7 @@ re-recorded.
 
 A live poll rebuilds the current page when any of these change: the subs fingerprint (count, stream
 ids, offered sidecars), the active index, the renderer kind (text / image / ASS), transcoding, or the
-own-burn / enhancement route and subtitle effect (what `lock_style_rows` and Timing's omission read).
+own-burn / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
 A page whose availability or `OpenLang` target no longer holds pops to the root by id.
 
 ## PR sequence

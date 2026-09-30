@@ -1490,7 +1490,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 
 /// `/tmp/plxnative-menupick=<tab>,<target>`: `target` is either an absolute `TableView` row
 /// number (the original contract) or, on the Audio tab, a NAMED target — `"boost"`/`"loudness"` —
-/// resolved through the panel's own [`crate::ui::track_menu::AudioRowTarget`] row map
+/// resolved through the panel's own [`crate::ui::track_menu::TrackRowId`] ids
 /// (`TrackMenuState::row_for_audio_target`). A name survives a track-count change a hand-written
 /// row number does not: `audio_enhancement_arm` below writes one instead of deriving the row
 /// itself, which is the issue #266 PR4 fix this trigger inherits (see

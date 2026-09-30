@@ -22,6 +22,8 @@ use crate::screens::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
 use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY,
     WCODE_PLAYPAUSE, WCODE_STOP};
 use crate::ui::fixture::FixtureMeasure;
+use crate::ui::form::FormId;
+use crate::ui::track_menu::TrackRowId;
 use crate::ui::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
@@ -421,8 +423,8 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    // no playing item: Off, then the headerless Timing + Color section
-    let color = 2;
+    // no playing item: Off, then the headerless Timing + Color section; the element is the row's KEY
+    let color = TrackRowId::Color.key().0;
     deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: color }, by: By::Dir });
     let (_, reqs, dismissed) = activate(&mut page, color);
     assert!(!dismissed, "a Color press keeps the panel open");
@@ -434,8 +436,8 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
     )));
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
 
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 0 }, by: By::Dir });
-    let (_, _, dismissed) = activate(&mut page, 0);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRowId::Off.key().0 }, by: By::Dir });
+    let (_, _, dismissed) = activate(&mut page, TrackRowId::Off.key().0);
     assert!(dismissed, "Off still commits and closes");
 }
 
@@ -451,12 +453,12 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then Timing, then Color — and Off is the checked row
-    let timing = 1;
+    let timing = TrackRowId::Timing.key().0;
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
     {
         let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        assert_eq!(menu.targets()[timing as usize], crate::ui::track_menu::RowTarget::Timing);
+        assert_eq!(menu.selected_id(), Some(TrackRowId::Timing), "the key names the Timing row");
     }
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
     let (_, reqs, dismissed) = activate(&mut page, timing);
     assert!(!dismissed, "an inert row keeps the panel up");
     assert!(
@@ -490,25 +492,12 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
         }]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    let (sub_row, timing_row) = {
-        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        let sub_row = menu
-            .targets()
-            .iter()
-            .position(|t| matches!(t, crate::ui::track_menu::RowTarget::Sub(_)))
-            .expect("a subtitle track row");
-        let timing_row = menu
-            .targets()
-            .iter()
-            .position(|t| *t == crate::ui::track_menu::RowTarget::Timing)
-            .expect("Timing row");
-        (sub_row, timing_row)
-    };
+    let (sub_row, timing_row) = (TrackRowId::SubTrack(0).key().0, TrackRowId::Timing.key().0);
     // Select the subtitle track first — Timing is inert while subtitles are Off.
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row as u32 }, by: By::Dir });
-    activate(&mut page, sub_row as u32);
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing_row as u32 }, by: By::Dir });
-    let (_, reqs, dismissed) = activate(&mut page, timing_row as u32);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row }, by: By::Dir });
+    activate(&mut page, sub_row);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing_row }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, timing_row);
     assert!(dismissed, "OpenTiming dismisses the Tracks panel");
     assert_eq!(
         reqs,
@@ -726,6 +715,65 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
     assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the flat ink");
 }
 
+/// **A pointer click on a row activates THAT row** — the keys the panel registers as hit stops, the
+/// keys its `Focusable` places, and what `Activate(key)` spends all agree. The cursor is left on
+/// Off (never moved by a `FocusMoved`), so a click that still read the cursor would commit the
+/// wrong row; each stop is resolved at its own centre through the hit map the way the dispatcher
+/// does, then activated by the key the map returned.
+#[test]
+fn a_pointer_click_activates_the_row_it_hit_by_key() {
+    use crate::ui::hit::HitMap;
+    use crate::ui::screen::DrawFrame;
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut store = crate::stores::metadata::MetadataStore::default();
+    let sub = |id: i64, index: i64, lang: &str, code: &str| crate::metadata::Stream {
+        id,
+        index,
+        lang: lang.into(),
+        lang_code: code.into(),
+        codec: "srt".into(),
+        ..Default::default()
+    };
+    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+        crate::metadata::PlayingItem::with_subs(vec![sub(11, 0, "English", "eng"), sub(22, 1, "French", "fra")]),
+    ))));
+    let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let cx = cx();
+    let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut f);
+    let stops = f.into_stops();
+    let mut map = HitMap::new();
+    map.fill(stops.clone());
+    map.swap();
+
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    let mut keys = menu.row_keys();
+    assert!(keys.contains(&TrackRowId::SubTrack(1).key().0), "premise: both tracks are rows");
+    let mut stop_keys: Vec<u32> = stops.iter().map(|s| s.key.elem).collect();
+    keys.sort_unstable();
+    stop_keys.sort_unstable();
+    assert_eq!(stop_keys, keys, "every focusable row registers exactly one stop, under its key");
+    for stop in &stops {
+        let (x, y) = (stop.rect.x + stop.rect.w / 2.0, stop.rect.y + stop.rect.h / 2.0);
+        assert_eq!(map.top_at(x, y).map(|s| s.key.elem), Some(stop.key.elem), "the hit map resolves the row's centre");
+        let placed = Focusable::<TestHost>::place(&page, &stop.key.elem, &cx, At::Drawn).expect("placed");
+        assert_eq!((placed.rect.x, placed.rect.y), (stop.rect.x, stop.rect.y), "place and stop agree");
+    }
+
+    // click French (subs index 1) while the cursor still sits on Off
+    let french = TrackRowId::SubTrack(1).key().0;
+    let (_, reqs, dismissed) = activate(&mut page, french);
+    assert!(dismissed, "a track pick closes the panel");
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::Subtitle { .. }))));
+    // (the harness host's metadata view is empty, so the commit carries no stream id; the id the
+    // panel resolved the key to is what it records as the checked track)
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    assert_eq!(menu.active_sub(), 1, "the click picked French (subs index 1), not the row under the cursor");
+    assert_eq!(menu.selected_id(), Some(TrackRowId::SubTrack(1)));
+}
+
 /// **Issue #162's census, for the four panels over the player**: every row a panel's `Focusable`
 /// declares — what the D-pad walks — is clickable with the pointer over its whole visible rect,
 /// against the map the panel's own paint-free `record_stops` fills. It grades the HIT MAP only —
@@ -756,7 +804,12 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         Focusable::<TestHost>::groups(&page, &cx, &mut groups);
         let mut rows = Vec::new();
         for g in &groups {
-            for elem in 0..g.len as u32 {
+            // Tracks' element is a row KEY, every other panel's a row index
+            let elems: Vec<u32> = match page.panel() {
+                Panel::Tracks(p) => p.row_keys(),
+                _ => (0..g.len as u32).collect(),
+            };
+            for elem in elems {
                 let p = Focusable::<TestHost>::place(&page, &elem, &cx, At::Drawn)
                     .unwrap_or_else(|| panic!("{kind:?}: row {elem} is declared but does not place"));
                 let visible = p.rect.intersect(p.clip);

@@ -4,9 +4,8 @@
 //! (the playing item's streams, the demuxer's own tags, "your languages"), so every rule here is
 //! host-tested without a `PlaybackSession`, a store or a `TableView`.
 //!
-//! `ui::track_menu` turns a [`sub_sections`] answer into drawn `TableView` sections (labels,
-//! badges, the checkmark, the Timing/Color read-outs) and reads a focused row back through
-//! [`SubRow::target`]. The model deliberately carries no checked track, offset or tone: those are
+//! `ui::track_menu` turns a [`sub_sections`] answer into a keyed form (labels, badges, the
+//! checkmark, the Timing/Color read-outs); a row's identity there is its `TrackRowId`. The model deliberately carries no checked track, offset or tone: those are
 //! read-outs, so changing one never re-groups the list.
 //!
 //! The shape: Off and every single-track "yours" language sit under one "Subtitles" header; a
@@ -37,22 +36,6 @@ pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     )
 }
 
-/// What a Subtitles-panel row IS, by POSITION — one entry per drawn row, in the exact order the
-/// sections draw (`TableView::sel` is one flat index over all of them). Every reader of a focused
-/// row matches on this rather than re-deriving which section a row fell in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RowTarget {
-    Off,
-    /// A track row — the index into the playing item's subs list ([`super::PlayingItem::subs`]).
-    Sub(usize),
-    Timing,
-    Color,
-    /// The non-selectable footnote naming why Timing/Color are dim (M7 follow-up: a live Burn).
-    /// Never produced by [`sub_sections`] itself — `ui::track_menu` inserts it, alongside the row,
-    /// once it knows the live route is actually burning right now, which this pure model does not.
-    Note,
-}
-
 /// The one badge a track row may show — never more than one (`player.html:954`'s priority:
 /// FORCED > SDH > EXTERNAL > an image codec). Hashable because it is part of the "identical
 /// tracks" key [`SubTrack::ordinal`] is counted over.
@@ -68,7 +51,7 @@ pub(crate) enum RowBadge {
 /// One offered subtitle track, parsed once — the unit every section is built from.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SubTrack {
-    /// index into the playing item's subs list — what the row's [`RowTarget::Sub`] carries.
+    /// index into the playing item's subs list — what the row's `TrackRowId::SubTrack` carries.
     pub(crate) i: usize,
     /// The display language (`Stream.lang`, or the catalog's "Unknown").
     pub(crate) lang: String,
@@ -106,17 +89,6 @@ pub(crate) enum SubRow {
     InLanguage(SubTrack),
     Timing,
     Color,
-}
-
-impl SubRow {
-    pub(crate) fn target(&self) -> RowTarget {
-        match self {
-            SubRow::Off => RowTarget::Off,
-            SubRow::Flat(t) | SubRow::InLanguage(t) => RowTarget::Sub(t.i),
-            SubRow::Timing => RowTarget::Timing,
-            SubRow::Color => RowTarget::Color,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -420,13 +392,5 @@ mod tests {
         let subs = vec![stream(1, 0, "", "", ""), stream(2, 1, "", "", "")];
         let sections = layout(&subs, &["eng", ""]);
         assert_eq!(sections.last().unwrap().header, SubHeader::OtherLanguages { languages: 1 });
-    }
-
-    #[test]
-    fn row_targets_follow_the_rows_in_drawn_order() {
-        let subs = vec![stream(1, 0, "English", "eng", "")];
-        let targets: Vec<RowTarget> =
-            layout(&subs, &[]).iter().flat_map(|s| &s.rows).map(SubRow::target).collect();
-        assert_eq!(targets, [RowTarget::Off, RowTarget::Timing, RowTarget::Color, RowTarget::Sub(0)]);
     }
 }

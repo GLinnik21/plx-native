@@ -665,9 +665,10 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // §7.3 step 5: the owner's `step` is the only place that mutates in response to a
                 // move the engine made — write the new cursor back into whichever panel is open,
                 // and extend the transport's read time exactly as a hand-moved cursor used to.
+                // Tracks' element is a row KEY (`ui::track_menu::TrackRowId`), the rest's an index.
                 let i = to.elem as i32;
                 match &mut self.panel {
-                    Panel::Tracks(p) => p.set_sel(i),
+                    Panel::Tracks(p) => p.focus_key(to.elem),
                     Panel::Info(p) => p.set_focus(i),
                     Panel::Chapters(p) => p.set_sel(i),
                     Panel::More(p) => p.set_sel(i),
@@ -684,7 +685,13 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             // (`Info`/`Chapters`) arms an engine press first and only reaches here as
             // `PressCommit`, on release — except `Info`, whose `PressCommit` defers instead to
             // the loop's own tvOS dip (`Self::activate`'s doc explains the split).
-            ScreenEvent::Activate(_) => {
+            ScreenEvent::Activate(elem) => {
+                // the event names the row that was hit (its key for Tracks): seat the panel on
+                // THAT row before `activate` reads the panel's own cursor, so a click never acts
+                // on a neighbour the cursor happened to still hold
+                if let Panel::Tracks(p) = &mut self.panel {
+                    p.focus_key(*elem);
+                }
                 self.activate(cx, fx);
                 Handled::No
             }
