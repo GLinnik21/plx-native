@@ -58,17 +58,11 @@ const VISIBLE: f32 = 0.01;
 /// rasterised by the draw exactly as before.
 const PREWARM_STRINGS: u64 = 8;
 
-/// [`PREWARM_STRINGS`] for a queue that holds only a page nobody is looking at yet
+/// [`PREWARM_STRINGS`] for a page nobody is looking at yet
 /// ([`PanelMotion::prewarm_background_text`]). Nothing waits on it, so it costs one string, ~1 ms
-/// on the TV, per presented frame: drained eight at a time it was `warmdrain:11.4`, a 21.3 ms
-/// frame right after the track menu opened.
-const BACKGROUND_STRINGS: u64 = 1;
-
-thread_local! {
-    /// Whether the text prewarm queue holds only background strings. Set by
-    /// [`PanelMotion::prewarm_background_text`], cleared by a live walk and by an empty queue.
-    static BACKGROUND_QUEUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
+/// on the TV, per presented frame with no live strings to drain: drained eight at a time it was
+/// `warmdrain:11.4`, a 21.3 ms frame right after the track menu opened.
+const BACKGROUND_STRINGS: usize = 1;
 
 /// Stiffness of the card's top/left edges and of the pages' sideways travel (`gfx::spring`'s `k`;
 /// the table's own scroll uses 300). Critically damped, so nothing overshoots.
@@ -156,16 +150,12 @@ impl PanelMotion {
         // This walk's strings are the whole queue: a held modal's or a finished transition's
         // leftovers must not eat the drain's budget (`ui::dispatch` clears the same way).
         crate::text::clear_prewarm();
-        BACKGROUND_QUEUE.with(|b| b.set(false));
-        self.prewarm_more_text(natural, live, measure);
+        Self::record_text(natural, live, measure);
     }
 
-    /// **Add `table`'s strings to the queue without replacing it** — a page that is not live yet
-    /// (`track_menu`'s other tab). The next [`Self::prewarm_text`] walk replaces them with the
-    /// live page's, which is the right priority: what is on screen comes first.
-    pub(crate) fn prewarm_more_text(&self, natural: Rect, table: &TableView, measure: &dyn Measure) {
-        // The same walk `ui::dispatch` runs for a page's warm pass: speculative to the recorder,
-        // and no raw clear may reach the framebuffer from it.
+    /// Queue `table`'s uncached strings: the recording walk `ui::dispatch` runs for a page's warm
+    /// pass, speculative to the recorder, with no raw clear reaching the framebuffer.
+    fn record_text(natural: Rect, table: &TableView, measure: &dyn Measure) {
         crate::gfx::without_frame_clear(|| {
             crate::ui::rec::speculative(|| {
                 crate::ui::record_walk(|| table.draw(Painter::recording(), natural, measure))
@@ -173,31 +163,36 @@ impl PanelMotion {
         });
     }
 
-    /// [`Self::prewarm_more_text`] for a page that is not on screen, into an EMPTY queue: the
-    /// drain then takes it [`BACKGROUND_STRINGS`] at a time.
-    pub(crate) fn prewarm_background_text(&self, natural: Rect, table: &TableView, measure: &dyn Measure) {
-        debug_assert!(!crate::text::prewarm_pending(), "background strings must not slow a live page's drain");
-        BACKGROUND_QUEUE.with(|b| b.set(true));
-        self.prewarm_more_text(natural, table, measure);
+    /// **Warm a page that is not on screen** (`track_menu`'s other tab), into the text module's
+    /// background queue rather than the live one: the draw empties the live queue every frame it
+    /// has no page warm (`ui::dispatch`), and on the TV that left this warm one string deep, so the
+    /// first switch to Audio still rasterised `textx9:8.0` cold. Called with the live queue empty.
+    pub(crate) fn prewarm_background_text(natural: Rect, table: &TableView, measure: &dyn Measure) {
+        debug_assert!(!crate::text::prewarm_pending(), "the live queue must not be parked with it");
+        Self::record_text(natural, table, measure);
+        crate::text::park_prewarm_as_background();
     }
 
-    /// **Rasterise what [`Self::prewarm_text`] queued** — at most [`PREWARM_STRINGS`] of it, or
-    /// [`BACKGROUND_STRINGS`] of a background queue. Called
+    /// **Rasterise what [`Self::prewarm_text`] queued** — at most [`PREWARM_STRINGS`] of it — or,
+    /// with nothing live queued, [`BACKGROUND_STRINGS`] of the background queue. Called
     /// from the PRESENTING side of the present decision (`app::run::prepare_window`, step 9's
     /// upload seam), never from `update`: this uploads GL textures, and §10 says a frame that does
     /// not present uploads nothing (nor may it reach EGL while the window is backgrounded). It
     /// still runs before the draw's first `glClear`, so the work overlaps the back-buffer wait.
     pub(crate) fn drain_queued_text() -> usize {
         if !crate::text::prewarm_pending() {
-            BACKGROUND_QUEUE.with(|b| b.set(false));
-            return 0;
+            if !crate::text::background_prewarm_pending() {
+                return 0;
+            }
+            return crate::diag::spans::span("warmdrain", || {
+                crate::text::drain_background_prewarm(BACKGROUND_STRINGS)
+            });
         }
-        let budget = if BACKGROUND_QUEUE.with(|b| b.get()) { BACKGROUND_STRINGS } else { PREWARM_STRINGS };
         // `drain_prewarm` reads its clock before each next string: a clock that advances one unit
         // per read admits exactly `PREWARM_STRINGS` of them.
         let mut reads = 0u64;
         crate::diag::spans::span("warmdrain", || {
-            crate::text::drain_prewarm(budget, || {
+            crate::text::drain_prewarm(PREWARM_STRINGS, || {
                 reads += 1;
                 reads
             })

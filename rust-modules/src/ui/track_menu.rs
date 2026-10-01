@@ -516,6 +516,16 @@ pub(crate) enum TrackOk {
     Inert,
 }
 
+impl Drop for TrackMenuState {
+    /// A closed menu cannot switch tabs, so its other tab's warm ([`Self::warm_other_tab`]) is
+    /// work for nobody.
+    fn drop(&mut self) {
+        if self.other_tab_warmed {
+            crate::text::clear_background_prewarm();
+        }
+    }
+}
+
 impl TrackMenuState {
     /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) — the on-screen audio/subs icons
     /// pick a specific tab this way; the plain open path passes 0. `yours` is "your languages" in
@@ -1604,7 +1614,9 @@ impl TrackMenuState {
     /// Done once per menu, on a frame with no page slide, no resize and an empty queue, so it
     /// neither competes with the live page's own strings nor adds to the open frame. The work is
     /// only building the form and recording it; the presenting side's drain uploads it, one
-    /// string a frame ([`PanelMotion::prewarm_background_text`]).
+    /// string a frame with no live strings queued ([`PanelMotion::prewarm_background_text`]).
+    /// Nothing waits on that queue, so a sub-page walked meanwhile only delays it; a closed menu
+    /// drops it ([`Drop`]).
     fn warm_other_tab(
         &mut self,
         ps: &crate::route::PlaybackSession,
@@ -1627,7 +1639,8 @@ impl TrackMenuState {
         let mut other = TrackTable::new(BAND_BASE);
         other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         other.set(form, None);
-        self.motion.prewarm_background_text(table_natural(&other.table, measure), &other.table, measure);
+        let natural = table_natural(&other.table, measure);
+        PanelMotion::prewarm_background_text(natural, &other.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -3127,7 +3140,10 @@ mod enhancement_menu_tests {
             codec: "srt".into(),
             ..Default::default()
         };
-        let mut item = metadata::PlayingItem::with_subs(vec![sub(601, 2, "Spanish", "spa"), sub(602, 3, "Czech", "ces")]);
+        let mut item = metadata::PlayingItem::with_subs(vec![
+            sub(601, 2, "Spanish", "spa"),
+            sub(602, 3, "Czech", "ces"),
+        ]);
         item.audio = vec![metadata::Stream { id: 501, index: 0, codec: "ac3".into(), channels: 2, default: true, ..Default::default() }];
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
@@ -3139,6 +3155,9 @@ mod enhancement_menu_tests {
         for frame in 0..60 {
             menu.update(0.016, &M, &ps, store.view());
             let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            // The draw drops whatever the live queue still holds (`ui::dispatch`, every frame
+            // with no page warm), which on the TV left the background warm one string deep.
+            crate::text::clear_prewarm();
             if frame > 0 {
                 assert!(drained <= 1, "frame {frame} rasterised {drained} background strings");
             }
@@ -3157,6 +3176,90 @@ mod enhancement_menu_tests {
         let cold: Vec<&String> =
             labels.iter().filter(|l| !crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).collect();
         assert!(cold.is_empty(), "the switch met these Subtitles labels cold: {cold:?}");
+        teardown(&ps);
+    }
+
+    /// **A page walked while the other tab's warm is still draining does not cancel it.** A live
+    /// walk replaces the live queue and the draw empties it, but the background queue is neither:
+    /// on the TV the osc's first sub-page push, a few frames after the open, used to wipe the
+    /// one-a-frame warm, and the first switch to Audio met `textx7:6.6` cold.
+    #[test]
+    fn a_live_walk_that_interrupts_the_other_tabs_warm_requeues_it() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
+            id,
+            index,
+            lang: lang.into(),
+            lang_code: code.into(),
+            codec: "srt".into(),
+            ..Default::default()
+        };
+        let mut item = metadata::PlayingItem::with_subs(vec![
+            sub(601, 2, "Spanish", "spa"),
+            sub(602, 3, "Czech", "ces"),
+        ]);
+        item.audio = vec![
+            metadata::Stream {
+                id: 501,
+                index: 0,
+                lang: "English".into(),
+                codec: "ac3".into(),
+                channels: 2,
+                default: true,
+                ..Default::default()
+            },
+            metadata::Stream {
+                id: 502,
+                index: 1,
+                lang: "German".into(),
+                codec: "aac".into(),
+                channels: 6,
+                ..Default::default()
+            },
+        ];
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        crate::text::reset_prewarm_for_test();
+        let frame = |menu: &mut TrackMenuState| {
+            menu.update(0.016, &M, &ps, store.view());
+            crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            // What the drain left of the live queue, the draw drops (`ui::dispatch`).
+            crate::text::clear_prewarm();
+        };
+        // The open drains the Subtitles root; the next frame queues Audio and drains one string.
+        frame(&mut menu);
+        frame(&mut menu);
+        assert!(crate::text::background_prewarm_pending(), "premise: the Audio warm is draining");
+        // Into Other languages and straight back, the way the osc walks it.
+        let nav = (menu.form.table.sections.iter())
+            .flat_map(|s| s.rows.iter())
+            .position(|r| r.label == "Other languages");
+        menu.focus_row(nav.expect("premise: an Other languages row") as c_int);
+        menu.on_right(&ps, store.view());
+        assert!(!menu.pages.is_empty(), "premise: the page opened");
+        for _ in 0..40 {
+            frame(&mut menu);
+        }
+        menu.on_left(&ps, store.view());
+        for _ in 0..80 {
+            frame(&mut menu);
+        }
+        menu.focus_tab(&ps, store.view(), 0);
+        let cold: Vec<String> = menu
+            .form
+            .table
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .map(|r| r.label.clone())
+            .filter(|l| {
+                !l.is_empty() && !crate::text::prewarm_resident_any_size_for_test(l.as_bytes())
+            })
+            .collect();
+        assert!(cold.is_empty(), "the switch met these Audio labels cold: {cold:?}");
         teardown(&ps);
     }
 
