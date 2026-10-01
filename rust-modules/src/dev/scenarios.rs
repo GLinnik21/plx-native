@@ -1086,6 +1086,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "playback" => crate::screens::family::SettingsPage::Playback,
                 // root → Playback → the Quality picker (`SettingsPage::boot_trail`), so BACK works.
                 "picker-quality" => crate::screens::family::SettingsPage::Picker(crate::screens::family::PickerKind::Quality),
+                "picker-next-episode" => crate::screens::family::SettingsPage::Picker(crate::screens::family::PickerKind::NextEpisode),
+                "picker-skip-interval" => crate::screens::family::SettingsPage::Picker(crate::screens::family::PickerKind::SkipInterval),
                 "audio" => crate::screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]

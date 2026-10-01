@@ -177,7 +177,7 @@ pub(super) struct Transport {
     // ---- LEFT/RIGHT's hold-to-scrub gesture ----------------------------------------------------
     //
     // The same idiom `screens::player::input::Scrub` drives the real HUD's scrubber with — a
-    // fresh press hops `SCRUB_STEP_NS`, a HELD key (auto-repeat) engages a continuous ramp
+    // fresh press hops `scrub_step_ns()`, a HELD key (auto-repeat) engages a continuous ramp
     // (`SCRUB_BASE`→`SCRUB_MAX`), and the release commits at once for a hold or arms a short
     // debounce for a tap — but not the same STATE TYPE: `ci/check-deps.sh`'s `sibling` gate
     // forbids this module from naming `crate::screens::player` at all. The tuning constants and
@@ -242,7 +242,7 @@ impl Transport {
         self.scrub_commit_at = 0;
     }
 
-    /// A fresh LEFT/RIGHT: the fixed hop, same as the player HUD's `key_scrub_fresh`'s `Jump` arm.
+    /// A fresh LEFT/RIGHT: the Skip interval hop, same as the player HUD's `key_scrub_fresh`'s `Jump` arm.
     /// There is no `Reveal`-only first press here (unlike the HUD, which a LEFT/RIGHT can arrive
     /// at hidden): full-trailer mode's transport is already up the instant it is entered
     /// ([`reveal`](Self::reveal) fires on promotion), so every press is a real gesture. `dur_ns`
@@ -262,9 +262,9 @@ impl Transport {
         self.scrub_alive = now;
         if !self.scrub_hold {
             let step = if fwd {
-                crate::ui::player_hud::SCRUB_STEP_NS
+                crate::ui::player_hud::scrub_step_ns()
             } else {
-                -crate::ui::player_hud::SCRUB_STEP_NS
+                -crate::ui::player_hud::scrub_step_ns()
             };
             self.scrub_ns =
                 crate::ui::player_hud::scrub_clamp_target(self.scrub_ns.max(0) + step, dur_ns);
@@ -587,13 +587,14 @@ mod tests {
         assert_eq!(trailer_key(MKey::Other, 0, 0), None, "an unbound key is not ours");
     }
 
-    /// **Requirement 4's key-ladder half: a fresh LEFT/RIGHT hops the fixed step, and a plain tap
+    /// **Requirement 4's key-ladder half: a fresh LEFT/RIGHT hops the default step, and a plain tap
     /// (key-up with no auto-repeat ever arriving) does not commit at once** — it arms the
     /// [`TAP_COMMIT_MS`](crate::ui::player_hud::TAP_COMMIT_MS) debounce instead, so a rapid burst
     /// of taps coalesces into one seek rather than issuing a reload per press.
     #[test]
-    fn a_fresh_press_hops_the_fixed_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
+    fn a_fresh_press_hops_the_default_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
     {
+        let _g = crate::testlock::serial();
         let mut t = Transport::IDLE;
         let dur = 120_000_000_000i64;
         let live = 30_000_000_000i64;
@@ -602,8 +603,8 @@ mod tests {
         assert!(t.scrubbing(), "a fresh press starts a gesture");
         assert_eq!(
             t.scrub_ns,
-            live + crate::ui::player_hud::SCRUB_STEP_NS,
-            "one fixed hop forward from the live position"
+            live + 10_000_000_000,
+            "one default-step hop (10 s) forward from the live position"
         );
 
         assert_eq!(t.scrub_release(0), None, "a tap does not commit at once");
@@ -613,10 +614,28 @@ mod tests {
         let target = t.step_tap_commit(crate::ui::player_hud::TAP_COMMIT_MS);
         assert_eq!(
             target,
-            Some(live + crate::ui::player_hud::SCRUB_STEP_NS),
+            Some(live + 10_000_000_000),
             "the debounce commits the accumulated target once it elapses"
         );
         assert!(!t.scrubbing(), "committing ends the gesture");
+    }
+
+    /// **The trailer shares the Skip interval**: a fresh press hops the chosen length, both ways.
+    #[test]
+    fn a_fresh_press_hops_the_chosen_skip_interval() {
+        use crate::plex::session::SkipInterval;
+        let _g = crate::testlock::serial();
+        const S: i64 = 1_000_000_000;
+        let (dur, live) = (200 * S, 100 * S);
+        for interval in SkipInterval::LADDER {
+            let _i = crate::ui::player_hud::SkipIntervalGuard::set(interval);
+            let mut t = Transport::IDLE;
+            t.scrub_fresh(true, 0, dur, live);
+            assert_eq!(t.scrub_ns, live + interval.ns(), "{interval:?} forward");
+            let mut t = Transport::IDLE;
+            t.scrub_fresh(false, 0, dur, live);
+            assert_eq!(t.scrub_ns, live - interval.ns(), "{interval:?} back");
+        }
     }
 
     /// **Requirement 4's other half: a HELD LEFT/RIGHT accumulates continuously via the auto-repeat

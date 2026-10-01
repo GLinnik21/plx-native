@@ -304,16 +304,16 @@ impl HudState {
         }
     }
 }
-// scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
+// scrub tuning: a press jumps scrub_step_ns() (the Skip interval); holding engages a continuous scrub ramping
 // SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second). Defined in `ui::player_hud` and
 // re-exported here — the trailer transport's own hold-to-scrub (`screens::detail::trailer`) wants
 // the identical feel and cannot name this module directly (`ci/check-deps.sh`'s `sibling` gate).
-// Long enough that a rapid ±10s tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
+// Long enough that a rapid tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
 // separate commit is a full reopen+prime on the engine, and back-to-back in-flight seeks are what
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels
 // immediate.
 pub(crate) use crate::ui::player_hud::{
-    SCRUB_ACCEL, SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, SCRUB_STEP_NS, TAP_COMMIT_MS,
+    scrub_step_ns, SCRUB_ACCEL, SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, TAP_COMMIT_MS,
 };
 // HUD auto-hide: how long the HUD lingers after the input that raised it.
 pub(crate) const HUD_LINGER_MS: u32 = crate::ui::player_hud::LINGER_MS; // plain transport/nav input

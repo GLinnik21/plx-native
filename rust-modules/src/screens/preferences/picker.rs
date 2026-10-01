@@ -1,6 +1,6 @@
 //! **A preference's choice list, as a page of the Settings stack** (`SettingsPage::Picker`). It
 //! renders exactly what the field list's in-page submenu used to: crumb = the parent page's title,
-//! title = the field's, the field-list page's copy, one checked `Choice` row per option, opened on
+//! title = the field's, the field's own explanation (see [`copy_text`]), one checked `Choice` row per option, opened on
 //! the checked one.
 //!
 //! **Keys and ids.** A row's id is its option's [`Value`]; its focus key is the option's POSITION in
@@ -124,7 +124,7 @@ impl PickerPage {
     fn rebuild(&mut self, seat_current: bool) {
         self.state.quality = crate::route::quality();
         self.state.direct_play = crate::route::direct_play_mode();
-        self.copy = copy_text(self.state.field.kind(), &self.state.io.status, self.state.direct_play).into_owned();
+        self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
@@ -172,7 +172,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::Quality(_) | Value::DirectPlay(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::SkipInterval(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {

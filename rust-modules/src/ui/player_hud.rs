@@ -652,12 +652,21 @@ impl ControlSlot {
 ///
 /// Up Next outranks Skip Credits deliberately: with somewhere to go, "next episode" is the better
 /// offer, and Skip Credits stays for the last episode of a show, where there is nowhere to go.
-pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) -> ControlSlot {
+/// Only a `final` credits marker (one that runs to the end of the item) qualifies: a mid-item
+/// credits segment is followed by more of the episode, so it keeps the Skip Credits pill.
+///
+/// The Next episode preference only changes the offer for that final-credits-with-a-successor
+/// case: `AfterCredits` and `Off` offer nothing there (the discs stay), because the successor is
+/// not announced until the stream ends, if then. The last episode and films keep Skip Credits.
+pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool, mode: crate::route::NextEpisodeMode) -> ControlSlot {
     match marker {
         Some(m) => {
             let pr = crate::screens::player::skip_pill::prompt_for(m);
-            if has_next && m.kind == crate::metadata::MarkerKind::Credits {
-                ControlSlot::UpNext(m)
+            if has_next && m.kind == crate::metadata::MarkerKind::Credits && m.final_seg {
+                match mode {
+                    crate::route::NextEpisodeMode::Countdown => ControlSlot::UpNext(m),
+                    crate::route::NextEpisodeMode::AfterCredits | crate::route::NextEpisodeMode::Off => ControlSlot::Discs,
+                }
             } else {
                 ControlSlot::Skip(pr)
             }
@@ -672,10 +681,16 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// the same frame then declined to draw.
 pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
+    let mode = crate::route::next_episode_mode();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
-    // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = meta.active_marker(ps).or_else(|| meta.synthesized_tail_marker(ps, has_next));
-    slot_for(m, has_next)
+    // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker` — and only to feed
+    // the Up Next countdown, so it is not even computed in the other modes.
+    let m = meta.active_marker(ps).or_else(|| {
+        (mode == crate::route::NextEpisodeMode::Countdown)
+            .then(|| meta.synthesized_tail_marker(ps, has_next))
+            .flatten()
+    });
+    slot_for(m, has_next, mode)
 }
 
 /// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go
@@ -1322,7 +1337,7 @@ pub(crate) const LINGER_MS: u32 = 4500;
 
 // ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
 //
-// Both hold-to-scrub gestures want the same feel — a press jumps `SCRUB_STEP_NS`; holding engages
+// Both hold-to-scrub gestures want the same feel — a press jumps `scrub_step_ns()`; holding engages
 // a continuous scrub ramping `SCRUB_BASE`→`SCRUB_MAX` (playback-seconds per real-second) — but the
 // STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
 // cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
@@ -1330,7 +1345,11 @@ pub(crate) const LINGER_MS: u32 = 4500;
 // `LINGER_MS` above defined here rather than in `screens::player::input` for `trailer.rs` to
 // import from a sibling. `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
-pub(crate) const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
+/// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
+/// read per press so a pick takes effect in a film already playing.
+pub(crate) fn scrub_step_ns() -> i64 {
+    crate::route::skip_interval().ns()
+}
 pub(crate) const SCRUB_BASE: f32 = 10.0;
 pub(crate) const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
 pub(crate) const SCRUB_MAX: f32 = 140.0;
@@ -1338,6 +1357,25 @@ pub(crate) const SCRUB_MAX: f32 = 140.0;
 // doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
 pub(crate) const TAP_COMMIT_MS: u32 = 450;
 pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+
+/// Sets the Skip interval for one test and puts the prior value back on drop. The caller holds
+/// `testlock::serial()`: the live value is a process global, like every preference.
+#[cfg(test)]
+pub(crate) struct SkipIntervalGuard(crate::route::SkipInterval);
+#[cfg(test)]
+impl SkipIntervalGuard {
+    pub(crate) fn set(interval: crate::route::SkipInterval) -> Self {
+        let prior = crate::route::skip_interval();
+        crate::route::restore_skip_interval(interval);
+        Self(prior)
+    }
+}
+#[cfg(test)]
+impl Drop for SkipIntervalGuard {
+    fn drop(&mut self) {
+        crate::route::restore_skip_interval(self.0);
+    }
+}
 
 /// Where a scrub target may legally land: never before zero, and never inside the last three
 /// seconds, which is a seek past the point the pipeline can prime from.
@@ -1817,6 +1855,7 @@ mod tests {
 
     use super::*;
     use crate::metadata::{Marker, MarkerKind};
+    use crate::route::NextEpisodeMode;
     use crate::screens::player::skip_pill::SkipAction;
 
     /// **The image-subtitle display set is a render, and it says how much of one** (§8.3 rule (c)):
@@ -1947,7 +1986,7 @@ mod tests {
     #[test]
     fn a_stand_in_owning_the_row_hides_every_disc_from_the_hit_test() {
         let cy = BTN_Y + BTN_S * 0.5;
-        let slot = slot_for(Some(marker(MarkerKind::Intro, false)), false);
+        let slot = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
         for i in 0..BTN_N {
             assert_eq!(
                 icon_hit(slot, btn_x(i) + BTN_S * 0.5, cy),
@@ -1963,21 +2002,21 @@ mod tests {
     #[test]
     fn the_control_row_picks_the_most_specific_occupant() {
         // no segment under the playhead → the ordinary Subtitles + Audio pair
-        assert!(slot_for(None, false).is_discs());
+        assert!(slot_for(None, false, NextEpisodeMode::Countdown).is_discs());
         assert!(
-            slot_for(None, true).is_discs(),
+            slot_for(None, true, NextEpisodeMode::Countdown).is_discs(),
             "a queued successor alone changes nothing"
         );
-        assert_eq!(slot_for(None, true).items(), BTN_N);
+        assert_eq!(slot_for(None, true, NextEpisodeMode::Countdown).items(), BTN_N);
         assert_eq!(
-            slot_for(None, true).primary_btn(),
+            slot_for(None, true, NextEpisodeMode::Countdown).primary_btn(),
             0,
             "the discs open on Subtitles"
         );
 
         // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
         for has_next in [false, true] {
-            let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next);
+            let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next, NextEpisodeMode::Countdown);
             assert!(matches!(slot, ControlSlot::Skip(p) if p.kind == MarkerKind::Intro));
             assert_eq!(slot.items(), 1, "a Skip pill is the row's only item");
             assert_eq!(
@@ -1988,7 +2027,7 @@ mod tests {
         }
 
         // credits WITH somewhere to go → Up Next outranks Skip Credits…
-        let up = slot_for(Some(marker(MarkerKind::Credits, true)), true);
+        let up = slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown);
         assert!(matches!(up, ControlSlot::UpNext(_)));
         // …and it is the ONE stand-in with a pair, whose primary is the RIGHT-hand item. Asserted
         // together because they are one fact: an `items()` of 2 with a `primary_btn()` of 0 would
@@ -1999,8 +2038,47 @@ mod tests {
         // …and WITHOUT (a show's last episode) it stays Skip Credits, which is the whole reason
         // both still exist
         assert!(matches!(
-            slot_for(Some(marker(MarkerKind::Credits, true)), false),
+            slot_for(Some(marker(MarkerKind::Credits, true)), false, NextEpisodeMode::Countdown),
             ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
+        ));
+    }
+
+    /// Up Next is only offered for a credits marker that runs to the end of the item (`final`).
+    /// A mid-item credits segment with a successor queued (a post-credits scene follows) is a
+    /// plain Skip Credits pill that seeks past it, not a countdown into the next episode.
+    #[test]
+    fn up_next_needs_a_final_credits_marker() {
+        let mid = slot_for(Some(marker(MarkerKind::Credits, false)), true, NextEpisodeMode::Countdown);
+        assert!(
+            matches!(mid, ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
+                && p.action == SkipAction::Seek(2_000 * 1_000_000)),
+            "a non-final credits marker offers Skip Credits even with a successor queued"
+        );
+        assert!(matches!(slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown), ControlSlot::UpNext(_)));
+    }
+
+    /// **Next episode: After credits / Off.** During the credits of an episode with a successor the
+    /// control row offers nothing — no Up Next tile (so no countdown and no HUD raise, both of
+    /// which key off the slot), and no Skip Credits pill. Everything else keeps its occupant.
+    #[test]
+    fn after_credits_and_off_offer_nothing_during_the_credits() {
+        for mode in [NextEpisodeMode::AfterCredits, NextEpisodeMode::Off] {
+            assert!(slot_for(Some(marker(MarkerKind::Credits, true)), true, mode).is_discs(), "{mode:?}");
+            // a show's last episode and a movie keep the Skip Credits pill, which finishes the item
+            assert!(matches!(
+                slot_for(Some(marker(MarkerKind::Credits, true)), false, mode),
+                ControlSlot::Skip(p) if p.action == SkipAction::Finish
+            ));
+            // a mid-item credits segment and an intro are skippable as ever
+            assert!(matches!(
+                slot_for(Some(marker(MarkerKind::Credits, false)), true, mode),
+                ControlSlot::Skip(p) if p.action == SkipAction::Seek(2_000 * 1_000_000)
+            ));
+            assert!(matches!(slot_for(Some(marker(MarkerKind::Intro, false)), true, mode), ControlSlot::Skip(_)));
+        }
+        assert!(matches!(
+            slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+            ControlSlot::UpNext(_)
         ));
     }
 
@@ -2008,20 +2086,20 @@ mod tests {
     /// seeks — seeking to its stated end would race the decoder against its own last frames.
     #[test]
     fn only_a_final_credits_segment_finishes_the_item() {
-        let fin = match slot_for(Some(marker(MarkerKind::Credits, true)), false) {
+        let fin = match slot_for(Some(marker(MarkerKind::Credits, true)), false, NextEpisodeMode::Countdown) {
             ControlSlot::Skip(p) => p.action,
             _ => unreachable!(),
         };
         assert_eq!(fin, SkipAction::Finish);
 
         // a mid-item credits segment (a post-credits scene follows) seeks past it and plays on
-        let mid = match slot_for(Some(marker(MarkerKind::Credits, false)), false) {
+        let mid = match slot_for(Some(marker(MarkerKind::Credits, false)), false, NextEpisodeMode::Countdown) {
             ControlSlot::Skip(p) => p.action,
             _ => unreachable!(),
         };
         assert_eq!(mid, SkipAction::Seek(2_000 * 1_000_000));
         // …as does an intro, `final` flag or not (PMS only sets it on credits)
-        let intro = match slot_for(Some(marker(MarkerKind::Intro, true)), false) {
+        let intro = match slot_for(Some(marker(MarkerKind::Intro, true)), false, NextEpisodeMode::Countdown) {
             ControlSlot::Skip(p) => p.action,
             _ => unreachable!(),
         };
@@ -2035,8 +2113,8 @@ mod tests {
     /// the on-device suite.
     #[test]
     fn only_a_vanishing_standin_takes_the_focus_ring_back() {
-        let discs = slot_for(None, false);
-        let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false);
+        let discs = slot_for(None, false, NextEpisodeMode::Countdown);
+        let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
 
         // the edge it exists for: the pill was there last frame, the discs are back, ring on the row
         assert!(standin_left_the_ring(true, discs, true));

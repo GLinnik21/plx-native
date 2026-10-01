@@ -688,7 +688,8 @@ pub(crate) fn exit_player(
 
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
 /// Starts the queued episode when the show has one, else leaves the player exactly as
-/// `exit_player` would. There is no interstitial: "always the next episode".
+/// `exit_player` would. There is no interstitial: "always the next episode" — except under the
+/// Next episode preference `Off`, which leaves the player here like a film.
 ///
 /// Returns whether playback was handed off to Up Next (`true`) or the player was left (`false`).
 /// `exit_player`'s `PopTo` only PARKS the navigation (`Dispatcher::request`, applied at the next
@@ -702,7 +703,9 @@ pub(crate) fn finish_playback(
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
-    if play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge) {
+    if crate::route::next_episode_mode() != crate::route::NextEpisodeMode::Off
+        && play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge)
+    {
         return true;
     }
     exit_player(ps, pa, refresh_hubs_at, pages);

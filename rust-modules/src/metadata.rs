@@ -1123,14 +1123,21 @@ pub(crate) struct Marker {
     pub(crate) kind: MarkerKind,
     pub(crate) start_ms: i64,
     pub(crate) end_ms: i64,
-    /// this credits segment runs to the end of the item (PMS `final: true`)
+    /// this credits segment runs to the end of the item (PMS `final: true`, or ending within
+    /// [`FINAL_SLACK_MS`] of the duration)
     pub(crate) final_seg: bool,
 }
 
+/// A credits marker ending within this of the item's duration counts as running to the end even
+/// without PMS's `final` flag: third-party marker editors and the file's own trailing slack leave
+/// it a second or two short, and such an episode must still get Up Next.
+const FINAL_SLACK_MS: i64 = 2_000;
+
 /// Parse a leaf's `Marker[]` into the app's model, dropping kinds the player has no behaviour for
 /// and any segment whose offsets are not a forward range (a zero-length or inverted marker would
-/// otherwise produce a prompt that can never be satisfied by seeking to its end).
-fn convert_markers(markers: &[crate::plex::Marker]) -> Vec<Marker> {
+/// otherwise produce a prompt that can never be satisfied by seeking to its end). `duration_ms` is
+/// the item's, for [`FINAL_SLACK_MS`] (`0` when unknown: only the explicit flag counts).
+fn convert_markers(markers: &[crate::plex::Marker], duration_ms: i64) -> Vec<Marker> {
     markers
         .iter()
         .filter_map(|m| {
@@ -1144,7 +1151,10 @@ fn convert_markers(markers: &[crate::plex::Marker]) -> Vec<Marker> {
                     kind,
                     start_ms: m.start_time_offset,
                     end_ms: m.end_time_offset,
-                    final_seg: m.is_final != 0,
+                    final_seg: m.is_final != 0
+                        || (kind == MarkerKind::Credits
+                            && duration_ms > 0
+                            && m.end_time_offset >= duration_ms - FINAL_SLACK_MS),
                 },
             )
         })
@@ -1173,7 +1183,8 @@ fn mark_skipped(state: &mut MetadataState, m: Marker) {
 /// never appear, and binge-watching ended every episode by dropping the user back to the detail
 /// page (found by the Plex Pass dependency audit after issue #22). Synthesizing the segment
 /// reuses the entire existing chain — tile, countdown, cancel latch, HUD hold — instead of
-/// growing a parallel EOS path.
+/// growing a parallel EOS path. It exists only to feed that tile, so `player_hud::slot` asks for
+/// it only under the Up Next countdown preference; the segment counts as `final`.
 ///
 /// Deliberately narrow: only when a successor EXISTS (a movie's tail must not grow a Skip
 /// Credits pill pointing nowhere), only when the item carries no credits marker AT ALL (a server
@@ -1772,6 +1783,15 @@ pub(crate) fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>)
     state.current = d;
 }
 
+/// TEST-ONLY installer for the playing item's markers: lets a rig put a segment under the playhead
+/// so the REAL `player_hud::slot` (not a hand-built slot) decides the control row. Crate-global,
+/// so callers hold [`crate::testlock::serial`].
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn set_playing_markers_for_test(state: &mut MetadataState, markers: Vec<Marker>) {
+    crate::testlock::assert_held("the playing store (set_playing_markers_for_test)");
+    state.playing = Some(PlayingItem { markers, ..PlayingItem::with_subs(Vec::new()) });
+}
+
 /// A compact descriptor of the item currently *playing*, for the in-player Info card. Unlike
 /// `current()` (which stays on the detail page's show/movie), this always describes the playing
 /// **leaf**: an episode carries the show title + SxEy + episode name + its still; a movie carries the
@@ -1993,7 +2013,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)
         related: Vec::new(),
         collection: None,
         chapters: convert_chapters(&it.chapter),
-        markers: convert_markers(&it.marker),
+        markers: convert_markers(&it.marker, it.duration),
         ratings: convert_ratings(&it),
         extras: Vec::new(),
         trailer_rk: String::new(),
@@ -2365,7 +2385,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it
         .as_ref()
-        .map(|it| convert_markers(&it.marker))
+        .map(|it| convert_markers(&it.marker, it.duration))
         .unwrap_or_default();
     let chapters = it
         .as_ref()
@@ -4321,7 +4341,7 @@ mod marker_tests {
         convert_markers(&[
             wire("credits", 3_065_648, 3_130_720, true),
             wire("intro", 990, 99_625, false),
-        ])
+        ], 0)
     }
 
     #[test]
@@ -4334,17 +4354,17 @@ mod marker_tests {
         assert!(!m[1].final_seg);
         // `commercial` (PMS emits it on recorded content) has no behaviour — it must be DROPPED,
         // not defaulted into one of the two, or the pill would offer to skip an ad break as an intro.
-        assert!(convert_markers(&[wire("commercial", 10, 20, false)]).is_empty());
-        assert!(convert_markers(&[wire("", 10, 20, false)]).is_empty());
+        assert!(convert_markers(&[wire("commercial", 10, 20, false)], 0).is_empty());
+        assert!(convert_markers(&[wire("", 10, 20, false)], 0).is_empty());
     }
 
     #[test]
     fn a_degenerate_range_is_dropped_rather_than_offered() {
         // A zero-length or inverted marker would produce a prompt that seeking to `end_ms` can
         // never satisfy — the pill would sit there and the press would do nothing.
-        assert!(convert_markers(&[wire("intro", 500, 500, false)]).is_empty());
-        assert!(convert_markers(&[wire("intro", 900, 100, false)]).is_empty());
-        assert!(convert_markers(&[wire("credits", -5, 100, true)]).is_empty());
+        assert!(convert_markers(&[wire("intro", 500, 500, false)], 0).is_empty());
+        assert!(convert_markers(&[wire("intro", 900, 100, false)], 0).is_empty());
+        assert!(convert_markers(&[wire("credits", -5, 100, true)], 0).is_empty());
     }
 
     #[test]
@@ -4401,6 +4421,22 @@ mod marker_tests {
         );
     }
 
+    /// A credits marker without PMS's `final` flag still counts as final when it ends at (or within
+    /// [`FINAL_SLACK_MS`] of) the item's duration, so Up Next is not lost to a marker that stops
+    /// a moment short of the end; a mid-episode one (a scene follows) stays a plain Skip.
+    #[test]
+    fn a_credits_marker_ending_at_the_duration_is_final_without_the_flag() {
+        let dur = 3_000_000;
+        let credits = |end| convert_markers(&[wire("credits", 2_900_000, end, false)], dur)[0].final_seg;
+        assert!(credits(dur), "ends exactly at the duration");
+        assert!(credits(dur - 1_500), "1.5 s short");
+        assert!(!credits(dur - 30_000), "30 s short: a scene follows");
+        let intro = convert_markers(&[wire("intro", 0, dur, false)], dur);
+        assert!(!intro[0].final_seg, "only credits can be final");
+        let unknown = convert_markers(&[wire("credits", 1000, 2000, false)], 0);
+        assert!(!unknown[0].final_seg, "no duration known: only the flag counts");
+    }
+
     #[test]
     fn a_final_credits_marker_holds_past_its_stated_end() {
         // PMS sets a `final` marker's end to the CONTAINER duration, but our playhead is the
@@ -4412,7 +4448,7 @@ mod marker_tests {
 
         // A NON-final credits marker (credits before a post-credits scene) must still end, or
         // playback past it would keep offering a skip for a segment already behind the playhead.
-        let mid = convert_markers(&[wire("credits", 1000, 2000, false)]);
+        let mid = convert_markers(&[wire("credits", 1000, 2000, false)], 0);
         assert!(marker_at(&mid, 1500).is_some());
         assert!(
             marker_at(&mid, 2000).is_none(),

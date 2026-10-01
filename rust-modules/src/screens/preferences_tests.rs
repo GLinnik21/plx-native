@@ -107,7 +107,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::SkipInterval]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
     ] {
         for field in fields {
@@ -179,4 +179,23 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     assert_eq!(parent.state.values[position_row], crate::i18n::msg::settings_playback_subtitle_position_high());
     crate::route::restore_subtitle_size(size);
     crate::route::restore_subtitle_position(position);
+}
+
+/// Every field belongs to exactly the page whose list shows it: the Audio & Subtitles page lists
+/// its four account fields and nothing else, the Playback page the six local ones, so a picker's
+/// `kind()` (its crumb, its copy, whether it loads the Plex account) can never disagree with the
+/// list that opened it.
+#[test]
+fn every_field_reports_the_page_whose_list_shows_it() {
+    let prefs = AudioPreferences::default();
+    for kind in [Kind::Playback, Kind::AudioSubtitles] {
+        let inputs = FieldListInputs { kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
+            prefs: Some(&prefs), busy: false, show_retry: false };
+        for &field in fields_of(&inputs) {
+            assert_eq!(field.kind(), kind, "{field:?} is listed by {kind:?}");
+        }
+    }
+    let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
+        prefs: Some(&prefs), busy: false, show_retry: false };
+    assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]);
 }

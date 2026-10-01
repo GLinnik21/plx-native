@@ -263,3 +263,25 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     crate::route::restore_subtitle_size(size);
     crate::route::restore_subtitle_position(position);
 }
+
+/// Subtitle size and position are LOCAL per-television settings. Opening their picker must not
+/// start the Plex account load (whose failure puts the Audio page's Retry row under the cursor),
+/// must not read as the Audio & Subtitles page, and must not carry the account note.
+#[test]
+fn the_local_subtitle_pickers_never_touch_the_plex_account() {
+    let _serial = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("pref-local-subtitle-pickers");
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+        let mut page = PickerPage::new(EntryId(0), field);
+        let mut emitted = drive(&mut page, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), 0);
+        emitted.extend(drive(&mut page, tick(), 0));
+        assert_eq!(preference_commands(&emitted), 0, "{field:?}: no account load");
+        assert!(page.txn.pending.is_none(), "{field:?}: nothing in flight");
+        assert!(!page.state.io.busy, "{field:?}: not busy");
+        assert!(page.state.io.status.is_empty(), "{field:?}: no loading status");
+        assert!(page.form.index_of_key(RowKey(RETRY_KEY)).is_none(), "{field:?}: no Retry row");
+        assert!(!page.copy.contains(crate::i18n::msg::settings_audio_account_note()), "{field:?}: no account note");
+        assert_eq!(field.kind(), Kind::Playback, "{field:?} belongs to the Video & playback page");
+        assert_eq!(field.kind().title(), crate::i18n::msg::settings_playback_title(), "{field:?}: the crumb names the page it opened from");
+    }
+}
