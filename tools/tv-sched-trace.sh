@@ -11,6 +11,11 @@
 # What it does on the set (kernel 4.4.84 aarch64: tracepoints and event tracing, NO function tracer,
 # NO SCHEDSTATS, no perf, no trace-cmd; tracefs is supported but not mounted):
 #   1. mounts tracefs at /sys/kernel/tracing only if it is not already mounted;
+#   (Observed on the television, 4.4.84: the string filter `name != "arch_timer"` is rejected, so the
+#   irq-number fallback is what runs; raw_syscalls `common_pid == N` is accepted; the per-CPU `stats`
+#   `entries:` line reaches 0 when drained; 433,702 events read back well inside the 90 s bound.
+#   An 8 s run at the 32 MB cap overran CPU 0 only (5,644 of 166,017 events; CPU 0 carries about
+#   twice the others'), so `--secs 6` is the loss-free choice.)
 #   2. sets trace_clock=mono (so event times are the app's CLOCK_MONOTONIC, the clock FRAMEDROP's
 #      `mono=`/`wait_at=` use) and a per-CPU buffer sized for ~60k events/s with headroom, capped
 #      at 32 MB across all CPUs (the set has ~45 MB free): longer than ~8 s overruns the ring;
