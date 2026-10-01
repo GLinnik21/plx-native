@@ -833,6 +833,30 @@ pub(super) fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(Strin
 pub(super) const DECISION_UNPLAYABLE: i64 = 2000;
 
 
+/// The two verdict NUMBERS of a `/decision` body — `generalDecisionCode` and `transcodeDecisionCode`
+/// — kept as the integers PMS sent (`None` = the body carried none; never a defaulted 0).
+///
+/// They ride [`PlayVerdict::Server`] beside the sentence for one reason: a refused playback reaches
+/// Sentry as a bare `decision_refused`, and the sentence that explains it is server copy that can
+/// carry file names, paths and server details, so it must never leave the television. A code is a
+/// protocol constant, not a quotation, so the report can classify it into a closed domain
+/// (`player::report::DecisionCodeClass`) and say WHICH refusal this was without saying anything
+/// about whose server or file it was.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DecisionCodes {
+    pub general: Option<i64>,
+    pub transcode: Option<i64>,
+}
+
+impl DecisionCodes {
+    pub(crate) fn of(mc: &crate::plex::MediaContainer) -> Self {
+        Self {
+            general: mc.general_decision_code,
+            transcode: mc.transcode_decision_code,
+        }
+    }
+}
+
 /// **Why a plan leaves without a URL on purpose**, as a typed verdict rather than a sentence.
 ///
 /// The server's own refusal is quoted verbatim ([`PlayVerdict::Server`]: PMS wrote it, in the
@@ -841,8 +865,10 @@ pub(super) const DECISION_UNPLAYABLE: i64 = 2000;
 /// would freeze one language into playback state that tests, logs and replays also read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PlayVerdict {
-    /// `/decision`'s own sentence, quoted and never translated. `""` when it gave none.
-    Server(String),
+    /// `/decision`'s own sentence, quoted and never translated. `""` when it gave none. Beside it,
+    /// the two NUMBERS the same body carried — the only part of a server refusal the failure report
+    /// may ever send anywhere (see [`DecisionCodes`]); the sentence stays on this device.
+    Server(String, DecisionCodes),
     /// Direct Play is Disabled, and this stream can only be played as the original.
     DirectPlayDisabled,
     /// Force Direct Play is on, and this is why the original cannot play.
@@ -868,7 +894,7 @@ impl PlayVerdict {
     pub(crate) fn text(&self) -> &str {
         use crate::i18n::msg;
         match self {
-            Self::Server(sentence) => sentence,
+            Self::Server(sentence, _) => sentence,
             Self::DirectPlayDisabled => msg::widgets_verdict_direct_play_disabled(),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => msg::widgets_verdict_forced_no_original(),
@@ -2053,7 +2079,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                 "decision: REFUSED general={:?} transcode={:?} — {v}",
                 mc.general_decision_code, mc.transcode_decision_code
             ));
-            plan.verdict = Some(PlayVerdict::Server(v));
+            plan.verdict = Some(PlayVerdict::Server(v, DecisionCodes::of(&mc)));
             return plan;
         }
         // the Load payload must match the server's ACTUAL output codecs

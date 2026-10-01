@@ -116,3 +116,31 @@ fn a_2000_decision_is_a_refusal_and_quotes_the_reason_the_server_named() {
     );
 }
 
+/// What a refusal keeps of the body is the two NUMBERS, exactly as sent: an absent one stays
+/// absent (never a defaulted 0), and string-encoded and numeric bodies read the same. The
+/// sentence is not among them — it is the one part that must never leave the television.
+#[test]
+fn a_refusal_keeps_the_two_decision_numbers_and_an_absent_one_stays_absent() {
+    fn mc(json: &[u8]) -> crate::plex::MediaContainer {
+        serde_json::from_slice::<crate::plex::Envelope>(json)
+            .expect("parse")
+            .media_container
+    }
+    let vp9 = mc(br#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":4007,
+        "transcodeDecisionText":"Cannot convert this item. Implementation for video encoder 'vp9' not found."}}"#);
+    assert_eq!(
+        DecisionCodes::of(&vp9),
+        DecisionCodes { general: Some(2000), transcode: Some(4007) }
+    );
+    let dovi = mc(br#"{"MediaContainer":{"generalDecisionCode":"2000","transcodeDecisionCode":"2003"}}"#);
+    assert_eq!(
+        DecisionCodes::of(&dovi),
+        DecisionCodes { general: Some(2000), transcode: Some(2003) }
+    );
+    let general_only = mc(br#"{"MediaContainer":{"generalDecisionCode":2000}}"#);
+    assert_eq!(
+        DecisionCodes::of(&general_only),
+        DecisionCodes { general: Some(2000), transcode: None }
+    );
+}
+

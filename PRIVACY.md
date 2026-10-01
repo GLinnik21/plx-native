@@ -103,6 +103,17 @@ The closed diagnostic vocabulary includes terminal kinds such as `playback_inter
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
+When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
+that report also carries four closed fields about the refusal — and never the server's own
+explanation, which is free text that can name files, paths and servers and stays on the television:
+the two numeric decision codes the server answered with, as `absent` / `2000` / `2003` / `4007` /
+`other_1xxx` / `other_2xxx` / `other_3xxx` / `other_4xxx` / `other` (a number outside that list is
+reported by its documented class, never as itself); the delivery the app had asked for,
+`original_remux` / `hls` / `progressive_transcode` (the report's own `delivery` stays `unknown`
+because the refused plan never installed a route); and the source file's video codec
+(`unknown` / `h264` / `hevc` / `av1` / `vp9` / `mpeg2` / `other`) and audio codec (`unknown` /
+`aac` / `ac3` / `eac3` / `truehd` / `dts` / `flac` / `mp3` / `opus` / `other`).
+
 The same choice also covers a **sign-in problem report** when signing in fails. It contains the
 `kind` of sign-in step that failed — or, when the failure was inside the app rather than on the
 network (the app's own sign-in work refused, stopped or left unfinished), which of those fixed
@@ -178,12 +189,12 @@ Every product analytics event also carries this bounded compatibility and connec
 | `feature.used` | `feature` — one of a fixed list of feature names |
 | `enhancement.refused` | `boost_dialog` — `true` / `false`; `normalize_loudness` — `true` / `false` |
 | `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
-| `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
-| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified` |
-| `playback.cancelled` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
-| `playback.abandoned` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
+| `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
+| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `kind` — `decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified` |
+| `playback.cancelled` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused |
+| `playback.abandoned` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused |
 | `playback.quality` | `playback_id` — a random number minted per attempt, never stored and never reused; `rebuffers` — `0` / `1` / `2-3` / `4+`; `buffering` — `none` / `<2s` / `2-10s` / `10s+` — never the interval |
-| `playback.ended` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `watched` — `abandoned` / `some` / `most` / `finished` — never a position or a duration |
+| `playback.ended` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `watched` — `abandoned` / `some` / `most` / `finished` — never a position or a duration |
 
 ## Never included in optional reports
 

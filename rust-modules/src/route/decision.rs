@@ -4297,6 +4297,16 @@ pub(crate) fn play_resolution_failed(ps: &PlaybackSession) -> bool {
 pub(crate) fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
     ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
+/// The verdict NUMBERS of a refusal the SERVER made at `/decision` — `None` when nothing was
+/// refused, or when the refusal was the app's own (Direct Play off, Force Direct Play): those carry
+/// no server codes because the server was never asked to decide. Numbers only; the sentence is
+/// [`play_verdict`], and it never reaches a report. MAIN THREAD.
+pub(crate) fn server_refusal_codes(ps: &PlaybackSession) -> Option<DecisionCodes> {
+    match ps.play_verdict {
+        Some(PlayVerdict::Server(_, codes)) => Some(codes),
+        _ => None,
+    }
+}
 /// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
 /// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
 /// resolved; this is the other half, for leaving the player entirely.
@@ -4327,6 +4337,29 @@ pub(crate) fn clear_play_verdict_for_test(ps: &mut PlaybackSession) {
 #[cfg(test)]
 pub(crate) fn refuse_for_test(ps: &mut PlaybackSession, verdict: PlayVerdict) {
     ps.play_verdict = Some(verdict);
+}
+/// Test-only: leave `ps` as a refusing [`apply_plan`] does after the SERVER refused a transcode —
+/// the verdict and its codes installed, the attempted route's contract and the source file's
+/// codecs recorded, and still no URL and no encoder session.
+#[cfg(test)]
+pub(crate) fn refuse_by_server_for_test(
+    ps: &mut PlaybackSession,
+    sentence: &str,
+    codes: DecisionCodes,
+    remux: bool,
+    hls: bool,
+    src_vcodec: &str,
+    src_acodec: &str,
+) {
+    ps.play_verdict = Some(PlayVerdict::Server(sentence.to_owned(), codes));
+    ps.cur_contract.remux = remux;
+    ps.cur_contract.delivery = if hls {
+        crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+    } else {
+        crate::plex::TranscodeDelivery::ProgressiveMkv
+    };
+    ps.src_vcodec = src_vcodec.to_owned();
+    ps.src_acodec = src_acodec.to_owned();
 }
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
