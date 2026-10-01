@@ -74,6 +74,7 @@ pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region fo
 // ladders. Its deletion readout now borrows the Session owner's immutable publication;
 // no module-level deletion counter remains for a newly mounted screen to poll.
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
+pub(crate) mod page_stack; // the drill-in page stack Tracks and More share
 pub(crate) mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
