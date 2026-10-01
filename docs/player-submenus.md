@@ -96,7 +96,7 @@ re-recorded.
 A live poll rebuilds the current page when any of these change: the subs fingerprint (count, stream
 ids, offered sidecars), the active index, the renderer kind (text / image / ASS), transcoding, or the
 own-burn / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
-A page whose availability or `OpenLang` target no longer holds pops to the root by id.
+On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the own burn, or a server burn that omits it). An `OpenLang` target that no longer exists pops likewise (PR 3).
 
 ## PR sequence
 
@@ -110,6 +110,7 @@ A page whose availability or `OpenLang` target no longer holds pops to the root 
 
 ## Decisions
 
+- **Minimum width (owner):** the in-player popovers (Tracks, More) have a floor, `theme::layout::PLAYER_MENU_MIN_W` (440 px at 1080p), set on their `TableView` (`min_panel_w`), so a small page does not shrink to its labels. A floor only: wider content still grows the panel to `MENU_MAX_W`. At 440 the locked-renderer note takes two lines in English and Belarusian and three in Spanish (two needs ~520).
 - **Geometry while the Position picker is open (owner): accept the overlap.** Panel bottom is fixed;
   at High the caption may pass behind the panel. No preview shift, no page-dependent HUD policy.
 - **Evidence for the animation PR:** host tests for running vs resting (a transition reports

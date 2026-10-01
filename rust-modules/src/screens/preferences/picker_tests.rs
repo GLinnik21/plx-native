@@ -234,3 +234,32 @@ fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
     crate::route::restore_subtitle_size(size);
     crate::route::restore_subtitle_position(position);
 }
+
+/// A failed Size write leaves the live value (and so the checkmark) on the new rung while the disk
+/// keeps the old one. OK on that checked row must write again, not pop and strand the pick.
+#[test]
+fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
+    let _serial = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("picker-size-retry");
+    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
+    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
+    let other = if page.state.checked == 0 { 1 } else { 0 };
+    let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+    let reply = emitted.into_iter().find_map(|e| match e.fx {
+        Fx::App(AppFx::Preferences(PreferenceCmd::SubtitleSize { size, reply })) => {
+            // what select_subtitle_size does on the main thread before the write lands
+            crate::route::restore_subtitle_size(size);
+            Some(reply)
+        }
+        _ => None,
+    }).expect("a size command");
+    reply.send(false).unwrap();
+    assert!(!popped(&drive(&mut page, tick(), other)), "a failed write keeps the page");
+    assert_eq!(page.state.checked, other, "the live pick is the checked row");
+    let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+    assert!(!popped(&emitted), "OK on the unsaved checked row does not pop");
+    assert_eq!(preference_commands(&emitted), 1, "it writes again");
+    crate::route::restore_subtitle_size(size);
+    crate::route::restore_subtitle_position(position);
+}

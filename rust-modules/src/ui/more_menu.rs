@@ -125,6 +125,7 @@ impl MoreMenuState {
         }
         let mut table = TableView::new();
         table.compact = true; // a short action list — BODY labels, like the profile menu
+        table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         // An empty Quality section is not drawn at all — a heading over nothing would read as a
         // menu that failed to load.
         let sections = if forced { vec![options] } else { vec![quality_sec, options] };

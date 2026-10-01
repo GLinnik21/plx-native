@@ -524,6 +524,9 @@ pub struct TableView {
     /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
     /// replacing the shared table header renderer or changing row/detail hierarchy.
     pub header_ink: [f32; 4],
+    /// The floor [`Self::menu_panel_width`] clamps to; [`MENU_MIN_W`] unless a panel family sets a
+    /// wider one (the in-player popovers: [`theme::layout::PLAYER_MENU_MIN_W`]).
+    pub min_panel_w: f32,
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
     hl_top: Spring,
@@ -546,7 +549,7 @@ impl TableView {
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _ } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -576,6 +579,7 @@ impl TableView {
             compact: false,
             tall: false,
             header_ink: theme::TEXT_TERTIARY,
+            min_panel_w: MENU_MIN_W,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
@@ -845,14 +849,14 @@ impl TableView {
 
     /// The shared popover-menu width rule: the table's own [`Self::measured_width`] (longest
     /// header / label / detail / trailing value plus `2 * CONTENT_X` of padding and the check
-    /// column) clamped to [[`MENU_MIN_W`], [`MENU_MAX_W`]]. Every TableView-in-popover menu sizes
+    /// column) clamped to [[`Self::min_panel_w`] (default [`MENU_MIN_W`]), [`MENU_MAX_W`]]. Every TableView-in-popover menu sizes
     /// its panel with this; none carries a width constant of its own.
     ///
     /// [`MENU_MAX_W`] is a localization CATCH, not a silent ellipsis: each menu's fit test grades
     /// its shipped languages at the cap, and [`Self::menu_cap_failure`] flags any draft whose
     /// `measured_width` exceeds it.
     pub(crate) fn menu_panel_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        self.measured_width(measure).clamp(MENU_MIN_W, MENU_MAX_W)
+        self.measured_width(measure).clamp(self.min_panel_w.min(MENU_MAX_W), MENU_MAX_W)
     }
 
     /// Test-side half of the cap: `Err` names the offending width when this table would need a

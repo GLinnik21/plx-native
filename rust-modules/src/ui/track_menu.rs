@@ -2,7 +2,8 @@
 //! animated `TableView` (Apple-TV "settings" look — a sliding pill selection, section header with
 //! a codec accessory, per-row badges, a leading checkmark on the active track). app.rs routes
 //! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
-//! panels. The selection commit (native audio switch / server transcode / burn) is unchanged
+//! panels on a root (on the Subtitles tab LEFT pops a sub-page and RIGHT on a Nav row enters it;
+//! BACK pops a sub-page before it dismisses). The selection commit (native audio switch / server transcode / burn) is unchanged
 //! from the previous procedural version — only the presentation moved onto the table.
 //!
 //! **The Subtitles panel is grouped, not one flat list** (plan `subtitle-menu-capsule` §3,
@@ -56,8 +57,9 @@
 //!
 //! **A sub-page never outlives the root it was built on.** The root's [`SubSig`] — subs fingerprint,
 //! active index, renderer kind, transcoding, own-burn and enhancement route — is stored when the
-//! root is built and compared on every live poll; a mismatch refreshes the root in place, or pops a
-//! sub-page straight to the root. The replay canon ([`TrackMenuState::canon`]) carries the tab, the
+//! root is built and compared on every live poll; a mismatch refreshes the root in place, and a
+//! sub-page in place too — it pops straight to the root only when its availability no longer holds
+//! (the renderer, or whether Style is shown / locked). The replay canon ([`TrackMenuState::canon`]) carries the tab, the
 //! page path with each return id, and the selected key.
 use crate::metadata;
 use crate::metadata::sub_layout::{self, RowBadge, SubHeader, SubRow, SubSection, SubTrack};
@@ -287,6 +289,16 @@ struct SubSig {
     effect: crate::route::SubtitleEffect,
 }
 
+impl SubSig {
+    /// What a pushed Style page's availability was built from: the renderer (Size / Position reach
+    /// only text), whether the app's own burn locks Style, and whether an ordinary server burn
+    /// omits it (`transcoding && !own_burn`, the gate [`TrackMenuState::sub_form`] shows Style by).
+    /// A page is popped when this changes and refreshed in place otherwise.
+    fn page_availability(&self) -> (SubRenderer, bool, bool) {
+        (self.renderer, self.own_burn, self.transcoding && !self.own_burn)
+    }
+}
+
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
 /// the appear fraction as a parameter instead of stepping its own [`Popover`].
@@ -424,8 +436,9 @@ pub(crate) enum TrackOk {
     /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
     /// Tracks panel and asks for `OverlayKind::Timing` in its place.
     OpenTiming,
-    /// The dim Timing row while subtitles are Off: OK does nothing, and so must not close the
-    /// panel either.
+    /// OK does nothing and must not close the panel either: the dim Timing row while subtitles are
+    /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
+    /// rung that is already checked.
     Inert,
 }
 
@@ -459,6 +472,7 @@ impl TrackMenuState {
             sub_style_locked: false,
             form: TrackTable::new(BAND_BASE),
         };
+        s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
         s.rebuild(ps, meta, tab);
         s
@@ -621,9 +635,11 @@ impl TrackMenuState {
     ///
     /// **It rebuilds on a [`SubSig`] change**, not on the two values it once compared: the subs
     /// list, the active index, the renderer kind, transcoding, and the enhancement route and
-    /// subtitle effect. On the root that is a refresh in place; ON A SUB-PAGE the page is popped to
-    /// the root (its availability came from the root it was opened on), so a Style page never
-    /// outlives the renderer or the lock that its Size and Position rows were built for.
+    /// subtitle effect. On the root that is a refresh in place. ON A SUB-PAGE the page is refreshed in
+    /// place too (focus kept by id) and popped to the root only when its availability no longer
+    /// holds ([`SubSig::page_availability`]: the renderer, or whether Style is shown / locked), so a
+    /// Style page never outlives the renderer or the lock its Size and Position rows were built for
+    /// while a track list or enhancement change it does not read leaves it alone.
     fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let live_sub = Self::derive_active_sub(ps, meta);
         let sig = self.sub_sig_for(ps, meta, live_sub);
@@ -637,14 +653,23 @@ impl TrackMenuState {
                 // not the viewer's row any more (its track left the offered list): the checked row
                 self.form.refresh_with(form, None, Some(&self.active_sub_id()));
             }
-            Some(first) => {
+            Some(first) if self.sub_sig.as_ref().is_some_and(|built| built.page_availability() != sig.page_availability()) => {
                 // The page was opened on a root that no longer holds (the renderer changed under
-                // Size/Position, a burn landed, the list moved): pop to the root, restoring the
-                // opener and scroll the stack saved at its first push.
+                // Size/Position, a burn landed or left): pop to the root, restoring the opener and
+                // scroll the stack saved at its first push.
                 self.pages.clear();
                 let form = self.sub_form(ps, meta);
                 self.form.restore(form, Some(&first.return_id), first.scroll);
                 self.form.table.set_title(None);
+            }
+            Some(_) => {
+                // The page still holds: remember what the root is now built from (the pop back
+                // rebuilds it) and refresh this page in place, focus kept by id.
+                self.sub_sig = Some(sig);
+                if let Some(page) = self.pages.last().map(|s| s.page) {
+                    let form = self.page_form(page);
+                    self.form.refresh(form);
+                }
             }
         }
     }
@@ -1328,8 +1353,9 @@ impl TrackMenuState {
 /// each frame from a `&TrackMenuState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`
 /// and `ui::table_screen::TablePart` use for the other bare-`TableView` panels, so this popover
 /// answers the same [`Focusable`]/[`Part`] query protocol they do. LEFT/RIGHT are NOT a move
-/// within the group — they switch the whole row set to the other tab, which only the owning
-/// screen can do (mirroring [`TrackMenuState::focus_tab`]), so both edges answer
+/// within the group — LEFT pops a sub-page, else switches the whole row set to the other tab, and
+/// RIGHT enters a Nav row, else switches tab; both replace the rows, which only the owning screen
+/// can do (mirroring [`TrackMenuState::on_left`] / [`TrackMenuState::on_right`]), so both edges answer
 /// [`EdgeRule::Screen`], the same idiom `TablePart` uses for a RIGHT edge the screen itself must
 /// interpret.
 ///
@@ -3703,9 +3729,10 @@ mod style_page_tests {
         teardown(&ps);
     }
 
-    /// **A Style page never outlives what it was built for**: a signature change while on a
-    /// sub-page pops to the root (opener and scroll restored); an unchanged signature leaves the
-    /// page alone; on the root the same change refreshes in place.
+    /// **A Style page never outlives what it was built for**: a change of the
+    /// page's availability (here the renderer kind) while on a sub-page pops to the root (opener and
+    /// scroll restored); an unchanged signature leaves the page alone; on the root any change
+    /// refreshes in place.
     #[test]
     fn a_rebuild_signature_mismatch_on_a_sub_page_pops_to_the_root() {
         let _g = crate::testlock::serial();
@@ -3725,6 +3752,52 @@ mod style_page_tests {
         assert_eq!(menu.selected_id(), Some(TrackRowId::Style), "on the row that opened it");
         assert_eq!(menu.form.table.title(), None);
         teardown(&ps);
+    }
+
+    /// **Only an availability change pops a sub-page.** A subs fingerprint change (a track offered
+    /// mid-play) or an enhancement-route change that leaves the renderer and the Style gate alone
+    /// refreshes the open Size picker in place: same page, same focused row, new signature stored.
+    #[test]
+    fn a_signature_change_that_keeps_the_pages_availability_refreshes_in_place() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRowId::Style);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRowId::OpenField(StyleField::Size));
+        menu.on_ok(store.view());
+        let picker = [TrackPage::Style, TrackPage::Picker(StyleField::Size)];
+        assert_eq!(menu.page_path(), picker);
+        let focused = TrackRowId::Choice(StyleField::Size, 0);
+        focus_id(&mut menu, focused);
+        let before = menu.sub_sig.clone();
+
+        // a second subtitle offered mid-play: the fingerprint moves, the renderer does not
+        let store2 = store_with(vec![stream(999, 0, "English", "eng", ""), stream(1000, 1, "French", "fra", "")]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert_ne!(menu.sub_sig, before, "the new fingerprint is stored");
+        assert_eq!(menu.page_path(), picker, "the picker stays");
+        assert_eq!(menu.selected_id(), Some(focused), "on the row the viewer was on");
+        teardown(&ps);
+
+        // the enhancement's subtitle effect moves (an embedded track is now the one on screen), still no own burn
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRowId::Style);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRowId::OpenField(StyleField::Size));
+        menu.on_ok(store.view());
+        focus_id(&mut menu, focused);
+        let before = menu.sub_sig.clone();
+        teardown(&ps);
+        let (ps2, _sid) = enhancement_test_session(EnhTestFixture {
+            remux: None,
+            subtitle_effect: SubtitleEffect::Embedded,
+            ..Default::default()
+        });
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps2, store.view());
+        assert_ne!(menu.sub_sig, before, "the enhancement route is part of the signature");
+        assert_eq!(menu.page_path(), picker, "the picker stays");
+        assert_eq!(menu.selected_id(), Some(focused));
+        teardown(&ps2);
     }
 
     /// **Every Style surface fits the panel in every shipped language**: the Subtitles root with
@@ -3756,6 +3829,33 @@ mod style_page_tests {
             }
         }
         crate::ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The locked-renderer notes wrap to two lines at the player-menu floor (three in Spanish).** A Style page is a few
+    /// short rows; without [`theme::layout::PLAYER_MENU_MIN_W`] it shrank to its labels and the
+    /// note wrapped to three lines in a sliver.
+    #[test]
+    fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let measure = crate::fontcov::advances::ShippedMeasure;
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            for codec in ["pgs", "ass"] {
+                let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
+                menu.push(TrackPage::Style);
+                let w = menu.form.table.menu_panel_width(&measure);
+                assert!(w >= theme::layout::PLAYER_MENU_MIN_W, "{language:?}: the page is not a sliver ({w})");
+                menu.form.table.fit_notes(w, &measure);
+                let lines = menu.form.table.sections.iter().flat_map(|s| &s.rows)
+                    .filter(|r| r.is_note()).map(|r| r.note_lines.get()).max().expect("a note row");
+                // Spanish's longer wording needs ~520px for two lines; at the 440 floor it takes three
+                // (measured), English and Belarusian take two
+                let allowed = if language == Preference::Es { 3 } else { 2 };
+                assert!(lines <= allowed, "{language:?} {codec}: the note takes {lines} lines at {w}px");
+                teardown(&ps);
+            }
+        }
     }
 
     /// The title band is a pointer-only stop: its key is recognised, no row owns it.

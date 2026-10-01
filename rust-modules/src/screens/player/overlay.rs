@@ -500,7 +500,8 @@ impl PlayerOverlayScreen {
     /// **The engine reached this panel's group EDGE and re-delivered the direction**
     /// (`EdgeRule::Screen`, §7.3 step 3) — the one thing left that a panel decides outside its own
     /// scope, because it moves focus OFF this screen (Chapters'/Info's DOWN) or re-addresses the
-    /// panel entirely (Tracks' LEFT/RIGHT tab switch, `TrackMenuState::focus_tab`). More declares
+    /// panel entirely (Tracks' LEFT/RIGHT: LEFT pops a sub-page, else switches tab
+    /// (`TrackMenuState::focus_tab`); RIGHT enters a Nav row, else switches tab). More declares
     /// no `Screen` edge at all (its four sides are `Stop`), so it never reaches here.
     fn edge_key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
@@ -537,8 +538,9 @@ impl PlayerOverlayScreen {
     /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
     /// reached this panel's group edge and re-delivered it (`edge_key`, above). OK is likewise
     /// left to the engine's own `Activate`/press machinery (§7.4; see [`Self::activate`]). BACK
-    /// dismisses — Tracks and More close silently, exactly as the old ladder did; Info and
-    /// Chapters also hand the transport the ordinary linger.
+    /// dismisses — except on a Tracks sub-page, where it pops one page first (the root, and the
+    /// other panels, dismiss). Tracks and More close silently, exactly as the old ladder did; Info
+    /// and Chapters also hand the transport the ordinary linger.
     fn key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
