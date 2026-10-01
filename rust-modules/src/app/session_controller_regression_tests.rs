@@ -460,7 +460,7 @@ mod tests {
                     assert!(!crate::auth::owner::ObservationSink::progress(&output, progress),
                         "the production worker sink must refuse late progress");
                     let terminal = crate::auth::LoginProgress::Failed {
-                        epoch: EPOCH, message: "Synthetic late failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None
+                        epoch: EPOCH, message: "Synthetic late failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
                     }.into();
                     assert!(!crate::auth::owner::ObservationSink::terminal(&output, terminal),
                         "the production worker sink must refuse a late terminal");

@@ -842,8 +842,16 @@ pub(crate) enum LoginProgress {
     /// class of the last network call and its counters, never `message`'s text.
     /// `plaintext` is the server the read-out may offer a consented plaintext connection to
     /// ([`PlaintextVerdict::offers`]) — screen-only; the incident carries closed codes alone.
+    ///
+    /// `account` is the name plex.tv gave the account that signed in and found no server, for the
+    /// read-out to say who signed in (`browse.auth.no_servers_signed_in_as`). Personal data:
+    /// screen-only like `plaintext`, `#[serde(skip)]` so no serialized copy carries it, left out of
+    /// the observation digest, and never part of `incident` or a log line. `message` is then
+    /// `browse.auth.no_servers`, the caption a screen shows when it has no name to say.
     Failed { epoch: u64, message: String, incident: crate::telemetry::incident::IncidentContext,
-        plaintext: Option<PlaintextVerdict> },
+        plaintext: Option<PlaintextVerdict>,
+        #[serde(skip)]
+        account: Option<String> },
     /// plex.tv stopped answering the polls of the code on screen (`Some`, once, when the run of
     /// unanswered polls reaches [`LINK_TROUBLE_AFTER`]) or answered again (`None`). Non-terminal:
     /// the wait goes on, and the owner raises a `LinkStalled` incident from the evidence.
@@ -922,7 +930,39 @@ pub(crate) fn synthetic_incident() -> IncidentContext {
 /// caption is for the person, the context is what an onboarding report may carry.
 fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
     incident: IncidentContext, plaintext: Option<PlaintextVerdict>) {
-    output.terminal(LoginProgress::Failed { epoch, message: message.into(), incident, plaintext }.into());
+    output_failed_naming(output, epoch, message, incident, plaintext, None);
+}
+
+/// [`output_failed`] for a failure that may also say which account signed in
+/// ([`LoginProgress::Failed::account`]).
+fn output_failed_naming(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
+    incident: IncidentContext, plaintext: Option<PlaintextVerdict>, account: Option<String>) {
+    output.terminal(LoginProgress::Failed {
+        epoch, message: message.into(), incident, plaintext, account }.into());
+}
+
+/// **Who signed in, when the answer is "no server yet"** — and only then. One `GET /api/v2/user`
+/// ([`crate::plex::account::DISPLAY_NAME_TIMEOUTS`], 5 s), made after discovery has already ended
+/// in [`Discovery::NoServers`]: a successful sign-in never asks, and nothing asks before discovery.
+/// `None` for every other verdict, for a call that failed or timed out, and for an answer with no
+/// usable name — the read-out then says `browse.auth.no_servers`, with no trace of the miss.
+///
+/// The name is personal data and goes nowhere but [`LoginProgress::Failed::account`]: it is not
+/// logged here, and the measuring that fits it on a line happens on the screen's thread
+/// ([`signed_in_reason`]), where the font is.
+fn no_servers_account(d: &Discovery, ac: &AccountClient, output: &dyn owner::ObservationSink)
+    -> Option<String> {
+    no_servers_account_with(d, output,
+        || ac.display_name_with(crate::plex::account::DISPLAY_NAME_TIMEOUTS))
+}
+
+/// [`no_servers_account`] with the user call injected, like `discover_and_store_with_resources`.
+fn no_servers_account_with(d: &Discovery, output: &dyn owner::ObservationSink,
+    user_call: impl FnOnce() -> Option<String>) -> Option<String> {
+    if !matches!(d, Discovery::NoServers(_)) || !output.live() {
+        return None;
+    }
+    user_call()
 }
 
 /// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
@@ -931,8 +971,9 @@ fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
 /// (`StatusOverlay::reason_segments`).
 ///
 /// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
-/// the read-out's reason column, the NAME is shortened with an ellipsis and the sentence keeps its
-/// words and its final period. `None` for a blank name — the caller says
+/// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
+/// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
+/// at the name's end would sit against that period as four dots. `None` for a blank name — the caller says
 /// `browse.auth.no_servers` instead, which needs no name.
 ///
 /// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
@@ -957,7 +998,7 @@ pub(crate) fn signed_in_reason(account: &str, measure: &dyn crate::ui::machine::
     // the sum of the parts under-reads the whole (kerning across the name's edges).
     let mut room = column - first_line_w(&message(""));
     loop {
-        let name = crate::text::elide_by(&account, room, false, |t| measure.width_str(t, sz, false));
+        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
         let out = message(&name);
         if first_line_w(&out) <= column || room <= 0.0 {
             return Some(out);
@@ -1065,7 +1106,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // that can show every sign-in cause's glyph without a network call or an account.
     if let Some(case) = crate::dev::scenarios::readout_case() {
         let (message, incident) = case.canned_login_failure();
-        return output_failed(output, epoch, &message, incident, None);
+        return output_failed_naming(output, epoch, &message, incident, None, case.canned_account());
     }
     let ac = AccountClient::new(&cid, None);
 
@@ -1122,7 +1163,8 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // outage.
     let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Login, ask, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
-        return output_failed(output, epoch, &message, incident, plaintext_offer(&discovery));
+        let account = no_servers_account(&discovery, &ac, output);
+        return output_failed_naming(output, epoch, &message, incident, plaintext_offer(&discovery), account);
     }
     let Discovery::Ok { server, sources } = discovery else { return };
     finish_sign_in(&ac, epoch, server, sources, output);
@@ -1325,7 +1367,8 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64, ask: &
     let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Rediscover, ask, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
         // The same caption AND the same incident as sign-in: this is the retry of that failure.
-        return output_failed(output, epoch, &message, incident, plaintext_offer(&discovery));
+        let account = no_servers_account(&discovery, &ac, output);
+        return output_failed_naming(output, epoch, &message, incident, plaintext_offer(&discovery), account);
     }
     if let Discovery::Ok { server, sources } = discovery {
         finish_sign_in(&ac, epoch, server, sources, output);

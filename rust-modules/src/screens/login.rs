@@ -252,6 +252,16 @@ struct QrLayout {
     status_spinner: Rect,
 }
 
+/// **The failed read-out's reason.** The session's caption, except that a no-server failure which
+/// carries the account's name says who signed in instead ([`auth::signed_in_reason`], measured
+/// with the live font here because the sign-in worker has none). A blank name — or none — keeps
+/// the caption, `browse.auth.no_servers`, which needs no name.
+fn failed_reason(error: &str, account: Option<&str>, measure: &dyn Measure) -> String {
+    account
+        .and_then(|account| auth::signed_in_reason(account, measure))
+        .unwrap_or_else(|| error.to_owned())
+}
+
 /// Preserve the QR status mark's existing radius; its dots are part of the measured gutter.
 const STATUS_SPINNER_R: f32 = 15.0;
 
@@ -765,6 +775,9 @@ pub(crate) struct LoginScreen {
     qr_code: Arc<str>,
     qr_replaced: bool,
     error: Arc<str>,
+    /// Who signed in, for the no-server reason alone (`SessionSnapshot::account`): composed and
+    /// measured at draw, where the live font is. Personal data — never logged or reported.
+    account: Option<Arc<str>>,
     discovery_retry: Option<auth::DiscoveryRetryProgress>,
     discovery_retry_observed_phase_ms: f32,
     delete_leftovers: usize,
@@ -801,6 +814,7 @@ impl LoginScreen {
             qr_code: Arc::from(""),
             qr_replaced: false,
             error: Arc::from(""),
+            account: None,
             discovery_retry: None,
             discovery_retry_observed_phase_ms: 0.0,
             delete_leftovers: 0,
@@ -861,8 +875,10 @@ impl LoginScreen {
         }
         if matches!(self.phase, Phase::Error | Phase::Discovering) {
             self.error = Arc::clone(&snapshot.error);
+            self.account = snapshot.account.clone();
         } else {
             self.error = Arc::from("");
+            self.account = None;
         }
         if self.discovery_retry != snapshot.discovery_retry {
             self.discovery_retry = snapshot.discovery_retry;
@@ -1557,7 +1573,8 @@ impl LoginScreen {
         env: &Env,
         focus: Option<u32>,
     ) {
-        let reason = CString::new(self.error.as_ref()).unwrap_or_default();
+        let reason = failed_reason(&self.error, self.account.as_deref(), f.measure);
+        let reason = CString::new(reason).unwrap_or_default();
         let note = self.report_note();
         let o = self.failed_readout(&reason, note.as_ref());
         self.draw_overlay(f, p, env, o, focus);
@@ -2183,6 +2200,7 @@ mod tests {
             code_replaced: false,
             users: Arc::from(Vec::<auth::UserTile>::new()),
             error: Arc::from(""),
+            account: None,
             pin_denied: false,
             profile: None,
             scope: auth::owner::ProfileScope(0),
@@ -2515,6 +2533,7 @@ mod tests {
             qr_code: Arc::from(""),
             qr_replaced: false,
             error: Arc::from(""),
+            account: None,
             discovery_retry: None,
             discovery_retry_observed_phase_ms: 0.0,
             delete_leftovers: 0,

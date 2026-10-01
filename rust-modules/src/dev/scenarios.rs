@@ -276,18 +276,15 @@ pub(crate) fn readout_case() -> Option<ReadoutCase> {
 /// `browse.auth.no_servers` fallback). A canned name, never a real account's.
 const MOCK_ACCOUNT: &str = "alexandra";
 
-/// The canned `discovery_no_servers` reason: [`crate::auth::signed_in_reason`] for the mock name.
-///
-/// **Measured on the sign-in worker with the live font**, which production must not copy: the
-/// device's font is main-thread state, so the real wiring shortens a name where the screen can
-/// measure. This path is `devtriggers`-only and runs once, before the read-out is first drawn.
-fn mock_no_servers_reason() -> String {
-    let account = crate::dev::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string());
-    crate::auth::signed_in_reason(&account, &crate::text::TtfMeasure)
-        .unwrap_or_else(|| crate::i18n::msg::browse_auth_no_servers().into())
-}
-
 impl ReadoutCase {
+    /// The account name the canned failure carries to the screen (`LoginProgress::Failed::account`),
+    /// the way a real no-server sign-in does: composed and measured there, not here. Only
+    /// `discovery_no_servers` has one.
+    pub(crate) fn canned_account(self) -> Option<String> {
+        if self != Self::DiscoveryNoServers { return None; }
+        Some(crate::dev::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
+            .filter(|name| !name.trim().is_empty())
+    }
     /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
     /// `login_worker_with_output` feeds `output_failed` in place of the real network calls — see
     /// [`readout_case`]'s doc.
@@ -310,7 +307,7 @@ impl ReadoutCase {
             Self::PinExpired => (msg::browse_auth_timeout().into(), ctx(IncidentKind::PinExpired)),
             Self::Authorization => (msg::browse_auth_signin_refused().into(), ctx(IncidentKind::Authorization)),
             Self::DiscoveryNoServers => (
-                mock_no_servers_reason().into(),
+                msg::browse_auth_no_servers().into(),
                 ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)),
             ),
             Self::DiscoveryRefused => (

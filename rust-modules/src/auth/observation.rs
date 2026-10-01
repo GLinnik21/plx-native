@@ -56,7 +56,9 @@ impl Observation {
                             super::DiscoveryRetryRun::HomeUsers => 1,
                         });
                     }
-                    LoginProgress::Failed { epoch, message, incident, plaintext } => {
+                    // `account` is deliberately not written: it is personal data and a digest is
+                    // what a recording keeps (see `SessionInit::signin_account`).
+                    LoginProgress::Failed { epoch, message, incident, plaintext, .. } => {
                         w.u8(3).u64(*epoch).str(message);
                         owner::write_incident_context(w, incident);
                         // Appended only when present, so a failure without one keeps its digest.
