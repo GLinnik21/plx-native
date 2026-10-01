@@ -175,6 +175,10 @@ pub(crate) enum Feature {
     /// three modes. The mode is the whole payload: a closed set of three codes, fired once per
     /// change, never per playback and never with anything about what was playing.
     NextEpisode(crate::plex::session::NextEpisodeMode),
+    /// **A viewer set the Skip interval preference** (Settings → Video & playback) to one of its
+    /// five lengths. The length is the whole payload: a closed set of five codes, fired once per
+    /// durable change, never per press and never with anything about what was playing.
+    SkipInterval(crate::plex::session::SkipInterval),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +215,13 @@ impl Feature {
                 crate::plex::session::NextEpisodeMode::Countdown => "next_episode_countdown",
                 crate::plex::session::NextEpisodeMode::AfterCredits => "next_episode_after_credits",
                 crate::plex::session::NextEpisodeMode::Off => "next_episode_off",
+            },
+            Self::SkipInterval(interval) => match interval {
+                crate::plex::session::SkipInterval::Seconds5 => "skip_interval_5s",
+                crate::plex::session::SkipInterval::Seconds10 => "skip_interval_10s",
+                crate::plex::session::SkipInterval::Seconds15 => "skip_interval_15s",
+                crate::plex::session::SkipInterval::Seconds30 => "skip_interval_30s",
+                crate::plex::session::SkipInterval::Seconds60 => "skip_interval_60s",
             },
         }
     }
@@ -896,6 +907,28 @@ mod tests {
                 want("next_episode_countdown"),
                 want("next_episode_after_credits"),
                 want("next_episode_off"),
+            ]
+        );
+    }
+
+    /// The Skip interval preference is reported as `feature.used` carrying exactly one of five
+    /// fixed codes — the length and nothing else, with no free-text field to put anything in.
+    #[test]
+    fn the_skip_interval_setting_reports_only_its_length() {
+        use crate::plex::session::SkipInterval;
+        let sent: Vec<_> = SkipInterval::LADDER
+            .iter()
+            .map(|&interval| serialize(DiagEvent::FeatureUsed { feature: Feature::SkipInterval(interval) }))
+            .collect();
+        let want = |code| ("feature.used", vec![("feature", Value::Str(code))]);
+        assert_eq!(
+            sent,
+            [
+                want("skip_interval_5s"),
+                want("skip_interval_10s"),
+                want("skip_interval_15s"),
+                want("skip_interval_30s"),
+                want("skip_interval_60s"),
             ]
         );
     }

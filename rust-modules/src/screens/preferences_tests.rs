@@ -107,7 +107,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::SkipInterval]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
     ] {
         for field in fields {

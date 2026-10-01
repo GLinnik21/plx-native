@@ -168,6 +168,12 @@
   "settings.playback.next_episode.countdown": "Cuenta atrás de A continuación",
   "settings.playback.next_episode.after_credits": "Después de los créditos",
   "settings.playback.next_episode.off": "Desactivado",
+  "settings.playback.skip_interval": "Intervalo de salto",
+  "settings.playback.skip_interval.seconds": {
+    "one": "{count} segundo",
+    "many": "{count} segundos",
+    "other": "{count} segundos"
+  },
   "settings.audio.language": "Idioma de audio preferido",
   "settings.audio.subtitles": "Subtítulos",
   "settings.audio.subtitle_language": "Idioma de los subtítulos",

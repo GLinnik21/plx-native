@@ -5326,6 +5326,36 @@ pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
     saved
 }
 
+/// How far one Left/Right press jumps in the player and the trailer transport — install-wide,
+/// like [`NEXT_EPISODE_MODE`]. Read per press by `ui::player_hud::scrub_step_ns`.
+static SKIP_INTERVAL: AtomicU8 = AtomicU8::new(1); // SkipInterval::Seconds10's index
+
+pub(crate) fn skip_interval() -> SkipInterval {
+    SkipInterval::from_index(SKIP_INTERVAL.load(Ordering::Relaxed))
+}
+
+pub(crate) fn restore_skip_interval(interval: SkipInterval) {
+    #[cfg(test)]
+    crate::testlock::assert_held("skip interval preference");
+    SKIP_INTERVAL.store(interval.index(), Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
+/// only once the write is durable, so a failed save claims nothing.
+pub(crate) fn set_skip_interval(interval: SkipInterval) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_skip_interval(interval)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved {
+        restore_skip_interval(interval);
+        crate::ui::idle::invalidate();
+        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+            feature: crate::diag::schema::Feature::SkipInterval(interval),
+        });
+    }
+    saved
+}
+
 pub(crate) fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
@@ -8810,6 +8840,10 @@ mod test_support;
 #[cfg(test)]
 #[path = "decision_next_episode_tests.rs"]
 mod next_episode_tests;
+
+#[cfg(test)]
+#[path = "decision_skip_interval_tests.rs"]
+mod skip_interval_tests;
 
 #[cfg(test)]
 #[path = "decision_resolve_route_tests.rs"]

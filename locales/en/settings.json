@@ -684,6 +684,20 @@
     "value": "Off",
     "description": "Next episode picker option: nothing is shown during the credits and the next episode does not start by itself."
   },
+  "settings.playback.skip_interval": {
+    "value": "Skip interval",
+    "description": "Settings, consent or sign-in UI: how far one Left or Right press jumps while watching."
+  },
+  "settings.playback.skip_interval.seconds": {
+    "value": {
+      "one": "{count} second",
+      "other": "{count} seconds"
+    },
+    "description": "Skip interval picker option and row read-out: the length of one jump, in seconds (5, 10, 15, 30 or 60).",
+    "args": {
+      "count": "i64"
+    }
+  },
   "settings.audio.language": {
     "value": "Preferred audio language",
     "description": "Settings, consent or sign-in UI: settings.audio.language"

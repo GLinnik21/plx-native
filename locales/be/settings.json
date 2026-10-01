@@ -170,6 +170,13 @@
   "settings.playback.next_episode.countdown": "Адлік «Далей»",
   "settings.playback.next_episode.after_credits": "Пасля тытраў",
   "settings.playback.next_episode.off": "Адключана",
+  "settings.playback.skip_interval": "Крок перамоткі",
+  "settings.playback.skip_interval.seconds": {
+    "one": "{count} секунда",
+    "few": "{count} секунды",
+    "many": "{count} секунд",
+    "other": "{count} секунды"
+  },
   "settings.audio.language": "Пажаданая мова гуку",
   "settings.audio.subtitles": "Субцітры",
   "settings.audio.subtitle_language": "Мова субцітраў",

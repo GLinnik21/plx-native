@@ -53,6 +53,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 crate::ui::idle::invalidate();
             });
         }
+        PreferenceCmd::SkipInterval { interval, reply } => {
+            let _ = crate::storage_worker::submit_retained(move || {
+                let _ = reply.send(crate::route::set_skip_interval(interval));
+                crate::ui::idle::invalidate();
+            });
+        }
         // The optimistic picks run HERE, on the main thread: the live value is published before
         // anything is persisted and the persistence rides the storage worker on its own
         // (`route::select_subtitle_size`), so there is no outer worker submission to republish.

@@ -621,6 +621,12 @@ pub struct Session {
     /// it did before.
     #[serde(default, deserialize_with = "de_soft_next_episode_mode", skip_serializing_if = "is_default_next_episode_mode")]
     pub(crate) next_episode_mode: NextEpisodeMode,
+    /// **How far one Left/Right press jumps in the player** — see [`SkipInterval`]. Install-wide
+    /// like [`Session::playback_quality`], one value for both directions. Absence is 10 s, the
+    /// hop every build before the field made. Skipped at the default so a session predating this
+    /// field — committed replay fixtures included — serializes exactly as it did before.
+    #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
+    pub(crate) skip_interval: SkipInterval,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -708,6 +714,8 @@ struct CanonicalSessionPreferences {
     subtitle_position: SubtitlePosition,
     #[serde(default, deserialize_with = "de_soft_next_episode_mode", skip_serializing_if = "is_default_next_episode_mode")]
     next_episode_mode: NextEpisodeMode,
+    #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
+    skip_interval: SkipInterval,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
@@ -742,6 +750,7 @@ impl Default for CanonicalSessionPreferences {
             subtitle_size: SubtitleSize::Medium,
             subtitle_position: SubtitlePosition::Low,
             next_episode_mode: NextEpisodeMode::Countdown,
+            skip_interval: SkipInterval::Seconds10,
             plaintext_consent: Vec::new(),
             audio_enhancements: crate::plex::AudioEnhancements::NONE,
             extensions: BTreeMap::new(),
@@ -791,6 +800,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         subtitle_size: session.subtitle_size,
         subtitle_position: session.subtitle_position,
         next_episode_mode: session.next_episode_mode,
+        skip_interval: session.skip_interval,
         plaintext_consent: session.plaintext_consent.clone(),
         audio_enhancements: session.audio_enhancements,
         extensions: BTreeMap::new(),
@@ -862,6 +872,7 @@ pub(crate) fn join_canonical(
         subtitle_size: preferences.subtitle_size,
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
+        skip_interval: preferences.skip_interval,
         plaintext_consent: preferences.plaintext_consent,
         audio_enhancements: preferences.audio_enhancements,
         profiles,
@@ -892,6 +903,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         subtitle_size: preferences.subtitle_size,
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
+        skip_interval: preferences.skip_interval,
         plaintext_consent: preferences.plaintext_consent,
         audio_enhancements: preferences.audio_enhancements,
         home_pins, recent_searches,
@@ -1233,6 +1245,62 @@ impl NextEpisodeMode {
 
     pub(crate) fn index(self) -> u8 {
         Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+}
+
+/// How far one Left/Right press jumps in the player (and the trailer transport) — install-wide
+/// like [`SubtitleTone`], the same for both directions. Absence is `Seconds10`, the fixed hop
+/// every build before this preference made. A closed set rather than a free number so the
+/// telemetry code for a pick is a fixed string and a hand-edited file cannot ask for a
+/// zero-length or hour-long hop. Holding a key still ramps by its own curve; this is only the tap.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SkipInterval {
+    #[serde(rename = "5s")]
+    Seconds5,
+    #[default]
+    #[serde(rename = "10s")]
+    Seconds10,
+    #[serde(rename = "15s")]
+    Seconds15,
+    #[serde(rename = "30s")]
+    Seconds30,
+    #[serde(rename = "60s")]
+    Seconds60,
+}
+
+impl SkipInterval {
+    /// Every option, shortest first — the order the picker lists them in.
+    pub(crate) const LADDER: [SkipInterval; 5] = [
+        SkipInterval::Seconds5,
+        SkipInterval::Seconds10,
+        SkipInterval::Seconds15,
+        SkipInterval::Seconds30,
+        SkipInterval::Seconds60,
+    ];
+
+    /// An in-memory index back to an option — out of range is the default, never a neighbouring
+    /// option, for the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub(crate) fn from_index(i: u8) -> SkipInterval {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&o| o == self).unwrap_or(1) as u8
+    }
+
+    pub(crate) fn seconds(self) -> i64 {
+        match self {
+            SkipInterval::Seconds5 => 5,
+            SkipInterval::Seconds10 => 10,
+            SkipInterval::Seconds15 => 15,
+            SkipInterval::Seconds30 => 30,
+            SkipInterval::Seconds60 => 60,
+        }
+    }
+
+    /// The hop in nanoseconds, the unit every scrub position is in.
+    pub(crate) fn ns(self) -> i64 {
+        self.seconds() * 1_000_000_000
     }
 }
 
@@ -2065,6 +2133,22 @@ fn is_default_next_episode_mode(mode: &NextEpisodeMode) -> bool {
     *mode == NextEpisodeMode::default()
 }
 
+/// The skip interval is a preference too: a spelling this build does not know degrades to 10 s.
+fn de_soft_skip_interval<'de, D>(d: D) -> Result<SkipInterval, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(SkipInterval::default());
+    };
+    Ok(serde_json::from_value::<SkipInterval>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_skip_interval(interval: &SkipInterval) -> bool {
+    *interval == SkipInterval::default()
+}
+
 /// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
 /// off rather than failing the enclosing [`Session`].
 fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::plex::AudioEnhancements, D::Error>
@@ -2255,6 +2339,16 @@ impl Session {
     pub(crate) fn with_next_episode_mode(&self, mode: NextEpisodeMode) -> Self {
         let mut next = self.clone();
         next.next_episode_mode = mode;
+        next
+    }
+
+    pub(crate) fn skip_interval(&self) -> SkipInterval {
+        self.skip_interval
+    }
+
+    pub(crate) fn with_skip_interval(&self, interval: SkipInterval) -> Self {
+        let mut next = self.clone();
+        next.skip_interval = interval;
         next
     }
 
@@ -5250,6 +5344,62 @@ mod next_episode_mode_tests {
             assert_eq!(join_canonical(&public, &protected).unwrap().next_episode_mode(), mode);
             assert_eq!(public_session(&public).next_episode_mode(), mode);
         }
+    }
+}
+
+/// `Session::skip_interval`: soft-parse, omit-at-default (so committed replay fixtures and every
+/// session written before the field existed serialize unchanged) and round-trip.
+#[cfg(test)]
+mod skip_interval_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_malformed_is_ten_seconds() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"skip_interval": null}),
+            serde_json::json!({"skip_interval": "future"}),
+            serde_json::json!({"skip_interval": 30}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
+            assert_eq!(session.skip_interval(), SkipInterval::Seconds10, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_not_serialized() {
+        let session = Session::default();
+        assert_eq!(session.skip_interval(), SkipInterval::Seconds10);
+        assert!(!serde_json::to_string(&session).unwrap().contains("skip_interval"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("skip_interval"), "{prefs}");
+    }
+
+    #[test]
+    fn a_pick_round_trips_through_both_formats() {
+        for interval in SkipInterval::LADDER.into_iter().filter(|&i| i != SkipInterval::default()) {
+            let session = Session::default().with_skip_interval(interval);
+            let json = serde_json::to_string(&session).unwrap();
+            assert!(json.contains("skip_interval"), "{json}");
+            let round: Session = serde_json::from_str(&json).unwrap();
+            assert_eq!(round.skip_interval(), interval);
+
+            let (public, protected) = split_canonical(&session).unwrap();
+            assert_eq!(join_canonical(&public, &protected).unwrap().skip_interval(), interval);
+            assert_eq!(public_session(&public).skip_interval(), interval);
+        }
+    }
+
+    #[test]
+    fn the_ladder_is_ascending_and_indexes_back_to_itself() {
+        let seconds: Vec<i64> = SkipInterval::LADDER.iter().map(|i| i.seconds()).collect();
+        assert_eq!(seconds, [5, 10, 15, 30, 60]);
+        for interval in SkipInterval::LADDER {
+            assert_eq!(SkipInterval::from_index(interval.index()), interval);
+        }
+        assert_eq!(SkipInterval::from_index(200), SkipInterval::Seconds10);
+        assert_eq!(SkipInterval::Seconds10.ns(), 10_000_000_000);
     }
 }
 
