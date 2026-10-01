@@ -92,18 +92,18 @@ tv_host() {
   # while it sat there answering. Same trap tools/tv-session.sh documents; this was its twin.
   make -s -C "$REPO" print-tv 2>/dev/null
 }
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 HOST="$(tv_host)"
-tv() { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@" 2>/dev/null; }
+# Through tools/tv-ssh: the key first, `sshpass` only if the set refuses it (see its header).
+tv() { PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@" 2>/dev/null; }
 
 mode="${1:-last}"
 
 hr() { printf '%s\n' "------------------------------------------------------------"; }
 
 # ---- 0. is the TV even up? a sleeping TV mimics every failure ----------------
-echo "== triaging $APPID [$FLAVOR] on ${HOST:-<no TV address>}"
+echo "== triaging $APPID [$FLAVOR] on the TV"
 if ! tv true; then
-  echo "TV ${HOST:-<no TV address>} is unreachable — wake it first (.agents/skills/wake-tv/wake-tv.sh)."
+  echo "the TV is unreachable — wake it first (.agents/skills/wake-tv/wake-tv.sh)."
   echo "NOTE: a sleeping TV makes every log assertion fail as 'no line found'; that is"
   echo "      not a crash. Re-run whatever failed after waking before triaging."
   exit 2

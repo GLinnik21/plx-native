@@ -36,7 +36,7 @@ install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`,
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
 setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), CMake (Homebrew, for
-the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run). See the
+the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use your ssh key first and need it only when the TV refuses the key). See the
 **`setup-environment` skill** (`.agents/skills/`) for the full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`

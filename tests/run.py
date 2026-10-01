@@ -43,9 +43,10 @@ Makefile's own default, and every path that follows is ASKED FOR rather than res
 
 Security: the PMS X-Plex-Token is read from src/config.local.h at runtime and is NEVER
 printed, logged, or written to any file. The TV ssh creds already live in the committed
-Makefile, so we shell out to `make` / sshpass for device I/O. A run that also needs a SECOND
-server (a friend's shared one) resolves that server's own access token from plex.tv with the
-same owner token -- again storing nothing; see resolve_shared_server.
+tools/tv-ssh (the published dev-mode password), so we shell out to `make` /
+tools/tv-ssh for device I/O. A run that also needs a SECOND server (a friend's shared one)
+resolves that server's own access token from plex.tv with the same owner token -- again
+storing nothing; see resolve_shared_server.
 
 Usage:
   ./tests/run.py --list                 # list cases and what they cover
@@ -89,6 +90,7 @@ MANIFEST_LOCAL = os.path.join(TESTS_DIR, "manifest.local.json")
 MANIFEST_LOCAL_EXAMPLE = MANIFEST_LOCAL + ".example"
 CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_HOST_FILE = os.path.join(REPO_ROOT, ".tv-host")
+TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
 from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
@@ -663,18 +665,14 @@ def require_stored_session(tv, name):
 
 
 def ssh_argv(tv, remote_cmd):
-    """The one SSH command shape used by blocking calls and streaming profiler helpers."""
-    return [
-        "sshpass", "-p", "alpine", "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=8",
-        f"root@{tv}", remote_cmd,
-    ]
+    """The one SSH command shape used by blocking calls and streaming profiler helpers: through
+    tools/tv-ssh, which tries this machine's key first and runs `sshpass` only if the set refuses
+    it (host-key options, timeouts and silencing live there, once)."""
+    return [TV_SSH, "ssh", f"root@{tv}", remote_cmd]
 
 
 def ssh(tv, remote_cmd, timeout=30):
-    """Run a command on the TV. Mirrors the Makefile's committed sshpass creds."""
+    """Run a command on the TV, the same way the Makefile does (tools/tv-ssh)."""
     cmd = ssh_argv(tv, remote_cmd)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -697,13 +695,7 @@ class MaliIrqSampler:
         if built.returncode != 0:
             raise RuntimeError("failed to build mali-irq-sample")
         local = os.path.join(REPO_ROOT, "pkg", "mali-irq-sample")
-        cmd = [
-            "sshpass", "-p", "alpine", "scp", "-O",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=8",
-            local, f"root@{self.tv}:{self.remote}.new",
-        ]
+        cmd = [TV_SSH, "scp", local, f"root@{self.tv}:{self.remote}.new"]
         if subprocess.run(cmd).returncode != 0:
             raise RuntimeError("failed to stage mali-irq-sample")
         moved = ssh(self.tv, f"chmod 700 {self.remote}.new && mv {self.remote}.new {self.remote}")

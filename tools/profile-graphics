@@ -26,8 +26,7 @@ from graphics_profile import (
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "tools" / "tv-lock.sh"
 LOCAL_HELPER = ROOT / "pkg" / "mali-irq-sample"
-SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8"]
+TV_SSH = str(ROOT / "tools" / "tv-ssh")
 
 
 def make_query(flavor: str) -> tuple[str, str, str, str]:
@@ -42,7 +41,7 @@ def make_query(flavor: str) -> tuple[str, str, str, str]:
 
 
 def ssh_base(tv: str) -> list[str]:
-    return ["sshpass", "-p", "alpine", "ssh", *SSH_OPTS, f"root@{tv}"]
+    return [TV_SSH, "ssh", f"root@{tv}"]
 
 
 def ssh(tv: str, command: str, *, check: bool = True) -> subprocess.CompletedProcess:
@@ -88,8 +87,7 @@ def main() -> int:
     subprocess.run(["make", "mali-irq-sample"], cwd=ROOT, check=True)
     remote = f"/tmp/plxnative-mali-irq-{os.getpid()}"
     try:
-        scp = ["sshpass", "-p", "alpine", "scp", "-O", *SSH_OPTS,
-               str(LOCAL_HELPER), f"root@{tv}:{remote}.new"]
+        scp = [TV_SSH, "scp", str(LOCAL_HELPER), f"root@{tv}:{remote}.new"]
         subprocess.run(scp, cwd=ROOT, check=True)
         ssh(tv, f"chmod 700 {remote}.new && mv {remote}.new {remote}")
         start_lines_text = ssh(tv, f"wc -l < {rundir}/plxnative-events.log 2>/dev/null || echo 0",

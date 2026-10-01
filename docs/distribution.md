@@ -518,7 +518,7 @@ world-readable `/tmp` on the TV across many runs.
 
 **Judgment calls, made explicitly:**
 
-- `sshpass -p alpine` (`Makefile:24-25`) — **not a secret.** `alpine` is the published webosbrew
+- `sshpass -p alpine` (`tools/tv-ssh`, the one ssh/scp front door) — **not a secret.** `alpine` is the published webosbrew
   dev-mode root password; the repo's own skill says so. Publishable. It does teach an insecure
   default and will authenticate against *any* rooted webOS TV a contributor points `TV=` at.
 - `TV_HOST` / `PMS_HOST` — RFC1918, low risk, but they are the maintainer's home topology,

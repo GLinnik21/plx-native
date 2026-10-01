@@ -74,9 +74,8 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
   because a umask masks mkdir's mode and the app writes there jailed under its own uid while the
   harness arms triggers there as root.)
 - **SSH auth: key first, `sshpass` fallback.** This machine authenticates with an
-  installed key, which is why the driver uses `BatchMode=yes`. The `Makefile`'s
-  `sshpass` path is the fallback for a machine without the key — both work; the key
-  simply wins when present.
+  installed key. `tools/tv-ssh` (which the driver and the `Makefile` share) tries the key first and
+  runs `sshpass` only when the TV refuses it — both work; the key simply wins when present.
 - **This webOS 4.5 build's power method is `power/powerOff`** —
   `power/turnOff` (newer webOS docs) returns `Unknown method`.
 - **`luna-send` silently no-ops without a controlling TTY** — on-TV calls are wrapped
@@ -91,7 +90,7 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
 | Symptom | Fix |
 |---|---|
 | `TV did not answer within 180s` | TV may be hard-off at the mains or on a different network segment. Check it's plugged in; retry once (`WAKE_TIMEOUT=300`). |
-| `Permission denied (publickey,password)` | You're on a machine whose key isn't on the TV. Add your pubkey to `/home/root/.ssh/authorized_keys` from a trusted machine (or rely on the Makefile's `sshpass` fallback). |
+| `Permission denied (publickey,password)` | You're on a machine whose key isn't on the TV. Add your pubkey to `/home/root/.ssh/authorized_keys` from a trusted machine (or rely on the `sshpass` fallback in `tools/tv-ssh`). |
 | `no MAC for the magic packet` | First run against a sleeping TV with no cache. Wake it by hand once and run `wake-tv.sh status` to learn+cache the MAC, or set `TV_MAC=` explicitly once. |
 | Wake works but `make deploy` still fails | The deploy raced the wake-up services; retry the deploy, then md5-compare (see Gotchas). |
 | `make deploy` says the app directory does not exist | Not a wake problem at all. That flavour has never been installed and scp cannot create an app — `make FLAVOR=<f> install` once (`tv-session` skill). |

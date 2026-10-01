@@ -81,10 +81,10 @@
 # Environment overrides (same as capture-screen.sh):
 #     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
 #
-# Auth: prefers an installed SSH key; falls back to `sshpass -p $TV_PASS` if present.
+# Auth: tools/tv-ssh -- the SSH key first; `sshpass -p $TV_PASS` only if the set refuses the key.
 # Stop with Ctrl-C. Requires: python3 (stdlib only), ssh; sshpass only if no key.
 #
-import argparse, base64, functools, hashlib, os, re, shlex, shutil, signal, socket, subprocess, sys, threading, time, webbrowser
+import argparse, base64, functools, hashlib, os, re, shlex, signal, socket, subprocess, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _default_tv_host():
@@ -99,7 +99,7 @@ def _default_tv_host():
 
 TV_HOST = os.environ.get("TV_HOST") or _default_tv_host()
 TV_USER = os.environ.get("TV_USER", "root")
-TV_PASS = os.environ.get("TV_PASS", "alpine")
+TV_SSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tv-ssh")
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
@@ -386,24 +386,11 @@ done
                 .replace("__MININT__", str(min_interval_ms)).strip())
 
 
-@functools.lru_cache(maxsize=1)
-def _ssh_prefix():
-    """Prefer key auth; fall back to sshpass if we have no key and it's installed.
-    Probed ONCE — the answer can't change during a run, and KeySink reconnects call
-    build_ssh_cmd from the HTTP thread serving /key, where a 10s probe would stall
-    a key press (which is exactly when the TV just came back from standby)."""
-    keycheck = subprocess.run(
-        ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", f"{TV_USER}@{TV_HOST}", "true"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if keycheck.returncode == 0:
-        return []
-    if shutil.which("sshpass"):
-        return ["sshpass", "-p", TV_PASS]
-    sys.exit(f"ERROR: cannot auth to {TV_USER}@{TV_HOST}. Install an SSH key or sshpass.")
-
-
 def build_ssh_cmd(remote_script: str):
-    return [*_ssh_prefix(), "ssh", *SSH_OPTS, f"{TV_USER}@{TV_HOST}", remote_script]
+    """The ssh command for one remote script, through the shared key-first wrapper
+    (tools/tv-ssh: the key, then `sshpass` only if the set refuses it; a fast failure when it is
+    unreachable). It `exec`s the real ssh, so the child is a plain ssh process as before."""
+    return [TV_SSH, "ssh", *SSH_OPTS, f"{TV_USER}@{TV_HOST}", remote_script]
 
 
 def read_exact(stream, n: int) -> bytes:

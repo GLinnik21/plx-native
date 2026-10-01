@@ -99,7 +99,7 @@ Four layers, so there is no "I forgot" path:
    it, so `with -- ./tests/run.py` works unchanged. `tools/capture-screen.sh` requires it too.
 4. **A `PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) — refuses any Bash command that
    drives the set without a lease: a raw `ssh root@…`, an `scp` into the app directory, a
-   `sshpass` one-liner, `make deploy`, `tests/run.py`. It reads one local file, never the network,
+   `sshpass` one-liner, `tools/tv-ssh`, `make deploy`, `tests/run.py`. It reads one local file, never the network,
    and blocks nothing host-side.
 
 ## When it refuses

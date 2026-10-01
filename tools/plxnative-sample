@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -29,13 +28,7 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "tools" / "tv-lock.sh"
 HELPER = ROOT / "pkg" / "plxnative-stackwalk"
-SSH_OPTIONS = [
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "LogLevel=ERROR",
-    "-o", "ConnectTimeout=8",
-    "-o", "BatchMode=yes",
-]
+TV_SSH = ROOT / "tools" / "tv-ssh"
 MAP_RE = re.compile(
     r"^([0-9a-f]+)-([0-9a-f]+)\s+(\S+)\s+([0-9a-f]+)\s+\S+\s+\d+\s*(.*)$"
 )
@@ -60,18 +53,9 @@ def query_make(flavor: str, *targets: str) -> list[str]:
 
 
 def transport(tv: str) -> tuple[list[str], list[str]]:
-    ssh = ["ssh", *SSH_OPTIONS, f"root@{tv}"]
-    probe = subprocess.run(ssh + ["true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if probe.returncode == 0:
-        return ssh, ["scp", "-O", *SSH_OPTIONS]
-    if shutil.which("sshpass"):
-        prefix = ["sshpass", "-p", "alpine"]
-        # BatchMode is useful for the key probe and explicitly disables password authentication;
-        # carrying it into sshpass makes the documented fallback impossible.
-        password_options = SSH_OPTIONS[:-2]
-        return (prefix + ["ssh", *password_options, f"root@{tv}"],
-                prefix + ["scp", "-O", *password_options])
-    raise SystemExit(f"cannot authenticate to root@{tv}; install an SSH key or sshpass")
+    """ssh and scp command prefixes through tools/tv-ssh: this machine's key first, `sshpass` only
+    if the set refuses it, and a fast failure when it is unreachable."""
+    return [str(TV_SSH), "ssh", f"root@{tv}"], [str(TV_SSH), "scp"]
 
 
 def ssh_call(ssh: list[str], command: str, *, check: bool = True) -> subprocess.CompletedProcess:

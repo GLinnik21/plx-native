@@ -197,8 +197,9 @@ two pids, in an order busybox does not promise. Use `fuser <appdir>/plxnative`, 
 The PMS **X-Plex-Token is secret and is never committed**. `run.py` reads it from the
 gitignored `src/config.local.h` (`#define PMS_TOKEN "..."`) at runtime and never prints,
 logs, or writes it — progress URLs are redacted to `<token>` in output. The TV ssh
-credentials are already in the committed `Makefile`, so the runner shells out to `make` /
-`sshpass` for device I/O (no new secret is introduced).
+credentials are already in the committed `tools/tv-ssh` (the published dev-mode password, tried only
+after this machine's ssh key is refused), so the runner shells out to `make` / `tools/tv-ssh` for
+device I/O (no new secret is introduced).
 
 Every other token the harness uses is **derived from that one at run time and stored nowhere**: the
 managed user's per-server token (below), and a second server's access token (further below). Both
@@ -337,8 +338,8 @@ library you care about — which is what `test_user` is for.
 
 ## Prerequisites
 
-- The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
-  and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
+- The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`
+  (only when the TV refuses your ssh key), and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
   PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
   actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
