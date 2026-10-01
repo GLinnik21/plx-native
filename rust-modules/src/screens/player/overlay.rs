@@ -278,12 +278,9 @@ impl PlayerOverlayScreen {
 
     pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
-            OverlayKind::Tracks { tab } => Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(
-                ps,
-                meta,
-                tab,
-                subtitle_yours_langs(ps, meta),
-            )),
+            OverlayKind::Tracks { tab } => Panel::Tracks(crate::diag::spans::span("tmnew", || {
+                crate::ui::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
+            })),
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
                 Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new(meta))

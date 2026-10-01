@@ -787,10 +787,10 @@ impl<H: Host> ModalStack<H> {
         // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
         // surface on a frame that captured nothing still queues nothing.
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
-            self.underlay.sync(source, sink);
+            crate::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
         for (_, a, lift) in dims {
-            sink.dim(self.underlay.field(), a);
+            crate::diag::spans::span("udim", || sink.dim(self.underlay.field(), a));
             (lift)(read);
         }
     }
