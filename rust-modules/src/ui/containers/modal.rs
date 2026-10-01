@@ -266,6 +266,10 @@ pub(crate) enum Latched {
     Corners([[f32; 3]; 4]),
 }
 
+/// Presenting frames a page must have been at rest, over the same envelope, before
+/// [`ModalUnderlay::note_at_rest`] lets the preload run (~0.5 s at 60 fps).
+pub(crate) const PRELOAD_REST_FRAMES: u16 = 30;
+
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum LatchStep {
@@ -426,9 +430,13 @@ pub struct ModalUnderlay {
     /// presented surface either adopts it (the same envelope) or drops it first.
     dormant: bool,
     /// The envelope the page under an EMPTY stack says its first surface will inherit
-    /// ([`want_corners`](Self::want_corners)), until the presenting side latches it
+    /// ([`note_at_rest`](Self::note_at_rest)), until the presenting side latches it
     /// ([`preload`](Self::preload)).
     wanted: Option<[[f32; 3]; 4]>,
+    /// The envelope the page at rest has been asking for, and for how many presenting frames in a
+    /// row ([`note_at_rest`](Self::note_at_rest)).
+    rest_for: Option<[[f32; 3]; 4]>,
+    rest: u16,
     /// Envelope latches so far (a reconstruction and a texture upload each).
     #[cfg(test)]
     corner_latches: u32,
@@ -442,9 +450,16 @@ impl ModalUnderlay {
             pending: None,
             dormant: false,
             wanted: None,
+            rest_for: None,
+            rest: 0,
             #[cfg(test)]
             corner_latches: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wanted(&self) -> Option<[[f32; 3]; 4]> {
+        self.wanted
     }
 
     #[cfg(test)]
@@ -466,11 +481,37 @@ impl ModalUnderlay {
         }
     }
 
-    /// **Note what the page under an empty stack would have its first surface inherit**, or that
-    /// it has nothing to say. Records only — no GL — so it may run on any frame whose prepare pass
-    /// ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
+    /// Set or withdraw the note directly, bypassing the rest count: for the frames that never reach
+    /// [`note_at_rest`](Self::note_at_rest) (a surface is up), and for tests that need a note.
     pub(crate) fn want_corners(&mut self, corners: Option<[[f32; 3]; 4]>) {
         self.wanted = corners;
+    }
+
+    /// **Note what the page under an empty stack would have its first surface inherit**, once per
+    /// presenting frame whose prepare ran, `None` when the page is not at rest, is not a video
+    /// plane or has not been reached. Records only — no GL — so it may run on any frame whose
+    /// prepare pass ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
+    ///
+    /// The note stands only after [`PRELOAD_REST_FRAMES`] of them in a row for the same envelope
+    /// (`None` restarts the count and withdraws any note). The latch is a ~8 ms reconstruction on
+    /// a frame nobody has budgeted for, so it waits out the playback-start frames, which are the
+    /// heaviest the player has.
+    pub(crate) fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
+        match corners {
+            Some(c) if self.rest_for == Some(c) => self.rest = self.rest.saturating_add(1),
+            Some(c) => {
+                self.rest_for = Some(c);
+                self.rest = 1;
+            }
+            None => {
+                self.rest_for = None;
+                self.rest = 0;
+                self.wanted = None;
+            }
+        }
+        if self.rest >= PRELOAD_REST_FRAMES {
+            self.wanted = corners;
+        }
     }
 
     /// **Latch the noted envelope ahead of the first open**, so a player popover's open frame does
@@ -623,7 +664,7 @@ impl<H: Host> ModalStack<H> {
         self.surfaces.is_empty()
     }
 
-    /// Latch the envelope the page noted ([`ModalUnderlay::want_corners`]) — only with no surface
+    /// Latch the envelope the page noted ([`ModalUnderlay::note_at_rest`]) — only with no surface
     /// up, and the note is consumed either way so it cannot outlive the frame it was made on.
     /// Uploads a texture: presenting frames only (`app::run::prepare_window`).
     pub(crate) fn preload_underlay(&mut self) {

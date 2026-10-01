@@ -971,6 +971,19 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
     }
+    fn underlay_corners(&self, _cx: &Cx<'_, FixtureHost>) -> Option<[[f32; 3]; 4]> {
+        VIDEO_PLANE_CORNERS.with(|c| c.get())
+    }
+}
+
+thread_local! {
+    /// What [`VideoPlaneScreen::underlay_corners`] answers: a test's stand-in for the playing
+    /// item's envelope (`None`: no envelope to preload).
+    static VIDEO_PLANE_CORNERS: std::cell::Cell<Option<[[f32; 3]; 4]>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn set_video_plane_corners(c: Option<[[f32; 3]; 4]>) {
+    VIDEO_PLANE_CORNERS.with(|v| v.set(c));
 }
 
 pub struct FixtureRig {

@@ -660,6 +660,73 @@ fn a_stale_noted_envelope_is_not_preloaded_over_a_live_stack() {
     assert!(!d.nav.modals.underlay.field().is_latched());
 }
 
+/// **The preload waits for a page at rest, through the dispatcher's own prepare pass.** The unit
+/// test of `note_at_rest` passed while production called `want_corners` instead and the debounce
+/// never gated anything: the first presenting frame latched, on the playback-start frame the
+/// wait exists to avoid (`dip=held`, `results=12-17`, 8-11 ms on a 27-37 ms frame).
+///
+/// (a) nothing latches until `PRELOAD_REST_FRAMES` presenting frames in a row over one envelope;
+/// (b) a changed envelope, or a frame with none, restarts the count;
+/// (c) a frame that does not reach the note (a surface on the stack, no live top entry) leaves
+/// nothing for a later `preload_underlay`.
+#[test]
+fn the_dispatchers_prepare_notes_the_envelope_only_after_the_page_has_rested() {
+    use crate::ui::fixture::set_video_plane_corners as corners;
+    let _g = crate::testlock::serial();
+    let n = super::modal::PRELOAD_REST_FRAMES as usize;
+    let c = [[0.2, 0.4, 0.1]; 4];
+    let c2 = [[0.7, 0.1, 0.3]; 4];
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::VideoPlane));
+    let mut ms = 0;
+    // One PRESENTING frame (prepare runs only on those), then the presenting side's preload.
+    let mut rested = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig| {
+        use crate::ui::present::{PresentEvent, Provenance};
+        ms += 16;
+        d.present.note(PresentEvent::Damage(Provenance::Input));
+        assert!(d.frame(rig, tick(ms), vec![], vec![], &mut NoTap).presented);
+        d.nav.modals.preload_underlay();
+    };
+    corners(Some(c));
+    for i in 1..n {
+        rested(&mut d, &mut rig);
+        assert!(!d.nav.modals.underlay.field().is_latched(), "frame {i} of {n}: nothing latched yet");
+    }
+    rested(&mut d, &mut rig);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "frame {n}: latched");
+
+    // (b) a different envelope restarts the count, and so does a frame with none
+    d.nav.modals.underlay.reset();
+    corners(Some(c2));
+    for _ in 1..n {
+        rested(&mut d, &mut rig);
+    }
+    corners(None);
+    rested(&mut d, &mut rig);
+    corners(Some(c2));
+    for _ in 1..n {
+        rested(&mut d, &mut rig);
+    }
+    assert!(!d.nav.modals.underlay.field().is_latched(), "a frame with no envelope restarted the count");
+    rested(&mut d, &mut rig);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
+
+    // (c) a surface on the stack: the note is not reached, and nothing stale survives it
+    d.nav.modals.underlay.reset();
+    for _ in 0..n {
+        rested(&mut d, &mut rig);
+    }
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
+    d.nav.modals.underlay.reset();
+    let _id = open_modal(&mut d, &mut rig, Style::Sheet, 4000);
+    for _ in 0..3 {
+        rested(&mut d, &mut rig);
+    }
+    assert_eq!(d.nav.modals.underlay.wanted(), None, "a surface is up: no note stands");
+    corners(None);
+}
+
 /// The latch policy, as the pure table it is.
 #[test]
 fn the_latch_policy_reads_the_page_once_per_snapshot_and_never_over_the_video_plane() {

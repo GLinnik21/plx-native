@@ -1157,6 +1157,10 @@ where
         {
             let Dispatcher { nav, input, budget, .. } = self;
             let Split { views, measure, .. } = rig.split();
+            // What a first surface over this page would dim through, for the presenting side to
+            // latch ahead of the open (`ModalUnderlay::preload`); `None` on every path that does
+            // not reach the page's note.
+            let mut noted = None;
             if host_render == HostRender::Live {
                 if let Some(e) = nav.tabs.stack.top_mut() {
                     let mut page_cx = parts.cx::<H>(views, measure);
@@ -1164,13 +1168,9 @@ where
                     page_cx.focus = input.engine.read(page_cx.owner);
                     if let Some(inst) = e.inst.as_mut() {
                         inst.screen.prepare(budget, &page_cx);
-                        // What a first surface over this page would dim through, noted for the
-                        // presenting side to latch ahead of the open (`ModalUnderlay::preload`).
-                        nav.modals.underlay.want_corners(
-                            (at_rest && nav.modals.surfaces.is_empty())
-                                .then(|| inst.screen.underlay_corners(&page_cx))
-                                .flatten(),
-                        );
+                        noted = (at_rest && nav.modals.surfaces.is_empty())
+                            .then(|| inst.screen.underlay_corners(&page_cx))
+                            .flatten();
                     }
                 }
             }
@@ -1182,6 +1182,7 @@ where
                     inst.screen.prepare(budget, &surface_cx);
                 }
             }
+            nav.modals.underlay.note_at_rest(noted);
         }
         let Dispatcher {
             budget, present, ..
