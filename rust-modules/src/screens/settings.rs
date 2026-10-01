@@ -826,8 +826,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
-        // `super::family` here matches this file's own `use super::family::{form_activate, form_focus, form_right_target, inner_cx,
-        // InnerHost, SettingsPage, ALERT_GROUP};` above — `family` is shared vocabulary, not a sibling screen.
+        // `family` is shared vocabulary, not a sibling screen (check-deps sibling rule)
         super::family::set_palette(self.ground.palette());
         match self.kind {
             Family::Settings => {

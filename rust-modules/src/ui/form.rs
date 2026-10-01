@@ -19,8 +19,7 @@
 //! picker lists reach past a hundred rows and a scan of that is cheaper than a hash; the
 //! operation-count test in `form_tests.rs` pins the bound.
 //!
-//! Three more things a declared row carries for pages that drill in (the player's track menu, and
-//! Settings pages 3-5 of the sequence): a [`RowKind::Nav`] row gets the drill-in chevron when it is
+//! Three more things a declared row carries for pages that drill in: a [`RowKind::Nav`] row gets the drill-in chevron when it is
 //! built; a [`RowKind::Choice`] row declared with [`FormSection::choice`] derives its checkmark from
 //! a current-value predicate instead of a hand-set flag; and an item can be
 //! [`FormSection::disabled`] — drawn dim, still focusable (the viewer can land on it and read why),
@@ -32,10 +31,6 @@
 //!
 //! Rendering is byte-identical to a hand-built `Vec<Section>`: [`Form`] produces exactly that list
 //! and hands it to the existing [`TableView`] path. Design record: `docs/settings-form.md`.
-
-// The Settings root is the first caller (PR 2 of the docs/settings-form.md sequence); the note,
-// separator, keyed-if and picker-facing halves land with their pages in PR 3-5.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::ui::table::{Row, Section, TableView};
 
@@ -420,8 +415,8 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         self.reseat_after_install();
     }
 
-    fn position_of(new: &[Option<Binding<Id, A, Dest>>], id: &Id) -> Option<usize> {
-        new.iter().position(|b| b.as_ref().is_some_and(|b| &b.id == id))
+    fn position_of(bindings: &[Option<Binding<Id, A, Dest>>], id: &Id) -> Option<usize> {
+        bindings.iter().position(|b| b.as_ref().is_some_and(|b| &b.id == id))
     }
 
     /// Build the form and, in debug builds, assert its ids and keys are unique and below the ceiling.
@@ -465,7 +460,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
 
     /// The new index `keep` lands on, or `None` when nothing (keep or a neighbour) survives.
     fn landing_for(&self, keep: &Id, new: &[Option<Binding<Id, A, Dest>>], neighbour: bool) -> Option<usize> {
-        let find = |id: &Id| new.iter().position(|b| b.as_ref().is_some_and(|b| &b.id == id));
+        let find = |id: &Id| Self::position_of(new, id);
         if let Some(i) = find(keep) {
             return Some(i);
         }
@@ -479,22 +474,17 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
             .or_else(|| (0..old_at).rev().find_map(survivor))
     }
 
-    fn binding(&self, index: usize) -> Option<&Binding<Id, A, Dest>> {
+    pub fn binding_at(&self, index: usize) -> Option<&Binding<Id, A, Dest>> {
         self.bindings.get(index)?.as_ref()
     }
-    pub fn binding_at(&self, index: usize) -> Option<&Binding<Id, A, Dest>> {
-        self.binding(index)
-    }
     pub fn id_at(&self, index: usize) -> Option<&Id> {
-        self.binding(index).map(|b| &b.id)
+        self.binding_at(index).map(|b| &b.id)
     }
     pub fn key_at(&self, index: usize) -> Option<RowKey> {
-        self.binding(index).map(|b| b.key)
+        self.binding_at(index).map(|b| b.key)
     }
     pub fn index_of(&self, id: &Id) -> Option<usize> {
-        self.bindings
-            .iter()
-            .position(|b| b.as_ref().is_some_and(|b| &b.id == id))
+        Self::position_of(&self.bindings, id)
     }
     pub fn index_of_key(&self, key: RowKey) -> Option<usize> {
         self.bindings
@@ -530,7 +520,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// What activating the row at `index` asks for: `Push(dest)` for a Nav item, else the action.
     /// `None` for an inert slot, an index off the end, or a [`FormSection::disabled`] item.
     pub fn activate(&self, index: usize) -> Option<Activation<A, Dest>> {
-        let b = self.binding(index).filter(|b| !b.disabled)?;
+        let b = self.binding_at(index).filter(|b| !b.disabled)?;
         Some(match &b.kind {
             RowKind::Nav(d) => Activation::Push(d.clone()),
             _ => Activation::Action(b.action.clone()),

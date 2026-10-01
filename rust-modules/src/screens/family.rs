@@ -9,7 +9,10 @@
 //! them, and each names the destination through this vocabulary rather than through the module
 //! that implements it.
 
-use crate::ui::machine::{Canon, Chrome, Cx, Host, LogicalState, ScreenId};
+use crate::ui::form::{Activation, FormTable, RowKey};
+use crate::ui::machine::{
+    Canon, Chrome, Cx, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
+};
 use crate::ui::screen::ScreenArg;
 use crate::ui::widgets::ControlPalette;
 
@@ -282,9 +285,6 @@ where
 pub(crate) const TABLE_GROUP: GroupId = GroupId(0);
 pub(crate) const BAND_GROUP: GroupId = GroupId(1);
 pub(crate) const ALERT_GROUP: GroupId = GroupId(2);
-
-use crate::ui::form::{Activation, FormTable, RowKey};
-use crate::ui::machine::{Effects, Fx, GroupId, NavOp};
 
 /// **The ONE activation path of every form page in the family** (docs/settings-form.md,
 /// "Navigation"): resolve the focus key to its row and either push the row's destination — a
