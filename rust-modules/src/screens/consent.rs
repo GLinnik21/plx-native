@@ -23,7 +23,7 @@ use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, Row
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind,
-    Key, LogicalState, Machine, MachineId, NavOp, PressFrom,
+    Key, LogicalState, Machine, MachineId, NavOp,
 };
 use crate::ui::route_screen::RouteLayout;
 use crate::ui::screen::{
@@ -1431,11 +1431,6 @@ fn errors_id_document() -> String {
         None => crate::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
     }
 }
-
-/// A test seam and a preview of the two `PressFrom`s the band answers to (the dispatcher arms
-/// both the same way now; kept so the type stays named where the family's docs point).
-#[allow(dead_code)]
-fn press_from_named(_p: PressFrom) {}
 
 /// The `(focus key, destination)` of every `Nav` row the page lists — the structural navigation
 /// test's expectation, built by the page's own form builder. `first_run`: `Some(product)` for the
