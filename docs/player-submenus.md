@@ -179,8 +179,19 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
 
 - **Back-buffer waits.** Most of these frames spend 13–39 ms in `clear`, the frame's first
   framebuffer command, and draw almost nothing else. They come at the same rate with the menu
-  closed, and they don't line up with Starfish feeds, so they are the compositor or driver
-  releasing a buffer, not menu work.
+  closed, and they don't line up with Starfish feeds. Measured on 2026-10-01 (panel off, guest +
+  mock, every frame logged with `--arm framedrop=0.01 --arm framecb`): the compositor's own
+  `wl_surface.frame` stamps show its repaint arriving 20–36 ms after the previous one while our
+  commit before it was on time, and it does so on Settings and Home with no video at all
+  (`plxnative-noidle`), so it is not the player route and not the app's GPU load (a menu-closed
+  player frame is a bare clear). 5–36 late repaints per ~95 s leg, varying leg to leg.
+- **A late commit.** The rest of the frames over 20 ms follow an on-time repaint: the work after
+  the clear (page, surfaces, swap) took 3–8 ms longer than usual, the commit moved by that much,
+  and the next frame is correspondingly short. The transport's clocks were one cause, rasterised
+  after the clear once a second (`textx2`, 1–3.5 ms); `player_hud::ClockWarm` now queues them from
+  the page's `prepare` so they are rasterised before it. In every other such frame the frame
+  thread's CPU time over the draw and the swap stayed flat (`dcpu=`, `scpu=`) while the wall time
+  rose: the thread was descheduled, not busy.
 - **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) is the modal underlay latching its field
   from the UltraBlur corners, and it was paid again on every open. `navcommit` is ~6 ms, of which
   `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is

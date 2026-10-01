@@ -58,7 +58,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 32] = [
+const DIAG: [&str; 33] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -114,6 +114,9 @@ const DIAG: [&str; 32] = [
     // `stall_ceiling_ms` gates arm it under every fps scene, and a scene whose gate moved the boot
     // away from the screen it grades would fail as "never entered this screen".
     "plxnative-framedrop",
+    // The compositor frame-callback probe (`system.rs`): extra fields on that same line, from one
+    // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
+    "plxnative-framecb",
     // The poster pipeline's observers: the cache counters and the per-image timeline
     // (`app/adapters/poster/trace.rs`). Both only READ the store and write log lines, and the boot
     // they exist to trace is the owner's everyday one — who's-watching picker, then Home. A

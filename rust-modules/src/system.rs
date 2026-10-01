@@ -514,6 +514,175 @@ pub(crate) fn opaque_route(player: bool) {
 #[cfg(feature = "hostsim")]
 pub(crate) fn opaque_route(_player: bool) {}
 
+// ---- The COMPOSITOR FRAME-CALLBACK PROBE (`/tmp/plxnative-framecb`) -----------------------------
+//
+// A present's wait for a free back buffer is paid inside the frame's first framebuffer-0 command
+// (the `clear` span), and from inside the app that wait reads the same whether the compositor
+// repainted late, skipped a repaint, or repainted on time and we were slow to notice. This probe
+// asks the compositor directly: one `wl_surface.frame` request per presented frame, placed before
+// the swap that commits it, whose `done(time)` event carries the COMPOSITOR'S OWN millisecond
+// stamp of the repaint that picked the commit up. Printed beside the frame's `FRAMEDROP` line
+// with our own monotonic clock, the two tell those cases apart.
+//
+// It also prices the COMMIT PHASE — everything between the back buffer's acquisition and the
+// swap's return, which is the part of a frame that moves the commit relative to the compositor's
+// repaint. `dcpu=`/`scpu=` are the frame thread's own CPU time over the draw and over the swap,
+// and `dcs=`/`scs=` the involuntary context switches in each: a draw that took 6 ms of wall clock
+// for 0.8 ms of CPU was descheduled, not busy, and no amount of work moved out of it would help.
+//
+// Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
+// from the process's own scope at first use, so the probe adds no symbol to the link. Unarmed it
+// is one latched bool per presented frame.
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-framecb` — see the section comment above.
+    pub(crate) fn frame_probe_armed = "framecb";
+);
+
+/// `(frame seq, compositor stamp ms, our CLOCK_MONOTONIC µs at dispatch)` for every `done` that
+/// arrived since the last [`frame_probe_fields`].
+#[cfg(not(feature = "hostsim"))]
+static FRAME_DONE: std::sync::Mutex<Vec<(u32, u32, u64)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(not(feature = "hostsim"))]
+static FRAME_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(not(feature = "hostsim"))]
+fn mono_us() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a plain clock read into a local.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
+}
+
+/// The frame thread's `(CPU µs, involuntary context switches)` so far.
+#[cfg(not(feature = "hostsim"))]
+fn thread_cost() -> (u64, u64) {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a plain clock read into a local.
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    let cpu = ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000;
+    #[cfg(target_os = "linux")]
+    let switches = {
+        // SAFETY: `getrusage` fills the zeroed struct it is handed.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) };
+        ru.ru_nivcsw as u64
+    };
+    #[cfg(not(target_os = "linux"))]
+    let switches = 0;
+    (cpu, switches)
+}
+
+/// The thread's cost at the three points of the commit phase: `[acquired, before swap]`, each
+/// `(cpu µs, involuntary switches)`. Frame-thread only; a `Mutex` because it is a `static`.
+#[cfg(not(feature = "hostsim"))]
+static COMMIT_COST: std::sync::Mutex<[Option<(u64, u64)>; 2]> = std::sync::Mutex::new([None, None]);
+
+/// The frame's first framebuffer command has returned: the back buffer is acquired.
+#[cfg(not(feature = "hostsim"))]
+pub(crate) fn frame_probe_acquired() {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = COMMIT_COST.lock() {
+        cost[0] = Some(thread_cost());
+    }
+}
+
+#[cfg(not(feature = "hostsim"))]
+unsafe extern "C" fn on_frame_done(data: *mut c_void, callback: *mut c_void, time: c_uint) {
+    if let Ok(mut done) = FRAME_DONE.lock() {
+        done.push((data as usize as u32, time, mono_us()));
+    }
+    // `wl_callback` is a one-shot: the client destroys it from its own `done`.
+    if let Some(destroy) = wl_sym("wl_proxy_destroy") {
+        let destroy: unsafe extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(destroy) };
+        unsafe { destroy(callback) };
+    }
+}
+
+/// Ask for this frame's callback. Call on a PRESENTING frame, before the swap that commits it.
+#[cfg(not(feature = "hostsim"))]
+pub(crate) fn frame_probe_request() {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = COMMIT_COST.lock() {
+        cost[1] = Some(thread_cost());
+    }
+    let surface = unsafe { G_WL_SURFACE };
+    if surface.is_null() {
+        return;
+    }
+    let (Some(ctor), Some(add_listener), Some(iface)) = (
+        wl_sym("wl_proxy_marshal_constructor"),
+        wl_sym("wl_proxy_add_listener"),
+        wl_sym("wl_callback_interface"),
+    ) else {
+        return;
+    };
+    let ctor: unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, ...) -> *mut c_void =
+        unsafe { std::mem::transmute(ctor) };
+    let add_listener: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> c_int =
+        unsafe { std::mem::transmute(add_listener) };
+    // `struct wl_callback_listener` is one function pointer.
+    static LISTENER: unsafe extern "C" fn(*mut c_void, *mut c_void, c_uint) = on_frame_done;
+    const WL_SURFACE_FRAME: c_uint = 3;
+    let seq = FRAME_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    unsafe {
+        let callback = ctor(surface, WL_SURFACE_FRAME, iface, std::ptr::null_mut::<c_void>());
+        if !callback.is_null() {
+            add_listener(
+                callback,
+                std::ptr::from_ref(&LISTENER).cast::<c_void>(),
+                seq as usize as *mut c_void,
+            );
+        }
+    }
+}
+
+/// The probe's trailing `FRAMEDROP` fields for the frame just presented: `seq=` (the request this
+/// frame made), `mono=` (our monotonic clock, ms, now), the commit phase's `dcpu=`/`dcs=` (draw:
+/// thread CPU ms and involuntary switches from the acquired back buffer to the swap) and
+/// `scpu=`/`scs=` (the swap itself), then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each
+/// callback that arrived since the previous line. `""` unarmed.
+#[cfg(not(feature = "hostsim"))]
+pub(crate) fn frame_probe_fields() -> String {
+    if !frame_probe_armed() {
+        return String::new();
+    }
+    let done = FRAME_DONE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default();
+    let mut out = format!(
+        " seq={} mono={:.1}",
+        FRAME_SEQ.load(std::sync::atomic::Ordering::Relaxed),
+        mono_us() as f64 / 1000.0
+    );
+    let [acquired, before_swap] = COMMIT_COST.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default();
+    if let Some((cpu1, cs1)) = before_swap {
+        let (cpu2, cs2) = thread_cost();
+        if let Some((cpu0, cs0)) = acquired {
+            out.push_str(&format!(" dcpu={:.2} dcs={}", cpu1.saturating_sub(cpu0) as f64 / 1000.0, cs1.saturating_sub(cs0)));
+        }
+        out.push_str(&format!(" scpu={:.2} scs={}", cpu2.saturating_sub(cpu1) as f64 / 1000.0, cs2.saturating_sub(cs1)));
+    }
+    out.push_str(" cb=");
+    for (i, (seq, stamp, at)) in done.iter().enumerate() {
+        if i > 0 {
+            out.push('|');
+        }
+        out.push_str(&format!("{seq}:{stamp}:{:.1}", *at as f64 / 1000.0));
+    }
+    out
+}
+
+#[cfg(feature = "hostsim")]
+pub(crate) fn frame_probe_request() {}
+#[cfg(feature = "hostsim")]
+pub(crate) fn frame_probe_acquired() {}
+#[cfg(feature = "hostsim")]
+pub(crate) fn frame_probe_fields() -> String {
+    String::new()
+}
+
 // Publish SDL's borrowed handles. Kept separate from the native query so failed queries can
 // be exercised without loading the television's SDL or marshalling a fake proxy.
 #[cfg(any(not(feature = "hostsim"), test))]
