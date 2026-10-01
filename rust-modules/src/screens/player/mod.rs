@@ -980,7 +980,7 @@ impl PlayerScreen {
                     (self.hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
             }
             input::ScrubPress::Jump => {
-                // scrubber focus, FRESH press: the fixed 10 s hop, and NOTHING committed. A held
+                // scrubber focus, FRESH press: the Skip interval hop, and NOTHING committed. A held
                 // key's repeats engage the continuous ramp below and the release commits; a tap's
                 // release arms the debounce so that a rapid burst coalesces into one seek. The
                 // commit belonging to the press was this package's first regression.
@@ -991,7 +991,7 @@ impl PlayerScreen {
                     self.scrub.ns = crate::player::intended_pos_ns(ps);
                 }
                 if !self.scrub.hold {
-                    let step = if fwd { input::SCRUB_STEP_NS } else { -input::SCRUB_STEP_NS };
+                    let step = if fwd { input::scrub_step_ns() } else { -input::scrub_step_ns() };
                     self.scrub.ns = Scrub::clamp_target(self.scrub.ns.max(0) + step, dur);
                 }
                 self.scrub.dir = if fwd { 1 } else { -1 };
@@ -1033,7 +1033,7 @@ impl PlayerScreen {
     /// the seed, so committing it is a full reopen + prime to the spot playback is already on.
     /// Tested BEFORE `hold`, because a hold that engaged but has not TRAVELLED yet is still that
     /// case — the ramp is what retires `reveal`, on real travel. A travelled hold commits now. A
-    /// plain tap arms the debounce instead, so that a rapid ±10 s burst becomes one seek.
+    /// plain tap arms the debounce instead, so that a rapid burst of hops becomes one seek.
     fn key_scrub_release<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
         if self.scrub.dir == 0 {
             return;
@@ -2041,6 +2041,9 @@ mod scrub_ownership_tests {
     const INST: InstanceId = InstanceId(3);
     /// 100 s, so the 3 s tail cap (`duration - 3s`) is far from every position these cases name.
     const DUR: i64 = 100_000_000_000;
+    /// What one press hops at the default Skip interval — a literal, so the default stays pinned
+    /// at the 10 s every build before the preference made.
+    const DEFAULT_HOP: i64 = 10_000_000_000;
 
     fn cx() -> Cx<'static, TestHost> {
         Cx {
@@ -2165,7 +2168,7 @@ mod scrub_ownership_tests {
 
     /// **(a) ONE tap, ONE seek — and the seek arrives on the DEBOUNCE, not on the press.**
     ///
-    /// `Scrub::commit_at`'s whole reason for existing is that a rapid ±10 s burst must coalesce
+    /// `Scrub::commit_at`'s whole reason for existing is that a rapid burst of hops must coalesce
     /// into a single seek: each commit is a full reopen + prime on the engine, and back-to-back
     /// in-flight seeks are what race the demux. A press that commits immediately spends that,
     /// and — with the loop's own key-up arm still arming the debounce on the same field — issued
@@ -2183,7 +2186,7 @@ mod scrub_ownership_tests {
             "the press moves the PREVIEW and commits nothing — the debounce is what coalesces \
              a burst, and a press that seeks at once has already spent it",
         );
-        assert_eq!(page.scrub.ns, input::SCRUB_STEP_NS, "…and the preview hopped 10 s");
+        assert_eq!(page.scrub.ns, DEFAULT_HOP, "…and the preview hopped 10 s");
 
         let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Up, 1_020);
         assert!(seeks(reqs).is_empty(), "the release ARMS the debounce; it does not commit");
@@ -2197,6 +2200,40 @@ mod scrub_ownership_tests {
 
         let (_, reqs) = tick(&mut page, 1_020 + input::TAP_COMMIT_MS + 500);
         assert!(seeks(reqs).is_empty(), "…and it is not repeated on every frame after it");
+    }
+
+    /// **A press hops the chosen Skip interval, in both directions, and clamps like any scrub.**
+    /// From 50 s of a 100 s film: a 60 s hop forward lands on the 3 s tail cap and one back on 0.
+    #[test]
+    fn a_press_hops_the_chosen_skip_interval_in_both_directions_and_clamps() {
+        use crate::plex::session::SkipInterval;
+        use crate::ui::consts::SDLK_LEFT;
+        use std::sync::atomic::Ordering::Relaxed;
+        let _g = crate::testlock::serial();
+        let _f = Fixture::new(false);
+        const S: i64 = 1_000_000_000;
+        crate::player::SHARED.playpos_ns.store(50 * S, Relaxed);
+        for (interval, fwd, back) in [
+            (SkipInterval::Seconds5, 55 * S, 45 * S),
+            (SkipInterval::Seconds10, 60 * S, 40 * S),
+            (SkipInterval::Seconds15, 65 * S, 35 * S),
+            (SkipInterval::Seconds30, 80 * S, 20 * S),
+            (SkipInterval::Seconds60, DUR - 3 * S, 0),
+        ] {
+            let _i = player_hud::SkipIntervalGuard::set(interval);
+            for (sym, want) in [(SDLK_RIGHT, fwd), (SDLK_LEFT, back)] {
+                let mut page = page_on_the_bar();
+                let (handled, reqs) = key(&mut page, sym, Edge::Down, 1_000);
+                assert_eq!(handled, Handled::Yes);
+                assert!(seeks(reqs).is_empty(), "{interval:?}: the press commits nothing");
+                assert_eq!(page.scrub.ns, want, "{interval:?} sym {sym}");
+                assert_eq!(
+                    want,
+                    player_hud::scrub_clamp_target(50 * S + if sym == SDLK_RIGHT { 1 } else { -1 } * interval.ns(), DUR),
+                    "{interval:?}: the expectation is the shared clamp of ±interval",
+                );
+            }
+        }
     }
 
     /// **(b) A scrub taken while PAUSED leaves the film paused.**
@@ -2243,7 +2280,7 @@ mod scrub_ownership_tests {
         assert!(page.scrub.hold, "a hardware repeat engages the continuous scrub");
         tick(&mut page, 1_400); // the ramp travels
         let travelled = page.scrub.ns;
-        assert!(travelled > input::SCRUB_STEP_NS, "the ramp advanced past the press's own hop");
+        assert!(travelled > DEFAULT_HOP, "the ramp advanced past the press's own hop");
         let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Up, 1_420);
         assert_eq!(
             seeks(reqs),
@@ -2284,7 +2321,7 @@ mod scrub_ownership_tests {
         assert!(seeks(reqs).is_empty());
         assert!(!page.scrub.drag, "the pointer no longer owns the gesture");
         assert_eq!(
-            page.scrub.ns, input::SCRUB_STEP_NS,
+            page.scrub.ns, DEFAULT_HOP,
             "…and the hop is seeded from the PLAYHEAD, not from the abandoned drag preview",
         );
     }

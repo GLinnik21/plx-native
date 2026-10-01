@@ -1337,7 +1337,7 @@ pub(crate) const LINGER_MS: u32 = 4500;
 
 // ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
 //
-// Both hold-to-scrub gestures want the same feel — a press jumps `SCRUB_STEP_NS`; holding engages
+// Both hold-to-scrub gestures want the same feel — a press jumps `scrub_step_ns()`; holding engages
 // a continuous scrub ramping `SCRUB_BASE`→`SCRUB_MAX` (playback-seconds per real-second) — but the
 // STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
 // cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
@@ -1345,7 +1345,11 @@ pub(crate) const LINGER_MS: u32 = 4500;
 // `LINGER_MS` above defined here rather than in `screens::player::input` for `trailer.rs` to
 // import from a sibling. `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
-pub(crate) const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
+/// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
+/// read per press so a pick takes effect in a film already playing.
+pub(crate) fn scrub_step_ns() -> i64 {
+    crate::route::skip_interval().ns()
+}
 pub(crate) const SCRUB_BASE: f32 = 10.0;
 pub(crate) const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
 pub(crate) const SCRUB_MAX: f32 = 140.0;
@@ -1353,6 +1357,25 @@ pub(crate) const SCRUB_MAX: f32 = 140.0;
 // doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
 pub(crate) const TAP_COMMIT_MS: u32 = 450;
 pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+
+/// Sets the Skip interval for one test and puts the prior value back on drop. The caller holds
+/// `testlock::serial()`: the live value is a process global, like every preference.
+#[cfg(test)]
+pub(crate) struct SkipIntervalGuard(crate::route::SkipInterval);
+#[cfg(test)]
+impl SkipIntervalGuard {
+    pub(crate) fn set(interval: crate::route::SkipInterval) -> Self {
+        let prior = crate::route::skip_interval();
+        crate::route::restore_skip_interval(interval);
+        Self(prior)
+    }
+}
+#[cfg(test)]
+impl Drop for SkipIntervalGuard {
+    fn drop(&mut self) {
+        crate::route::restore_skip_interval(self.0);
+    }
+}
 
 /// Where a scrub target may legally land: never before zero, and never inside the last three
 /// seconds, which is a seek past the point the pipeline can prime from.
