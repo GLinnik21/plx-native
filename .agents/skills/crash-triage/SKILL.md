@@ -211,7 +211,7 @@ purpose and check the recorder end to end.
 tools/tv-lock.sh acquire --why "prove the crash tracer"
 make deploy                                     # a devtriggers build; RELEASE=1 compiles this out
 RUN=$(make -s print-rundir)
-ssh root@"$(make -s print-tv)" "echo segv > $RUN/plxnative-crashtest"
+tools/tv-ssh ssh tv "echo segv > $RUN/plxnative-crashtest"
 make run RUN_SECS=12                            # it will die at once, on purpose
 tools/crash-report.sh                           # the record, symbolized
 ```
@@ -240,7 +240,7 @@ so a by-hand session leaves it armed and the next launch dies too — which read
 app having become unlaunchable.
 
 ```bash
-ssh root@"$(make -s print-tv)" "rm -f $RUN/plxnative-crashtest"
+tools/tv-ssh ssh tv "rm -f $RUN/plxnative-crashtest"
 ```
 
 ## Gotchas

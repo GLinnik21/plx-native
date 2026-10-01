@@ -35,8 +35,8 @@ tv_host() {
   if [ -n "${TV:-}" ]; then echo "$TV"; return; fi
   make -s -C "$REPO" print-tv 2>/dev/null | head -1
 }
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
-tv_ssh() { ssh "${SSH_OPTS[@]}" "root@$(tv_host)" "$@"; }
+# Through tools/tv-ssh: the key first, `sshpass` only if the set refuses it, no address on any line.
+tv_ssh() { PLX_TV_ADDR="$(tv_host)" "$REPO/tools/tv-ssh" ssh tv "$@"; }
 
 need_tools() {
   [ -x "$TOOL-nm" ] || { echo "ERROR: NDK binutils not found at $TOOL-* (set WEBOS_SDK, or run the setup-environment skill)" >&2; exit 2; }
@@ -63,7 +63,7 @@ pull_lib() {
   esac
   local base; base="$(basename "$dev_path")"
   echo "pulling $dev_path -> $CACHE/$base" >&2
-  scp "${SSH_OPTS[@]}" -q "root@$(tv_host):$dev_path" "$CACHE/$base"
+  PLX_TV_ADDR="$(tv_host)" "$REPO/tools/tv-ssh" scp -q "tv:$dev_path" "$CACHE/$base"
   echo "$CACHE/$base"
 }
 

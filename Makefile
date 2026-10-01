@@ -60,8 +60,12 @@ TV       ?= $(strip $(shell cat .tv-host 2>/dev/null || cat "$$(git rev-parse --
 # with "no TV configured" instead of dialling `root@`. `alpine` is NOT a secret (webosbrew's
 # published dev-mode root password, the same on every rooted set); the ADDRESS is what identified
 # one household, and that stays local. See tools/tv-ssh for the contract.
-SSH       = tools/tv-ssh ssh tv
-SCP       = tools/tv-ssh scp
+# TV_CHECK expands to nothing when a TV is configured and stops make otherwise, so a recipe never
+# dials an empty address (it used to be `root@$(TV_OR_DIE)`; without this a deploy with no TV
+# says "does not exist ... make install", which is the wrong advice).
+TV_CHECK  = $(if $(TV),,$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
+SSH       = $(TV_CHECK)tools/tv-ssh ssh tv
+SCP       = $(TV_CHECK)tools/tv-ssh scp
 RUN_SECS ?= 18
 
 # --- THE TELEVISION IS A MUTEX, and this is what enforces it -------------------------------

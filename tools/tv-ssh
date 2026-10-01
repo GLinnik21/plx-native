@@ -59,11 +59,29 @@ configured_host() {
   printf '%s' "$h" | tr -d ' \t\n\r'
 }
 
-# An explicit <user>@<address>[:path] argument wins (and is left exactly as given).
+# An explicit destination wins (and is left exactly as given). Only the REAL destination counts: for
+# ssh, the first non-option word (the `tv` placeholder ends the search); for scp, an operand of the
+# form <user>@<address>:<path>. A remote-command word or a local file that merely looks like
+# `name@host` (`grep alice@example.net`, `icon@2x.png`) must never become the host we probe and, on a
+# refused key, send the password to.
+DEST_RE='^([A-Za-z0-9_.-]+)@([^:[:space:]]+)(:.*)?$'
 host=""
+skip=0
 for a in "$@"; do
-  if [[ "$a" =~ ^([A-Za-z0-9_.-]+)@([^:[:space:]]+)(:.*)?$ ]]; then
-    user="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"; break
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$mode" = ssh ]; then
+    case "$a" in
+      -[bcDeEFIiJLlmOopQRSWw]|-B) skip=1; continue ;;   # options that take a separate value
+      -*) continue ;;
+    esac
+    if [ "$a" != tv ] && [[ "$a" =~ $DEST_RE ]]; then user="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"; fi
+    break
+  else
+    case "$a" in
+      -[cFiJloPS]) skip=1; continue ;;
+      -*) continue ;;
+    esac
+    if [[ "$a" == *:* ]] && [[ "$a" =~ $DEST_RE ]]; then user="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"; break; fi
   fi
 done
 [ -n "$host" ] || host="$(configured_host)"
@@ -82,6 +100,8 @@ for a in "$@"; do
   fi
 done
 
+# Option order: OpenSSH keeps the FIRST value of an option, and these come before the caller's, so a
+# caller-supplied ConnectTimeout or LogLevel is silently ignored. Use PLX_TV_SSH_TIMEOUT / PLX_VERBOSE.
 COMMON=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o "ConnectTimeout=$TIMEOUT")
 KEY=(-o BatchMode=yes -o PreferredAuthentications=publickey)
 if [ -n "${PLX_VERBOSE:-}" ]; then FINAL_LOG=ERROR; else FINAL_LOG=QUIET; fi
@@ -104,7 +124,10 @@ fi
 if [ "$rc" -eq 255 ] && printf '%s' "$probe_err" | grep -qiE 'permission denied|too many authentication failures'; then
   command -v sshpass >/dev/null 2>&1 \
     || die "the TV refused this machine's ssh key and sshpass is not installed — authorize your key on the TV (wake-tv skill) or install sshpass"
-  exec sshpass -p "$TV_PASSWORD" "$mode" "${extra[@]}" "${COMMON[@]}" -o "LogLevel=$FINAL_LOG" "${args[@]}"
+  # PubkeyAuthentication=no: with "Too many authentication failures" the agent's keys would be
+  # offered again and exhaust MaxAuthTries before the password is ever sent.
+  exec sshpass -p "$TV_PASSWORD" "$mode" "${extra[@]}" "${COMMON[@]}" -o PubkeyAuthentication=no \
+       -o "LogLevel=$FINAL_LOG" "${args[@]}"
 fi
 
 msg="the TV is unreachable (asleep? see the wake-tv skill)"

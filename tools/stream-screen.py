@@ -99,6 +99,9 @@ def _default_tv_host():
 
 TV_HOST = os.environ.get("TV_HOST") or _default_tv_host()
 TV_USER = os.environ.get("TV_USER", "root")
+# What console output calls the television: its address names one household, so it is printed only
+# when asked for (PLX_VERBOSE=1), the same switch tools/tv-ssh uses.
+TV_LABEL = TV_HOST if os.environ.get("PLX_VERBOSE") else "the TV"
 TV_SSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tv-ssh")
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
@@ -657,7 +660,7 @@ def source_supervisor(hub: FrameHub, stats: dict, args, w, h, min_interval_ms, r
     while not hub.stopped:
         if mode in ("auto", "app") and probe_app_port(args.app_port):
             use_mpeg = args.codec == "mpeg" and tshub is not None and not legacy_app
-            print(f"  source: app stream (tcp {TV_HOST}:{args.app_port}, UI plane only, "
+            print(f"  source: app stream (tcp {TV_LABEL}:{args.app_port}, UI plane only, "
                   f"{'mpeg1/ts' if use_mpeg else 'jpeg'})")
             # auto mode arms the playback fallback (service view while the UI stream idles)
             if use_mpeg:
@@ -1296,7 +1299,7 @@ def main():
         except Exception:
             disp_host = "127.0.0.1"
     url = f"http://{disp_host}:{args.port}/"
-    print(f"Streaming TV {TV_HOST} [source={args.source}"
+    print(f"Streaming {TV_LABEL} [source={args.source}"
           f"{'' if not min_interval_ms else f', <= {args.fps:g} fps'}]  ->  {url}")
     # The capture port is printed BESIDE the install it belongs to, because those two
     # disagreeing is the failure with no error: the app is up, the log is healthy, and the

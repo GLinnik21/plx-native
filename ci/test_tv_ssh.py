@@ -22,7 +22,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -44,10 +43,17 @@ case "$FAKE_MODE" in
     if [ -z "$FAKE_VIA_SSHPASS" ]; then
       echo "root@$FAKE_HOST: Permission denied (publickey,password)." >&2; exit 255
     fi ;;
+  key-toomany)
+    # The agent offers more keys than MaxAuthTries allows; only a run that turns public-key
+    # auth OFF (as the sshpass run must) ever reaches the password.
+    if [ -z "$FAKE_VIA_SSHPASS" ] || ! printf '%s\n' "$@" | grep -qx 'PubkeyAuthentication=no'; then
+      echo "Received disconnect from $FAKE_HOST port 22:2: Too many authentication failures" >&2; exit 255
+    fi ;;
 esac
 # Accepted. Echo what the remote command would see; `cat` proves stdin was not eaten by a probe.
 eval "last=\${$#}"
 if [ "$last" = true ]; then exit 0; fi
+if [ "$last" = failcmd ]; then echo "remote: Permission denied" >&2; exit 255; fi
 if [ "$last" = cat ]; then exec cat; fi
 printf 'ran: %s\n' "$last"
 exit "${FAKE_REMOTE_RC:-0}"
@@ -103,10 +109,8 @@ class TvSshTests(unittest.TestCase):
             "PLX_TV_ADDR": host,
         }
         env.update(extra_env or {})
-        started = time.monotonic()
         proc = subprocess.run(
             [str(WRAPPER), *args], input=stdin, capture_output=True, text=True, env=env, timeout=30)
-        proc.elapsed = time.monotonic() - started
         return proc
 
     def calls(self):
@@ -169,8 +173,9 @@ class TvSshTests(unittest.TestCase):
         proc = self.run_wrapper("unreachable", "ssh", "tv", "echo hello")
         self.assertEqual(proc.returncode, 255)
         self.assertFalse([c for c in self.calls() if c.startswith("sshpass")], self.calls())
+        # ONE ssh call in total: the probe. The real command is never attempted.
+        self.assertEqual(len([c for c in self.calls() if c.startswith("ssh ")]), 1, self.calls())
         self.assertIn("the TV", proc.stderr)
-        self.assertLess(proc.elapsed, 5)
         self.assert_no_leak(proc)
 
     def test_unreachable_scp_is_the_same(self):
@@ -211,6 +216,59 @@ class TvSshTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(len([c for c in self.calls() if c.startswith("sshpass")]), 1)
 
+    # ---- the destination is the real destination, not any word that looks like one -------
+    def test_email_looking_remote_command_word_is_not_the_destination(self):
+        proc = self.run_wrapper("key-denied", "ssh", "tv", "grep", "-c", "alice@example.net", "/etc/x")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        ssh_calls = [c for c in self.calls() if c.startswith("ssh ")]
+        self.assertTrue(ssh_calls)
+        probe = ssh_calls[0]
+        self.assertIn(f"[root@{HOST}]", probe)
+        self.assertNotIn("[alice@example.net]", probe)
+        sshpass = [c for c in self.calls() if c.startswith("sshpass")]
+        self.assertEqual(len(sshpass), 1)
+        self.assertIn(f"[root@{HOST}]", sshpass[0])
+
+    def test_bare_scp_operand_with_an_at_sign_is_not_the_destination(self):
+        proc = self.run_wrapper("key-denied", "scp", "icon@2x.png", "tv:/tmp/")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        probe = [c for c in self.calls() if c.startswith("ssh ")][0]
+        self.assertIn(f"[root@{HOST}]", probe)
+        self.assertNotIn("icon@2x.png", probe)
+        scp = [c for c in self.calls() if c.startswith("sshpass")][0]
+        self.assertIn("[icon@2x.png]", scp)
+        self.assertIn(f"[root@{HOST}:/tmp/]", scp)
+
+    def test_explicit_destination_after_options_is_honoured(self):
+        proc = self.run_wrapper("key-ok", "ssh", "-o", "ServerAliveInterval=3", "-tt",
+                                f"root@{HOST}", "echo hi", host="")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        probe = [c for c in self.calls() if c.startswith("ssh ")][0]
+        self.assertIn(f"[root@{HOST}]", probe)
+
+    # ---- the password run really can reach the password ----------------------------------
+    def test_sshpass_run_turns_public_key_auth_off(self):
+        proc = self.run_wrapper("key-toomany", "ssh", "tv", "echo hello")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ran: echo hello", proc.stdout)
+        sshpass = [c for c in self.calls() if c.startswith("sshpass")]
+        self.assertEqual(len(sshpass), 1, self.calls())
+        self.assertIn("[PubkeyAuthentication=no]", sshpass[0])
+
+    # ---- the real command's own failures are not auth failures ---------------------------
+    def test_remote_command_failing_255_permission_denied_is_passed_through(self):
+        proc = self.run_wrapper("key-ok", "ssh", "tv", "failcmd")
+        self.assertEqual(proc.returncode, 255)
+        self.assertIn("Permission denied", proc.stderr)
+        self.assertFalse([c for c in self.calls() if c.startswith("sshpass")], self.calls())
+
+    def test_the_real_command_runs_exactly_once(self):
+        for mode in ("key-ok", "key-denied"):
+            self.log.write_text("")
+            self.run_wrapper(mode, "ssh", "tv", "echo once")
+            ran = [c for c in self.calls() if c.startswith("ssh ") and c.endswith("[echo once]")]
+            self.assertEqual(len(ran), 1, (mode, self.calls()))
+
     def test_stdin_reaches_the_command(self):
         proc = self.run_wrapper("key-ok", "ssh", "tv", "cat", stdin="payload-line\n")
         self.assertEqual(proc.stdout, "payload-line\n")
@@ -222,23 +280,43 @@ class TvSshTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 7)
 
 
-class MakefileDryRun(unittest.TestCase):
-    """`make -n deploy` prints every command the real run would echo. None of them may carry the
-    password, `sshpass`, or the address -- the transcript of a deploy is read by people and agents."""
+class MakefileTests(unittest.TestCase):
+    """What make would ECHO. A deploy transcript is read by people and agents, so none of the
+    commands may carry the password, `sshpass`, or the address.
 
-    def test_dry_run_deploy_is_silent_about_address_and_password(self):
+    Dry runs use goals whose recipes are only ssh/scp (no toolchain, so the result is the same on
+    a CI host without the NDK); the whole Makefile is additionally scanned statically, which is
+    what covers `deploy`'s scp lines without expanding its build graph."""
+
+    def dry_run(self, goal, tv=HOST):
         env = dict(os.environ)
         env.pop("TV", None)
-        proc = subprocess.run(
-            ["make", "-n", "deploy", f"TV={HOST}", "FLAVOR=debug"],
-            cwd=ROOT, capture_output=True, text=True, env=env, timeout=300)
-        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
-        out = proc.stdout + proc.stderr
-        self.assertIn("tools/tv-ssh", out)
-        # Report the offending LINES only: a failing dry run is thousands of lines long.
-        leaks = [ln[:160] for ln in out.splitlines()
-                 if HOST in ln or "sshpass" in ln or PASSWORD in ln]
-        self.assertEqual(leaks[:5], [], f"{len(leaks)} leaking lines")
+        return subprocess.run(["make", "-n", goal, f"TV={tv}", "FLAVOR=debug"],
+                              cwd=ROOT, capture_output=True, text=True, env=env, timeout=120)
+
+    def test_dry_runs_are_silent_about_address_and_password(self):
+        for goal in ("verify-deploy", "kill", "uninstall", "run-stream"):
+            proc = self.dry_run(goal)
+            self.assertEqual(proc.returncode, 0, (goal, proc.stderr[-300:]))
+            out = proc.stdout + proc.stderr
+            self.assertIn("tools/tv-ssh", out, goal)
+            leaks = [ln[:160] for ln in out.splitlines()
+                     if HOST in ln or "sshpass" in ln or PASSWORD in ln]
+            self.assertEqual(leaks[:5], [], f"{goal}: {len(leaks)} leaking lines")
+
+    def test_no_recipe_line_names_the_password_or_a_literal_address(self):
+        leaks = []
+        for n, ln in enumerate((ROOT / "Makefile").read_text().splitlines(), 1):
+            if re.match(r"\s*@?#", ln) or ln.startswith(("print-tv:", "TV_CHECK")):
+                continue  # comments are not echoed; print-tv is the query that prints it on purpose
+            if "sshpass" in ln or PASSWORD in ln or "root@" in ln or "$(TV)" in ln:
+                leaks.append(f"{n}: {ln.strip()[:100]}")
+        self.assertEqual(leaks[:5], [])
+
+    def test_no_tv_configured_stops_make_with_the_old_sentence(self):
+        proc = self.dry_run("kill", tv="")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("no TV configured", proc.stderr)
 
 
 if __name__ == "__main__":
