@@ -77,17 +77,16 @@ use crate::metadata;
 use crate::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
 use crate::metadata::track_label;
 use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
-use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host};
+use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
 use crate::ui::popover::Popover;
-use crate::ui::screen::{
-    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
-    Hover, Part, Placed, Seat, Step, Stop,
-};
+use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::page_stack::{self, PageStack, TITLE_KEY};
+use crate::ui::page_stack::{
+    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
+    popover_register_stops, popover_seat, PageStack, PopoverPanel,
+};
 use crate::ui::panel_motion::PanelMotion;
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::table_screen::BAND_BASE;
@@ -282,7 +281,7 @@ fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -
     // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
     // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
     // the bottom edge steady.
-    let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
+    let bottom = theme::layout::PLAYER_MENU_BOTTOM; // 764 — ~28px above the buttons
     // A note row wraps, so its line count depends on the width: it is resolved HERE, against the
     // same `measure` and `pw` the panel is sized with, so no caller (`update`, hit-testing,
     // `draw`) can read the count a rebuild left stale. Idempotent and a few short strings.
@@ -434,8 +433,6 @@ pub(crate) struct TrackMenuState {
     /// The card's resize and the page slide ([`crate::ui::panel_motion`]): the layout target is
     /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
     motion: PanelMotion,
-    /// Whether [`Self::warm_other_tab`] has queued the other tab's root strings for this menu.
-    other_tab_warmed: bool,
     /// The owner token of the background queue this menu parked ([`crate::text::park_prewarm_as_background`]).
     /// [`Drop`] clears the queue only while it is still this menu's: a dismissed menu lives on
     /// through its fade-out (`ModalStack`'s `Closing`), and a Tracks menu reopened inside that
@@ -548,7 +545,6 @@ impl TrackMenuState {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
-            other_tab_warmed: false,
             background_owner: None,
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
@@ -586,11 +582,6 @@ impl TrackMenuState {
     #[cfg(test)]
     pub(crate) fn page_path(&self) -> Vec<TrackPage> {
         self.pages.iter().map(|s| s.page).collect()
-    }
-
-    /// Is this the pointer-only key of the title band ([`TITLE_KEY`])?
-    pub(crate) fn is_title_key(elem: u32) -> bool {
-        page_stack::is_title_key(elem)
     }
 
     /// Was the Subtitles root last built under the app's own live burn (what locks Timing and Style)?
@@ -1605,14 +1596,13 @@ impl TrackMenuState {
         meta: metadata::MetadataView<'_>,
         measure: &dyn crate::ui::machine::Measure,
     ) {
-        if self.other_tab_warmed
+        if self.background_owner.is_some()
             || !self.pages.is_empty()
             || self.motion.transitioning()
             || crate::text::prewarm_pending()
         {
             return;
         }
-        self.other_tab_warmed = true;
         // The whole recording part is speculative to the recorder (spec §5): the form's layout
         // asks the measure about a page no frame draws, and a replay must answer 0.0 for a key
         // its recording lacks instead of refusing on it.
@@ -1669,59 +1659,39 @@ pub(crate) struct TrackMenuPart<'a> {
     pub(crate) group: GroupId,
 }
 
+impl PopoverPanel for TrackMenuState {
+    type Id = TrackRow;
+    type Act = ();
+    type Dest = TrackPage;
+    fn form(&self) -> &FormTable<Self::Id, Self::Act, Self::Dest> {
+        &self.form
+    }
+    fn motion(&self) -> &PanelMotion {
+        &self.motion
+    }
+    fn panel_rect(&self, measure: &dyn Measure) -> Rect {
+        TrackMenuState::panel_rect(self, measure)
+    }
+    fn shown_rect(&self, measure: &dyn Measure) -> Rect {
+        TrackMenuState::shown_rect(self, measure)
+    }
+}
+
 impl<H: Host> Focusable<H> for TrackMenuPart<'_>
 where
     H::Elem: IndexElem,
 {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        out.push(GroupSpec {
-            id: self.group,
-            kind: GroupKind::Column,
-            seat: Seat::Remembered,
-            reachable: AxisMask::VERTICAL,
-            edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Screen],
-            extent: self.state.panel_rect(_cx.measure),
-            len: self.state.form.focusable_len(),
-            elem: ElemKind::Bare,
-        });
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        popover_groups(self.state, self.group, cx.measure, out);
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.state.form.index_of_key(RowKey(key.index()?)).map(|_| self.group)
+        popover_group_of(self.state, key, self.group)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        let Some(from) = key.elem.index() else {
-            return Step::Edge;
-        };
-        let delta = match dir {
-            Dir::Up => -1,
-            Dir::Down => 1,
-            _ => return Step::Edge, // Left/Right: the screen's own tab switch, via `EdgeRule::Screen`
-        };
-        match self.state.form.step_key(RowKey(from), delta) {
-            Some(k) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(k.0) }),
-            None => Step::Edge,
-        }
+        popover_neighbour(self.state, self.entry, key, dir)
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        // Where the stop is DRAWN: the page's slide offset on x and the animated card as the clip,
-        // the same numbers `Part::draw` registers (replay compares the two). `rest_rect` is the
-        // layout, where the row settles.
-        let natural = self.state.panel_rect(cx.measure);
-        let clip = self.state.shown_rect(cx.measure);
-        let dx = self.state.motion.live_dx();
-        let placed = |rest: Rect, index: Option<u32>| Placed {
-            rect: Rect::new(rest.x + dx, rest.y, rest.w, rest.h),
-            rest_rect: rest,
-            clip,
-            index,
-        };
-        // the title band's pointer-only key: not a row, but replay and hit validation must be able
-        // to place it (`docs/player-submenus.md`)
-        if key.index() == Some(TITLE_KEY) {
-            return Some(placed(self.state.form.table.title_rect(natural)?, None));
-        }
-        let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
-        Some(placed(self.state.form.table.row_frame(natural, i as i32)?, Some(i)))
+        popover_place(self.state, key, cx.measure)
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         // Trust the panel's OWN cursor (`table.sel`), not `want`. The cursor is where
@@ -1740,8 +1710,7 @@ where
         FocusKey { entry: self.entry, elem: H::Elem::of_index(key.map_or(0, |k| k.0)) }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let key = self.state.form.selected_key().or_else(|| self.state.form.opening_key());
-        FocusKey { entry: self.entry, elem: H::Elem::of_index(key.map_or(0, |k| k.0)) }
+        popover_seat(self.state, self.entry)
     }
 }
 
@@ -1750,51 +1719,11 @@ where
     H::Elem: IndexElem,
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    /// Registers every visible row's stop (§7.6); the panel's own paint happens directly on the
-    /// owned `TrackMenuState` from `PlayerOverlayScreen::draw` (see the struct doc above).
+    /// Registers every selectable row's stop and the title band's ([`popover_register_stops`]); the
+    /// popover's own paint happens directly on the owned state from `PlayerOverlayScreen::draw`
+    /// (struct doc above).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        let p = Painter::root();
-        let r = self.state.panel_rect(f.measure);
-        // only the ACTIVE page registers stops, where it is drawn this frame: the slide's x offset
-        // and the animated card as the clip (`PanelMotion`); the pointer is held while either moves
-        let dx = self.state.motion.live_dx();
-        let clip = self.state.shown_rect(f.measure);
-        let moved = |rect: Rect| Rect::new(rect.x + dx, rect.y, rect.w, rect.h);
-        for i in 0..self.state.form.table.n_rows() {
-            let Some(key) = self.state.form.key_at(i as usize) else {
-                continue;
-            };
-            if let Some(row) = self.state.form.table.row_frame(r, i) {
-                f.stop(
-                    p,
-                    Stop {
-                        key: FocusKey {
-                            entry: self.entry,
-                            elem: H::Elem::of_index(key.0),
-                        },
-                        rect: moved(row),
-                        rest_rect: row,
-                        clip,
-                        hover: Hover::Focus,
-                        activate: Activate::Direct,
-                    },
-                );
-            }
-        }
-        // "< STYLE": a click pops. A pointer-only stop — no hover focus, never in the D-pad column.
-        if let Some(band) = self.state.form.table.title_rect(r) {
-            f.stop(
-                p,
-                Stop {
-                    key: FocusKey { entry: self.entry, elem: H::Elem::of_index(TITLE_KEY) },
-                    rect: moved(band),
-                    rest_rect: band,
-                    clip,
-                    hover: Hover::Ignore,
-                    activate: Activate::Direct,
-                },
-            );
-        }
+        popover_register_stops(self.state, self.entry, f);
     }
 }
 
@@ -2050,7 +1979,7 @@ fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool)
 /// measure.
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (bottom, top_min) = (SCR_H - 316.0, 60.0);
+    let (bottom, top_min) = (theme::layout::PLAYER_MENU_BOTTOM, 60.0);
     let pw = crate::ui::table::MENU_MAX_W;
     out.push((
         "track menu panel (widest)",
@@ -2730,7 +2659,7 @@ mod enhancement_menu_tests {
         let store = one_track_store();
         let replay = Measurements::Replay(TableMeasure::new(std::collections::HashMap::new()));
         menu.warm_other_tab(&ps, store.view(), &replay);
-        assert!(menu.other_tab_warmed, "premise: the warm ran");
+        assert!(menu.background_owner.is_some(), "premise: the warm ran");
         assert_eq!(replay.drain(), Ok(Vec::new()), "the warm's queries are not strict replay queries");
         crate::text::reset_prewarm_for_test();
         teardown(&ps);
@@ -3813,7 +3742,6 @@ mod focus_tests {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
-            other_tab_warmed: false,
             background_owner: None,
         }
     }
@@ -3865,8 +3793,8 @@ mod focus_tests {
             let mut groups = Vec::new();
             <TrackMenuPart as Focusable<HostFixture>>::groups(&part, cx, &mut groups);
             let g = groups.into_iter().next().expect("one group");
-            assert!(matches!(g.edge[2], EdgeRule::Screen));
-            assert!(matches!(g.edge[3], EdgeRule::Screen));
+            assert!(matches!(g.edge[2], crate::ui::screen::EdgeRule::Screen));
+            assert!(matches!(g.edge[3], crate::ui::screen::EdgeRule::Screen));
         });
     }
 
@@ -4472,8 +4400,8 @@ mod style_page_tests {
         let (mut menu, ps, store) = open_text();
         focus_id(&mut menu, TrackRow::Style);
         menu.on_ok(store.view());
-        assert!(TrackMenuState::is_title_key(TITLE_KEY));
-        assert!(menu.keys().iter().all(|k| !TrackMenuState::is_title_key(*k)));
+        assert!(page_stack::is_title_key(page_stack::TITLE_KEY));
+        assert!(menu.keys().iter().all(|k| !page_stack::is_title_key(*k)));
         teardown(&ps);
     }
 

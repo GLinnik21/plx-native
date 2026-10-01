@@ -799,7 +799,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // THAT row before `activate` reads the panel's own cursor, so a click never acts
                 // on a neighbour the cursor happened to still hold
                 if let Panel::Tracks(p) = &mut self.panel {
-                    if crate::ui::track_menu::TrackMenuState::is_title_key(*elem) {
+                    if crate::ui::page_stack::is_title_key(*elem) {
                         // the "< TITLE" band: a click goes back one page, and acts on no row
                         p.pop(ps, H::metadata(cx));
                         self.moved(fx);
@@ -808,7 +808,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     p.focus_key(*elem);
                 }
                 if let Panel::More(p) = &mut self.panel {
-                    if crate::ui::more_menu::MoreMenuState::is_title_key(*elem) {
+                    if crate::ui::page_stack::is_title_key(*elem) {
                         // the "< QUALITY" band: a click goes back one page, and acts on no row
                         p.pop(ps);
                         self.moved(fx);

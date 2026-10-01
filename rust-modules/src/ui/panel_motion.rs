@@ -320,8 +320,8 @@ impl PanelMotion {
             return;
         };
         let leaving_now = Layer { table: old, rect, alpha: slide.live_alpha, x: slide.live_x };
-        if slide.dir != dir && !slide.leaving.is_empty() {
-            let revived = slide.leaving.pop().expect("checked non-empty");
+        let revived = if slide.dir != dir { slide.leaving.pop() } else { None };
+        if let Some(revived) = revived {
             slide.live_alpha = revived.alpha;
             slide.live_x = revived.x;
         } else {

@@ -64,19 +64,18 @@
 //! the picture already satisfies does nothing at all. That is a user-initiated switch and not an
 //! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
-use crate::ui::consts::*;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
-use crate::ui::screen::{
-    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
-    Hover, Part, Placed, Seat, Step, Stop,
-};
+use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
+use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::page_stack::{self, PageStack, TITLE_KEY};
+use crate::ui::page_stack::{
+    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
+    popover_register_stops, popover_seat, PageStack, PopoverPanel,
+};
 use crate::ui::panel_motion::PanelMotion;
 use crate::ui::table::Row;
-use crate::ui::{theme, Painter, Rect};
+use crate::ui::{theme, Rect};
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -330,11 +329,6 @@ impl MoreMenuState {
         }
     }
 
-    /// Is this the pointer-only key of the title band ([`TITLE_KEY`])?
-    pub(crate) fn is_title_key(elem: u32) -> bool {
-        page_stack::is_title_key(elem)
-    }
-
     /// **The replay canon**: the page path (each pushed page and the row that opened it) and the
     /// selected row's [`RowKey`] — not its index, which two pages share.
     pub(crate) fn canon(&self, c: &mut crate::ui::machine::Canon) {
@@ -461,7 +455,7 @@ impl MoreMenuState {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
             let px = crate::ui::player_hud::CTRL_RIGHT - pw;
-            let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
+            let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
             let ph = self.panel_h();
             Rect::new(px, bottom - ph, pw, ph)
         })
@@ -481,7 +475,7 @@ impl MoreMenuState {
     /// rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
     /// the cap it scrolls, which is what `TableView` is for.
     fn panel_h(&self) -> f32 {
-        let bottom = SCR_H - 316.0;
+        let bottom = theme::layout::PLAYER_MENU_BOTTOM;
         self.form.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
@@ -538,61 +532,39 @@ pub(crate) struct MoreMenuPart<'a> {
     pub(crate) group: GroupId,
 }
 
+impl PopoverPanel for MoreMenuState {
+    type Id = MoreRow;
+    type Act = Action;
+    type Dest = MorePage;
+    fn form(&self) -> &FormTable<Self::Id, Self::Act, Self::Dest> {
+        &self.form
+    }
+    fn motion(&self) -> &PanelMotion {
+        &self.motion
+    }
+    fn panel_rect(&self, measure: &dyn Measure) -> Rect {
+        MoreMenuState::panel_rect(self, measure)
+    }
+    fn shown_rect(&self, measure: &dyn Measure) -> Rect {
+        MoreMenuState::shown_rect(self, measure)
+    }
+}
+
 impl<H: Host> Focusable<H> for MoreMenuPart<'_>
 where
     H::Elem: IndexElem,
 {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        out.push(GroupSpec {
-            id: self.group,
-            kind: GroupKind::Column,
-            seat: Seat::Remembered,
-            reachable: AxisMask::VERTICAL,
-            // UP/DOWN stop at the ends; LEFT pops a pushed page and RIGHT enters a Nav row, which only
-            // the owning screen can do (`PlayerOverlayScreen::edge_key`), so both edges are the screen's
-            edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Screen],
-            extent: self.state.panel_rect(_cx.measure),
-            len: self.state.form.focusable_len(),
-            elem: ElemKind::Bare,
-        });
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        popover_groups(self.state, self.group, cx.measure, out);
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.state.form.index_of_key(RowKey(key.index()?)).map(|_| self.group)
+        popover_group_of(self.state, key, self.group)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        let Some(from) = key.elem.index() else {
-            return Step::Edge;
-        };
-        let delta = match dir {
-            Dir::Up => -1,
-            Dir::Down => 1,
-            _ => return Step::Edge,
-        };
-        match self.state.form.step_key(RowKey(from), delta) {
-            Some(k) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(k.0) }),
-            None => Step::Edge,
-        }
+        popover_neighbour(self.state, self.entry, key, dir)
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        // Where the stop is DRAWN: the page's slide offset on x and the animated card as the clip,
-        // the same numbers `Part::draw` registers (replay compares the two). `rest_rect` is the
-        // layout, where the row settles.
-        let natural = self.state.panel_rect(cx.measure);
-        let clip = self.state.shown_rect(cx.measure);
-        let dx = self.state.motion.live_dx();
-        let placed = |rest: Rect, index: Option<u32>| Placed {
-            rect: Rect::new(rest.x + dx, rest.y, rest.w, rest.h),
-            rest_rect: rest,
-            clip,
-            index,
-        };
-        // the title band's pointer-only key: not a row, but replay and hit validation must be able
-        // to place it
-        if key.index() == Some(TITLE_KEY) {
-            return Some(placed(self.state.form.table.title_rect(natural)?, None));
-        }
-        let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
-        Some(placed(self.state.form.table.row_frame(natural, i as i32)?, Some(i)))
+        popover_place(self.state, key, cx.measure)
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         // A live key stays where it is. One that names no row of the page now showing — the opener
@@ -608,11 +580,7 @@ where
         FocusKey { entry: self.entry, elem: H::Elem::of_index(key.unwrap_or(0)) }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let key = self.state.form.selected_key().or_else(|| self.state.form.opening_key());
-        FocusKey {
-            entry: self.entry,
-            elem: H::Elem::of_index(key.map_or(0, |k| k.0)),
-        }
+        popover_seat(self.state, self.entry)
     }
 }
 
@@ -621,52 +589,11 @@ where
     H::Elem: IndexElem,
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    /// Registers every selectable row's stop (rule 11: hover parks, a click activates — the same
-    /// loop `TablePart::draw` runs over an ordinary page table); the popover's own paint happens
-    /// directly on the owned `MoreMenuState` from `PlayerOverlayScreen::draw` (struct doc above).
+    /// Registers every selectable row's stop and the title band's ([`popover_register_stops`]); the
+    /// popover's own paint happens directly on the owned state from `PlayerOverlayScreen::draw`
+    /// (struct doc above).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        let p = Painter::root();
-        let r = self.state.panel_rect(f.measure);
-        // only the ACTIVE page registers stops, where it is drawn this frame: the slide's x offset
-        // and the animated card as the clip (`PanelMotion`); the pointer is held while either moves
-        let dx = self.state.motion.live_dx();
-        let clip = self.state.shown_rect(f.measure);
-        let moved = |rect: Rect| Rect::new(rect.x + dx, rect.y, rect.w, rect.h);
-        for i in 0..self.state.form.table.n_rows() {
-            let Some(key) = self.state.form.key_at(i as usize) else {
-                continue;
-            };
-            if let Some(row) = self.state.form.table.row_frame(r, i) {
-                f.stop(
-                    p,
-                    Stop {
-                        key: FocusKey {
-                            entry: self.entry,
-                            elem: H::Elem::of_index(key.0),
-                        },
-                        rect: moved(row),
-                        rest_rect: row,
-                        clip,
-                        hover: Hover::Focus,
-                        activate: Activate::Direct,
-                    },
-                );
-            }
-        }
-        // "< QUALITY": a click pops. A pointer-only stop — no hover focus, never in the D-pad column.
-        if let Some(band) = self.state.form.table.title_rect(r) {
-            f.stop(
-                p,
-                Stop {
-                    key: FocusKey { entry: self.entry, elem: H::Elem::of_index(TITLE_KEY) },
-                    rect: moved(band),
-                    rest_rect: band,
-                    clip,
-                    hover: Hover::Ignore,
-                    activate: Activate::Direct,
-                },
-            );
-        }
+        popover_register_stops(self.state, self.entry, f);
     }
 }
 
@@ -769,7 +696,7 @@ fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (pw, ph) = (crate::ui::table::MENU_MAX_W, 320.0f32);
-    let bottom = SCR_H - 316.0;
+    let bottom = theme::layout::PLAYER_MENU_BOTTOM;
     out.push((
         "… overflow menu panel",
         Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
@@ -1149,8 +1076,8 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), all.len());
         assert!(keys.iter().all(|k| *k < crate::ui::table_screen::BAND_BASE));
-        assert!(MoreMenuState::is_title_key(TITLE_KEY));
-        assert!(keys.iter().all(|k| !MoreMenuState::is_title_key(*k)));
+        assert!(page_stack::is_title_key(page_stack::TITLE_KEY));
+        assert!(keys.iter().all(|k| !page_stack::is_title_key(*k)));
     }
 
     /// **The replay canon tells the root from the Quality page**, and one selected row from
