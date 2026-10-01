@@ -139,6 +139,8 @@ pub(crate) struct Scenarios {
     pub(crate) subtiming: Subtiming,
     /// `/tmp/plxnative-submenuosc` — see [`submenuosc_arm`] and [`SubmenuOsc`].
     pub(crate) submenu_osc: SubmenuOsc,
+    /// `/tmp/plxnative-moreosc` — see [`moreosc_arm`]; the same state as `submenu_osc`.
+    pub(crate) more_osc: SubmenuOsc,
     pub(crate) pause_tried: bool,
     /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
     pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
@@ -1479,6 +1481,10 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             );
             pin_headless_hud(app, fr.now, None);
         }
+        if crate::dev::flag("more") {
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
+            pin_headless_hud(app, fr.now, None);
+        }
         if crate::dev::flag("info") {
             crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
             pin_headless_hud(app, fr.now, Some(0));
@@ -1628,6 +1634,58 @@ fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
     crate::log(&format!("submenuosc: step {} -> {} tab={tab} depth={depth} key={:?}", app.scenarios.submenu_osc.step, step.next, step.key));
     app.scenarios.submenu_osc.step = step.next;
     app.inputs.extend(crate::app::bridge::script_key(step.key, Tick { ms: fr.now, dt_us: 0 }));
+}
+
+/// The More oscillator's script, a pure function of the page depth: on the root seat the Quality
+/// row and press RIGHT (a push); on the Quality page press LEFT (a pop). Anything deeper climbs out.
+fn moreosc_next(depth: usize) -> (bool, Key) {
+    if depth == 0 { (true, Key::Right) } else { (false, Key::Left) }
+}
+
+/// `/tmp/plxnative-moreosc=<period_ms>` — the device frame-time scene for More's Quality drill-in
+/// (panel resize + page slide), the same shape as [`submenuosc_arm`]: with More open
+/// (`plxnative-more=1`) one REAL key per period through the dispatcher, alternating push and pop.
+/// A More dismissed under it is reopened at the root.
+fn moreosc_arm(app: &mut App, fr: &mut Frame) {
+    let period = *app.scenarios.more_osc.period.get_or_insert_with(|| {
+        crate::dev::read("moreosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
+    });
+    if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
+        return;
+    }
+    crate::ui::idle::wake();
+    if fr.now.wrapping_sub(app.scenarios.more_osc.last) < period {
+        return;
+    }
+    app.scenarios.more_osc.last = fr.now;
+    let Some(depth) = crate::app::bridge::player_overlay_mut(&mut app.pages).and_then(|s| s.more_probe()) else {
+        if !crate::app::bridge::player_overlay_up(&app.pages) {
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
+            pin_headless_hud(app, fr.now, None);
+        }
+        return;
+    };
+    let (seat, key) = moreosc_next(depth);
+    if seat {
+        if let Some(surface) = crate::app::bridge::player_overlay_mut(&mut app.pages) {
+            surface.seat_more_quality();
+        }
+    }
+    crate::log(&format!("moreosc: depth={depth} key={key:?}"));
+    app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: fr.now, dt_us: 0 }));
+}
+
+#[cfg(test)]
+mod moreosc_script_tests {
+    use super::moreosc_next;
+    use crate::ui::machine::Key;
+
+    #[test]
+    fn the_root_pushes_the_quality_row_and_the_page_pops() {
+        assert_eq!(moreosc_next(0), (true, Key::Right));
+        assert_eq!(moreosc_next(1), (false, Key::Left));
+        assert_eq!(moreosc_next(3), (false, Key::Left), "off script: climb out, never press blind");
+    }
 }
 
 /// `/tmp/plxnative-subtiming`'s own state across frames — see [`subtiming_arm`].
@@ -1968,6 +2026,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     menupick_arm(app, fr);
     subtiming_arm(app, fr);
     submenuosc_arm(app, fr);
+    moreosc_arm(app, fr);
     marker_arm(app, fr);
     if crate::app::bridge::player(&app.pages).is_some() {
         failure_fixture(&mut app.player.session);

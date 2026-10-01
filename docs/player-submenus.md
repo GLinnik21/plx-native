@@ -9,8 +9,9 @@ model reviewer over several rounds; this file keeps the decisions and their reas
 the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay
 state) and PR 3 (Other languages, the language pages, the image-subtitle badge) and PR 4 (the animated
 panel resize and page slide for Tracks and More, `ui::panel_motion`, plus the device frame-time
-scene) are what this repository has; PR 5 (More -> Quality) is open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
-purpose.
+scene) and PR 5 (More -> Quality on the shared `ui::page_stack::PageStack`, the `more-quality-osc`
+scene) are what this repository has. The replay anchors were re-recorded for PR 2 and again for PR 5
+because the overlay's state shape changed on purpose.
 
 ## Behaviour
 
@@ -145,7 +146,11 @@ On the root the change refreshes in place. On a sub-page the page is refreshed i
    state, pointer and BACK behaviour.
 3. Other languages, language pages, the badge change, the invalidation fingerprint.
 4. Resize/slide animation for all table popovers (Tracks, More); the `track-menu-submenu-osc` scene.
-5. Later: More -> Quality drill-in.
+5. More -> Quality: the root's headerless Quality row (value = the current rung) pushes a Quality page
+   on `ui::page_stack::PageStack` (extracted from the track menu); live refresh keeps focus by id and
+   pops to the root when Quality becomes unavailable; the failure screen's quality entry opens on the
+   page, and BACK pops to the root before it dismisses; the `more-quality-osc` scene
+   (`plxnative-more=1`, `plxnative-moreosc=<period_ms>`, `dev::scenarios::moreosc_arm`).
 
 ## Decisions
 
@@ -190,6 +195,13 @@ Fixed on the way here:
 - **Cold first tab switch.** The first switch to the other tab rasterised its strings cold
   (`textx8:9.5`). They are now warmed in the background, one string a frame
   (`TrackMenuState::warm_other_tab`).
+
+`more-quality-osc` (trigger `plxnative-more=1` to open More, `plxnative-moreosc=<period_ms>`,
+`dev::scenarios::moreosc_arm`) is the same check for More: RIGHT on the Quality row pushes the rung
+page and LEFT pops it, every 900 ms. Same sequence with `--arm more=1 --arm moreosc=900`, reading
+`route=player overlay=more`; `moreosc:` lines log each key. It needs a source that can offer
+Quality rungs (a transcodable item), because the row is absent otherwise. Same 25 ms budget, same
+"not yet measured on the TV".
 
 Panel OFF does not stop presents on the player route: while the hardware video plane is bound
 `ui::idle`'s `VIDEO_PLANE` gate forces a present every frame, so the frame times are the real

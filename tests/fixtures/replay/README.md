@@ -280,3 +280,12 @@ shape `13647275923436478101` (`0xbd64dd25602c1e95`) and replayed SAME in both mo
 (`tests/replay_fixtures.py`, three consecutive runs, and `tests/focusfp.sh --replay`/`--targets`/
 `--resolve`) with zero difference counters. None of the three drives the player, so the recorded
 frames differ only in the shape they carry.
+
+The player sub-menus' fifth step (PR 5: More's Quality row becomes a page on the shared `PageStack`)
+moved the screen census (`SCREEN_SHAPES_PIN`, `10952571532616655710` -> `8098562808894689397`) on
+purpose: the player overlay's replay canon now carries More's page path, and the shape string gained
+`|More:{depth,pages,key}`. The anchors recorded against shape `13647275923436478101` were observed
+being refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then
+all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`10119451143357529556` and replayed SAME in both modes (`tests/replay_fixtures.py`, three
+consecutive runs) with zero difference counters. None of the three drives the player.

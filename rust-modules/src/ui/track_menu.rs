@@ -43,7 +43,7 @@
 //! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
 //! each read out their current value and push a picker page ([`TrackPage::Picker`]) of
 //! [`RowKind::Choice`] rows with the current rung checked. A push remembers the opener's id and the
-//! scroll ([`Saved`]); a pop ([`TrackMenuState::pop`], LEFT or BACK, or a click on the title band,
+//! scroll ([`page_stack::Saved`]); a pop ([`TrackMenuState::pop`], LEFT or BACK, or a click on the title band,
 //! whose pointer-only stop is [`TITLE_KEY`]) restores both, so focus returns to the row that opened
 //! the page by id. OK or RIGHT on a Nav row pushes ([`TrackMenuState::on_right`]); LEFT on the root
 //! is still the tab switch and BACK on the root dismisses. Every page opens on an explicit id
@@ -87,6 +87,7 @@ use crate::ui::screen::{
     Hover, Part, Placed, Seat, Step, Stop,
 };
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::page_stack::{self, PageStack, TITLE_KEY};
 use crate::ui::panel_motion::PanelMotion;
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::table_screen::BAND_BASE;
@@ -230,10 +231,6 @@ impl TrackPage {
     }
 }
 
-/// The pointer-only key of the page title band ("< STYLE"): OUTSIDE the form's key range (at the
-/// ceiling), so it is never a row and never in the D-pad column. A click on it pops.
-pub(crate) const TITLE_KEY: u32 = BAND_BASE;
-
 /// The hand-assigned focus key of each row: a family base per kind of row plus the track's own
 /// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
 /// track list that sorts differently, the DSP pair appearing) moves no key. Free families for the
@@ -294,17 +291,6 @@ fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -
     let ph = table.measured_height().clamp(160.0, bottom - top_min);
     let py = bottom - ph; // ≥ top_min by construction
     Rect::new(px, py, pw, ph)
-}
-
-/// **What a pushed page remembers of the page beneath it**: the opener's id and the scroll the
-/// list was left at, so a pop ([`FormTable::restore`]) brings the page back exactly as it was.
-#[derive(Clone, Copy, Debug)]
-struct Saved {
-    /// The page this entry opened.
-    page: TrackPage,
-    /// The row that opened it, on the page beneath.
-    return_id: TrackRow,
-    scroll: f32,
 }
 
 /// The renderer the ACTIVE subtitle is drawn by — what decides whether the caption's Size and
@@ -394,7 +380,7 @@ pub(crate) struct TrackMenuState {
     position: SubtitlePosition,
     /// The pages pushed above the Subtitles root, outermost first (empty = the root). Each entry
     /// carries the opener and scroll of the page beneath it.
-    pages: Vec<Saved>,
+    pages: PageStack<TrackPage, TrackRow>,
     /// The renderer of the ACTIVE subtitle, captured when the root is (re)built — what the Style
     /// page's Size and Position lock reads.
     renderer: SubRenderer,
@@ -550,7 +536,7 @@ impl TrackMenuState {
             tone: crate::player::subtitle_tone(),
             size: crate::route::subtitle_size(),
             position: crate::route::subtitle_position(),
-            pages: Vec::new(),
+            pages: PageStack::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
             other: Vec::new(),
@@ -585,10 +571,8 @@ impl TrackMenuState {
     /// a replay tells Subtitles from Audio, the root from a Style page, and two return stacks
     /// apart.
     pub(crate) fn canon(&self, c: &mut Canon) {
-        c.u32(self.tab as u32).u32(self.pages.len() as u32);
-        for saved in &self.pages {
-            c.u32(saved.page.code()).u32(saved.return_id.key().0);
-        }
+        c.u32(self.tab as u32);
+        self.pages.canon(c, TrackPage::code, |r| r.key().0);
         c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
     }
 
@@ -606,7 +590,7 @@ impl TrackMenuState {
 
     /// Is this the pointer-only key of the title band ([`TITLE_KEY`])?
     pub(crate) fn is_title_key(elem: u32) -> bool {
-        elem == TITLE_KEY
+        page_stack::is_title_key(elem)
     }
 
     /// Was the Subtitles root last built under the app's own live burn (what locks Timing and Style)?
@@ -785,7 +769,7 @@ impl TrackMenuState {
             // The page still holds: remember what the root is now built from (the pop back
             // rebuilds it) and refresh this page in place, focus kept by id.
             self.sub_sig = Some(sig);
-            if let Some(page) = self.pages.last().map(|s| s.page) {
+            if let Some(page) = self.pages.top() {
                 let form = self.page_form(page);
                 // a language can change shape under the viewer (one track <-> several): the row
                 // they were on follows it to its new one
@@ -1089,7 +1073,7 @@ impl TrackMenuState {
                 TrackCommit::SubtitleTone(tone)
             }
         };
-        if let Some(page) = self.pages.last().map(|s| s.page) {
+        if let Some(page) = self.pages.top() {
             let form = self.page_form(page);
             self.form.refresh(form);
         }
@@ -1221,8 +1205,8 @@ impl TrackMenuState {
     /// [`Self::page_initial`]) and its title band.
     fn push(&mut self, page: TrackPage) {
         let Some(return_id) = self.form.selected_id().copied() else { return };
-        self.pages.push(Saved { page, return_id, scroll: self.form.table.scroll_pos() });
-        let leaving = self.leave_page();
+        self.pages.push(page, return_id, self.form.table.scroll_pos());
+        let leaving = page_stack::leave_page(&mut self.form);
         let form = self.page_form(page);
         self.form.open(form, self.page_initial(page).as_ref());
         // after the sections: the band moves every row, so the pill is re-jumped onto the focused one
@@ -1230,21 +1214,13 @@ impl TrackMenuState {
         self.motion.begin_slide(leaving, 1.0);
     }
 
-    /// Take the page that is showing OUT of the form, whole, leaving a blank table of the same
-    /// kind for the next page to be built into: the page slide draws the old one once more, so it
-    /// is moved, never cloned.
-    fn leave_page(&mut self) -> TableView {
-        let blank = self.form.table.blank_like();
-        std::mem::replace(&mut self.form.table, blank)
-    }
-
     /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
     /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
     pub(crate) fn pop(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
-        let leaving = self.leave_page();
+        let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
-        match self.pages.last().map(|s| s.page) {
+        match self.pages.top() {
             None => {
                 let form = self.layout(ps, meta);
                 self.form.restore(form, Some(&saved.return_id), saved.scroll);
@@ -3825,7 +3801,7 @@ mod focus_tests {
             tone: SubtitleTone::White,
             size: SubtitleSize::Medium,
             position: SubtitlePosition::Low,
-            pages: Vec::new(),
+            pages: PageStack::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
             other: Vec::new(),

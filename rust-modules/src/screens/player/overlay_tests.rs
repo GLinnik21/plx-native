@@ -23,7 +23,9 @@ use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE
     WCODE_PLAYPAUSE, WCODE_STOP};
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::form::FormId;
-use crate::ui::track_menu::{StyleField, TrackPage, TrackRow, TITLE_KEY};
+use crate::ui::more_menu::{Action as MoreAction, MoreRow, MorePage};
+use crate::ui::page_stack::TITLE_KEY;
+use crate::ui::track_menu::{StyleField, TrackPage, TrackRow};
 use crate::ui::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
@@ -254,15 +256,130 @@ fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
 }
 
 #[test]
-fn back_dismisses_more_including_the_quality_recovery_variant() {
+fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
     let ps = crate::route::PlaybackSession::IDLE;
-    for quality in [false, true] {
-        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality });
-        let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
-        assert_eq!(handled, Handled::Yes, "More quality={quality} owns BACK");
-        assert!(reqs.is_empty(), "BACK must not activate a More row");
-        assert!(dismissed, "BACK must dismiss More quality={quality}");
+    // the ordinary entry is the root: BACK dismisses
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert_eq!(handled, Handled::Yes, "More owns BACK");
+    assert!(reqs.is_empty(), "BACK must not activate a More row");
+    assert!(dismissed, "BACK must dismiss the More root");
+    // the quality recovery entry opens ON the Quality page: BACK goes up one page, then dismisses
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: true });
+    assert_eq!(more_page(&page), Some(MorePage::Quality));
+    let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert_eq!(handled, Handled::Yes);
+    assert!(only_hud(&reqs) && !dismissed, "BACK on the Quality page only pops it: {reqs:?}");
+    assert_eq!(more_page(&page), None);
+    let (_, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(reqs.is_empty() && dismissed, "BACK at the root dismisses");
+}
+
+/// Nothing but the read-time `ExtendHud` a menu move raises.
+fn only_hud(reqs: &[PlayerReq]) -> bool {
+    reqs.iter().all(|r| matches!(r, PlayerReq::ExtendHud(_)))
+}
+
+fn more_page(page: &PlayerOverlayScreen) -> Option<MorePage> {
+    let Panel::More(menu) = page.panel() else { panic!("More panel") };
+    menu.page()
+}
+
+/// Focus `row` on the More panel the way the engine would (a `FocusMoved`), then press OK on it the
+/// way a click does (`Activate`, the row's key).
+fn more_open(page: &mut PlayerOverlayScreen, row: MoreRow) -> (Handled, Vec<PlayerReq>, bool) {
+    let key = row.key().0;
+    deliver(page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: key }, by: By::Dir });
+    activate(page, key)
+}
+
+/// **More's Quality row drills in, and LEFT / BACK / a title click all go back.** OK (or RIGHT) on
+/// the row pushes and asks the app for nothing, keeping the panel up; a rung on the page commits
+/// the ordinary `More(SetQuality)` request and dismisses exactly as the flat ladder's rung did.
+#[test]
+fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
+    use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
+    assert_eq!(more_page(&page), None);
+
+    // OK on the row
+    let (_, reqs, dismissed) = more_open(&mut page, MoreRow::OpenQuality);
+    assert!(!dismissed && only_hud(&reqs), "a Nav row keeps the panel open and asks for nothing but read time: {reqs:?}");
+    assert_eq!(more_page(&page), Some(MorePage::Quality));
+    // LEFT at the edge pops
+    press_at_edge(&mut page, SDLK_LEFT);
+    assert_eq!(more_page(&page), None);
+    // RIGHT at the edge enters
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: MoreRow::OpenQuality.key().0 }, by: By::Dir });
+    press_at_edge(&mut page, SDLK_RIGHT);
+    assert_eq!(more_page(&page), Some(MorePage::Quality));
+    // a click on the title band pops, and acts on no row
+    let (_, reqs, dismissed) = activate(&mut page, TITLE_KEY);
+    assert!(!dismissed && only_hud(&reqs), "a title click commits nothing: {reqs:?}");
+    assert_eq!(more_page(&page), None);
+    let Panel::More(menu) = page.panel() else { panic!("More") };
+    assert_eq!(menu.sel_id(), Some(MoreRow::OpenQuality), "the pop restores focus on the Quality row");
+    // RIGHT / LEFT at the root with an Options row focused: nothing happens
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: MoreRow::Act(MoreAction::ToggleStats).key().0 }, by: By::Dir });
+    press_at_edge(&mut page, SDLK_RIGHT);
+    press_at_edge(&mut page, SDLK_LEFT);
+    assert_eq!(more_page(&page), None);
+
+    // a rung on the page commits `More(SetQuality)` and dismisses
+    more_open(&mut page, MoreRow::OpenQuality);
+    let rung = MoreRow::Act(MoreAction::SetQuality(crate::route::Quality::P720));
+    let (_, reqs, dismissed) = more_open(&mut page, rung);
+    assert!(dismissed, "a rung pick closes the menu, as it always did");
+    assert!(
+        reqs.iter().any(|r| matches!(r, PlayerReq::More(MoreAction::SetQuality(crate::route::Quality::P720)))),
+        "the pick reports the ordinary SetQuality request: {reqs:?}"
+    );
+}
+
+/// The Quality page registers a pointer-only title stop that replay can place, never in the D-pad
+/// column; the root registers none. Mid-slide a stop sits where the page is DRAWN.
+#[test]
+fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
+    use crate::ui::screen::{DrawFrame, Screen};
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
+    let stops_of = |page: &PlayerOverlayScreen| {
+        let cx = cx();
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f);
+        f.into_stops()
+    };
+    let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    };
+    tick(&mut page, 1_000);
+    assert!(stops_of(&page).iter().all(|s| s.key.elem != TITLE_KEY), "the root has no title band");
+    assert!(!Screen::<TestHost>::pointer_held(&page));
+
+    more_open(&mut page, MoreRow::OpenQuality);
+    assert!(Screen::<TestHost>::pointer_held(&page), "a push holds the pointer from the first frame");
+    tick(&mut page, 1_016);
+    let mid = stops_of(&page);
+    let title = mid.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
+    assert_eq!(title.hover, crate::ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    assert!(title.rect.x > title.rest_rect.x, "mid-slide the stop is where the page is DRAWN");
+    let cx = cx();
+    let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
+    assert_eq!((placed.rect.x, placed.clip.x), (title.rect.x, title.clip.x), "place and stop agree mid-slide");
+    assert_eq!(Focusable::<TestHost>::group_of(&page, &TITLE_KEY, &cx), None, "never in the D-pad column");
+    for i in 0..240 {
+        tick(&mut page, 1_032 + i * 16);
     }
+    assert!(!Screen::<TestHost>::pointer_held(&page), "released once settled");
+    let rest = stops_of(&page);
+    let title = rest.iter().find(|s| s.key.elem == TITLE_KEY).expect("title stop");
+    assert_eq!(title.rect, title.rest_rect, "at rest the stop IS its layout");
 }
 
 /// **The held-direction cadence, which moved WITH the input** (unchanged mechanism, graded at the
@@ -380,8 +497,9 @@ fn activate_commits_the_bare_rows_directly() {
     let (_, _, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "Tracks: Activate commits and dismisses");
 
+    // an Options row: the root's first row is the Quality drill-in, which opens a page instead
     let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
-    let (_, reqs, dismissed) = activate(&mut page, 0);
+    let (_, reqs, dismissed) = more_open(&mut page, MoreRow::Act(MoreAction::ToggleStats));
     assert!(dismissed, "More: Activate commits and dismisses");
     assert!(
         reqs.iter().any(|r| matches!(r, PlayerReq::More(_))),

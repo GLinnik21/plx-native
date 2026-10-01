@@ -2091,7 +2091,9 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 // page (`PreferencesV3`); the previous pin was 0x668c_44dc_797c_5b0f.
 // Player sub-menus PR 2b: the track menu owns a page stack (`TrackPage`) and the overlay shape
 // carries it; the previous pin was 0x1a5c_e155_557b_e949.
-const SCREEN_SHAPES_PIN: u64 = 0x97ff_59c7_9aab_e35e;
+// Player sub-menus PR 5: More owns a page stack (`MorePage`, the Quality page) and the overlay shape
+// carries it too; the previous pin was 0x7063_dff7_775b_9075.
+const SCREEN_SHAPES_PIN: u64 = 0x7063_dff7_775b_9075;
 
 #[cfg(test)]
 mod arg_tests {

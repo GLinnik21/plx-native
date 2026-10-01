@@ -590,6 +590,25 @@
       }
     },
     {
+      "name": "more-quality-osc",
+      "tier": "player",
+      "route": "player",
+      "overlay": "more",
+      "loop_floor": 45,
+      "run_secs": 40,
+      "warmup_s": 9,
+      "item": "movie_h264_ac3_1080p",
+      "worst_ceiling_ms": 25,
+      "comment": "The More popover's Quality drill-in under load: with More open (plxnative-more=1), plxnative-moreosc=900 presses one REAL key every 900 ms through the dispatcher (dev::scenarios::moreosc_next): RIGHT on the Quality row pushes the rung page, LEFT pops it. Every key is a push or pop, so the sampled frames are the panel RESIZE spring and the page SLIDE, not a settled menu; 900 ms lets each transition settle before the next. No fps_floor (the hardware video plane is bound, so fps= is neither an animator nor an idle grade); loop= and worstframe= are the signals.",
+      "_ceiling_note": "25 ms, the same budget and the same 2nd-highest post-warmup worstframe= reading as track-menu-submenu-osc. NOT YET MEASURED ON THE DEVICE: the number is the budget, not a baseline.",
+      "_account_free_note": "Runs without any Plex account: tools/tv-session.sh up --guest --mock --screen player=<rk> --arm more=1 --arm moreosc=900 --arm framedrop=25, against tests/mock_pms.py started with --media <mockverify dir>. The Quality row needs a transcodable item (it is absent for a source that cannot be re-encoded); docs/player-submenus.md 'Device frame-time check' has the sequence.",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-more": "1",
+        "plxnative-moreosc": "900"
+      }
+    },
+    {
       "name": "timing-capsule",
       "tier": "player",
       "route": "player",

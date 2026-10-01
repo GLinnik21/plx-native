@@ -20,7 +20,9 @@
 //! to the ordinary transport arms. A surface cannot fall through — the dispatcher hands it the key
 //! and the ladder never sees it — so it FORWARDS instead: `PlayerReq::Transport`, which the loop
 //! spends on the same toggle, leaving this panel untouched. `More` keeps the old
-//! swallow-everything answer for the same reason it always did.
+//! swallow-everything answer for the same reason it always did. `More`'s Quality row is a page
+//! (`ui::page_stack`): BACK, LEFT at the edge and a title click pop it, RIGHT and OK push it, and
+//! only BACK at the root dismisses; its replay canon carries the page path like Tracks'.
 //!
 //! **The `Focusable` half is real now (restructure phase 12, D2).** Each panel's own
 //! `*Part` wrapper (`ui::track_menu::TrackMenuPart`, `ui::chapters_panel::ChaptersPart`,
@@ -47,7 +49,7 @@ use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };
-use crate::ui::more_menu::MoreMenuPart;
+use crate::ui::more_menu::{MoreMenuPart, MoreOk};
 use crate::ui::screen::{
     At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
@@ -65,11 +67,12 @@ use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 /// The selected ROW is in it deliberately: these panels' UP/DOWN changes nothing else in the app,
 /// so without it a replay grades a panel opening and closing and nothing between.
 ///
-/// `sel` is the highlighted row's index for every panel but the track menu, whose own canon
-/// ([`crate::ui::track_menu::TrackMenuState::canon`]) replaces it: `tab`, the page-path depth, each
-/// pushed page's `{page,return_key}` and the selected row's KEY.
+/// `sel` is the highlighted row's index for every panel but the track menu and More, whose own
+/// canons ([`crate::ui::track_menu::TrackMenuState::canon`], [`crate::ui::more_menu::MoreMenuState::canon`])
+/// replace it: the track menu's `tab`, then for both the page-path depth, each pushed page's
+/// `{page,return_key}` and the selected row's KEY.
 pub(crate) const SHAPE: &str =
-    "PlayerOverlayScreen{kind:str,sel:u32|Tracks:{tab:u32,depth:u32,pages:[{page:u32,return_key:u32}],key:u32}}";
+    "PlayerOverlayScreen{kind:str,sel:u32|Tracks:{tab:u32,depth:u32,pages:[{page:u32,return_key:u32}],key:u32}|More:{depth:u32,pages:[{page:u32,return_key:u32}],key:u32}}";
 
 /// Which panel a [`PlayerOverlayArg`] names, and — since the argument is what the container holds
 /// for the whole life of the entry — the identity `ScreenArg::same_instance` compares.
@@ -384,6 +387,23 @@ impl PlayerOverlayScreen {
         }
     }
 
+    /// `moreosc`'s read of the More panel: how many pages are pushed; `None` when the panel on
+    /// screen is not More.
+    pub(crate) fn more_probe(&self) -> Option<usize> {
+        match &self.panel {
+            Panel::More(p) => Some(p.osc_depth()),
+            _ => None,
+        }
+    }
+
+    /// `moreosc`'s cursor seat: put the More cursor on the Quality row so the next real RIGHT key
+    /// enters it.
+    pub(crate) fn seat_more_quality(&mut self) {
+        if let Panel::More(p) = &mut self.panel {
+            p.focus_key(crate::ui::form::FormId::key(&crate::ui::more_menu::MoreRow::OpenQuality).0);
+        }
+    }
+
     /// `submenuosc`'s cursor seat: put the Tracks cursor on `row` so the next real RIGHT key
     /// enters it. `false` when this page has no such row.
     pub(crate) fn seat_track_row(&mut self, row: crate::ui::track_menu::TrackRow) -> bool {
@@ -476,7 +496,12 @@ impl PlayerOverlayScreen {
     /// way the panel's own cursor is already correct — every `FocusMoved` this screen sees writes
     /// it back (`step`'s own arm below) — so this reads the panel's OWN `on_ok`, exactly as the
     /// old ladder's `Key::Ok` arms did.
-    fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn activate<H: AppLike + crate::screens::registry::MetadataLike>(
+        &mut self,
+        ps: &crate::route::PlaybackSession,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
         match &mut self.panel {
             Panel::Tracks(p) => match p.on_ok(H::metadata(cx)) {
                 TrackOk::Commit { commit, keep_open } => {
@@ -511,12 +536,15 @@ impl PlayerOverlayScreen {
                     }
                 }
             },
-            Panel::More(p) => {
-                let action = p.on_ok();
-                self.dismiss(fx);
-                Self::ask(fx, PlayerReq::More(action));
-                self.closing(fx);
-            }
+            Panel::More(p) => match p.on_ok(ps) {
+                MoreOk::Action(action) => {
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::More(action));
+                    self.closing(fx);
+                }
+                // the Quality row opened its page: the panel stays with its rows replaced
+                MoreOk::Navigated => self.moved(fx),
+            },
             Panel::Info(p) => {
                 let action = p.on_ok(H::metadata(cx));
                 self.dismiss(fx);
@@ -543,8 +571,9 @@ impl PlayerOverlayScreen {
     /// (`EdgeRule::Screen`, §7.3 step 3) — the one thing left that a panel decides outside its own
     /// scope, because it moves focus OFF this screen (Chapters'/Info's DOWN) or re-addresses the
     /// panel entirely (Tracks' LEFT/RIGHT: LEFT pops a sub-page, else switches tab
-    /// (`TrackMenuState::focus_tab`); RIGHT enters a Nav row, else switches tab). More declares
-    /// no `Screen` edge at all (its four sides are `Stop`), so it never reaches here.
+    /// (`TrackMenuState::focus_tab`); RIGHT enters a Nav row, else switches tab). More's LEFT/RIGHT
+    /// are `Screen` edges too, for its Quality page: LEFT pops it, RIGHT enters the Quality row,
+    /// and either does nothing otherwise (no tabs to switch).
     fn edge_key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
@@ -562,6 +591,15 @@ impl PlayerOverlayScreen {
             }
             (Panel::Tracks(p), Key::Right { .. }) => {
                 p.on_right(ps, H::metadata(cx));
+                self.moved(fx);
+            }
+            // More's one drill-in page: LEFT pops it (nothing at the root), RIGHT enters a Nav row
+            (Panel::More(p), Key::Left { .. }) => {
+                p.pop(ps);
+                self.moved(fx);
+            }
+            (Panel::More(p), Key::Right { .. }) => {
+                p.on_right(ps);
                 self.moved(fx);
             }
             (Panel::Chapters(_), Key::Down) | (Panel::Info(_), Key::Down) => {
@@ -664,9 +702,15 @@ impl PlayerOverlayScreen {
         }
         match key {
             Key::Back => {
-                // BACK on a Subtitles sub-page goes up one page; on a root it dismisses
+                // BACK on a Subtitles / Quality sub-page goes up one page; on a root it dismisses
                 if let Panel::Tracks(p) = &mut self.panel {
                     if p.pop(ps, H::metadata(cx)) {
+                        self.moved(fx);
+                        return Handled::Yes;
+                    }
+                }
+                if let Panel::More(p) = &mut self.panel {
+                    if p.pop(ps) {
                         self.moved(fx);
                         return Handled::Yes;
                     }
@@ -761,14 +805,23 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     }
                     p.focus_key(*elem);
                 }
-                self.activate(cx, fx);
+                if let Panel::More(p) = &mut self.panel {
+                    if crate::ui::more_menu::MoreMenuState::is_title_key(*elem) {
+                        // the "< QUALITY" band: a click goes back one page, and acts on no row
+                        p.pop(ps);
+                        self.moved(fx);
+                        return Handled::No;
+                    }
+                    p.focus_key(*elem);
+                }
+                self.activate(ps, cx, fx);
                 Handled::No
             }
             ScreenEvent::PressCommit(_) => {
                 if let Panel::Info(_) = &self.panel {
                     Self::ask(fx, PlayerReq::ArmInfoPress);
                 } else {
-                    self.activate(cx, fx);
+                    self.activate(ps, cx, fx);
                 }
                 Handled::No
             }
@@ -892,6 +945,8 @@ impl LogicalState for PlayerOverlayScreen {
         match &self.panel {
             // the tab, the page path with each opener, and the selected row's KEY
             Panel::Tracks(p) => p.canon(c),
+            // the Quality page's depth and opener, and the selected row's KEY
+            Panel::More(p) => p.canon(c),
             _ => {
                 c.u32(self.sel() as u32);
             }
