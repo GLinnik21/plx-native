@@ -266,6 +266,10 @@ pub(crate) enum Latched {
     Corners([[f32; 3]; 4]),
 }
 
+/// Presenting frames a page must have been at rest, over the same envelope, before
+/// [`ModalUnderlay::note_at_rest`] lets the preload run (~0.5 s at 60 fps).
+pub(crate) const PRELOAD_REST_FRAMES: u16 = 30;
+
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum LatchStep {
@@ -429,6 +433,9 @@ pub struct ModalUnderlay {
     /// ([`want_corners`](Self::want_corners)), until the presenting side latches it
     /// ([`preload`](Self::preload)).
     wanted: Option<[[f32; 3]; 4]>,
+    /// How many presenting frames in a row the page at rest has asked for `rest_for`.
+    rest_for: Option<[[f32; 3]; 4]>,
+    rest: u16,
     /// Envelope latches so far (a reconstruction and a texture upload each).
     #[cfg(test)]
     corner_latches: u32,
@@ -442,6 +449,8 @@ impl ModalUnderlay {
             pending: None,
             dormant: false,
             wanted: None,
+            rest_for: None,
+            rest: 0,
             #[cfg(test)]
             corner_latches: 0,
         }
@@ -471,6 +480,28 @@ impl ModalUnderlay {
     /// ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
     pub(crate) fn want_corners(&mut self, corners: Option<[[f32; 3]; 4]>) {
         self.wanted = corners;
+    }
+
+    /// [`want_corners`](Self::want_corners) for a page AT REST, once per presenting frame: the note
+    /// stands only after [`PRELOAD_REST_FRAMES`] of them in a row for the same envelope (`None` is
+    /// a frame that is not at rest or has no envelope, and restarts the count). The latch is a
+    /// ~8 ms reconstruction on a frame nobody has budgeted for, so it waits out the playback-start
+    /// frames, which are the heaviest the player has.
+    pub(crate) fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
+        match corners {
+            Some(c) if self.rest_for == Some(c) => self.rest = self.rest.saturating_add(1),
+            Some(c) => {
+                self.rest_for = Some(c);
+                self.rest = 1;
+            }
+            None => {
+                self.rest_for = None;
+                self.rest = 0;
+            }
+        }
+        if self.rest >= PRELOAD_REST_FRAMES {
+            self.wanted = corners;
+        }
     }
 
     /// **Latch the noted envelope ahead of the first open**, so a player popover's open frame does
