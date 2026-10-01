@@ -266,6 +266,10 @@ pub(crate) enum Latched {
     Corners([[f32; 3]; 4]),
 }
 
+/// Presenting frames a page must have been at rest, over the same envelope, before
+/// [`ModalUnderlay::note_at_rest`] lets the preload run (~0.5 s at 60 fps).
+pub(crate) const PRELOAD_REST_FRAMES: u16 = 30;
+
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum LatchStep {
@@ -411,12 +415,30 @@ impl DimSink for GlDims {
 /// **When it re-latches**: whenever `popover::host::page_epoch` moves, i.e. whenever the host
 /// snapshot is re-captured because the page under the stack changed; for a video-plane surface,
 /// whenever its corners change. **When it resets**: when no surface declares a dim any more, and
-/// when [`ModalStack::prune`] retires the last surface.
+/// when [`ModalStack::prune`] retires the last surface — EXCEPT a corner envelope, which is kept
+/// dormant ([`retire`](ModalUnderlay::retire)): it is the playing item's light, not the popover's,
+/// and re-latching it was 5.5-7.3 ms of every player popover's open frame. It is also latched
+/// ahead of the first open ([`preload`](ModalUnderlay::preload)). A dormant field is adopted by the
+/// next stack asking for the same envelope and dropped, before anything reads it, by any other.
 pub struct ModalUnderlay {
     field: crate::ui::underlay::UnderlayField,
     held: Latched,
     /// A page read queued and not yet landed: the epoch it reads, and its ticket.
     pending: Option<(u32, crate::gfx::FieldTicket)>,
+    /// The stack is empty but the field still holds a corner envelope — see
+    /// [`retire`](Self::retire). It is a CACHE until something asks for it: the next sync, dim or
+    /// presented surface either adopts it (the same envelope) or drops it first.
+    dormant: bool,
+    /// The envelope the page under an EMPTY stack says its first surface will inherit
+    /// ([`want_corners`](Self::want_corners)), until the presenting side latches it
+    /// ([`preload`](Self::preload)).
+    wanted: Option<[[f32; 3]; 4]>,
+    /// How many presenting frames in a row the page at rest has asked for `rest_for`.
+    rest_for: Option<[[f32; 3]; 4]>,
+    rest: u16,
+    /// Envelope latches so far (a reconstruction and a texture upload each).
+    #[cfg(test)]
+    corner_latches: u32,
 }
 
 impl ModalUnderlay {
@@ -425,7 +447,115 @@ impl ModalUnderlay {
             field: crate::ui::underlay::UnderlayField::new(),
             held: Latched::Nothing,
             pending: None,
+            dormant: false,
+            wanted: None,
+            rest_for: None,
+            rest: 0,
+            #[cfg(test)]
+            corner_latches: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corner_latches(&self) -> u32 {
+        self.corner_latches
+    }
+
+    /// **The last surface is gone.** A page latch is dropped (the next stack may sit over a
+    /// different page and starts from a fresh read); a corner envelope is KEPT, dormant, because
+    /// it describes the playing item rather than the popover that closed: re-latching it on every
+    /// open of a player Tracks/More popover was 5.5-7.3 ms of the open frame on the television
+    /// (`ulatch`, 2026-10-01).
+    pub(crate) fn retire(&mut self) {
+        if matches!(self.held, Latched::Corners(_)) {
+            self.pending = None;
+            self.dormant = true;
+        } else {
+            self.reset();
+        }
+    }
+
+    /// **Note what the page under an empty stack would have its first surface inherit**, or that
+    /// it has nothing to say. Records only — no GL — so it may run on any frame whose prepare pass
+    /// ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
+    pub(crate) fn want_corners(&mut self, corners: Option<[[f32; 3]; 4]>) {
+        self.wanted = corners;
+    }
+
+    /// [`want_corners`](Self::want_corners) for a page AT REST, once per presenting frame: the note
+    /// stands only after [`PRELOAD_REST_FRAMES`] of them in a row for the same envelope (`None` is
+    /// a frame that is not at rest or has no envelope, and restarts the count). The latch is a
+    /// ~8 ms reconstruction on a frame nobody has budgeted for, so it waits out the playback-start
+    /// frames, which are the heaviest the player has.
+    pub(crate) fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
+        match corners {
+            Some(c) if self.rest_for == Some(c) => self.rest = self.rest.saturating_add(1),
+            Some(c) => {
+                self.rest_for = Some(c);
+                self.rest = 1;
+            }
+            None => {
+                self.rest_for = None;
+                self.rest = 0;
+            }
+        }
+        if self.rest >= PRELOAD_REST_FRAMES {
+            self.wanted = corners;
+        }
+    }
+
+    /// **Latch the noted envelope ahead of the first open**, so a player popover's open frame does
+    /// not pay the reconstruction and the texture upload (5.5-7.3 ms `ulatch` on the television,
+    /// 2026-10-01). Uploads a texture, so the caller runs it only on a frame that presents
+    /// (`app::run::prepare_window`, beside the other uploads, spec §10). Never touches a field a
+    /// live stack is using: only an empty one — nothing held, or the envelope kept dormant.
+    pub(crate) fn preload(&mut self) {
+        let Some(c) = self.wanted.take() else { return };
+        if self.held == Latched::Corners(c) {
+            return;
+        }
+        // A stack that has asked for a page read is live, whatever it has latched so far.
+        if !self.dormant && (self.held != Latched::Nothing || self.pending.is_some()) {
+            return;
+        }
+        crate::diag::spans::span("upre", || {
+            self.field.reset();
+            self.field
+                .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
+        });
+        self.held = Latched::Corners(c);
+        self.pending = None;
+        self.dormant = true;
+        #[cfg(test)]
+        {
+            self.corner_latches += 1;
+        }
+    }
+
+    /// Drop a dormant envelope: the surface now being presented cannot inherit it.
+    pub(crate) fn drop_dormant(&mut self) {
+        if self.dormant {
+            self.reset();
+        }
+    }
+
+    /// Settle a dormant field against what a stack that DIMS asks for, before anything reads it:
+    /// the same envelope is adopted as is, anything else starts from the flat ink exactly as a
+    /// fresh field would. `None` (no surface declares a dim: the Info card, the Chapters strip, the
+    /// Timing capsule) asks for nothing and leaves the field alone.
+    pub(crate) fn wake(&mut self, source: Option<UnderlaySource>) {
+        if !self.dormant || source.is_none() {
+            return;
+        }
+        self.dormant = false;
+        let same = matches!((source, self.held), (Some(UnderlaySource::Corners(a)), Latched::Corners(b)) if a == b);
+        if !same {
+            self.reset();
+        }
+    }
+
+    pub(crate) fn is_dormant(&self) -> bool {
+        self.dormant
     }
 
     pub(crate) fn field(&self) -> &crate::ui::underlay::UnderlayField {
@@ -455,6 +585,11 @@ impl ModalUnderlay {
     /// panel (simulator, 2026-09-19): under two 8-bit codes on the brightest cell of the measured
     /// Home (field 0.61), for one frame.
     pub(crate) fn sync(&mut self, source: Option<UnderlaySource>, sink: &mut dyn DimSink) {
+        // A dim-less panel over the kept envelope: nothing to inherit and nothing to reset.
+        if self.dormant && source.is_none() {
+            return;
+        }
+        self.wake(source);
         if let Some((epoch, ticket)) = self.pending {
             match sink.collect(ticket) {
                 crate::gfx::FieldRead::Ready(raw) => {
@@ -483,6 +618,10 @@ impl ModalUnderlay {
                 self.field
                     .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
                 self.held = Latched::Corners(c);
+                #[cfg(test)]
+                {
+                    self.corner_latches += 1;
+                }
             }
             LatchStep::Reset => self.reset(),
         }
@@ -493,6 +632,7 @@ impl ModalUnderlay {
         self.field.reset();
         self.held = Latched::Nothing;
         self.pending = None;
+        self.dormant = false;
     }
 }
 
@@ -521,10 +661,26 @@ impl<H: Host> ModalStack<H> {
         self.surfaces.is_empty()
     }
 
+    /// Latch the envelope the page noted ([`ModalUnderlay::want_corners`]) — only with no surface
+    /// up, and the note is consumed either way so it cannot outlive the frame it was made on.
+    /// Uploads a texture: presenting frames only (`app::run::prepare_window`).
+    pub(crate) fn preload_underlay(&mut self) {
+        if self.surfaces.is_empty() {
+            self.underlay.preload();
+        } else {
+            self.underlay.want_corners(None);
+        }
+    }
+
     /// Present a surface (§3.4): mint the entry, `Mount` + `Enter(Fresh)`; the caller (`Navigation`)
     /// adds the host's `Cover` in the same drain.
     pub fn present(&mut self, ids: &mut Minter, arg: H::Arg, style: Style) -> (EntryId, Vec<Life<H>>) {
         let id = ids.entry();
+        // Only a player panel can inherit the kept envelope; any other surface's panel reads the
+        // field before a dim could replace it, so it starts from the flat ink.
+        if !matches!(style, Style::PlayerPanel { .. }) {
+            self.underlay.drop_dormant();
+        }
         self.surfaces.push(Surface {
             entry: Entry {
                 id,
@@ -680,9 +836,10 @@ impl<H: Host> ModalStack<H> {
             }
         }
         // The last surface is gone: nothing is dimming this host any more, and the next stack
-        // presented over it — perhaps over a different page — starts from a fresh read.
+        // presented over it — perhaps over a different page — starts from a fresh read. A corner
+        // envelope is the exception: it is the playing item's light and is kept dormant.
         if self.surfaces.is_empty() {
-            self.underlay.reset();
+            self.underlay.retire();
         }
         out
     }
@@ -755,7 +912,14 @@ impl<H: Host> ModalStack<H> {
     /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
     /// call's own argument instead of through a static.
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::ui::screen::ScrimLiftRead<'_>) {
+        // Nothing is up: no dim to paint, and the field is not this frame's to touch — it may be
+        // the kept or preloaded envelope (`ModalUnderlay::retire`/`preload`).
+        if self.surfaces.is_empty() {
+            return;
+        }
         if crate::gfx::blur_source_pass() {
+            let source = self.underlay_source();
+            self.underlay.wake(source);
             // Declaration/source traversals consume the published field. Only the visible
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
             for (_, alpha, lift) in self.scrims(nav_page_alpha) {
@@ -777,6 +941,9 @@ impl<H: Host> ModalStack<H> {
         read: crate::ui::screen::ScrimLiftRead<'_>,
         sink: &mut dyn DimSink,
     ) {
+        if self.surfaces.is_empty() {
+            return;
+        }
         let dims = self.scrims(nav_page_alpha);
         let source = self.underlay_source();
         // The page is read on the frame that CAPTURED it, or else the first frame a dim is seen.
@@ -786,7 +953,7 @@ impl<H: Host> ModalStack<H> {
         // and costs no presented frame. Queued a frame later instead, on the first ramp frame, it
         // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
         // surface on a frame that captured nothing still queues nothing.
-        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
+        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() || self.underlay.is_dormant() {
             crate::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
         for (_, a, lift) in dims {
