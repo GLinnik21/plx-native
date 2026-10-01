@@ -2277,9 +2277,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         glClearColor(0.0, 0.0, 0.0, 0.0);
                         // The frame's first framebuffer-0 command, where this driver parks the
                         // wait for a free back buffer: spanned like every other route's `clear`.
+                        // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
+                        // and, from the acquired buffer to the swap, over the commit phase.
+                        crate::system::frame_probe_waiting();
                         crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
-                        // dev (`/tmp/plxnative-framecb`): the back buffer is ours from here; what
-                        // the thread costs between this and the swap is the frame's commit phase.
                         crate::system::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out

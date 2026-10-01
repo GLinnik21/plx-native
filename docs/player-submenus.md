@@ -190,8 +190,10 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
   and the next frame is correspondingly short. The transport's clocks were one cause, rasterised
   after the clear once a second (`textx2`, 1–3.5 ms); `player_hud::ClockWarm` now queues them from
   the page's `prepare` so they are rasterised before it. In every other such frame the frame
-  thread's CPU time over the draw and the swap stayed flat (`dcpu=`, `scpu=`) while the wall time
-  rose: the thread was descheduled, not busy.
+  thread's CPU time over the draw and the swap stayed flat while the wall time rose (the probe's
+  `d=`/`s=` fields, wall/cpu/run-queue ms): the thread was off the CPU, not busy.
+  `--arm framedrop=17 --arm framering --arm framecb` captures the same evidence while writing only
+  the slow frames and their neighbours.
 - **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) is the modal underlay latching its field
   from the UltraBlur corners, and it was paid again on every open. `navcommit` is ~6 ms, of which
   `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is

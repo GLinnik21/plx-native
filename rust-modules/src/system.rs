@@ -524,11 +524,12 @@ pub(crate) fn opaque_route(_player: bool) {}
 // stamp of the repaint that picked the commit up. Printed beside the frame's `FRAMEDROP` line
 // with our own monotonic clock, the two tell those cases apart.
 //
-// It also prices the COMMIT PHASE — everything between the back buffer's acquisition and the
-// swap's return, which is the part of a frame that moves the commit relative to the compositor's
-// repaint. `dcpu=`/`scpu=` are the frame thread's own CPU time over the draw and over the swap,
-// and `dcs=`/`scs=` the involuntary context switches in each: a draw that took 6 ms of wall clock
-// for 0.8 ms of CPU was descheduled, not busy, and no amount of work moved out of it would help.
+// It also prices the frame thread over the three stretches of a player frame's present: `w` (the
+// first framebuffer command, where the driver waits for a back buffer), `d` (the draw after it)
+// and `s` (the swap). Each prints `<p>=<wall>/<cpu>/<runq>` in ms and `<p>sw=<slept>/<preempted>`
+// context switches: wall time that is neither CPU nor run-queue wait was spent BLOCKED, run-queue
+// wait is a thread that wanted to run and was not given a CPU, and CPU is work. `wait_at=` is the
+// monotonic ms at which the wait began, for lining a frame up with a kernel trace.
 //
 // Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
 // from the process's own scope at first use, so the probe adds no symbol to the link. Unarmed it
@@ -554,39 +555,100 @@ fn mono_us() -> u64 {
     ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
 }
 
-/// The frame thread's `(CPU µs, involuntary context switches)` so far.
+/// What the frame thread has cost so far, read at each boundary of a frame's present.
 #[cfg(not(feature = "hostsim"))]
-fn thread_cost() -> (u64, u64) {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: a plain clock read into a local.
-    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-    let cpu = ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000;
-    #[cfg(target_os = "linux")]
-    let switches = {
-        // SAFETY: `getrusage` fills the zeroed struct it is handed.
-        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-        unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) };
-        ru.ru_nivcsw as u64
-    };
-    #[cfg(not(target_os = "linux"))]
-    let switches = 0;
-    (cpu, switches)
+#[derive(Clone, Copy, Default)]
+struct ThreadCost {
+    /// `CLOCK_MONOTONIC`, µs.
+    at: u64,
+    /// On-CPU time, µs.
+    cpu: u64,
+    /// Time spent RUNNABLE but waiting for a CPU, µs (`/proc/thread-self/schedstat`, field 2).
+    /// Wall minus `cpu` minus this is time spent blocked.
+    runq: u64,
+    /// Voluntary context switches: the thread slept.
+    slept: u64,
+    /// Involuntary ones: it was preempted.
+    preempted: u64,
 }
 
-/// The thread's cost at the three points of the commit phase: `[acquired, before swap]`, each
-/// `(cpu µs, involuntary switches)`. Frame-thread only; a `Mutex` because it is a `static`.
 #[cfg(not(feature = "hostsim"))]
-static COMMIT_COST: std::sync::Mutex<[Option<(u64, u64)>; 2]> = std::sync::Mutex::new([None, None]);
+impl ThreadCost {
+    fn now() -> Self {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a plain clock read into a local.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        let cpu = ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000;
+        #[cfg(target_os = "linux")]
+        let (slept, preempted) = {
+            // SAFETY: `getrusage` fills the zeroed struct it is handed.
+            let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) };
+            (ru.ru_nvcsw as u64, ru.ru_nivcsw as u64)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (slept, preempted) = (0, 0);
+        Self { at: mono_us(), cpu, runq: Self::runq_us(), slept, preempted }
+    }
+
+    /// The scheduler's own run-queue wait for this thread. One `pread` on a descriptor opened
+    /// once, by the frame thread, for itself; 0 where the file does not exist.
+    fn runq_us() -> u64 {
+        static FD: std::sync::OnceLock<c_int> = std::sync::OnceLock::new();
+        // SAFETY: a NUL-terminated literal path; the descriptor lives for the process.
+        let fd = *FD.get_or_init(|| unsafe {
+            libc::open(c"/proc/thread-self/schedstat".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
+        });
+        if fd < 0 {
+            return 0;
+        }
+        let mut buf = [0u8; 96];
+        // SAFETY: `buf` is a live local of the length passed.
+        let n = unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
+        let text = std::str::from_utf8(&buf[..n.max(0) as usize]).unwrap_or("");
+        // "<run ns> <run-queue wait ns> <timeslices>"
+        text.split_ascii_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) / 1000
+    }
+
+    /// ` <p>=<wall>/<cpu>/<runq> <p>sw=<slept>/<preempted>` for the stretch from `from` to `self`.
+    fn since(&self, from: &Self, phase: &str) -> String {
+        let ms = |a: u64, b: u64| a.saturating_sub(b) as f64 / 1000.0;
+        format!(
+            " {phase}={:.2}/{:.2}/{:.2} {phase}sw={}/{}",
+            ms(self.at, from.at),
+            ms(self.cpu, from.cpu),
+            ms(self.runq, from.runq),
+            self.slept.saturating_sub(from.slept),
+            self.preempted.saturating_sub(from.preempted)
+        )
+    }
+}
+
+/// This frame's boundaries: `[before the first framebuffer command, back buffer acquired, before
+/// the swap]`. Frame-thread only; a `Mutex` because it is a `static`.
+#[cfg(not(feature = "hostsim"))]
+static FRAME_COST: std::sync::Mutex<[Option<ThreadCost>; 3]> = std::sync::Mutex::new([None; 3]);
+
+#[cfg(not(feature = "hostsim"))]
+fn frame_probe_mark(slot: usize) {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = FRAME_COST.lock() {
+        cost[slot] = Some(ThreadCost::now());
+    }
+}
+
+/// The frame's first framebuffer command is next: the wait for a back buffer starts here.
+#[cfg(not(feature = "hostsim"))]
+pub(crate) fn frame_probe_waiting() {
+    frame_probe_mark(0);
+}
 
 /// The frame's first framebuffer command has returned: the back buffer is acquired.
 #[cfg(not(feature = "hostsim"))]
 pub(crate) fn frame_probe_acquired() {
-    if !frame_probe_armed() {
-        return;
-    }
-    if let Ok(mut cost) = COMMIT_COST.lock() {
-        cost[0] = Some(thread_cost());
-    }
+    frame_probe_mark(1);
 }
 
 #[cfg(not(feature = "hostsim"))]
@@ -607,9 +669,7 @@ pub(crate) fn frame_probe_request() {
     if !frame_probe_armed() {
         return;
     }
-    if let Ok(mut cost) = COMMIT_COST.lock() {
-        cost[1] = Some(thread_cost());
-    }
+    frame_probe_mark(2);
     let surface = unsafe { G_WL_SURFACE };
     if surface.is_null() {
         return;
@@ -642,10 +702,9 @@ pub(crate) fn frame_probe_request() {
 }
 
 /// The probe's trailing `FRAMEDROP` fields for the frame just presented: `seq=` (the request this
-/// frame made), `mono=` (our monotonic clock, ms, now), the commit phase's `dcpu=`/`dcs=` (draw:
-/// thread CPU ms and involuntary switches from the acquired back buffer to the swap) and
-/// `scpu=`/`scs=` (the swap itself), then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each
-/// callback that arrived since the previous line. `""` unarmed.
+/// frame made), `mono=` (our monotonic clock, ms, now), the three stretches described in the
+/// section comment, then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each callback that
+/// arrived since the previous line. `""` unarmed.
 #[cfg(not(feature = "hostsim"))]
 pub(crate) fn frame_probe_fields() -> String {
     if !frame_probe_armed() {
@@ -657,13 +716,15 @@ pub(crate) fn frame_probe_fields() -> String {
         FRAME_SEQ.load(std::sync::atomic::Ordering::Relaxed),
         mono_us() as f64 / 1000.0
     );
-    let [acquired, before_swap] = COMMIT_COST.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default();
-    if let Some((cpu1, cs1)) = before_swap {
-        let (cpu2, cs2) = thread_cost();
-        if let Some((cpu0, cs0)) = acquired {
-            out.push_str(&format!(" dcpu={:.2} dcs={}", cpu1.saturating_sub(cpu0) as f64 / 1000.0, cs1.saturating_sub(cs0)));
+    let [waiting, acquired, before_swap] =
+        FRAME_COST.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default();
+    if let Some(before_swap) = before_swap {
+        if let (Some(waiting), Some(acquired)) = (waiting, acquired) {
+            out.push_str(&format!(" wait_at={:.2}", waiting.at as f64 / 1000.0));
+            out.push_str(&acquired.since(&waiting, "w"));
+            out.push_str(&before_swap.since(&acquired, "d"));
         }
-        out.push_str(&format!(" scpu={:.2} scs={}", cpu2.saturating_sub(cpu1) as f64 / 1000.0, cs2.saturating_sub(cs1)));
+        out.push_str(&ThreadCost::now().since(&before_swap, "s"));
     }
     out.push_str(" cb=");
     for (i, (seq, stamp, at)) in done.iter().enumerate() {
@@ -677,6 +738,8 @@ pub(crate) fn frame_probe_fields() -> String {
 
 #[cfg(feature = "hostsim")]
 pub(crate) fn frame_probe_request() {}
+#[cfg(feature = "hostsim")]
+pub(crate) fn frame_probe_waiting() {}
 #[cfg(feature = "hostsim")]
 pub(crate) fn frame_probe_acquired() {}
 #[cfg(feature = "hostsim")]
