@@ -93,9 +93,11 @@ fi
 # out), ~64 bytes an event in the ring, +25% headroom for an uneven CPU split. Total ring memory is
 # capped at 32 MB (the set has ~45 MB free); buffer_size_kb is PER CPU, so the set divides by its
 # CPU count. Past the cap the run still works but the ring covers only cap_secs seconds.
-want_kb=$(( secs * 60000 * 64 * 5 / 4 / 1024 ))
+ev_per_s=60000
+ev_bytes=64
+want_kb=$(( secs * ev_per_s * ev_bytes * 5 / 4 / 1024 ))
 cap_kb=32768
-cap_secs=$(( cap_kb * 1024 / (60000 * 64) ))
+cap_secs=$(( cap_kb * 1024 / (ev_per_s * ev_bytes) ))
 
 # The on-set half, one busybox-sh script run as `sh -s -- MODE ARGS...` over ssh, preceded by the
 # host's `T=` and `PIDF=` lines. The event list lives here once so that enabling and disabling
