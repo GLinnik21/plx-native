@@ -1108,7 +1108,8 @@ impl PersonScreen {
             1.0
         };
         let scale = self.shelves[kind].scale(col) * press_scale;
-        let label = card_row::TileLabel::titled(&item.title, person.role(kind, col));
+        let label = card_row::TileLabel::titled(&item.title, person.role(kind, col))
+            .settling(self.shelves[kind].settle_lag(person.shelf(kind).len(), col, &SHELF_STYLE));
         card_row::draw_focused(
             f.painter.alpha(f.page_alpha),
             Art::Poster(Some(item)),

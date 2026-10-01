@@ -226,15 +226,8 @@ impl CardRow {
         self.overflow.step(ot, sty.k_scale, dt);
         if let Some(fc) = focused {
             if n > 0 {
-                let want = scroll_into_view(
-                    self.scroll_x.pos,
-                    fc,
-                    n,
-                    sty.w,
-                    sty.gap,
-                    SCR_W - 2.0 * sty.margin_x,
-                );
-                self.scroll_x.step(want, sty.k_scroll, dt);
+                self.scroll_x
+                    .step(self.scroll_target(fc, n, sty), sty.k_scroll, dt);
             }
         }
         self.lift.step(
@@ -247,6 +240,24 @@ impl CardRow {
         // arrive with the scroll that is revealing the row, not with the tile that is growing.
         self.band
             .step(focused.is_some() as i32 as f32, sty.k_scroll, dt);
+    }
+    /// **How far the row still has to scroll for `focused` to be where it will rest** — live
+    /// scroll minus [`scroll_into_view`]'s target, so a tile's settled screen x is its live x plus
+    /// this. `0` once the glide has landed, and `0` for a focus that needs no scroll at all.
+    /// Derived from the spring and the focus, never stored, so it is not part of the row's
+    /// replayable motion. A focused label hands it to [`place_label`] through
+    /// [`TileLabel::settling`], so its alignment is judged where the tile is GOING.
+    pub(crate) fn settle_lag(&self, n: usize, focused: usize, sty: &RowStyle) -> f32 {
+        if n == 0 {
+            return 0.0;
+        }
+        self.scroll_x.pos - self.scroll_target(focused, n, sty)
+    }
+    /// The scroll offset [`scroll_into_view`] wants for `focused` — what `update` steers the
+    /// spring to and `settle_lag` measures the live offset against.
+    fn scroll_target(&self, focused: usize, n: usize, sty: &RowStyle) -> f32 {
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        scroll_into_view(self.scroll_x.pos, focused, n, sty.w, sty.gap, vw)
     }
     /// Cell `i`'s live focus-pop scale. Cells inside the spring array own a spring each; every cell
     /// PAST it shares `overflow`, and only the focused one reads it — otherwise the whole tail of a
@@ -653,6 +664,11 @@ pub(crate) struct TileLabel {
     /// 1 for every caller whose band does not animate (the Library grid, the profile picker, the
     /// detail Related shelf), which is why `Default` gives it that.
     pub reveal: f32,
+    /// **How far the tile's row still has to scroll before this tile rests** (see
+    /// [`CardRow::settle_lag`]); `0` for a tile that is not mid-glide. [`place_label`] judges the
+    /// block's alignment and width at the tile's SETTLED screen position, so a glide does not
+    /// re-decide them on every frame.
+    pub settle_lag: f32,
 }
 
 /// **Hand-written, not derived, for one field**: `reveal` defaults to 1 (fully on screen), where a
@@ -665,6 +681,7 @@ impl Default for TileLabel {
             caption: None,
             glyph: false,
             reveal: 1.0,
+            settle_lag: 0.0,
         }
     }
 }
@@ -675,6 +692,12 @@ impl TileLabel {
     /// the curve is solved from.
     pub(crate) fn revealed(mut self, a: f32) -> Self {
         self.reveal = a;
+        self
+    }
+    /// Chain this off a shelf's [`CardRow::settle_lag`]: the label is placed for where the tile
+    /// will REST, and only translates with it on the way there.
+    pub(crate) fn settling(mut self, lag: f32) -> Self {
+        self.settle_lag = lag;
         self
     }
     /// Title only — the plain poster shelf.
@@ -831,7 +854,7 @@ pub(crate) fn strip<'a>(
             s,
             sty,
             resume(i),
-            &label(i).revealed(row.band_reveal()),
+            &label(i).revealed(row.band_reveal()).settling(row.settle_lag(n, i, sty)),
             measure,
         );
         extra(pr, i, x, true);
@@ -1213,12 +1236,19 @@ const EDGE_PAD: f32 = 16.0;
 /// so the comparison happens in screen space and the answer comes back in the painter's. An
 /// untranslated caller (`home`, `library`, `profiles`) has `dx == 0`.
 ///
+/// **Where the tile is going, not where it is.** `lag` is [`CardRow::settle_lag`]: the centred /
+/// leading-edge choice and the block's width are decided at the tile's SETTLED screen position,
+/// while `x` still follows the live card. A tile that glides in from the right used to cross the
+/// panel-edge threshold part-way through, so the block flipped alignment and re-sized (re-eliding
+/// the caption, flipping the title into its marquee) on the way — the label visibly jumped.
+///
 /// The right bound is the panel's edge less whatever the SCREEN has reserved there
 /// (`RowStyle::right_reserve` — the Library's A–Z rail). The leading edge is the UNSCALED card's,
 /// so a focus pop never moves the block or re-keys the width-keyed wrap/elide caches.
-pub(crate) fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32) -> LabelPlace {
-    let lo = EDGE_PAD - p.dx();
-    let hi = SCR_W - sty.right_reserve - EDGE_PAD - p.dx();
+pub(crate) fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f32) -> LabelPlace {
+    let settled_dx = p.dx() + lag;
+    let lo = EDGE_PAD - settled_dx;
+    let hi = SCR_W - sty.right_reserve - EDGE_PAD - settled_dx;
     let x = rect.cx() - w * 0.5;
     if x >= lo && x + w <= hi {
         return LabelPlace { x, w, centred: true };
@@ -1338,7 +1368,7 @@ fn under_budget(sty: &RowStyle) -> f32 {
 /// so a screen with a constraint on it can grade the block that is DRAWN; every line under the
 /// tile occupies a sub-rect of this.
 pub(crate) fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
-    let at = place_label(p, rect, sty, under_budget(sty));
+    let at = place_label(p, rect, sty, under_budget(sty), 0.0);
     (at.x, at.w)
 }
 
@@ -1367,7 +1397,7 @@ fn draw_label_block(
     let caption_run = caption_str.as_ref().map_or(0.0, |s| {
         measure.width_str(&elide_caption(s, full), csz, false)
     });
-    let at = place_label(p, rect, sty, title_run.max(caption_run));
+    let at = place_label(p, rect, sty, title_run.max(caption_run), label.settle_lag);
     if let Some(t) = &label.title {
         title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0));
         y += UNDER_LINE_H + UNDER_LINE_GAP;
@@ -1470,7 +1500,7 @@ mod tests {
                 for screen_x in [-120.0, MARGIN_X, 700.0, SCR_W - MARGIN_X - CARD_W, SCR_W - CARD_W] {
                     let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
                     for w in [120.0, 280.0, under_budget(&sty)] {
-                        let at = place_label(p, rect, &sty, w);
+                        let at = place_label(p, rect, &sty, w, 0.0);
                         if at.centred {
                             assert_eq!(at.x + at.w * 0.5, rect.cx(), "a centred block shares the card's centre");
                             assert_eq!(at.w, w);
@@ -1493,12 +1523,12 @@ mod tests {
     fn title_and_caption_share_the_leading_edge_when_constrained() {
         let sty = RowStyle::HOME;
         let rect = Rect::new(SCR_W - MARGIN_X - sty.w, 300.0, sty.w, sty.h);
-        let at = place_label(Painter::root(), rect, &sty, under_budget(&sty));
+        let at = place_label(Painter::root(), rect, &sty, under_budget(&sty), 0.0);
         assert!(!at.centred);
         assert_eq!(at.run_x(60.0), rect.x);
         assert_eq!(at.run_x(at.w), rect.x);
         let mid = Rect::new(700.0, 300.0, sty.w, sty.h);
-        let centred = place_label(Painter::root(), mid, &sty, 200.0);
+        let centred = place_label(Painter::root(), mid, &sty, 200.0, 0.0);
         assert!(centred.centred, "a block with room stays centred on its card");
         assert_eq!(centred.run_x(60.0) + 30.0, mid.cx());
     }
@@ -2005,5 +2035,38 @@ mod tests {
             row.update(6, None, &sty, 1.0 / 60.0);
         });
         assert!(!still, "a settled collapsed band must not keep the panel awake");
+    }
+    /// The focused label's alignment and width are decided ONCE per focus move, not re-decided on
+    /// every frame of the scroll glide. Moving right onto a tile that needs the row to scroll, the
+    /// tile starts off to the right and glides left; judged against its LIVE screen position the
+    /// block flipped between "centred" and "leading edge" (and re-sized, re-eliding the caption
+    /// and flipping the title into its marquee) part-way through, which read as the label jumping.
+    #[test]
+    fn a_label_block_keeps_its_placement_through_the_scroll_glide() {
+        for sty in [RowStyle::HOME, RowStyle::EPISODE] {
+            let n = 14;
+            let pitch = sty.w + sty.gap;
+            for from in 0..n - 1 {
+                let mut row = CardRow::new();
+                for _ in 0..600 {
+                    row.update(n, Some(from), &sty, 1.0 / 60.0);
+                }
+                let to = from + 1;
+                let rect = Rect::new(sty.margin_x + to as f32 * pitch, 300.0, sty.w, sty.h);
+                let mut seen = Vec::new();
+                for _ in 0..120 {
+                    row.update(n, Some(to), &sty, 1.0 / 60.0);
+                    let p = Painter::root().translate(-row.scroll_x(), 0.0);
+                    let at = place_label(p, rect, &sty, under_budget(&sty), row.settle_lag(n, to, &sty));
+                    seen.push((at.centred, at.w));
+                }
+                let settled = *seen.last().unwrap();
+                assert!(
+                    seen.iter().all(|s| *s == settled),
+                    "{}x{} → col {to}: placement changed mid-glide: {seen:?}",
+                    sty.w, sty.h,
+                );
+            }
+        }
     }
 }

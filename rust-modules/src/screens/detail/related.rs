@@ -160,7 +160,8 @@ pub(crate) fn draw_focused_in(
         scale,
         &RowStyle::HOME,
         item.resume_frac(),
-        &card_row::TileLabel::title(&item.title),
+        &card_row::TileLabel::title(&item.title)
+            .settling(row.settle_lag(items.len(), index, &RowStyle::HOME)),
         measure,
     );
 }
