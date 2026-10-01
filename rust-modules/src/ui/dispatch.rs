@@ -1152,6 +1152,10 @@ where
         // `take_frame_stats` because that drain belongs to the heartbeat, once a second.
         self.cold.note_prepare(self.budget.refused());
         let parts = self.parts(tick);
+        // A note made on an earlier frame never reaches `ModalStack::preload_underlay`.
+        self.nav.modals.underlay.want_corners(None);
+        // Latching costs a reconstruction and an upload: only for a page at rest.
+        let at_rest = self.page_quiescent && !self.nav.tabs.stack.transition.in_flight();
         {
             let Dispatcher { nav, input, budget, .. } = self;
             let Split { views, measure, .. } = rig.split();
@@ -1165,7 +1169,9 @@ where
                         // What a first surface over this page would dim through, noted for the
                         // presenting side to latch ahead of the open (`ModalUnderlay::preload`).
                         nav.modals.underlay.want_corners(
-                            nav.modals.surfaces.is_empty().then(|| inst.screen.underlay_corners(&page_cx)).flatten(),
+                            (at_rest && nav.modals.surfaces.is_empty())
+                                .then(|| inst.screen.underlay_corners(&page_cx))
+                                .flatten(),
                         );
                     }
                 }
@@ -1490,8 +1496,9 @@ where
             set.frame_cache_bytes = set.frame_cache_bytes.max(super::frame::FRAME_CACHE_BYTES);
         }
         // the surfaces, bottom to top; a later stop is above an earlier one. Each is handed the
-        // stack's ONE underlay field — latched by the dims above, from the undimmed page, on this
-        // very frame — which is what a popover panel's ground is drawn from
+        // stack's ONE underlay field — brought up to date by the dims above (from the undimmed
+        // page, or the playing item's envelope, which may be the one kept from an earlier open or
+        // preloaded ahead of it) — which is what a popover panel's ground is drawn from
         // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
         let modals = &mut nav.modals;
         let field = modals.underlay.field();

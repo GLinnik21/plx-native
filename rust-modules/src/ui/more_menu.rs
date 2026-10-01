@@ -490,8 +490,8 @@ impl MoreMenuState {
         self.motion.transitioning()
     }
 
-    /// The root page's strings, queued on the frame the panel mounts — see
-    /// `TrackMenuState::warm_open`, which this mirrors.
+    /// The opening page's strings (the root, or the Quality page for a quality entry), queued on
+    /// the frame the panel mounts — see `TrackMenuState::warm_open`, which this mirrors.
     pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
         if self.motion.is_warm(self.form.table.layout_rev()) {
             return;
@@ -921,6 +921,23 @@ mod tests {
         assert_eq!(st.page(), Some(MorePage::Quality));
         st.on_right(&ps);
         assert_eq!(st.page(), Some(MorePage::Quality), "RIGHT on a rung does nothing");
+    }
+
+    /// **`warm_open` queues the OPENING page's strings with no `update`, once** — the root for the
+    /// ordinary entry, the Quality page for a quality entry.
+    #[test]
+    fn warm_open_queues_the_opening_page_once_without_an_update() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _serial = crate::testlock::serial();
+        let ps = crate::route::PlaybackSession::default();
+        for st in [MoreMenuState::new(&ps), MoreMenuState::new_quality(&ps)] {
+            crate::text::reset_prewarm_for_test();
+            st.warm_open(&M);
+            assert!(crate::text::prewarm_pending(), "warm_open queued the opening page");
+            crate::text::clear_prewarm();
+            st.warm_open(&M);
+            assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again");
+        }
     }
 
     /// The failure screen's entry opens ON the Quality page, the active rung focused, no slide; a

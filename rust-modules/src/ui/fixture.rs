@@ -546,6 +546,8 @@ pub struct FixtureModal {
     pub last_navigation: super::screen::NavPresentation,
     /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
     pub scrim_alpha: f32,
+    /// When set the dim is over the video plane and inherits this envelope (`Scrim::over_video`).
+    pub scrim_corners: Option<[[f32; 3]; 4]>,
     /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
     pub scrim_lift: Option<super::screen::ScrimLift>,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
@@ -593,6 +595,7 @@ impl FixtureModal {
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
+            scrim_corners: None,
             scrim_lift: None,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
@@ -781,6 +784,9 @@ impl Screen<FixtureHost> for FixtureModal {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
+        if let Some(c) = self.scrim_corners {
+            return super::screen::Scrim::over_video(self.scrim_alpha, Some(c));
+        }
         match self.scrim_lift {
             Some(lift) => super::screen::Scrim::lifting(self.scrim_alpha, lift),
             None => super::screen::Scrim::dim(self.scrim_alpha),

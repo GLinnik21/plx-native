@@ -501,11 +501,19 @@ impl ModalUnderlay {
         }
     }
 
-    /// Settle a dormant field against what the new stack asks for, before anything reads it: the
-    /// same envelope is adopted as is, anything else starts from the flat ink exactly as a fresh
-    /// field would.
+    /// Drop a dormant envelope: the surface now being presented cannot inherit it.
+    pub(crate) fn drop_dormant(&mut self) {
+        if self.dormant {
+            self.reset();
+        }
+    }
+
+    /// Settle a dormant field against what a stack that DIMS asks for, before anything reads it:
+    /// the same envelope is adopted as is, anything else starts from the flat ink exactly as a
+    /// fresh field would. `None` (no surface declares a dim: the Info card, the Chapters strip, the
+    /// Timing capsule) asks for nothing and leaves the field alone.
     pub(crate) fn wake(&mut self, source: Option<UnderlaySource>) {
-        if !self.dormant {
+        if !self.dormant || source.is_none() {
             return;
         }
         self.dormant = false;
@@ -546,6 +554,10 @@ impl ModalUnderlay {
     /// panel (simulator, 2026-09-19): under two 8-bit codes on the brightest cell of the measured
     /// Home (field 0.61), for one frame.
     pub(crate) fn sync(&mut self, source: Option<UnderlaySource>, sink: &mut dyn DimSink) {
+        // A dim-less panel over the kept envelope: nothing to inherit and nothing to reset.
+        if self.dormant && source.is_none() {
+            return;
+        }
         self.wake(source);
         if let Some((epoch, ticket)) = self.pending {
             match sink.collect(ticket) {
@@ -618,6 +630,17 @@ impl<H: Host> ModalStack<H> {
         self.surfaces.is_empty()
     }
 
+    /// Latch the envelope the page noted ([`ModalUnderlay::want_corners`]) — only with no surface
+    /// up, and the note is consumed either way so it cannot outlive the frame it was made on.
+    /// Uploads a texture: presenting frames only (`app::run::prepare_window`).
+    pub(crate) fn preload_underlay(&mut self) {
+        if self.surfaces.is_empty() {
+            self.underlay.preload();
+        } else {
+            self.underlay.want_corners(None);
+        }
+    }
+
     /// Present a surface (§3.4): mint the entry, `Mount` + `Enter(Fresh)`; the caller (`Navigation`)
     /// adds the host's `Cover` in the same drain.
     pub fn present(&mut self, ids: &mut Minter, arg: H::Arg, style: Style) -> (EntryId, Vec<Life<H>>) {
@@ -625,7 +648,7 @@ impl<H: Host> ModalStack<H> {
         // Only a player panel can inherit the kept envelope; any other surface's panel reads the
         // field before a dim could replace it, so it starts from the flat ink.
         if !matches!(style, Style::PlayerPanel { .. }) {
-            self.underlay.wake(None);
+            self.underlay.drop_dormant();
         }
         self.surfaces.push(Surface {
             entry: Entry {
@@ -782,7 +805,8 @@ impl<H: Host> ModalStack<H> {
             }
         }
         // The last surface is gone: nothing is dimming this host any more, and the next stack
-        // presented over it — perhaps over a different page — starts from a fresh read.
+        // presented over it — perhaps over a different page — starts from a fresh read. A corner
+        // envelope is the exception: it is the playing item's light and is kept dormant.
         if self.surfaces.is_empty() {
             self.underlay.retire();
         }

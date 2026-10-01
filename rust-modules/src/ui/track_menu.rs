@@ -3134,7 +3134,10 @@ mod enhancement_menu_tests {
         // The same layout is walked once: the first `update` does not queue it again.
         crate::text::clear_prewarm();
         menu.warm_open(&M);
-        assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again");
+        assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again by warm_open");
+        let mut menu = menu;
+        menu.update(0.016, &M, &ps, crate::stores::metadata::MetadataStore::default().view());
+        assert!(!crate::text::prewarm_pending(), "the first update walked the layout again");
         teardown(&ps);
     }
 

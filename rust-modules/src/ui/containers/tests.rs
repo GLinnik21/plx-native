@@ -593,6 +593,73 @@ fn an_empty_stacks_dim_pass_leaves_the_kept_envelope_alone() {
     assert_eq!(d.nav.modals.underlay.corner_latches(), n);
 }
 
+/// **An Info/Chapters/Timing-style player panel (a `PlayerPanel` with no dim) leaves the kept
+/// envelope alone**, open and closed: its `Scrim::NONE` makes the source `None`, and syncing the
+/// field against "nobody dims" used to drop it, so the next presenting frame paid `upre` again.
+#[test]
+fn a_dimless_player_panel_opening_and_closing_keeps_the_envelope() {
+    let (mut d, mut rig, _) = booted();
+    let c = [[0.2, 0.4, 0.1]; 4];
+    let mut fb = FakeFb::new(0.5);
+    fb.video_plane = true;
+    d.nav.modals.underlay.want_corners(Some(c));
+    d.nav.modals.preload_underlay();
+    let n = d.nav.modals.underlay.corner_latches();
+    let id = open_modal(&mut d, &mut rig, Style::PlayerPanel { survives_failure: false }, 16);
+    for _ in 0..2 {
+        fb.frame(0.5);
+        dims_frame(&mut d, &rig, &mut fb);
+    }
+    assert!(d.nav.modals.underlay.field().is_latched(), "open: the envelope stands");
+    assert!(d.nav.modals.hide(id));
+    d.nav.modals.prune();
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "closed: still kept");
+    assert_eq!(d.nav.modals.underlay.corner_latches(), n);
+}
+
+/// **A dimming PlayerPanel presented over the kept envelope adopts it through `draw_scrims_on`**,
+/// latching nothing; one over DIFFERENT corners re-latches.
+#[test]
+fn a_player_panel_presented_over_the_kept_field_adopts_it_through_the_dim_pass() {
+    let (mut d, mut rig, _) = booted();
+    let c = [[0.2, 0.4, 0.1]; 4];
+    let c2 = [[0.7, 0.1, 0.3]; 4];
+    let mut fb = FakeFb::new(0.5);
+    fb.video_plane = true;
+    d.nav.modals.underlay.want_corners(Some(c));
+    d.nav.modals.preload_underlay();
+    let n = d.nav.modals.underlay.corner_latches();
+    let id = open_modal(&mut d, &mut rig, Style::PlayerPanel { survives_failure: false }, 16);
+    modal_mut(&mut d, id).scrim_alpha = 0.5;
+    modal_mut(&mut d, id).scrim_corners = Some(c);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(d.nav.modals.underlay.corner_latches(), n, "adopted, not re-latched");
+    assert_eq!(fb.events, ["dim"]);
+    modal_mut(&mut d, id).scrim_corners = Some(c2);
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
+}
+
+/// **A noted envelope never outlives its frame or lands over a live stack.**
+#[test]
+fn a_stale_noted_envelope_is_not_preloaded_over_a_live_stack() {
+    let (mut d, mut rig, _) = booted();
+    let c = [[0.2, 0.4, 0.1]; 4];
+    d.nav.modals.underlay.want_corners(Some(c));
+    let _ = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.nav.modals.preload_underlay();
+    assert!(!d.nav.modals.underlay.field().is_latched(), "a live stack's field is not preloaded over");
+    // the note was consumed: closing the stack and preloading again does nothing
+    d.nav.modals.hide(d.nav.modals.top().unwrap().entry.id);
+    d.nav.modals.prune();
+    d.nav.modals.preload_underlay();
+    assert!(!d.nav.modals.underlay.field().is_latched());
+}
+
 /// The latch policy, as the pure table it is.
 #[test]
 fn the_latch_policy_reads_the_page_once_per_snapshot_and_never_over_the_video_plane() {

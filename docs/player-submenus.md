@@ -182,8 +182,11 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
   closed, and they don't line up with Starfish feeds, so they are the compositor or driver
   releasing a buffer, not menu work.
 - **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) is the modal underlay latching its field
-  from the UltraBlur corners, and it is paid again on every open. `navcommit` is ~6 ms, of which
-  `tmnew` is under 1 ms. Then come the root page's first strings.
+  from the UltraBlur corners, and it was paid again on every open. `navcommit` is ~6 ms, of which
+  `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is
+  kept across closes and preloaded while nothing is open (`ModalUnderlay::retire`/`preload`), and
+  the overlay's `prepare` queues the root strings on the mount frame (`warm_open`): the open frame
+  measures ~19 ms, the rest being `after_step`'s focus seat.
 - **Playback start.** The Play/ACB call and single Starfish `Feed()` calls block for 5–28 ms in
   the first seconds.
 
