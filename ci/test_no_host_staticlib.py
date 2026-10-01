@@ -1,103 +1,160 @@
 #!/usr/bin/env python3
-"""Fail if a host cargo build of the app crate still emits a staticlib.
+"""Fail if a host cargo build of the app crate would emit a staticlib or any non-rlib artifact.
 
 `rust-modules/Cargo.toml` declares `crate-type = ["rlib"]`: the simulator bin and the host tests
 only need the rlib, and the ARM archive `make` links is produced separately by
-`cargo rustc --crate-type staticlib`. A `staticlib` crate type on the crate makes EVERY cargo
-build of it (`cargo build`, the simulator, anything that depends on the library) also write a
-~200 MB archive that bundles every upstream crate, and makes the ARM build write an rlib nobody
-links.
+`cargo rustc --crate-type staticlib` (whose archive `ci/check-staticlib-artifact.py` checks in the
+ARM build). A `staticlib` crate type on the crate makes EVERY cargo build of it (`cargo build`, the
+simulator, anything that depends on the library) also write a ~200 MB archive that bundles every
+upstream crate, and makes the ARM build write an rlib nobody links.
 
-This reads cargo's own `compiler-artifact` records and never lists a target directory, so stale
-files from an older checkout cannot matter and a `"fresh": true` record still counts. cargo's
-stdout also carries the test harness's plain text, so only lines that parse as a JSON object
-with reason == "compiler-artifact" are looked at.
+This used to run a full `cargo build --lib` (30-50 s of codegen on the serial cargo path of
+`make check`) and read the `compiler-artifact` records for a `.a` filename. Cargo derives every
+file it writes for a library unit from that unit's `crate_types`, so the property is decided before
+rustc starts, and this reads it there at no compile cost:
+
+  * `cargo build --lib --unit-graph` (nightly, `-Zunstable-options`) prints the resolved unit
+    graph of the build the old test ran, without compiling anything. The app library unit's
+    `target.crate_types` must be exactly `["rlib"]`;
+  * `cargo metadata --no-deps` reports the declared `[lib]` target; its `crate_types` and `kind`
+    must be exactly `["rlib"]` too, so a manifest edit is named at the manifest and not only in the
+    resolved graph.
+
+The detector is proven RED against a manifest that adds `staticlib` (or `cdylib`) by
+`ManifestMutationTests`, which builds a throwaway workspace of symlinks to the real sources with
+one edited `Cargo.toml` -- the real tree is never touched.
 """
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
-# `cargo test --lib` compiles the crate only as a test harness and never asks for its library
-# crate types, so it cannot show the offence. A plain `cargo build --lib` builds the library unit
-# itself, the same unit the simulator bin (and any other dependent) links, and writes whatever
-# `[lib] crate-type` declares. This used to ride on `cargo test --bin plxnative-storage --no-run`,
-# which built the library as a dependency of the storage helper; the helper is its own package now
-# and depends on no part of this crate, so the library is built directly.
-CONFIGS = (("lib unit", ["build", "--lib"]),)
+# What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
+# lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
+# the manifest names. A mutated copy replaces `Cargo.toml` only.
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage")
 
 
-def staticlib_artifacts(stdout):
-    """Return (filename-or-crate-type, detail) offences among the crate's compiler-artifact records."""
-    offences = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(record, dict) or record.get("reason") != "compiler-artifact":
-            continue
-        target = record.get("target") or {}
-        if target.get("name") != CRATE:
-            continue
-        if "staticlib" in (target.get("crate_types") or []):
-            offences.append(("crate_types", ",".join(target["crate_types"])))
-        for name in record.get("filenames") or []:
-            if name.endswith(".a"):
-                offences.append(("filename", name))
-    return offences
+def offences(unit_graph=None, metadata=None):
+    """Describe every way the app library would be built as something other than an rlib."""
+    found = []
+    if unit_graph is not None:
+        units = [u for u in unit_graph.get("units", []) if (u.get("target") or {}).get("name") == CRATE]
+        if not units:
+            found.append(("unit graph", f"no {CRATE} library unit at all"))
+        for unit in units:
+            types = unit["target"].get("crate_types") or []
+            if types != ["rlib"]:
+                found.append(("unit crate_types", ",".join(types)))
+    if metadata is not None:
+        targets = [t for p in metadata.get("packages", []) for t in p.get("targets", [])
+                   if t.get("name") == CRATE]
+        if not targets:
+            found.append(("metadata", f"no {CRATE} target at all"))
+        for target in targets:
+            for field in ("crate_types", "kind"):
+                if target.get(field) != ["rlib"]:
+                    found.append((f"target {field}", ",".join(target.get(field) or [])))
+    return found
+
+
+def cargo(args, cwd):
+    env = dict(os.environ)
+    env["PATH"] = str(Path.home() / ".cargo/bin") + os.pathsep + env.get("PATH", "")
+    # cwd matters: cargo finds rust-modules/.cargo/config.toml (build-std and the codegen flags)
+    # from the working directory.
+    proc = subprocess.run(["cargo", f"+{NIGHTLY}", *args], cwd=cwd, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, env=env)
+    if proc.returncode != 0:
+        raise AssertionError(f"cargo {' '.join(args)} failed: {proc.stderr[-2000:]}")
+    return json.loads(proc.stdout)
+
+
+def resolve(cwd):
+    """(unit graph of `cargo build --lib`, `cargo metadata --no-deps`) for the workspace at `cwd`."""
+    graph = cargo(["build", "--lib", "--unit-graph", "-Zunstable-options"], cwd)
+    meta = cargo(["metadata", "--format-version", "1", "--no-deps"], cwd)
+    return graph, meta
 
 
 class ParserTests(unittest.TestCase):
-    def record(self, **over):
-        rec = {"reason": "compiler-artifact", "target": {"name": CRATE, "crate_types": ["rlib"]},
-               "filenames": ["/t/libplxnative_modules-abc.rlib"], "fresh": True}
-        rec.update(over)
-        return json.dumps(rec)
+    def graph(self, types=("rlib",), name=CRATE):
+        return {"units": [{"target": {"name": name, "kind": list(types), "crate_types": list(types)},
+                           "mode": "build"}]}
 
-    def test_ignores_harness_text_and_other_reasons(self):
-        out = "\n".join(["running 0 tests", "{not json", json.dumps({"reason": "build-finished"}),
-                         self.record()])
-        self.assertEqual(staticlib_artifacts(out), [])
+    def meta(self, types=("rlib",), name=CRATE):
+        return {"packages": [{"targets": [{"name": name, "kind": list(types),
+                                           "crate_types": list(types)}]}]}
 
-    def test_flags_archive_even_when_fresh(self):
-        out = self.record(filenames=["/t/libplxnative_modules.a"], fresh=True)
-        self.assertEqual(staticlib_artifacts(out), [("filename", "/t/libplxnative_modules.a")])
+    def test_rlib_only_is_clean(self):
+        self.assertEqual(offences(self.graph(), self.meta()), [])
 
-    def test_flags_staticlib_crate_type(self):
-        out = self.record(target={"name": CRATE, "crate_types": ["staticlib", "rlib"]})
-        self.assertEqual(staticlib_artifacts(out), [("crate_types", "staticlib,rlib")])
+    def test_flags_staticlib_in_the_unit(self):
+        self.assertEqual(offences(self.graph(("rlib", "staticlib"))),
+                         [("unit crate_types", "rlib,staticlib")])
+
+    def test_flags_cdylib_in_the_unit(self):
+        self.assertEqual(offences(self.graph(("cdylib",))), [("unit crate_types", "cdylib")])
+
+    def test_flags_declared_staticlib_in_metadata(self):
+        self.assertEqual(offences(metadata=self.meta(("staticlib", "rlib"))),
+                         [("target crate_types", "staticlib,rlib"), ("target kind", "staticlib,rlib")])
+
+    def test_a_missing_library_is_an_offence_not_a_pass(self):
+        self.assertEqual(len(offences(self.graph(name="other"), self.meta(name="other"))), 2)
 
     def test_other_crates_may_be_archives(self):
-        out = self.record(target={"name": "zstd_sys", "crate_types": ["staticlib"]},
-                          filenames=["/t/libz.a"])
-        self.assertEqual(staticlib_artifacts(out), [])
+        graph = {"units": [{"target": {"name": "zstd_sys", "kind": ["staticlib"],
+                                       "crate_types": ["staticlib"]}, "mode": "build"},
+                           *self.graph()["units"]]}
+        self.assertEqual(offences(graph), [])
 
 
 class HostBuildTests(unittest.TestCase):
-    def test_host_builds_emit_no_staticlib(self):
-        env = dict(os.environ)
-        env["PATH"] = str(Path.home() / ".cargo/bin") + os.pathsep + env.get("PATH", "")
-        for label, args in CONFIGS:
-            with self.subTest(label):
-                proc = subprocess.run(
-                    ["cargo", f"+{NIGHTLY}", *args, "--message-format=json"],
-                    # cwd matters: cargo finds rust-modules/.cargo/config.toml (the codegen flags)
-                    # from the working directory, and a different flag set is a different
-                    # fingerprint, i.e. a full rebuild instead of a no-op.
-                    cwd=ROOT / "rust-modules",
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-                self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
-                offences = staticlib_artifacts(proc.stdout)
-                self.assertEqual(offences, [], f"{label}: {CRATE} still builds a staticlib")
+    def test_host_lib_build_is_rlib_only(self):
+        graph, meta = resolve(ROOT / "rust-modules")
+        self.assertEqual(offences(graph, meta), [], f"{CRATE} would build more than an rlib")
+
+
+class ManifestMutationTests(unittest.TestCase):
+    """The detector is RED when a manifest adds an archive crate type, against real cargo."""
+
+    def workspace_with(self, crate_type_line):
+        tmp = tempfile.TemporaryDirectory(prefix="plx-staticlib-")
+        self.addCleanup(tmp.cleanup)
+        src = ROOT / "rust-modules"
+        dest = Path(tmp.name) / "rust-modules"
+        dest.mkdir()
+        for name in WORKSPACE_FILES:
+            (dest / name).symlink_to(src / name)
+        manifest = (src / "Cargo.toml").read_text()
+        declared = 'crate-type = ["rlib"]'
+        self.assertIn(declared, manifest, "the manifest no longer spells the lib crate-type this "
+                      "mutation test edits; update it with the manifest")
+        (dest / "Cargo.toml").write_text(manifest.replace(declared, crate_type_line))
+        return dest
+
+    def test_unmutated_copy_is_clean(self):
+        # The control: the same symlink workspace, manifest byte-identical, is not an offence --
+        # so the red cases below are red for the edit and not for the harness.
+        graph, meta = resolve(self.workspace_with('crate-type = ["rlib"]'))
+        self.assertEqual(offences(graph, meta), [])
+
+    def test_staticlib_added_to_the_manifest_is_caught(self):
+        graph, meta = resolve(self.workspace_with('crate-type = ["rlib", "staticlib"]'))
+        found = offences(graph, meta)
+        self.assertIn(("unit crate_types", "rlib,staticlib"), found)
+        self.assertIn(("target crate_types", "rlib,staticlib"), found)
+
+    def test_cdylib_added_to_the_manifest_is_caught(self):
+        graph, meta = resolve(self.workspace_with('crate-type = ["cdylib", "rlib"]'))
+        self.assertTrue(any("cdylib" in detail for _, detail in offences(graph, meta)))
 
 
 if __name__ == "__main__":
