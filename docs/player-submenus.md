@@ -209,9 +209,14 @@ its own launch (inside a `tv-lock` lease, `--guest`, mock server, menu oscillato
 
 1. **Kernel scheduler trace.** Boot with `--arm framedrop=17 --arm framering=17 --arm framecb`
    (the ring only exists while `framedrop` is armed). During the leg run
-   `tools/tv-sched-trace.sh --secs 20 --out sched.gz`: it mounts tracefs if needed, records
-   `sched_switch`, `sched_wakeup`, `irq_handler_entry/exit` and any mali/kbase/gpu event category
-   on `trace_clock=mono`, and restores the set afterwards. The kernel is 4.4.84 with event tracing
+   `tools/tv-sched-trace.sh --secs 8 --tid <app pid> --out sched.gz`: it mounts tracefs if needed,
+   records `sched_switch`, `sched_wakeup`, `irq_handler_entry/exit` (arch timer filtered out), any
+   mali/kbase/gpu event category and, with `--tid`, that thread's raw syscalls, on
+   `trace_clock=mono`, drains `trace_pipe` (bounded by `--read-timeout`, default 90 s; a stopped
+   read-back leaves a valid partial gzip and exit status 3), and restores the set afterwards. The
+   first TV run read the non-consuming `trace` file, which took minutes for under 4 s of data, and
+   at 20 s the ring overran (1.3 M events written, 0.87 M kept, CPU 0's early events lost), so the
+   defaults are now 8 s and a ring capped at 32 MB; the tool prints the overrun if it still happens. The kernel is 4.4.84 with event tracing
    but no function tracer and no SCHEDSTATS. Then
    `tools/analyze-sched-trace.py APP.log sched.gz --tid <app pid>` (`APP.log` from
    `tools/tv-session.sh log FRAMEDROP`; the frame thread is the main thread, tid == pid). For each

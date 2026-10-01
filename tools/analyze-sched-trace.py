@@ -13,7 +13,7 @@ Inputs
             first framebuffer command (the back-buffer wait) began.
   TRACE     ftrace text with trace_clock=mono, as tools/tv-sched-trace.sh captures it: sched_switch,
             sched_wakeup, irq_handler_entry (and optionally raw_syscalls sys_enter/sys_exit for the
-            frame thread, which tv-sched-trace.sh does not enable -- without them the syscall a
+            frame thread, which `tv-sched-trace.sh --tid N` enables -- without them the syscall a
             thread left the CPU in is simply not named).
   --tid     the frame thread (the app's main thread: tid == pid).
 
