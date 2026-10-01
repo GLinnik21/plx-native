@@ -329,7 +329,7 @@ thread_local! {
     /// from [`PREWARM`] because that queue belongs to the live page: the draw empties it every
     /// frame it has no page warm (`ui::dispatch`), a held surface waits on it
     /// ([`prewarm_pending`]), and a new live walk replaces it. None of that may touch work
-    /// nothing waits on, so it waits here and leaves a string at a time.
+    /// nothing waits on, so it waits here and is drained in the time the live queue leaves each frame.
     static BACKGROUND: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
     /// Which park the [`BACKGROUND`] queue belongs to: bumped by every
     /// [`park_prewarm_as_background`], compared by [`clear_background_prewarm_owned`].
@@ -400,8 +400,8 @@ pub(crate) fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
 
 /// Drain jobs until the deadline reached by `now`. The clock is read before starting each next
 /// item, so an indivisible TTF render may finish just beyond the deadline but no further render is
-/// begun there. On the measured pages one item is ~1 ms; the six-millisecond caller budget keeps
-/// that bounded while guaranteeing forward progress.
+/// begun there. On the measured pages one item is ~1 ms; the caller's budget keeps
+/// that bounded while the first item guarantees forward progress.
 fn drain_budgeted<T>(
     jobs: &mut VecDeque<T>,
     budget_us: u64,

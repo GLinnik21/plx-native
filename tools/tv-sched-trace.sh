@@ -2,7 +2,7 @@
 #
 # tv-sched-trace.sh -- capture a kernel scheduler/IRQ trace from the television, then put it back.
 #
-#   tools/tv-sched-trace.sh [--secs 8] [--tid N] [--read-timeout 90] [--out FILE.gz]
+#   tools/tv-sched-trace.sh [--secs 6] [--tid N] [--read-timeout 90] [--out FILE.gz]
 #
 # Runs on the HOST and drives the set through tools/tv-ssh (root, busybox sh). It takes the
 # television's lock like every other device tool (tools/tv-lock.sh), so run it inside your own
@@ -15,10 +15,10 @@
 #   irq-number fallback is what runs; raw_syscalls `common_pid == N` is accepted; the per-CPU `stats`
 #   `entries:` line reaches 0 when drained; 433,702 events read back well inside the 90 s bound.
 #   An 8 s run at the 32 MB cap overran CPU 0 only (5,644 of 166,017 events; CPU 0 carries about
-#   twice the others'), so `--secs 6` is the loss-free choice.)
+#   twice the others'), so the default `--secs 6` is the loss-free choice.)
 #   2. sets trace_clock=mono (so event times are the app's CLOCK_MONOTONIC, the clock FRAMEDROP's
 #      `mono=`/`wait_at=` use) and a per-CPU buffer sized for ~60k events/s with headroom, capped
-#      at 32 MB across all CPUs (the set has ~45 MB free): longer than ~8 s overruns the ring;
+#      at 32 MB across all CPUs (the set has ~45 MB free): about 8 s of events on average, but CPU 0 fills first, hence the 6 s default;
 #   3. enables sched/sched_switch, sched/sched_wakeup, irq/irq_handler_entry, irq/irq_handler_exit
 #      (minus the arch timer, which fires on every CPU every few ms and is pure noise) and every
 #      event category whose name matches mali|kbase|gpu; with --tid N also raw_syscalls
@@ -44,7 +44,7 @@ set -uo pipefail
 
 T=/sys/kernel/tracing
 PIDF=/tmp/tv-sched-trace.pids
-secs=8
+secs=6
 tid=""
 read_timeout=90
 out=""
@@ -53,7 +53,7 @@ if [ "$TEST" = 1 ]; then
   T="${TV_SCHED_TRACE_T:?}"; PIDF="${TV_SCHED_TRACE_PIDF:?}"
 fi
 
-usage() { sed -n '3,4p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3p;5p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --secs) [ $# -ge 2 ] || usage; secs="$2"; shift 2 ;;

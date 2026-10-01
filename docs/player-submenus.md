@@ -221,9 +221,9 @@ tools below are the how-to; the findings follow.
    0 when the buffer is drained; and a `trace_pipe` read-back of 433,702 events (9.3 MB gzipped)
    finished well inside the 90 s bound. The first run read the non-consuming `trace` file, which took
    minutes for under 4 s of data, and at 20 s the ring overran (1.3 M events written, 0.87 M kept),
-   hence the 8 s default and the 32 MB ring cap. An 8 s run at the cap still overran CPU 0 only, by
-   5,644 of 166,017 events (CPU 0 carries about twice the events of the others); `--secs 6` is the
-   safe choice for a loss-free trace. Then
+   hence the 32 MB ring cap. An 8 s run at the cap still overran CPU 0 only, by
+   5,644 of 166,017 events (CPU 0 carries about twice the events of the others), so `--secs 6` is
+   the default and the loss-free choice. Then
    `tools/analyze-sched-trace.py APP.log sched.gz --tid <app pid>` (`APP.log` from
    `tools/tv-session.sh log FRAMEDROP`; the frame thread is the main thread, tid == pid). For each
    slow frame it lists where the thread left the CPU (preempted or blocked, in which syscall when
@@ -281,8 +281,10 @@ Findings:
 5. **What is the app's: the text prewarm drain had no per-frame bound.** `warmdrain` took 22.7 ms in
    one frame 1.8 s after playback start (frame total 34.9 ms), 15.8 and 11.9 ms in the first 0.2 s,
    and 9.8 ms on the menu-open frame at t0+6 s, where with the 8.3 ms nav commit it made the
-   pre-clear work 19.6 ms and the frame 21.7 ms. A per-frame budget for the drain is tracked
-   separately.
+   pre-clear work 19.6 ms and the frame 21.7 ms. The drain is now bounded by time (#376,
+   `PREWARM_BUDGET_US`, live queue first). On the television the track menu's open frame went from
+   `warmdrain` 9.8/6.6 ms (frame 21.7/17.8 ms) to 3.3/3.2 ms (frame 14.8/18.3 ms); one single-string
+   18.9 ms drain at about 1.1 s after playback start remains.
 6. **#372's preload.** The `upre` latch ran once, 1.4 s after the first frame in both legs, and cost
    9.6 and 11.2 ms in `prepare`; the frame totals were 16.5 and 17.9 ms. That is before the first
    framebuffer command, inside the wait, so it did not drop a frame, and the menu opened at t0+6 s
