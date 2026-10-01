@@ -553,7 +553,7 @@
         "plxnative-play": "$rk",
         "plxnative-menu": "0"
       },
-      "_more_note": "overlay=more (the \"...\" options popover; it IS one of OVERLAY_WORDS, see app/mod.rs) has no fps:more-menu scene here on purpose, not by omission: it has no headless boot trigger. app/playback.rs and app/run.rs only ever open ui::more_menu from a live remote key (MORE, or the OK-hold item context path), the same way info-panel/track-menu/chapters-panel/timing-capsule are opened from plxnative-info/plxnative-menu/plxnative-chapters/plxnative-subtiming. If a plxnative-more (or equivalent) boot trigger is ever added, mirror this scene as fps:more-menu: route player, overlay more, tier player, loop_floor 45, run_secs 26, warmup_s 9, the same item shape."
+      "_more_note": "overlay=more (the \"...\" options popover; it IS one of OVERLAY_WORDS, see app/mod.rs) has a headless boot trigger, plxnative-more=1, and its device frame-time scene is more-quality-osc below (plxnative-moreosc drives the Quality drill-in push/pop). This scene stays on the track menu."
     },
     {
       "name": "track-menu-subs",
@@ -601,12 +601,13 @@
       "worst_ceiling_ms": 25,
       "comment": "The More popover's Quality drill-in under load: with More open (plxnative-more=1), plxnative-moreosc=900 presses one REAL key every 900 ms through the dispatcher (dev::scenarios::moreosc_next): RIGHT on the Quality row pushes the rung page, LEFT pops it. Every key is a push or pop, so the sampled frames are the panel RESIZE spring and the page SLIDE, not a settled menu; 900 ms lets each transition settle before the next. No fps_floor (the hardware video plane is bound, so fps= is neither an animator nor an idle grade); loop= and worstframe= are the signals.",
       "_ceiling_note": "25 ms, the same budget and the same 2nd-highest post-warmup worstframe= reading as track-menu-submenu-osc. NOT YET MEASURED ON THE DEVICE: the number is the budget, not a baseline.",
-      "_account_free_note": "Runs without any Plex account: tools/tv-session.sh up --guest --mock --screen player=<rk> --arm more=1 --arm moreosc=900 --arm framedrop=25, against tests/mock_pms.py started with --media <mockverify dir>. The Quality row needs a transcodable item (it is absent for a source that cannot be re-encoded); docs/player-submenus.md 'Device frame-time check' has the sequence.",
+      "_account_free_note": "Runs without any Plex account: tools/tv-session.sh up --guest --mock --screen player=<rk> --arm more=1 --arm moreosc=900 --arm framedrop=25, against tests/mock_pms.py started with --media <mockverify dir>. The Quality row is absent ONLY under Force Direct Play (the ladder is never empty and does not depend on the item), so the setting must be off; require_log below fails the scene if the page was never pushed. docs/player-submenus.md 'Device frame-time check' has the sequence.",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-more": "1",
         "plxnative-moreosc": "900"
-      }
+      },
+      "require_log": ["moreosc: depth=1"]
     },
     {
       "name": "timing-capsule",

@@ -126,7 +126,8 @@ re-recorded.
   an opposite-direction key (push then pop) revives the page that was arriving from its own alpha,
   and a push during a push turns the arriving page into a leaving one from where it is, so no key
   steps the picture. Audio <-> Subtitles resizes the
-  card only; More resizes when its row set changes. Only the live page registers focus stops, at
+  card only; More resizes when its row set changes and also slides between its root and the
+  Quality page. Only the live page registers focus stops, at
   the animated position (`place` agrees with `Part::draw`), and `Screen::pointer_held` makes the
   dispatcher record but never resolve pointer input for the slide plus the rect lag. A settled
   panel reports no motion to `ui::idle` and asks for no frames.
@@ -199,8 +200,10 @@ Fixed on the way here:
 `more-quality-osc` (trigger `plxnative-more=1` to open More, `plxnative-moreosc=<period_ms>`,
 `dev::scenarios::moreosc_arm`) is the same check for More: RIGHT on the Quality row pushes the rung
 page and LEFT pops it, every 900 ms. Same sequence with `--arm more=1 --arm moreosc=900`, reading
-`route=player overlay=more`; `moreosc:` lines log each key. It needs a source that can offer
-Quality rungs (a transcodable item), because the row is absent otherwise. Same 25 ms budget, same
+`route=player overlay=more`; `moreosc:` lines log each key. The Quality row is absent only under
+Force Direct Play, so that setting must be off; the oscillator then logs `moreosc: no Quality row`
+and pushes nothing, and the scene's `require_log` (`moreosc: depth=1`) fails the run rather than
+grading a screen that never moved. Same 25 ms budget, same
 "not yet measured on the TV".
 
 Panel OFF does not stop presents on the player route: while the hardware video plane is bound

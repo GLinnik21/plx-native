@@ -1667,8 +1667,11 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     };
     let (seat, key) = moreosc_next(depth);
     if seat {
-        if let Some(surface) = crate::app::bridge::player_overlay_mut(&mut app.pages) {
-            surface.seat_more_quality();
+        let seated = crate::app::bridge::player_overlay_mut(&mut app.pages).is_some_and(|s| s.seat_more_quality());
+        if !seated {
+            // Nothing to push: say so, rather than let the scene grade a panel that never moved.
+            crate::log("moreosc: no Quality row");
+            return;
         }
     }
     crate::log(&format!("moreosc: depth={depth} key={key:?}"));

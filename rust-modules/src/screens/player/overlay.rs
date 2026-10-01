@@ -398,9 +398,11 @@ impl PlayerOverlayScreen {
 
     /// `moreosc`'s cursor seat: put the More cursor on the Quality row so the next real RIGHT key
     /// enters it.
-    pub(crate) fn seat_more_quality(&mut self) {
-        if let Panel::More(p) = &mut self.panel {
-            p.focus_key(crate::ui::form::FormId::key(&crate::ui::more_menu::MoreRow::OpenQuality).0);
+    /// `false` when the panel is not More or its root offers no Quality row (Force Direct Play).
+    pub(crate) fn seat_more_quality(&mut self) -> bool {
+        match &mut self.panel {
+            Panel::More(p) => p.focus_key(crate::ui::form::FormId::key(&crate::ui::more_menu::MoreRow::OpenQuality).0),
+            _ => false,
         }
     }
 
@@ -618,7 +620,7 @@ impl PlayerOverlayScreen {
     /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
     /// reached this panel's group edge and re-delivered it (`edge_key`, above). OK is likewise
     /// left to the engine's own `Activate`/press machinery (§7.4; see [`Self::activate`]). BACK
-    /// dismisses — except on a Tracks sub-page, where it pops one page first (the root, and the
+    /// dismisses — except on a Tracks or More sub-page, where it pops one page first (the root, and the
     /// other panels, dismiss). Tracks and More close silently, exactly as the old ladder did; Info
     /// and Chapters also hand the transport the ordinary linger.
     fn key<H: AppLike + crate::screens::registry::MetadataLike>(
@@ -778,7 +780,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     Panel::Tracks(p) => p.focus_key(to.elem),
                     Panel::Info(p) => p.set_focus(i),
                     Panel::Chapters(p) => p.set_sel(i),
-                    Panel::More(p) => p.focus_key(to.elem),
+                    Panel::More(p) => { p.focus_key(to.elem); }
                     // Timing has no cursor the engine could have moved — its own `key()` owns
                     // every press and always returns `Handled::Yes`, so this arm is unreached for
                     // it in practice.

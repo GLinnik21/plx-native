@@ -5719,6 +5719,20 @@ def grade_poster_gate(scene, lines):
     return ok, " | " + detail
 
 
+def grade_required_log(scene, lines):
+    """`require_log`: a list of substrings, each of which must appear in at least one log line.
+    For a scene whose oscillator can quietly do nothing (More's Quality row absent under Force
+    Direct Play): frame-time gates pass on a screen that never moved, so the scene must also
+    prove its own stimulus ran. Returns (ok, detail_suffix)."""
+    want = scene.get("require_log")
+    if not want:
+        return True, ""
+    missing = [w for w in want if not any(w in l for l in lines)]
+    if missing:
+        return False, " | required log line(s) never seen: " + ", ".join(repr(w) for w in missing)
+    return True, " | required log line(s) present: " + ", ".join(repr(w) for w in want)
+
+
 def fps_scene_needs_token(scene, has_shared_server=False):
     """Whether this scene must cross the signed-in boot gate.
 
@@ -5946,6 +5960,10 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok_p, detail_p = grade_poster_gate(scene, lines)
     ok = ok and ok_p
     detail += detail_p
+
+    ok_r, detail_r = grade_required_log(scene, lines)
+    ok = ok and ok_r
+    detail += detail_r
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 

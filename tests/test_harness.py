@@ -69,6 +69,21 @@ def _overlay(items):
     return {"pms": {"host": "10.0.0.2", "port": 32400}, "tv": "10.0.0.3", "items": items}
 
 
+class RequireLogTests(unittest.TestCase):
+    """`require_log`: a scene proves its own stimulus ran (more-quality-osc must push the page)."""
+
+    def test_absent_line_fails_and_present_line_passes(self):
+        scene = {"require_log": ["moreosc: depth=1"]}
+        ok, detail = run.grade_required_log(scene, ["moreosc: depth=0 key=Right"])
+        self.assertFalse(ok)
+        self.assertIn("moreosc: depth=1", detail)
+        ok, _ = run.grade_required_log(scene, ["x", "moreosc: depth=1 key=Left"])
+        self.assertTrue(ok)
+
+    def test_a_scene_without_the_field_is_unaffected(self):
+        self.assertEqual(run.grade_required_log({}, []), (True, ""))
+
+
 class _Overlay:
     """Point run.MANIFEST_LOCAL at a temp overlay for the duration of a `with` block."""
 

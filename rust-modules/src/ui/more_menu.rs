@@ -432,10 +432,11 @@ impl MoreMenuState {
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
     /// Both a D-pad move AND a pointer hover reach here now — hover parks focus THROUGH the engine
     /// (§7.5), replacing this menu's own `pointer_focus`.
-    pub(crate) fn focus_key(&mut self, elem: u32) {
-        if let Some(i) = self.form.index_of_key(RowKey(elem)) {
-            self.form.table.sel = i as i32;
-        }
+    /// Returns whether a row with that key is on the page showing.
+    pub(crate) fn focus_key(&mut self, elem: u32) -> bool {
+        let Some(i) = self.form.index_of_key(RowKey(elem)) else { return false };
+        self.form.table.sel = i as i32;
+        true
     }
 
     /// OK on the highlighted row: an action to perform (the container dismisses the panel
@@ -468,8 +469,8 @@ impl MoreMenuState {
 
     /// The panel's height alone. The ceiling was 320 while this menu held one row, and it was
     /// invisible then. With the Quality ladder beside it `measured_height()` can reach 600 when
-    /// Auto is enabled — two headers, seven rows, a divider, AND the table's own top/bottom
-    /// padding — so a 320 cap put four of nine rows on screen and silently scrolled the rest,
+    /// Auto is enabled — the tallest page is the Quality page: its title band plus seven
+    /// rungs, AND the table's own top/bottom padding — so a 320 cap put four of nine rows on screen and silently scrolled the rest,
     /// which is a picker whose options you cannot see.
     ///
     /// The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
@@ -516,13 +517,15 @@ impl MoreMenuState {
 }
 
 /// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
-/// over the flat Options+Quality row list, built fresh by
+/// over the rows of the page showing (the root's Quality drill-in plus Options, or the Quality
+/// page's rungs), built fresh by
 /// `screens::player::overlay::PlayerOverlayScreen` each frame from a `&MoreMenuState` — the same
 /// borrowed-view shape `ui::table_screen::TablePart`/`ui::geom::Table` use for the other panels
 /// that are already a bare `TableView` in a frame, so this popover answers the same
-/// [`Focusable`]/[`Part`] query protocol they do. Every edge is `Stop`, exactly as
-/// `screens::account_menu::AccountMenuScreen`'s one `Column` group answers — this menu is a
-/// self-contained modal surface with nowhere else for focus to escape to.
+/// [`Focusable`]/[`Part`] query protocol they do. UP and DOWN `Stop` at the ends; LEFT and RIGHT
+/// are `EdgeRule::Screen`, re-delivered to `PlayerOverlayScreen::edge_key`, which pops a pushed
+/// page on LEFT and enters a Nav row (Quality) on RIGHT, and otherwise swallows the key so focus
+/// never leaves the modal surface.
 ///
 /// **`state` is a SHARED reference** — every [`Focusable`] method here is a pure read (`&self`),
 /// and the owning screen's own `Focusable` impl only ever has `&self` too (§7.1: "the engine never
@@ -1130,8 +1133,9 @@ mod tests {
     fn an_unknown_key_is_none_not_a_neighbour() {
         let mut st = menu(false, Quality::Auto);
         let before = st.sel();
-        st.focus_key(0xdead);
+        assert!(!st.focus_key(0xdead), "an unknown key reports it seated nothing");
         assert_eq!(st.sel(), before, "an unknown key moves nothing");
+        assert!(st.focus_key(MoreRow::OpenQuality.key().0), "the Quality row is seatable on the root");
     }
 
     /// Every row's key is distinct and below the band, and the title band's pointer key is none of
