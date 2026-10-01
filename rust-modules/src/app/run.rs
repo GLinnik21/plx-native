@@ -4114,6 +4114,35 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// A resolved, mounted Player whose playhead sits inside a `final` credits marker, so the REAL
+    /// `player_hud::slot` (via `Frame::begin`) decides the control row instead of a slot the test
+    /// built itself. Returns the frame clock after one settled frame.
+    fn playing_inside_final_credits(rig: &mut Rig) -> u32 {
+        rig.request();
+        rig.resolve();
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Player);
+        frame(&mut rig.app, 16);
+        crate::metadata::set_playing_markers_for_test(
+            rig.app.bridge.metadata_mut().state_mut(),
+            vec![crate::metadata::Marker {
+                kind: crate::metadata::MarkerKind::Credits,
+                start_ms: 0,
+                end_ms: 60_000,
+                final_seg: true,
+            }],
+        );
+        crate::player::restore_state_for_test(crate::player::PlaybackState::Playing as u8);
+        crate::player::SHARED
+            .playpos_ns
+            .store(30_000_000_000, std::sync::atomic::Ordering::Relaxed);
+        let mut t = 16;
+        // The slot reaches the screen in `update`, which runs after the frame that ticks the
+        // countdown — so it takes two frames for the countdown to see it.
+        step(&mut rig.app, &mut t, vec![]);
+        step(&mut rig.app, &mut t, vec![]);
+        t
+    }
+
     /// **Next episode: After credits.** The credits of an episode with a successor queued arm no
     /// Up Next countdown, so nothing is requested however long they run; the end of the stream
     /// then plays the successor exactly as it always has.
@@ -4126,29 +4155,45 @@ mod lifecycle_regression_tests {
             return;
         };
         let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::AfterCredits);
-        rig.request();
-        rig.resolve();
-        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Player);
-        frame(&mut rig.app, 16);
-        let credits = crate::metadata::Marker {
-            kind: crate::metadata::MarkerKind::Credits,
-            start_ms: 0,
-            end_ms: 60_000,
-            final_seg: true,
-        };
-        let slot = crate::ui::player_hud::slot_for(Some(credits), true, crate::route::next_episode_mode());
-        let player = super::super::bridge::player_mut(&mut rig.app.pages).unwrap();
-        player.up_next.tick(slot, 20);
-        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
-        fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
-        assert!(!player.up_next.expired(fr.now), "no countdown was armed for the credits");
-        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        let mut t = playing_inside_final_credits(&mut rig);
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(fr.ctrl.is_discs(), "inside the credits the row keeps the discs");
+        t += crate::ui::up_next::COUNTDOWN_MS;
+        step(&mut rig.app, &mut t, vec![]);
+        let player = super::super::bridge::player(&rig.app.pages).unwrap();
+        assert!(!player.up_next.expired(t), "no countdown was armed for the credits");
         assert!(!crate::route::play_pending(), "the credits alone must not request the successor");
         assert_eq!(crate::route::up_next(&rig.app.player.session).unwrap().rk, "2");
 
         crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        fr.now = t;
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(crate::route::play_pending(), "the end of the stream still plays the next episode");
+    }
+
+    /// **Next episode: Countdown** on the same rig as the test above, so the two differ only in
+    /// the preference: the credits put the Up Next tile up and its countdown requests the
+    /// successor before the stream ends.
+    #[test]
+    fn countdown_requests_the_successor_from_inside_the_credits() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED countdown_requests_the_successor_from_inside_the_credits: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::Countdown);
+        let mut t = playing_inside_final_credits(&mut rig);
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            matches!(fr.ctrl, crate::ui::player_hud::ControlSlot::UpNext(_)),
+            "inside the credits the tile takes over",
+        );
+        assert!(!crate::route::play_pending(), "the countdown is still running");
+        t += crate::ui::up_next::COUNTDOWN_MS;
+        step(&mut rig.app, &mut t, vec![]);
+        assert!(crate::route::play_pending(), "the countdown requests the successor");
     }
 
     /// **Next episode: Off.** The end of an episode that HAS a successor leaves the player like a
