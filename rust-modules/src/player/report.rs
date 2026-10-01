@@ -155,6 +155,96 @@ impl DeliveryClass {
     }
 }
 
+/// A `/decision` verdict number (`generalDecisionCode` / `transcodeDecisionCode`) as a CLOSED
+/// domain. The number is a server protocol constant, not a quotation, so it is the one part of a
+/// refusal a report may carry; the server's sentence beside it never is.
+///
+/// **Which codes exist is only partly documented, and this list claims no more than the evidence.**
+/// The vendored OpenAPI spec (`docs/plex-openapi.json`, `generalDecisionCode`) documents the CLASSES
+/// — "1xxx are playback can succeed, 2xxx are a general error (such as insufficient bandwidth),
+/// 3xxx are errors in direct play, and 4xxx are errors in transcodes. Same codes are used in all"
+/// — and no table of members. The exact numbers named here are the ones this repository has
+/// observed a PMS send on a refusal: `2000` (general, "Neither direct play nor conversion is
+/// available", the code `route::plan::refusal` fires on), `2003` (transcode lane, "File is
+/// unplayable. DoVi (Profile 5) color space is not supported.", `docs/pms-api.md`) and `4007`
+/// (transcode lane, "Cannot convert this item. Implementation for video encoder 'vp9' not found.",
+/// PMS 1.43.3). Every other number falls into its documented class bucket — a new `4xxx` reads
+/// `other_4xxx`, which still says "a transcode-lane error" without this list guessing its meaning —
+/// and a number outside 1000-4999 is `other`. The wire code of a named member IS its number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecisionCodeClass {
+    /// The body carried no such code (never a defaulted 0).
+    Absent,
+    C2000,
+    C2003,
+    C4007,
+    Other1xxx,
+    Other2xxx,
+    Other3xxx,
+    Other4xxx,
+    Other,
+}
+
+impl DecisionCodeClass {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Absent,
+        Self::C2000,
+        Self::C2003,
+        Self::C4007,
+        Self::Other1xxx,
+        Self::Other2xxx,
+        Self::Other3xxx,
+        Self::Other4xxx,
+        Self::Other,
+    ];
+
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::C2000 => "2000",
+            Self::C2003 => "2003",
+            Self::C4007 => "4007",
+            Self::Other1xxx => "other_1xxx",
+            Self::Other2xxx => "other_2xxx",
+            Self::Other3xxx => "other_3xxx",
+            Self::Other4xxx => "other_4xxx",
+            Self::Other => "other",
+        }
+    }
+
+    pub(crate) fn from_code(code: Option<i64>) -> Self {
+        match code {
+            None => Self::Absent,
+            Some(2000) => Self::C2000,
+            Some(2003) => Self::C2003,
+            Some(4007) => Self::C4007,
+            Some(1000..=1999) => Self::Other1xxx,
+            Some(2000..=2999) => Self::Other2xxx,
+            Some(3000..=3999) => Self::Other3xxx,
+            Some(4000..=4999) => Self::Other4xxx,
+            Some(_) => Self::Other,
+        }
+    }
+}
+
+/// What a `decision_refused` report adds to the common context — all closed domains, none of the
+/// server's sentence. Present only for a refusal the SERVER made at `/decision`; the app's own
+/// policy refusals (Direct Play off, Force Direct Play) carry no server codes and no attempted
+/// transcode, so they get none of it rather than a half-filled block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RefusalContext {
+    /// `generalDecisionCode` of the refusing `/decision`.
+    pub(crate) general: DecisionCodeClass,
+    /// `transcodeDecisionCode` of the same body — the lane that names the cause.
+    pub(crate) transcode: DecisionCodeClass,
+    /// The route the refused plan ASKED for. A separate field from `delivery`, which stays
+    /// `unknown` because no route was installed: the attempt is recorded, the delivery is not.
+    pub(crate) attempted: DeliveryClass,
+    /// The SOURCE file's codecs (not the transcode's output, which a refusal never produced).
+    pub(crate) source_video: VideoCodecClass,
+    pub(crate) source_audio: AudioCodecClass,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QualityClass {
     Unknown,
@@ -670,6 +760,8 @@ pub(crate) struct PlaybackErrorContext {
     pub(crate) http: HttpClass,
     pub(crate) buffer: BufferClass,
     pub(crate) started: bool,
+    /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
+    pub(crate) refusal: Option<RefusalContext>,
 }
 
 /// The delivery of the route this playback INSTALLED. A refused or unresolved plan installs none
@@ -834,7 +926,35 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         http: HttpClass::from_status(super::SHARED.dg_http_status.load(Relaxed)),
         buffer: BufferClass::from_ms(super::SHARED.dg_abr_buffer_ms.load(Relaxed)),
         started: SAW_START.load(Relaxed),
+        refusal: refusal_context(ps),
     }
+}
+
+/// The refusal block for a refusal the SERVER made at `/decision`, else `None`.
+///
+/// **`attempted` is read from the contract, and that is honest.** `build_stream` stores the route it
+/// is about to ask for in `plan.contract` BEFORE it asks `/decision`, and `apply_plan` installs
+/// the contract of a refusing plan like any other (only the URL and the encoder session are
+/// withheld) — so the contract records which route was ATTEMPTED even though none was installed.
+/// The refusal arm is reached only from the remux / HLS / progressive-transcode branch, so those
+/// are the only three answers; it is ordered as [`delivery_class`] orders them. `delivery` itself
+/// stays `unknown`: reporting the attempt as the delivery would say a route existed.
+fn refusal_context(ps: &crate::route::PlaybackSession) -> Option<RefusalContext> {
+    let codes = crate::route::server_refusal_codes(ps)?;
+    let attempted = if crate::route::is_segmented_hls(ps) {
+        DeliveryClass::Hls
+    } else if crate::route::is_remux(ps) {
+        DeliveryClass::Remux
+    } else {
+        DeliveryClass::Transcode
+    };
+    Some(RefusalContext {
+        general: DecisionCodeClass::from_code(codes.general),
+        transcode: DecisionCodeClass::from_code(codes.transcode),
+        attempted,
+        source_video: VideoCodecClass::from_name(&crate::route::source_vcodec(ps)),
+        source_audio: AudioCodecClass::from_name(&crate::route::source_acodec(ps)),
+    })
 }
 
 fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
@@ -1163,8 +1283,16 @@ fn rebuffer_time_class(ms: i64) -> &'static str {
     }
 }
 
+/// `direct` / `transcode` of the route this playback INSTALLED, `unknown` when none was.
+///
+/// A refused or unresolved plan installs no route (`tsession` stays empty), and "no encoder
+/// session" is how a direct play is recognised — so this read `direct` for every refusal, the same
+/// false claim [`delivery_class`] made until Sentry PLX-NATIVE-14. The usage funnel's `mode`
+/// domain gained `unknown` for it; `diag::schema::MODE` and `PRIVACY.md` carry the value.
 fn mode(ps: &crate::route::PlaybackSession) -> &'static str {
-    if crate::route::is_transcoding(ps) {
+    if crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
+        "unknown"
+    } else if crate::route::is_transcoding(ps) {
         "transcode"
     } else {
         "direct"
@@ -1202,39 +1330,127 @@ fn new_attempt_id() -> i64 {
     (i64::from_le_bytes(b) & i64::MAX) as i64
 }
 
-/// The video codec, from a CLOSED table.
+/// The video codec, as a CLOSED domain.
 ///
 /// `route::stream_vcodec` hands back a `String` off the wire, and `diag::schema` has no arm that
 /// could carry one — deliberately, that being the property that makes "no runtime string reaches
 /// the wire" a fact about the type. So the mapping is here: a name the table does not know becomes
 /// `other`, which is a real answer (it means the server sent something this app did not expect) and
-/// cannot become a leak.
-pub(crate) fn video_codec_class(name: &str) -> &'static str {
-    match name.to_ascii_lowercase().as_str() {
-        "h264" | "avc" | "avc1" => "h264",
-        "hevc" | "h265" | "hvc1" => "hevc",
-        "av1" => "av1",
-        "vp9" => "vp9",
-        "mpeg2video" | "mpeg2" => "mpeg2",
-        "" => "unknown",
-        _ => "other",
+/// cannot become a leak. ONE table serves the usage funnel's `playback.started` and the handled
+/// error report's source codecs, so the two cannot disagree about what "hevc" is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoCodecClass {
+    Unknown,
+    H264,
+    Hevc,
+    Av1,
+    Vp9,
+    Mpeg2,
+    Other,
+}
+
+impl VideoCodecClass {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Unknown,
+        Self::H264,
+        Self::Hevc,
+        Self::Av1,
+        Self::Vp9,
+        Self::Mpeg2,
+        Self::Other,
+    ];
+
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::H264 => "h264",
+            Self::Hevc => "hevc",
+            Self::Av1 => "av1",
+            Self::Vp9 => "vp9",
+            Self::Mpeg2 => "mpeg2",
+            Self::Other => "other",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "h264" | "avc" | "avc1" => Self::H264,
+            "hevc" | "h265" | "hvc1" => Self::Hevc,
+            "av1" => Self::Av1,
+            "vp9" => Self::Vp9,
+            "mpeg2video" | "mpeg2" => Self::Mpeg2,
+            "" => Self::Unknown,
+            _ => Self::Other,
+        }
     }
 }
 
-/// The audio codec, from a closed table, for [`video_codec_class`]'s reason.
-pub(crate) fn audio_codec_class(name: &str) -> &'static str {
-    match name.to_ascii_lowercase().as_str() {
-        "aac" => "aac",
-        "ac3" => "ac3",
-        "eac3" | "ac3 plus" | "ec-3" => "eac3",
-        "truehd" => "truehd",
-        "dts" | "dca" => "dts",
-        "flac" => "flac",
-        "mp3" => "mp3",
-        "opus" => "opus",
-        "" => "unknown",
-        _ => "other",
+/// The audio codec, as a closed domain, for [`VideoCodecClass`]'s reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioCodecClass {
+    Unknown,
+    Aac,
+    Ac3,
+    Eac3,
+    TrueHd,
+    Dts,
+    Flac,
+    Mp3,
+    Opus,
+    Other,
+}
+
+impl AudioCodecClass {
+    pub(crate) const ALL: [Self; 10] = [
+        Self::Unknown,
+        Self::Aac,
+        Self::Ac3,
+        Self::Eac3,
+        Self::TrueHd,
+        Self::Dts,
+        Self::Flac,
+        Self::Mp3,
+        Self::Opus,
+        Self::Other,
+    ];
+
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Aac => "aac",
+            Self::Ac3 => "ac3",
+            Self::Eac3 => "eac3",
+            Self::TrueHd => "truehd",
+            Self::Dts => "dts",
+            Self::Flac => "flac",
+            Self::Mp3 => "mp3",
+            Self::Opus => "opus",
+            Self::Other => "other",
+        }
     }
+
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "aac" => Self::Aac,
+            "ac3" => Self::Ac3,
+            "eac3" | "ac3 plus" | "ec-3" => Self::Eac3,
+            "truehd" => Self::TrueHd,
+            "dts" | "dca" => Self::Dts,
+            "flac" => Self::Flac,
+            "mp3" => Self::Mp3,
+            "opus" => Self::Opus,
+            "" => Self::Unknown,
+            _ => Self::Other,
+        }
+    }
+}
+
+pub(crate) fn video_codec_class(name: &str) -> &'static str {
+    VideoCodecClass::from_name(name).code()
+}
+
+pub(crate) fn audio_codec_class(name: &str) -> &'static str {
+    AudioCodecClass::from_name(name).code()
 }
 
 // ---- the buckets, which are the privacy decision --------------------------------------------
@@ -1451,8 +1667,8 @@ mod tests {
     fn a_refused_plan_reports_no_delivery_and_no_requested_quality() {
         let _g = crate::testlock::serial();
         for verdict in [
-            crate::route::PlayVerdict::Server("Cannot convert this item.".into()),
-            crate::route::PlayVerdict::Server(String::new()),
+            crate::route::PlayVerdict::Server("Cannot convert this item.".into(), Default::default()),
+            crate::route::PlayVerdict::Server(String::new(), Default::default()),
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
         ] {
@@ -1464,6 +1680,174 @@ mod tests {
             // The selected quality is the viewer's own setting, which is recorded and still true.
             assert_eq!(ctx.selected, QualityClass::selected(crate::route::quality()));
         }
+    }
+
+    /// Sentry PLX-NATIVE-14, the half `delivery: unknown` could not give: WHICH refusal. A server
+    /// refusal reports the verdict numbers it was made on, the route the plan ATTEMPTED (recorded
+    /// in the contract even though no route was installed), and the source file's codecs — while
+    /// `delivery` itself stays `unknown`, because nothing was installed.
+    #[test]
+    fn a_server_refusal_reports_its_codes_the_attempted_route_and_the_source_codecs() {
+        let _g = crate::testlock::serial();
+        use crate::route::DecisionCodes as C;
+        // (remux, hls) -> the attempt. Remux is checked after HLS, as `delivery_class` does.
+        for (remux, hls, attempted) in [
+            (true, false, "original_remux"),
+            (false, true, "hls"),
+            (false, false, "progressive_transcode"),
+        ] {
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_by_server_for_test(
+                &mut ps,
+                "Cannot convert this item.",
+                C { general: Some(2000), transcode: Some(4007) },
+                remux,
+                hls,
+                "vp9",
+                "eac3",
+            );
+            let ctx = error_context(&ps);
+            assert_eq!(ctx.delivery.code(), "unknown", "no route was installed");
+            let r = ctx.refusal.expect("a server refusal carries its refusal block");
+            assert_eq!(r.general.code(), "2000");
+            assert_eq!(r.transcode.code(), "4007");
+            assert_eq!(r.attempted.code(), attempted, "remux={remux} hls={hls}");
+            assert_eq!(r.source_video.code(), "vp9");
+            assert_eq!(r.source_audio.code(), "eac3");
+        }
+        // A body that carried only one of the two numbers keeps the other `absent`, not 0.
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::refuse_by_server_for_test(
+            &mut ps,
+            "",
+            C { general: Some(2000), transcode: None },
+            false,
+            false,
+            "",
+            "",
+        );
+        let r = error_context(&ps).refusal.expect("refusal block");
+        assert_eq!((r.transcode.code(), r.source_video.code(), r.source_audio.code()), ("absent", "unknown", "unknown"));
+    }
+
+    /// The server's sentence is free text — it can carry a file name, a path, a library or server
+    /// name — and must never leave the television. Build the real payload for a refused plan whose
+    /// sentence, source codec names and server codes are all hostile, and demand the serialized
+    /// event holds none of them while still holding the closed fields.
+    #[test]
+    fn no_free_text_from_the_server_decision_reaches_the_serialized_event() {
+        let _g = crate::testlock::serial();
+        use crate::route::DecisionCodes as C;
+        let sentence = "Cannot convert /media/Private Films/Secret Title (2020)/secret.mkv on SERVER-NAME-9 \
+                        token=abc123 http://192.168.1.50:32400/library";
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::refuse_by_server_for_test(
+            &mut ps,
+            sentence,
+            C { general: Some(2000), transcode: Some(4999) },
+            false,
+            false,
+            "x-secret-video-tag",
+            "x-secret-audio-tag",
+        );
+        let ctx = error_context(&ps);
+        let body = crate::telemetry::playback::event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            crate::player::FailureKind::DecisionRefused,
+            ctx,
+            &[],
+        );
+        let text = String::from_utf8(body).expect("utf-8 event");
+        for leak in [
+            "Secret", "secret", "/media", "Private", "SERVER-NAME", "token", "abc123", "192.168",
+            "32400", "Cannot convert", "x-secret",
+        ] {
+            assert!(!text.contains(leak), "the payload carries {leak:?}: {text}");
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).expect("event JSON");
+        let refusal = &v["contexts"]["refusal"];
+        assert_eq!(refusal["general_code"], "2000");
+        assert_eq!(refusal["transcode_code"], "other_4xxx", "an unlisted number is bucketed, not echoed");
+        assert_eq!(refusal["source_video"], "other");
+        assert_eq!(refusal["source_audio"], "other");
+        assert_eq!(v["tags"]["playback.attempted_delivery"], "progressive_transcode");
+    }
+
+    /// The block is the SERVER's refusal and nothing else: the app's own policy refusals have no
+    /// server codes and no attempted transcode, and a playback with a route is not a refusal.
+    #[test]
+    fn only_a_server_refusal_carries_the_refusal_block() {
+        let _g = crate::testlock::serial();
+        for verdict in [
+            crate::route::PlayVerdict::DirectPlayDisabled,
+            crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
+        ] {
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_for_test(&mut ps, verdict.clone());
+            assert!(error_context(&ps).refusal.is_none(), "{verdict:?}");
+        }
+        let mut hls = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut hls, false, true);
+        assert!(error_context(&hls).refusal.is_none());
+    }
+
+    /// The numbers are bucketed by their DOCUMENTED class (OpenAPI `generalDecisionCode`), and an
+    /// absent number is never read as 0.
+    #[test]
+    fn decision_codes_fall_into_a_closed_domain() {
+        for (code, want) in [
+            (None, "absent"),
+            (Some(2000), "2000"),
+            (Some(2003), "2003"),
+            (Some(4007), "4007"),
+            (Some(1001), "other_1xxx"),
+            (Some(2001), "other_2xxx"),
+            (Some(3000), "other_3xxx"),
+            (Some(4020), "other_4xxx"),
+            (Some(0), "other"),
+            (Some(5000), "other"),
+            (Some(-1), "other"),
+        ] {
+            assert_eq!(DecisionCodeClass::from_code(code).code(), want, "{code:?}");
+        }
+        // The listed domain is the whole enum, with no code repeated.
+        let mut codes: Vec<_> = DecisionCodeClass::ALL.iter().map(|c| c.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), DecisionCodeClass::ALL.len());
+    }
+
+    /// Source codecs reach the report through the closed tables only: a name the table does not
+    /// know is `other` and is never echoed, which is what keeps a file's own tag out of Sentry.
+    #[test]
+    fn source_codecs_are_closed_classes_and_unknown_names_are_never_echoed() {
+        assert_eq!(VideoCodecClass::from_name("HEVC").code(), "hevc");
+        assert_eq!(VideoCodecClass::from_name("vc1").code(), "other");
+        assert_eq!(VideoCodecClass::from_name("").code(), "unknown");
+        assert_eq!(AudioCodecClass::from_name("dca").code(), "dts");
+        assert_eq!(AudioCodecClass::from_name("x-private-tag").code(), "other");
+        // The usage funnel's string helpers are the same table.
+        assert_eq!(video_codec_class("h265"), VideoCodecClass::Hevc.code());
+        assert_eq!(audio_codec_class("ec-3"), AudioCodecClass::Eac3.code());
+    }
+
+    /// `playback.failed`'s `mode` read `direct` for a refused plan, for the reason `delivery` did:
+    /// it was derived from the absence of an encoder session, and a refusal has none.
+    #[test]
+    fn a_refused_plan_reports_mode_unknown_and_a_real_route_keeps_its_mode() {
+        let _g = crate::testlock::serial();
+        let mut refused = crate::route::PlaybackSession::default();
+        crate::route::refuse_by_server_for_test(&mut refused, "", Default::default(), true, false, "", "");
+        assert_eq!(mode(&refused), "unknown");
+        let mut policy = crate::route::PlaybackSession::default();
+        crate::route::refuse_for_test(&mut policy, crate::route::PlayVerdict::DirectPlayDisabled);
+        assert_eq!(mode(&policy), "unknown");
+        assert_eq!(mode(&crate::route::PlaybackSession::default()), "direct");
+        let mut transcode = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut transcode, false, false);
+        assert_eq!(mode(&transcode), "transcode");
     }
 
     /// The other half: a failure on a playback that DID install a route keeps the real tags.

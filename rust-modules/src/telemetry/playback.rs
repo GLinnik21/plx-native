@@ -149,6 +149,28 @@ pub(crate) fn event_body(
         }},
         "breadcrumbs": {"values": breadcrumbs},
     });
+    if let Some(r) = context.refusal {
+        // Tags so an issue can be searched and grouped on them, a context so one event reads in
+        // one place. Every value is the `code()` of a closed enum; the server's own sentence has
+        // no field here and no path to one (see `PlayVerdict::Server` — it stays on the device).
+        for (key, value) in [
+            ("playback.refusal_general", r.general.code()),
+            ("playback.refusal_transcode", r.transcode.code()),
+            ("playback.attempted_delivery", r.attempted.code()),
+            ("playback.source_video", r.source_video.code()),
+            ("playback.source_audio", r.source_audio.code()),
+        ] {
+            body["tags"][key] = Value::String(value.to_string());
+        }
+        body["contexts"]["refusal"] = serde_json::json!({
+            "type": "refusal",
+            "general_code": r.general.code(),
+            "transcode_code": r.transcode.code(),
+            "attempted_delivery": r.attempted.code(),
+            "source_video": r.source_video.code(),
+            "source_audio": r.source_audio.code(),
+        });
+    }
     if !dist.is_empty() {
         body["dist"] = Value::String(dist.to_string());
     }
@@ -195,8 +217,9 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
 /// the closed domains disclosed beside the preview. No consent-time identifier is minted.
 pub(crate) fn preview_event() -> Vec<u8> {
     use crate::player::report::{
-        BufferClass, DeliveryClass, DeliveryReason, HttpClass, OriginalProbePhase, PipelineClass,
-        QualityClass, RasterClass, RateClass, TraceAge, TraceDirection, TraceOutcome,
+        AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
+        OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
+        TraceAge, TraceDirection, TraceOutcome, VideoCodecClass,
     };
     let trace = [
         TraceStep {
@@ -269,6 +292,16 @@ pub(crate) fn preview_event() -> Vec<u8> {
             http: HttpClass::ServerError,
             buffer: BufferClass::S3To10,
             started: true,
+            // Representative of a `decision_refused` report's extra block, shown here so the
+            // consent screen's sample carries every key a report can; a real report has it only
+            // when the server refused the plan.
+            refusal: Some(RefusalContext {
+                general: DecisionCodeClass::C2000,
+                transcode: DecisionCodeClass::C4007,
+                attempted: DeliveryClass::Transcode,
+                source_video: VideoCodecClass::Vp9,
+                source_audio: AudioCodecClass::Eac3,
+            }),
         },
         &trace,
     )
@@ -292,10 +325,11 @@ pub(crate) fn preview_domains() -> String {
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
     };
+    use crate::player::report::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
     use FailureKind as F;
     use crate::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 13] = [
+    let domains: [(&str, String); 17] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -311,6 +345,12 @@ pub(crate) fn preview_domains() -> String {
             F::code,
         )),
         (msg::core_preview_domain_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
+        // The four rows below ride a `decision_refused` report only (`PlaybackErrorContext::
+        // refusal`); the labels say so, and each list is its enum's own `ALL`/variant set.
+        (msg::core_preview_domain_refusal_codes(), codes(&N::ALL, N::code)),
+        (msg::core_preview_domain_attempted_delivery(), codes(&[D::Remux, D::Hls, D::Transcode], D::code)),
+        (msg::core_preview_domain_source_video(), codes(&V::ALL, V::code)),
+        (msg::core_preview_domain_source_audio(), codes(&Z::ALL, Z::code)),
         (msg::core_preview_domain_quality(), codes(
             &[
                 Q::Unknown,
@@ -424,8 +464,9 @@ pub(crate) fn preview_domains() -> String {
 mod tests {
     use super::*;
     use crate::player::report::{
-        BufferClass, DeliveryClass, HttpClass, OriginalProbePhase, PipelineClass, QualityClass,
-        RasterClass, RateClass, TraceAge, TraceOutcome,
+        AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, HttpClass,
+        OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
+        TraceAge, TraceOutcome, VideoCodecClass,
     };
 
     fn context() -> PlaybackErrorContext {
@@ -440,6 +481,7 @@ mod tests {
             http: HttpClass::ServerError,
             buffer: BufferClass::S3To10,
             started: true,
+            refusal: None,
         }
     }
 
@@ -741,6 +783,99 @@ mod tests {
             );
             assert_eq!(keys(&crumb["data"]), want);
         }
+    }
+
+    /// A refused plan's report carries the refusal block as tags (to search and group on) and as a
+    /// context (to read), every value a closed code; a report with no refusal carries neither, which
+    /// `handled_error_schema_keys_are_exact_for_every_breadcrumb_shape` pins key by key.
+    #[test]
+    fn a_refusal_context_adds_exactly_its_closed_tags_and_context_keys() {
+        fn keys(v: &Value) -> Vec<&str> {
+            let mut out: Vec<_> = v.as_object().expect("object").keys().map(String::as_str).collect();
+            out.sort_unstable();
+            out
+        }
+        let mut ctx = context();
+        ctx.delivery = DeliveryClass::Unknown;
+        ctx.requested = QualityClass::Unknown;
+        ctx.refusal = Some(RefusalContext {
+            general: DecisionCodeClass::C2000,
+            transcode: DecisionCodeClass::C4007,
+            attempted: DeliveryClass::Remux,
+            source_video: VideoCodecClass::Hevc,
+            source_audio: AudioCodecClass::TrueHd,
+        });
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureKind::DecisionRefused,
+            ctx,
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(
+            keys(&v["contexts"]),
+            ["hardware", "playback", "refusal", "webos"]
+        );
+        assert_eq!(
+            keys(&v["contexts"]["refusal"]),
+            ["attempted_delivery", "general_code", "source_audio", "source_video", "transcode_code", "type"]
+        );
+        assert_eq!(v["contexts"]["refusal"]["general_code"], "2000");
+        assert_eq!(v["contexts"]["refusal"]["transcode_code"], "4007");
+        assert_eq!(v["contexts"]["refusal"]["attempted_delivery"], "original_remux");
+        assert_eq!(v["contexts"]["refusal"]["source_video"], "hevc");
+        assert_eq!(v["contexts"]["refusal"]["source_audio"], "truehd");
+        assert_eq!(
+            keys(&v["tags"]),
+            [
+                "playback.attempted_delivery",
+                "playback.declared_rate",
+                "playback.delivery",
+                "playback.kind",
+                "playback.refusal_general",
+                "playback.refusal_transcode",
+                "playback.requested_quality",
+                "playback.selected_quality",
+                "playback.source_audio",
+                "playback.source_video",
+                "playback.started",
+            ]
+        );
+        assert_eq!(v["tags"]["playback.delivery"], "unknown", "no route was installed");
+        assert_eq!(v["tags"]["playback.refusal_transcode"], "4007");
+        assert_eq!(v["tags"]["playback.attempted_delivery"], "original_remux");
+        assert_eq!(v["tags"]["playback.source_video"], "hevc");
+        // Grouping is unchanged: the fingerprint is the failure kind, as before.
+        assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "decision_refused"]));
+    }
+
+    #[test]
+    fn the_consent_sample_carries_every_key_a_refusal_report_can() {
+        let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
+        assert!(v["contexts"]["refusal"].is_object(), "{v}");
+        assert!(v["tags"]["playback.refusal_general"].is_string());
+    }
+
+    #[test]
+    fn consent_preview_and_privacy_name_every_refusal_domain_value() {
+        use crate::player::report::{AudioCodecClass, DecisionCodeClass, VideoCodecClass};
+        let legend = preview_domains();
+        let privacy = include_str!("../../../PRIVACY.md");
+        let mut values: Vec<&str> = Vec::new();
+        values.extend(DecisionCodeClass::ALL.iter().map(|c| c.code()));
+        values.extend(VideoCodecClass::ALL.iter().map(|c| c.code()));
+        values.extend(AudioCodecClass::ALL.iter().map(|c| c.code()));
+        for value in values {
+            assert!(legend.contains(value), "preview domain omitted {value}");
+            assert!(privacy.contains(value), "PRIVACY.md omitted {value}");
+        }
+        // The whole domain, in order, once per field: the consent screen lists it as written.
+        assert!(legend.contains("absent / 2000 / 2003 / 4007 / other_1xxx / other_2xxx / other_3xxx / other_4xxx / other"));
+        assert!(legend.contains("original_remux / hls / progressive_transcode"));
+        assert!(legend.contains("unknown / h264 / hevc / av1 / vp9 / mpeg2 / other"));
+        assert!(legend.contains("unknown / aac / ac3 / eac3 / truehd / dts / flac / mp3 / opus / other"));
     }
 
     #[test]

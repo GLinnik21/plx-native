@@ -764,7 +764,7 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
 #[cfg(test)]
 const PLAYBACK_ID: &str = "a random number minted per attempt, never stored and never reused";
 #[cfg(test)]
-const MODE: &str = "`direct` or `transcode`";
+const MODE: &str = "`direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused";
 
 /// One event's contract. See [`EVENT_SPECS`].
 #[cfg(test)]

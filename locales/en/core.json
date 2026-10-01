@@ -117,6 +117,22 @@
     "value": "delivery",
     "description": "Field name in the consent preview's list of possible playback-error values: how the video was delivered."
   },
+  "core.preview_domain_refusal_codes": {
+    "value": "server decision codes, general and transcode (refused-plan reports only)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the numeric verdict codes the media server gave when it refused to play or convert an item. Only reports about a refusal carry it."
+  },
+  "core.preview_domain_attempted_delivery": {
+    "value": "attempted delivery (refused-plan reports only)",
+    "description": "Field name in the consent preview's list of possible playback-error values: which way of delivering the video the app asked the server for before the server refused. Only reports about a refusal carry it."
+  },
+  "core.preview_domain_source_video": {
+    "value": "source video codec (refused-plan reports only)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the video format class of the file the server refused. Only reports about a refusal carry it."
+  },
+  "core.preview_domain_source_audio": {
+    "value": "source audio codec (refused-plan reports only)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the audio format class of the file the server refused. Only reports about a refusal carry it."
+  },
   "core.preview_domain_quality": {
     "value": "quality",
     "description": "Field name in the consent preview's list of possible playback-error values."
