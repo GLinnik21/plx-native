@@ -17,6 +17,7 @@ across files: a boundary that names another module's `const X: &str = "…"` is 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
 import argparse
 import json
 from pathlib import Path
@@ -62,7 +63,20 @@ def decode(text: str) -> str:
                   else {'n': '\n', 'r': '\r', 't': '\t', '0': '\0'}.get(m[3], m[3]), text)
 
 
+# Compiled once and matched at an offset (`pattern.match(source, i)`), never against `source[i:]`:
+# slicing copied the rest of the file for every token, which made the scan quadratic in file size
+# and was nearly all of this gate's wall time. `Match.end()` is absolute when an offset is given.
+RAW_STRING = re.compile(r'(?:[bc])?r(#{0,255})"')
+QUOTED_STRING = re.compile(r'(?:[bc])?"')
+CHAR_LITERAL = re.compile(r"(?:b)?'(?:\\(?:u\{[^}]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'")
+SPACE = re.compile(r'\s+')  # `\s` is `str.isspace()` for str patterns
+WORD = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+
+
+@functools.lru_cache(maxsize=None)
 def tokenize(source: str) -> list[Token]:
+    """Token list for one file. Cached: `const_table` and `scan` tokenize the same file, and
+    neither mutates the result."""
     tokens = []
     i, line = 0, 1
     while i < len(source):
@@ -77,21 +91,21 @@ def tokenize(source: str) -> list[Token]:
                 elif source.startswith('*/', i): depth, i = depth - 1, i + 2
                 else: i += 1
         elif source[i].isspace():
-            i += 1
+            i = SPACE.match(source, i).end()
         else:
-            raw = re.match(r'(?:[bc])?r(#{0,255})"', source[i:])
-            quoted = re.match(r'(?:[bc])?"', source[i:])
-            char = re.match(r"(?:b)?'(?:\\(?:u\{[^}]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'", source[i:])
-            word = re.match(r'[A-Za-z_][A-Za-z_0-9]*', source[i:])
+            raw = RAW_STRING.match(source, i)
+            quoted = QUOTED_STRING.match(source, i)
+            char = CHAR_LITERAL.match(source, i)
+            word = WORD.match(source, i)
             if raw:
-                content = i + raw.end()
+                content = raw.end()
                 ending = '"' + raw[1]
                 end = source.find(ending, content)
                 if end < 0: raise ValueError(f'unterminated raw string at line {line}')
                 tokens.append(Token(source[content:end], ln, True))
                 i = end + len(ending)
             elif quoted:
-                content = i + quoted.end()
+                content = quoted.end()
                 i = content
                 while i < len(source):
                     if source[i] == '\\': i += 2
@@ -100,10 +114,10 @@ def tokenize(source: str) -> list[Token]:
                 tokens.append(Token(decode(source[content:i]), ln, True))
                 i += 1
             elif char:
-                i += char.end()  # a single character cannot contain a UI message
+                i = char.end()  # a single character cannot contain a UI message
             elif word:
                 tokens.append(Token(word[0], ln))
-                i += word.end()
+                i = word.end()
             else:
                 punctuation = source[i:i+2]
                 if punctuation not in ('::', '=>', '->'): punctuation = source[i]

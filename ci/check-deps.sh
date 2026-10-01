@@ -104,6 +104,19 @@ grep_code() {
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
 
+# grep_code_owner <pattern>: grep_code "$SRC" for the six owner rules below, from ONE shared pass.
+# Each carries a ~100-name alternation that this platform's grep evaluates line by line at ~0.5 s
+# a rule over the whole tree. Every line any of them can match names one of the six modules'
+# paths (`crate::<module>::` or `stores::<module>::`, the leading part of the pattern), so one
+# cheap alternation of just those prefixes keeps the few hundred candidate lines, and each rule
+# filters that list with its real pattern. The verdict and the output are unchanged, but the
+# prefix alternation must stay a NECESSARY part of every owner pattern, never a loose sample.
+OWNER_PREFIX='crate::(browse|viewstate|person|search|pms|metadata)::|stores::(browse|viewstate|person|search|hubs|metadata)::'
+OWNER_LINES="$(grep -HrnE --include='*.rs' "$OWNER_PREFIX" "$SRC" 2>/dev/null || true)"
+grep_code_owner() {
+  printf '%s\n' "$OWNER_LINES" | grep -E -- "$1" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
+}
+
 # strip_strings_and_comments <file>: prints the file, one line per input line (so line numbers of
 # the output line up with `sed -n '<n>p'` on the original), with the CONTENT of every
 # double-quoted string literal blanked to spaces (quotes kept, so `"foo"` becomes `"   "`, an
@@ -391,7 +404,7 @@ browse_owner_matches=$({
     'BrowseState|BrowseAdapter|BrowseStore' "$SRC/browse/view.rs"
   owner_declarations "$browse_store_facades" 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
     'BrowseState|BrowseAdapter|BrowseStore' "$SRC/stores/browse.rs"
-  grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
+  grep_code_owner "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\("
 } | sort -u)
 if [ -z "$browse_owner_matches" ]; then
   ok "browse-owner: zero global state, selectors, adapters, and free facades"
@@ -409,7 +422,7 @@ viewstate_owner_matches=$({
   owner_declarations "$viewstate_facades" "$viewstate_selectors" \
     'ViewStateState|ViewStateAdapter|ViewStateStore|Req|Completion|Done' \
     "$SRC/viewstate.rs" "$SRC/stores/viewstate.rs"
-  grep_code "(crate::viewstate|crate::stores::viewstate|stores::viewstate)::($viewstate_facades)\(" "$SRC"
+  grep_code_owner "(crate::viewstate|crate::stores::viewstate|stores::viewstate)::($viewstate_facades)\("
 } | sort -u)
 if [ -z "$viewstate_owner_matches" ]; then
   ok "viewstate-owner: zero global storage, transport, selectors, and free facades"
@@ -428,7 +441,7 @@ person_owner_matches=$({
   owner_declarations "$person_facades" "$person_selectors" \
     'PersonState|PersonAdapter|PersonStore|Person|Fetch|Mail|Landing' \
     "$SRC/person.rs" "$SRC/stores/person.rs"
-  grep_code "(crate::person|crate::stores::person|stores::person)::($person_facades)\(" "$SRC"
+  grep_code_owner "(crate::person|crate::stores::person|stores::person)::($person_facades)\("
 } | sort -u)
 if [ -z "$person_owner_matches" ]; then
   ok "person-owner: zero global storage, transport, selectors, and free facades"
@@ -454,7 +467,7 @@ search_owner_matches=$({
   owner_declarations "$search_facades" "$search_selectors" \
     'SearchState|SearchAdapter|SearchStore|Fetch|Projection|Shelf' \
     "$SRC/search.rs" "$SRC/stores/search.rs"
-  grep_code "(crate::search|crate::stores::search|stores::search)::($search_facades)\(" "$SRC"
+  grep_code_owner "(crate::search|crate::stores::search|stores::search)::($search_facades)\("
 } | sort -u)
 if [ -z "$search_owner_matches" ]; then
   ok "search-owner: zero global storage, transport, selectors, and free facades"
@@ -480,7 +493,7 @@ hubs_owner_matches=$({
   owner_declarations "$hubs_facades" "$hubs_selectors" \
     'PmsState|PmsAdapter|HubsStore|Landing|Src|SourceBuild' \
     "$SRC/pms.rs" "$SRC/pms/initial.rs" "$SRC/stores/hubs.rs"
-  grep_code "(crate::pms|crate::stores::hubs|stores::hubs)::($hubs_facades)\(" "$SRC"
+  grep_code_owner "(crate::pms|crate::stores::hubs|stores::hubs)::($hubs_facades)\("
 } | sort -u)
 if [ -z "$hubs_owner_matches" ]; then
   ok "hubs-owner: zero global storage, transport, selectors, and free facades"
@@ -505,7 +518,7 @@ metadata_owner_matches=$({
   owner_declarations "$metadata_facades" "$metadata_selectors" \
     'MetadataState|MetadataAdapter|MetadataStore|Tracker' \
     "$SRC/metadata.rs" "$SRC/stores/metadata.rs"
-  grep_code "(crate::metadata|crate::stores::metadata|stores::metadata)::($metadata_facades)\(" "$SRC"
+  grep_code_owner "(crate::metadata|crate::stores::metadata|stores::metadata)::($metadata_facades)\("
 } | sort -u)
 if [ -z "$metadata_owner_matches" ]; then
   ok "metadata-owner: zero global storage, transport, selectors, and free facades"
