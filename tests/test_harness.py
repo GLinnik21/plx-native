@@ -22,6 +22,8 @@ synthetic): the invariants being checked — every case ends with an `rk` or a `
 skips only its owner — are properties of the tracked matrix as it actually stands, and a case added
 tomorrow that breaks one of them should fail here rather than on the television.
 """
+import concurrent.futures
+import functools
 import http.client
 import importlib.util
 import inspect
@@ -5200,23 +5202,96 @@ class DepGates(unittest.TestCase):
 
     ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+    # Every path `ci/check-deps.sh` reads (it `cd`s to its own `..` first): the Rust sources it
+    # greps, its allowlists and helper, and the build configuration its `fpflags` rule scans.
+    # A self-test plants or mutates a file in a private copy of exactly these, never in the
+    # checkout, so the self-tests are independent of one another (they run in parallel, see
+    # `load_tests` at the bottom) and a failing or interrupted one cannot leave the working tree
+    # edited. `test_the_private_copy_grades_exactly_like_the_real_tree` (the grep inputs) and
+    # `test_the_private_copy_carries_every_fpflags_input` (the build configuration) fail if this
+    # list falls behind the script.
+    TREE_INPUTS = (
+        "ci",
+        "rust-modules/src",
+        "rust-modules/Cargo.toml",
+        "rust-modules/build.rs",
+        "rust-modules/storage/Cargo.toml",
+        "rust-modules/storage/build.rs",
+        "rust-modules/.cargo",
+        "Makefile",
+    )
+
+    @functools.cached_property
+    def tree(self):
+        """The private copy of the gate's inputs; removed when the test ends."""
+        root = tempfile.mkdtemp(prefix="_check_deps_tree_")
+        self.addCleanup(shutil.rmtree, root, True)
+        for rel in self.TREE_INPUTS:
+            source = os.path.join(self.ROOT, rel)
+            if not os.path.exists(source):
+                continue
+            target = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.isdir(source):
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                shutil.copy2(source, target)
+        return root
+
     def test_check_deps_is_green(self):
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_self_tests_never_touch_the_real_tree(self):
+        """Red-first for the parallel gate self-tests: every planting helper below edits a private
+        copy of the gate's inputs, never the checkout. A helper that wrote into the checkout
+        bumped the mtime of a file `cargo` watches, so the NEXT cargo invocation of a `make check`
+        recompiled the whole crate for nothing -- and made it impossible to run two self-tests at
+        once."""
+        real = os.path.join(self.ROOT, "rust-modules", "src", "browse", "mod.rs")
+        before = os.stat(real).st_mtime_ns
+        self.assertEqual(self._prepend("browse/mod.rs", "\n").returncode, 0)
+        self.assertEqual(os.stat(real).st_mtime_ns, before, "a self-test wrote into the real tree")
+
+    def test_the_private_copy_grades_exactly_like_the_real_tree(self):
+        """The copy must carry every input `ci/check-deps.sh` reads: a missing one makes a gate see
+        nothing and pass (or fail) for a reason the real tree would not share."""
+        real = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        copy = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual((copy.returncode, copy.stdout), (real.returncode, real.stdout), copy.stderr)
+
+    def test_the_private_copy_carries_every_fpflags_input(self):
+        """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
+        gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
+        it scans, inside the copy, and require the rule to go red naming it."""
+        for rel in ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/storage/Cargo.toml",
+                    "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile"):
+            with self.subTest(input=rel):
+                target = os.path.join(self.tree, rel)
+                self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
+                with open(target, "a", encoding="utf-8") as f:
+                    f.write("\nrustflags = [\"-C\", \"target-feature=+fma\"]\n")
+                r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
+                                   capture_output=True, text=True)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("fpflags:", out)
+                self.assertIn(rel, out)
+                shutil.copy2(os.path.join(self.ROOT, rel), target)
+
     def _plant(self, name, content):
         """Write `content` to a temp file under rust-modules/src that no ci/allow/*.txt names,
-        run ci/check-deps.sh against the real tree with it present, and guarantee removal even if
+        run the private copy's ci/check-deps.sh with it present, and guarantee removal even if
         the assertion that follows fails. An orphan .rs file with no `mod` statement pointing at
         it is invisible to cargo (nothing declares it part of the crate) but not to `find … -name
         '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
         catches a shape without touching a real, permanent source file."""
-        target = os.path.join(self.ROOT, "rust-modules", "src", name)
+        target = os.path.join(self.tree, "rust-modules", "src", name)
         self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
-            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
                                    capture_output=True, text=True)
         finally:
             if os.path.exists(target):
@@ -5228,16 +5303,16 @@ class DepGates(unittest.TestCase):
         assertion that follows fails. Unlike `_plant`'s orphan-file trick, `mutators-visibility`
         greps a DECLARATION LINE inside one of the seven specific legacy-store files by path, not
         a `find … -name '*.rs'` sweep, so an orphan file elsewhere in the tree is invisible to it
-        by design; a scratch mutation of the real file's own content is what "plants a
+        by design; a scratch mutation of the copied file's own content is what "plants a
         pub(crate) fn set_cur in a temp copy" (the D3 brief's own words) has to mean here."""
-        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        target = os.path.join(self.tree, "rust-modules", "src", relpath)
         with open(target, encoding="utf-8") as f:
             original = f.read()
         self.assertEqual(original.count(needle), 1, f"{needle!r} not found exactly once in {relpath}")
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original.replace(needle, replacement, 1))
-            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
                                    capture_output=True, text=True)
         finally:
             with open(target, "w", encoding="utf-8") as f:
@@ -5245,13 +5320,13 @@ class DepGates(unittest.TestCase):
 
     def _prepend(self, relpath, content):
         """Temporarily prepend a valid module-level fixture to a scanned Rust file."""
-        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        target = os.path.join(self.tree, "rust-modules", "src", relpath)
         with open(target, encoding="utf-8") as f:
             original = f.read()
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content + original)
-            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
                                   capture_output=True, text=True)
         finally:
             with open(target, "w", encoding="utf-8") as f:
@@ -5384,14 +5459,14 @@ impl BrowseScopeFixture {
         self.assertIn("ok — browse-owner", r.stdout)
 
     def test_browse_owner_gate_fails_closed_when_a_scanner_input_is_missing(self):
-        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "view.rs")
+        target = os.path.join(self.tree, "rust-modules", "src", "browse", "view.rs")
         hidden = target + ".check-deps-selftest"
         self.assertTrue(os.path.exists(target), f"missing scanner fixture {target}")
         self.assertFalse(os.path.exists(hidden), f"stale self-test artifact at {hidden}")
         try:
             os.replace(target, hidden)
             r = subprocess.run(
-                [os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                [os.path.join(self.tree, "ci", "check-deps.sh")],
                 capture_output=True,
                 text=True,
             )
@@ -5459,7 +5534,7 @@ impl ViewStateOwnerGateFixture {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def _module_path_fixture(self, production_reference):
-        source = os.path.join(self.ROOT, "rust-modules", "src")
+        source = os.path.join(self.tree, "rust-modules", "src")
         with tempfile.TemporaryDirectory(prefix="_check_deps_cfg_", dir=source) as directory:
             declaration = '#[cfg(test)]\n#[allow(dead_code)]\n#[path = "support.rs"]\npub(crate) mod checks;\n'
             if production_reference:
@@ -5469,9 +5544,9 @@ impl ViewStateOwnerGateFixture {
             target = os.path.join(directory, "support.rs")
             with open(target, "w", encoding="utf-8") as output:
                 output.write('pub fn helper() { std::thread::spawn(|| {}); let _ = 0.5f32.powf(2.4); }\n')
-            result = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+            result = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
                                     capture_output=True, text=True)
-            return result, os.path.relpath(target, self.ROOT)
+            return result, os.path.relpath(target, self.tree)
 
     def test_cfg_test_path_modules_are_excluded_from_production_gates(self):
         result, target = self._module_path_fixture(False)
@@ -5919,6 +5994,78 @@ class StreamSelectionReset(unittest.TestCase):
         src = inspect.getsource(run.apply_stream_setup)
         self.assertIn('case.get("stream_reset", True)', src)
         self.assertIn("pms_reset_streams(", src)
+
+
+class _ParallelSuite(unittest.TestSuite):
+    """Runs its tests on a thread pool and replays each one's outcome into the real result.
+
+    Only for tests whose work is a subprocess and that share no state (`DepGates`: each runs
+    `ci/check-deps.sh` over its own private copy of the tree, about 11 s apiece (a few of them run it
+    several times),
+    which was 630 of the 645 s this module took when they ran one after another). Threads are
+    enough because the time is spent waiting on the child. A test runs against a private
+    `TestResult`, then its counters and failure lists are folded into the shared one on the
+    calling thread, so the shared result is only ever touched from one thread.
+
+    What parallel mode does not do: `-f` (failfast) and `-b` (buffer) are not honoured, and the
+    per-test progress characters are not printed -- the final count, the failure list and the exit
+    code are correct. Naming a dotted test or class on the command line bypasses this suite
+    entirely (see `load_tests`) and runs serially. An interrupt stops the tests not yet started
+    and waits only for the ones already running.
+    """
+
+    def run(self, result, debug=False):
+        jobs = min(8, os.cpu_count() or 1)
+        configured = os.environ.get("PLX_TEST_JOBS")
+        if configured:
+            try:
+                jobs = int(configured)
+            except ValueError:
+                print(f"PLX_TEST_JOBS={configured!r} is not an integer; using {jobs}", file=sys.stderr)
+        tests = list(self)
+        if jobs <= 1 or len(tests) <= 1:
+            return super().run(result, debug)
+
+        def one(test):
+            private = unittest.TestResult()
+            test.run(private)
+            return test, private
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+        try:
+            for future in [pool.submit(one, test) for test in tests]:
+                test, private = future.result()
+                result.startTest(test)
+                result.testsRun += private.testsRun - 1  # `startTest` counted this one
+                result.failures.extend(private.failures)
+                result.errors.extend(private.errors)
+                result.skipped.extend(private.skipped)
+                result.expectedFailures.extend(private.expectedFailures)
+                result.unexpectedSuccesses.extend(private.unexpectedSuccesses)
+                if not (private.failures or private.errors or private.skipped):
+                    result.addSuccess(test)
+                result.stopTest(test)
+        finally:
+            # Not `with`: its exit waits for EVERY queued test, so Ctrl-C would sit through the
+            # whole class. Cancel what has not started; a running test cleans up its own copy.
+            pool.shutdown(wait=True, cancel_futures=True)
+        return result
+
+
+def load_tests(loader, tests, pattern):
+    """Whole-module runs (`python3 tests/test_harness.py`, `make check`) run `DepGates` in
+    parallel; naming a test on the command line still runs it alone, in the foreground.
+    `PLX_TEST_JOBS=1` forces the one-at-a-time order."""
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    # The same walk `loadTestsFromModule` does (every TestCase class the module can see, in name
+    # order), minus its `load_tests` hook, which is this function.
+    for name in dir(module):
+        obj = getattr(module, name)
+        if isinstance(obj, type) and issubclass(obj, unittest.TestCase):
+            case = loader.loadTestsFromTestCase(obj)
+            suite.addTest(_ParallelSuite(case) if obj is DepGates else case)
+    return suite
 
 
 if __name__ == "__main__":
