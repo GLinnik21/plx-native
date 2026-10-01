@@ -102,7 +102,13 @@ jobs:
           workspaces: rust-modules
 
       - name: make check (lint + host unit suite)
-        run: make check
+        # Teed to a file so the "Report suite size" step below can read the `test result:` lines
+        # this run already printed instead of compiling and listing the suite a second time.
+        # `pipefail` is explicit: without it the exit status would be tee's, not make's.
+        shell: bash
+        run: |
+          set -o pipefail
+          make check 2>&1 | tee "$RUNNER_TEMP/make-check.log"
 
       - name: Type-check the RELEASE feature set
         # **`make check` cannot see a break in this configuration, and neither could this gate
@@ -129,26 +135,27 @@ jobs:
           cargo "+$RUST_NIGHTLY" check --lib --features hostsim
           cargo "+$RUST_NIGHTLY" check --lib --no-default-features --features hostsim
 
-      - name: Type-check the Cloud Lab feature set
-        # `lab-diagnostics` is the one feature that is NOT in the default set (which is what makes
-        # it unshippable by forgetting a flag), so no step above compiles a line of `lab/` or of
-        # `ui/lab_toast.rs`. Until 2026-09-10 nothing anywhere did, and the configuration had been
-        # broken since restructure phase 9 moved `player::diag` onto the playback session — found
-        # by writing this gate, not by a lab hour, which is where it would otherwise have surfaced:
-        # rented, remote, with no console and no way to rebuild.
-        #
-        # `--tests` and not a bare `--lib`: a feature-gated module's TEST code is the half nothing
-        # else here can see, and an orphaned `#[test]` attribute had been sitting in
-        # `lab/snapshot.rs` for exactly that reason. It needs no `pkg/lab.json` — that file is
-        # `make LAB=1`'s requirement (a live session secret), not the compiler's.
-        run: cd rust-modules && cargo "+$RUST_NIGHTLY" check --lib --tests --features lab-diagnostics
+      # The Cloud Lab type-check (`cargo check --lib --tests --features lab-diagnostics`) used to be
+      # a step here. `make check-cargo` runs that exact command (Makefile, after the hostsim test
+      # pass), so a second copy only recompiled the crate for 38 s: bare cargo here and the
+      # Makefile's cargo disagree on the env that build.rs fingerprints, so nothing was reused.
 
       - name: Report suite size
         # CLAUDE.md's stated test count has gone stale twice. Print the real number rather than
-        # trusting a doc: the count is a fact the suite can produce about itself.
+        # trusting a doc: the count is a fact the suite can produce about itself. It is read from
+        # the `test result:` lines `make check` printed above — this step compiles nothing.
         run: |
-          n=$(cd rust-modules && cargo test --lib -- --list | grep -c ': test' || true)
-          echo "host unit tests: $n" >> "$GITHUB_STEP_SUMMARY"
+          log="$RUNNER_TEMP/make-check.log"
+          grep -E '^test result:' "$log"   # in the job log too, for the record
+          {
+            echo '### host unit tests (read from the make check log)'
+            echo '```'
+            grep -E '^test result:' "$log"
+            echo '```'
+            total=$(grep -E '^test result:' "$log" \
+              | sed -E 's/.* ([0-9]+) passed;.*/\1/' | awk '{n += $1} END {print n}')
+            echo "host unit tests passed, all passes summed: $total"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   cross-build:
     name: cross-build (armv7) + artifact assertions
@@ -177,16 +184,24 @@ jobs:
         uses: ./.github/actions/webos-ndk
 
       - name: Cache the bundled FFmpeg
-        # vendor/ffmpeg-prefix is gitignored and ci/build-ffmpeg.sh is a prerequisite of the
-        # staticlib, so without this every run downloads the tarball and cross-builds FFmpeg from
-        # scratch — minutes, on every push. The script's VERSION, SHA256 and configure flags are
-        # its whole input, so hashing the script is the whole key.
+        # The cache that works is the SCRIPT's own: `ci/build-ffmpeg.sh` keeps its build tree (the
+        # extracted source plus every object) under `$PLX_BUILD_CACHE/ffmpeg/<arch>-<version>-<key>`,
+        # default `~/.cache/plxnative`, and a hit there skips configure and compile and only
+        # re-installs the prefix. The step used to cache `vendor/ffmpeg-prefix` instead, which hit
+        # and did nothing: the restored files are OLDER than the fresh checkout's
+        # `ci/build-ffmpeg.sh`/`ci/arm-cc.py`, so make re-ran the script, the script found no tree
+        # of its own and rebuilt FFmpeg (77 s) every run.
+        #
+        # The script keys the tree on the version, the SHA-256 pin, the NDK/sysroot stamp, the
+        # configure flags and the hashes of `arm-cc.py` and `check-link-evidence.py`, and it re-derives
+        # that key itself on every run, so a stale restore can only ever fail to match and rebuild;
+        # it can never hand back wrong objects. This cache key therefore only has to change when
+        # those inputs can: the script, the two files it hashes, the evidence stager it runs after
+        # install, and the NDK pin (read from the NDK action, which owns the literal).
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            vendor/ffmpeg-prefix
-            vendor/ffmpeg-build
-          key: ffmpeg-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+          path: ~/.cache/plxnative/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
 
       - name: Build
         run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
