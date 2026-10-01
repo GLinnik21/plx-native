@@ -144,11 +144,18 @@ impl PanelMotion {
         // This walk's strings are the whole queue: a held modal's or a finished transition's
         // leftovers must not eat the drain's budget (`ui::dispatch` clears the same way).
         crate::text::clear_prewarm();
+        self.prewarm_more_text(natural, live, measure);
+    }
+
+    /// **Add `table`'s strings to the queue without replacing it** — a page that is not live yet
+    /// (`track_menu`'s other tab). The next [`Self::prewarm_text`] walk replaces them with the
+    /// live page's, which is the right priority: what is on screen comes first.
+    pub(crate) fn prewarm_more_text(&self, natural: Rect, table: &TableView, measure: &dyn Measure) {
         // The same walk `ui::dispatch` runs for a page's warm pass: speculative to the recorder,
         // and no raw clear may reach the framebuffer from it.
         crate::gfx::without_frame_clear(|| {
             crate::ui::rec::speculative(|| {
-                crate::ui::record_walk(|| live.draw(Painter::recording(), natural, measure))
+                crate::ui::record_walk(|| table.draw(Painter::recording(), natural, measure))
             })
         });
     }

@@ -264,6 +264,38 @@ impl FormId for TrackRow {
 type TrackForm = Form<TrackRow, (), TrackPage>;
 type TrackTable = FormTable<TrackRow, (), TrackPage>;
 
+/// [`TrackMenuState::enh_state`]'s answer: the Audio tab's Boost/Loudness offer as displayed, the
+/// route it rides, the reason it is disabled, and the live subtitle effect its note names.
+type EnhState = (
+    Option<crate::plex::AudioEnhancements>,
+    Option<crate::route::EnhancementRoute>,
+    Option<crate::route::DisabledReason>,
+    crate::route::SubtitleEffect,
+);
+
+/// **A tab root's natural panel rect** — the layout of `table` as the panel would hug it. Each
+/// tab hugs its own rows (shared menu rule); the right edge is fixed, so switching tabs moves only
+/// the left edge.
+fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    let pw = table.menu_panel_width(measure);
+    // the transport control row's own right edge — one number for the discs and both panels
+    let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+    // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
+    // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
+    // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
+    // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
+    // the bottom edge steady.
+    let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
+    // A note row wraps, so its line count depends on the width: it is resolved HERE, against the
+    // same `measure` and `pw` the panel is sized with, so no caller (`update`, hit-testing,
+    // `draw`) can read the count a rebuild left stale. Idempotent and a few short strings.
+    table.fit_notes(pw, measure);
+    let top_min = 60.0;
+    let ph = table.measured_height().clamp(160.0, bottom - top_min);
+    let py = bottom - ph; // ≥ top_min by construction
+    Rect::new(px, py, pw, ph)
+}
+
 /// **What a pushed page remembers of the page beneath it**: the opener's id and the scroll the
 /// list was left at, so a pop ([`FormTable::restore`]) brings the page back exactly as it was.
 #[derive(Clone, Copy, Debug)]
@@ -416,6 +448,8 @@ pub(crate) struct TrackMenuState {
     /// The card's resize and the page slide ([`crate::ui::panel_motion`]): the layout target is
     /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
     motion: PanelMotion,
+    /// Whether [`Self::warm_other_tab`] has queued the other tab's root strings for this menu.
+    other_tab_warmed: bool,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -513,6 +547,7 @@ impl TrackMenuState {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
+            other_tab_warmed: false,
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -1273,6 +1308,16 @@ impl TrackMenuState {
     /// inert slot: it takes a layout row and has no identity). Mirrors [`Self::layout`] for the
     /// Subtitles tab.
     fn audio_form(&self, meta: metadata::MetadataView<'_>) -> TrackForm {
+        self.audio_form_for(
+            meta,
+            (self.enhance_shown, self.enhance_route, self.enhance_disabled, self.enhance_subtitle_effect),
+        )
+    }
+
+    /// [`Self::audio_form`] against an explicit enhancement answer ([`Self::enh_state`]'s shape),
+    /// so the Audio root can be built while the menu shows Subtitles and has not stored one.
+    fn audio_form_for(&self, meta: metadata::MetadataView<'_>, enh: EnhState) -> TrackForm {
+        let (enhance_shown, enhance_route, enhance_disabled, enhance_subtitle_effect) = enh;
         let mut sec = FormSection::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
             Some(t) => t,
@@ -1313,7 +1358,7 @@ impl TrackMenuState {
             sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), row);
         }
         let mut form = Form::new().section(sec);
-        if let Some(shown) = self.enhance_shown {
+        if let Some(shown) = enhance_shown {
             let mut enh = FormSection::new("")
                 .item(
                     TrackRow::Boost,
@@ -1327,13 +1372,13 @@ impl TrackMenuState {
                     (),
                     Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness),
                 );
-            if let Some(route) = self.enhance_route {
-                if let Some(note) = Self::enh_note_text(route, self.enhance_subtitle_effect) {
+            if let Some(route) = enhance_route {
+                if let Some(note) = Self::enh_note_text(route, enhance_subtitle_effect) {
                     enh = enh.note(note);
                 }
             }
             form = form.section(enh);
-        } else if let Some(reason) = self.enhance_disabled {
+        } else if let Some(reason) = enhance_disabled {
             // Every gate but "no Plex Pass" is now a visible reason (owner direction, 2026-09-29):
             // the rows stay in the list, dim and reading Off, with a one-line non-selectable
             // footnote naming why. "No Plex Pass" is the ONE absence that stays a silent gap (I1/I2).
@@ -1365,13 +1410,10 @@ impl TrackMenuState {
         // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
         // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
         // see why the control they had is gone, not just find it missing.
-        let locked = crate::route::live_is_own_burn(ps);
         let sig = self.sub_sig_for(ps, meta, self.active_sub);
         self.renderer = sig.renderer;
         self.sub_sig = Some(sig);
-        let show_timing = !crate::route::is_transcoding(ps) || locked;
-        let model = self.sub_model(ps, meta, show_timing);
-        self.other = model.other.clone();
+        let (form, model) = self.sub_root_form(ps, meta);
         self.root_tracks = model
             .sections
             .iter()
@@ -1381,7 +1423,17 @@ impl TrackMenuState {
                 _ => None,
             })
             .collect();
-        table_form(&model, self.active_sub, self.offset_ms, locked)
+        self.other = model.other;
+        form
+    }
+
+    /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
+    /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
+    fn sub_root_form(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
+        let locked = crate::route::live_is_own_burn(ps);
+        let show_timing = !crate::route::is_transcoding(ps) || locked;
+        let model = self.sub_model(ps, meta, show_timing);
+        (table_form(&model, self.active_sub, self.offset_ms, locked), model)
     }
 
     /// The Subtitles model for the current item and route — the one place the root and the pages
@@ -1398,14 +1450,7 @@ impl TrackMenuState {
     /// off the live route in one place — [`Self::rebuild`] and [`Self::update`] both need exactly
     /// this triple, and computing it once here keeps them from independently re-deriving it (and
     /// risking disagreement).
-    fn enh_state(
-        ps: &crate::route::PlaybackSession,
-    ) -> (
-        Option<crate::plex::AudioEnhancements>,
-        Option<crate::route::EnhancementRoute>,
-        Option<crate::route::DisabledReason>,
-        crate::route::SubtitleEffect,
-    ) {
+    fn enh_state(ps: &crate::route::PlaybackSession) -> EnhState {
         use crate::route::EnhancementAvailability;
         let subtitle_effect = crate::route::live_subtitle_effect(ps);
         match crate::route::menu_enhancement_availability(ps) {
@@ -1501,32 +1546,7 @@ impl TrackMenuState {
     /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
     /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
-        self.motion.natural(self.form.table.layout_rev(), || {
-            // Each tab hugs its own rows (shared menu rule); the right edge is fixed, so switching
-            // tabs moves only the left edge.
-            let pw = self.form.table.menu_panel_width(measure);
-            // the transport control row's own right edge — one number for the discs and both panels
-            let px = crate::ui::player_hud::CTRL_RIGHT - pw;
-            // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
-            // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
-            // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
-            // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
-            // the bottom edge steady.
-            let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
-            let ph = self.panel_h(measure, pw);
-            let py = bottom - ph; // ≥ top_min by construction
-            Rect::new(px, py, pw, ph)
-        })
-    }
-
-    /// The panel's height at width `pw`. A note row wraps, so its line count depends on the
-    /// width: it is resolved HERE, against the same `measure` and `pw` the panel is sized with,
-    /// so no caller (`update`, hit-testing, `draw`) can read the count a rebuild left stale.
-    /// Idempotent and a few short strings per call.
-    fn panel_h(&self, measure: &dyn crate::ui::machine::Measure, pw: f32) -> f32 {
-        self.form.table.fit_notes(pw, measure);
-        let (bottom, top_min) = (SCR_H - 316.0, 60.0);
-        self.form.table.measured_height().clamp(160.0, bottom - top_min)
+        self.motion.natural(self.form.table.layout_rev(), || table_natural(&self.form.table, measure))
     }
 
     /// The card as it is drawn this frame: its top and left edges on their springs toward
@@ -1574,6 +1594,39 @@ impl TrackMenuState {
         self.form.table.update(dt, natural.h);
         self.motion.step(dt, natural);
         self.motion.prewarm_text(natural, &self.form.table, measure);
+        self.warm_other_tab(ps, meta, measure);
+    }
+
+    /// **Queue the OTHER tab's root strings once the panel is idle**, so a tab switch does not
+    /// meet them cold. The live page's prewarm cannot cover a switch: the key rebuilds the table
+    /// after this frame's `update`, so its draw rasterised the new tab's strings itself, on the
+    /// TV `textx8:9.5` inside a 24.8–29.0 ms frame on the first switch to Audio (2026-10-01).
+    /// Done once per menu, on a frame with no page slide, no resize and an empty queue, so it
+    /// neither competes with the live page's own strings nor adds to the open frame. The work is
+    /// only building the form and recording it; the presenting side's drain uploads it.
+    fn warm_other_tab(
+        &mut self,
+        ps: &crate::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
+        if self.other_tab_warmed
+            || !self.pages.is_empty()
+            || self.motion.transitioning()
+            || crate::text::prewarm_pending()
+        {
+            return;
+        }
+        self.other_tab_warmed = true;
+        let form = if self.tab == 0 {
+            self.sub_root_form(ps, meta).0
+        } else {
+            self.audio_form_for(meta, Self::enh_state(ps))
+        };
+        let mut other = TrackTable::new(BAND_BASE);
+        other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
+        other.set(form, None);
+        self.motion.prewarm_more_text(table_natural(&other.table, measure), &other.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -3056,6 +3109,50 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
+    /// **An idle menu has the OTHER tab's strings resident before the first switch.** The key
+    /// rebuilds the table after the frame's `update`, so the live page's prewarm cannot cover a
+    /// tab switch: on the TV the first switch to Audio drew `textx8:9.5` in a 24.8–29.0 ms frame.
+    #[test]
+    fn an_idle_menu_warms_the_other_tabs_strings_before_a_switch() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
+            id,
+            index,
+            lang: lang.into(),
+            lang_code: code.into(),
+            codec: "srt".into(),
+            ..Default::default()
+        };
+        let mut item = metadata::PlayingItem::with_subs(vec![sub(601, 2, "Spanish", "spa"), sub(602, 3, "Czech", "ces")]);
+        item.audio = vec![metadata::Stream { id: 501, index: 0, codec: "ac3".into(), channels: 2, default: true, ..Default::default() }];
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        crate::text::reset_prewarm_for_test();
+        // A second of presented frames on the Audio tab: open, settle, drain.
+        for _ in 0..60 {
+            menu.update(0.016, &M, &ps, store.view());
+            crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        }
+        menu.focus_tab(&ps, store.view(), 1);
+        let labels: Vec<String> = menu
+            .form
+            .table
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .map(|r| r.label.clone())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(!labels.is_empty(), "premise: the Subtitles tab has rows");
+        let cold: Vec<&String> =
+            labels.iter().filter(|l| !crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).collect();
+        assert!(cold.is_empty(), "the switch met these Subtitles labels cold: {cold:?}");
+        teardown(&ps);
+    }
+
     /// **A note that appears in a rebuild is sized on that same `update`.** A note's line count
     /// depends on the panel width, so it is resolved against the measure `update` now carries;
     /// before, the count a rebuild left was read by the panel height until the NEXT draw measured
@@ -3578,6 +3675,7 @@ mod focus_tests {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             motion: PanelMotion::new(),
+            other_tab_warmed: false,
         }
     }
 
