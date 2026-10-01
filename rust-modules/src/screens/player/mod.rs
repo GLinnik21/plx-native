@@ -161,6 +161,8 @@ pub(crate) struct PlayerScreen {
     failure_sel: usize,
     /// Did a failure own the frame at the last Tick — the edge that resets `failure_sel`.
     failure_up: bool,
+    /// The transport clocks' prewarm memo — a render resource, not logical state (`prepare`).
+    clock_warm: crate::ui::player_hud::ClockWarm,
 }
 
 impl PlayerScreen {
@@ -185,6 +187,7 @@ impl PlayerScreen {
             repair_scroll: 0,
             failure_sel: 0,
             failure_up: false,
+            clock_warm: Default::default(),
         }
     }
 
@@ -1311,7 +1314,15 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// The transport's clocks, queued for the presenting side to rasterise before the draw's
+    /// back-buffer wait (`player_hud::ClockWarm`). Only while the playbar is drawn: the gate is
+    /// `draw`'s own (`hud_drawn` and the transport's middle).
+    fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
+        let ps = H::session(cx);
+        if self.transport && self.hud_drawn(ps, cx.tick.ms) {
+            self.clock_warm.queue_live(ps);
+        }
+    }
     /// The playing item's UltraBlur envelope: what every panel over this page dims through.
     fn underlay_corners(&self, cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
         H::metadata(cx).playing().and_then(|p| p.blur)
@@ -1732,6 +1743,31 @@ mod step_ladder_tests {
         page.record_stops(&mut f, page.hud_drawn(ps, 1_000));
         let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
         assert_eq!(got, Vec::<u32>::new(), "no scrub/row/tab stop registers under the capsule");
+    }
+
+    /// **A prepared player frame queues the transport's clocks, and only while the playbar is
+    /// drawn.** The clocks are new strings once a second; left to the draw they were rasterised
+    /// AFTER the frame's back-buffer wait (`clear:12.4 … textx2:1.1` on the TV), which is what
+    /// took those frames past 20 ms under an open Tracks/More popover (`HudPolicy::Lifted`).
+    #[test]
+    fn prepare_queues_the_transport_clocks_only_while_the_playbar_is_drawn() {
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        let mut budget = Budget::new();
+        let cx = cx();
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        page.set_hud_policy(HudPolicy::Hidden);
+        Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
+        assert!(!crate::text::prewarm_pending(), "nothing is drawn under the capsule: nothing to warm");
+        page.set_hud_policy(HudPolicy::Lifted);
+        page.transport = false;
+        Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
+        assert!(!crate::text::prewarm_pending(), "an Info card owns the middle: no playbar, no clocks");
+        page.transport = true;
+        Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
+        assert!(crate::text::prewarm_pending(), "the playbar's clocks were left for the draw to rasterise");
+        crate::text::reset_prewarm_for_test();
     }
 
     /// **However the capsule's surface closes, the transport stays down after it** (finding: a
