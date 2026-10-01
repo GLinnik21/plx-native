@@ -89,6 +89,10 @@ fn commit_live(previous: &Consent, next: &Consent) {
         crate::telemetry::crashreport::discard_pending_before_opt_in();
     }
     crate::telemetry::consent::install(next.clone());
+    // Sign-in events held while the question was unanswered (`diag::event`) go through the
+    // ordinary gate now that the decision is published: a "yes" lets them through with their
+    // original stamp, a "no" drops them, and either way the held queue is empty afterwards.
+    crate::diag::replay_deferred();
     if !next.errors {
         crate::player::report::clear_error_trace();
     }
@@ -128,6 +132,9 @@ fn persist_record_off_thread(next: Consent) {
 fn forget_live(_prior: &Consent) {
     let next = Consent::default();
     crate::telemetry::consent::install(next.clone());
+    // A held sign-in event belongs to the account whose attempt caused it, never to whoever signs
+    // in next: drop it unreplayed.
+    crate::diag::clear_deferred();
     crate::player::report::clear_error_trace();
     crate::telemetry::delivery::forget();
     crate::telemetry::spool::purge_all_local();
@@ -343,6 +350,62 @@ mod tests {
 
         assert_eq!(kept, vec!["one-off".to_string()], "a withdrawal purged the one-off report");
         assert!(erased, "sign-out left the one-off report queued");
+    }
+
+    /// **Sign-in events held while consent was unanswered** are replayed by `commit_live` once a
+    /// decision is published, and dropped unreplayed by `forget_live`, so a departing account's
+    /// attempt can never reach the next account's decision.
+    #[test]
+    fn commit_live_replays_held_signin_events_and_forget_live_drops_them() {
+        use crate::diag::schema::DiagEvent;
+        struct Redirect(std::path::PathBuf);
+        impl Drop for Redirect {
+            fn drop(&mut self) {
+                crate::telemetry::redirect_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let _serial = crate::testlock::serial();
+        let saved = consent::current();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-consent-adapter-held-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _redirect = Redirect(dir.clone());
+        crate::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
+
+        crate::diag::clear_deferred();
+        consent::install(Consent::default());
+        crate::diag::event(DiagEvent::SignInStarted);
+        assert_eq!(crate::diag::deferred_len(), 1);
+
+        let mut adapter = ConsentAdapter::live();
+        let yes = Consent {
+            asked_version: consent::POLICY_VERSION,
+            usage: true,
+            install_id: Some("i".repeat(32)),
+            ..Consent::default()
+        };
+        adapter.commit(&Consent::default(), &yes);
+        let after_commit = crate::diag::deferred_len();
+
+        crate::diag::event(DiagEvent::SignInStarted); // consent is answered yes: sent, not held
+        consent::install(Consent::default());
+        crate::diag::event(DiagEvent::SignInCancelled);
+        let held_before_forget = crate::diag::deferred_len();
+        adapter.forget(&yes);
+        let after_forget = crate::diag::deferred_len();
+
+        crate::diag::clear_deferred();
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+        assert_eq!(after_commit, 0, "commit_live left the held event queued");
+        assert_eq!(held_before_forget, 1, "the unanswered sign-in event was not held");
+        assert_eq!(after_forget, 0, "forget_live left the held event queued");
     }
 
     #[test]

@@ -39,7 +39,10 @@ pub(crate) mod test_events;
 /// event's category, an install identifier that actually exists, and a build that carries an
 /// endpoint at all. Any of them missing is a silent return, which is the only safe direction —
 /// and the reason the boot log states which destinations this build can reach, since "consented
-/// but not wired" and "sent" look identical from every other line.
+/// but not wired" and "sent" look identical from every other line. One bounded exception sits in
+/// front of the consent gate: an UNANSWERED decision defers the sign-in family instead of dropping
+/// it (`defer`, cap [`DEFERRED_CAP`], in memory, session-only) so a sign-in, which always precedes
+/// the first question, is not silently lost; an ANSWERED "no" still drops, exactly as before.
 ///
 /// Sending happens on `telemetry::flush_soon`'s worker. This is the frame loop: a send opens a
 /// socket and can block for the sender's whole timeout.
@@ -83,6 +86,33 @@ fn event_for(e: schema::DiagEvent, server: ServerContext) {
     // Observe producer intent in scoped tests without consenting, queuing, or sending anything.
     #[cfg(test)]
     if test_events::intercept(e) { return; }
+    event_for_impl(e, server, None);
+}
+
+/// The stamp a deferred event was born with — captured once, at [`defer`] time, so a later
+/// [`replay_deferred`] reports it as having happened when it actually did rather than when the
+/// consent question finally got answered. `session_id` is `&'static str` because [`session_id`]
+/// itself never changes within one process; captured anyway, alongside the timestamp, so the
+/// replayed event's stamp is entirely self-contained rather than re-derived from process state
+/// that happens not to have moved.
+#[derive(Clone, Copy)]
+struct Stamp {
+    occurred_at_ms: u64,
+    /// `None` when [`session_id`] could not be read at defer time (a transient `/dev/urandom`
+    /// failure — it never un-latches once it has answered `Some`, so this is the one shape a
+    /// replay can see that the direct path cannot). Kept as the fail-closed sentinel rather than
+    /// coerced to `""`, so a replay drops the event exactly as the direct path already does
+    /// instead of emitting an out-of-domain empty session id.
+    session_id: Option<&'static str>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn event_for_impl(e: schema::DiagEvent, server: ServerContext, stamp: Option<Stamp>) {
     // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
     // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
     // is the shape `diag::scrub`'s identity list had to be rebuilt into after wiring it to
@@ -91,8 +121,48 @@ fn event_for(e: schema::DiagEvent, server: ServerContext) {
     // Every event declared today is a USAGE event. When error events arrive they ask the other
     // switch, and the mapping becomes a `match` on the variant.
     if !crate::telemetry::consent::allows_usage() {
+        // **A sign-in always happens BEFORE the consent question** — it is asked only once an
+        // authorized account exists, and sign-out resets the decision to unanswered — so this gate
+        // drops the whole sign-in funnel for every attempt, which is how 0.7.0 shipped with no
+        // `signin.*` events at all (issue #75 fixed the same loss in 0.6). When the ONLY reason
+        // this event was dropped is that consent is UNANSWERED (as against answered "no", which is
+        // a real decision and must stay dropped), hold a small, bounded, SIGN-IN-ONLY set of events
+        // so a later "yes" can still see the funnel that led to it. See `defer`.
+        //
+        // A replayed event (`stamp.is_some()`) that STILL finds consent unanswered is not
+        // re-deferred — `replay_deferred` empties the queue unconditionally, and re-holding it here
+        // would fight that.
+        let unresolved = crate::telemetry::consent::current().is_none_or(|c| !c.answered());
+        if unresolved && stamp.is_none() && is_deferrable(&e) {
+            defer(e);
+        }
         return;
     }
+    // Resolved here — right after the only gate that can turn this into a defer — rather than
+    // further down beside the network-shaped checks below, so a replay's stamp is fixed before
+    // anything build-config-dependent (`has_posthog`) can short-circuit the function; see the
+    // `stamp_replayed_through_the_impl_is_what_gets_used` test, which observes this regardless of
+    // whether the checkout carries a PostHog key at all.
+    let (occurred_at_ms, session_id) = match stamp {
+        // The same fail-closed drop the direct path takes below — a replayed event whose stamp
+        // never got a real session id (a transient `/dev/urandom` failure at defer time) must not
+        // emit one with an out-of-domain empty string in its place.
+        Some(Stamp {
+            occurred_at_ms,
+            session_id: Some(session_id),
+        }) => (occurred_at_ms, session_id),
+        Some(Stamp {
+            session_id: None, ..
+        }) => return,
+        None => {
+            let Some(session_id) = session_id() else {
+                return;
+            };
+            (now_ms(), session_id)
+        }
+    };
+    #[cfg(test)]
+    tests::record_stamp_used(occurred_at_ms, session_id);
     // An identifier only exists after an opt-in, which `allows_usage` implies — but READ it rather
     // than assume it. "Implies" is how an invariant becomes a panic, and the failure here would be
     // a report with a fabricated id, which is the one outcome the whole design refuses.
@@ -105,12 +175,6 @@ fn event_for(e: schema::DiagEvent, server: ServerContext) {
     let Some(event_id) = random_hex_id() else {
         return; // no randomness source, so nothing could acknowledge this record
     };
-    let Some(session_id) = session_id() else {
-        return;
-    };
-    let occurred_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
     let envelope = match server {
         ServerContext::Snapshot(server, link, ip) => schema::UsageEnvelope::capture_for_snapshot(
             e,
@@ -145,6 +209,90 @@ fn event_for(e: schema::DiagEvent, server: ServerContext) {
         body,
     };
     let _ = crate::telemetry::spool::append_if(&record, crate::telemetry::consent::allows_usage);
+}
+
+/// Only the sign-in family may be deferred — issue #75's whole point is that this funnel is the
+/// one the consent question can never precede, because it is asked only once an account is
+/// authorized. Every other event (a route, a playback action) has an ordinary population that was
+/// already asked at the normal point in its flow, and holding one of THOSE for a later consent
+/// answer would misdate it — a route entered minutes before the question was answered is not the
+/// same signal as a route entered after.
+fn is_deferrable(e: &schema::DiagEvent) -> bool {
+    matches!(
+        e,
+        schema::DiagEvent::SignInStarted
+            | schema::DiagEvent::SignInCompleted
+            | schema::DiagEvent::SignInFailed { .. }
+            | schema::DiagEvent::SignInCancelled
+    )
+}
+
+/// How many sign-in events may be held before the oldest is dropped: four whole attempts, since
+/// each is `started` plus exactly one of completed/failed/cancelled (`schema.rs`'s bracket) and a
+/// code renewal emits nothing. A fifth attempt before the answer evicts the oldest `started`, so
+/// a replayed `failed` can then arrive without its `started`. Bounded because this is memory a
+/// stranger's television carries for as long as the consent question sits unanswered, which could
+/// be indefinitely.
+const DEFERRED_CAP: usize = 8;
+
+/// One held sign-in event: the event itself, plus the stamp it was born with — see [`Stamp`].
+struct Deferred {
+    event: schema::DiagEvent,
+    stamp: Stamp,
+}
+
+/// The sign-in events waiting on an unanswered consent decision. Session-only: never persisted, so
+/// a crash or relaunch before the question is answered loses them, same as any other in-memory
+/// queue here.
+static DEFERRED: std::sync::Mutex<std::collections::VecDeque<Deferred>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+fn defer(e: schema::DiagEvent) {
+    // Captured HERE, not at replay: the event happened now, and a replay that recomputed "now"
+    // would report it as having happened whenever the consent question finally got answered —
+    // which, for a stalled sign-in, could be many minutes later in the same process.
+    let stamp = Stamp {
+        occurred_at_ms: now_ms(),
+        session_id: session_id(),
+    };
+    let mut q = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
+    if q.len() >= DEFERRED_CAP {
+        q.pop_front();
+    }
+    q.push_back(Deferred { event: e, stamp });
+}
+
+/// Drain and replay every deferred sign-in event through the normal gated path. Called from the
+/// consent adapter's `commit_live` right after the new decision is published — a "yes" lets these
+/// through exactly as if consent had already been answered when they first happened; a "no" hits
+/// the same gate every other event does and is dropped, which is why this drains UNCONDITIONALLY
+/// rather than checking the answer itself: emptying the queue either way is what keeps a refused
+/// answer from leaking a stale queue into whichever account signs in next.
+///
+/// Each event is replayed with the [`Stamp`] it was captured with at `defer` time — not a freshly
+/// computed "now" — so the funnel a person can see afterwards is dated when the sign-in actually
+/// happened, not when they finally answered the consent question.
+pub(crate) fn replay_deferred() {
+    let events: Vec<Deferred> = {
+        let mut q = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
+        q.drain(..).collect()
+    };
+    for d in events {
+        event_for_impl(d.event, ServerContext::None, Some(d.stamp));
+    }
+}
+
+/// How many sign-in events are currently held; for the seam tests in `app::adapters::consent`.
+#[cfg(test)]
+pub(crate) fn deferred_len() -> usize {
+    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
+/// Drop every deferred sign-in event with no replay. Called on sign-out/delete-local-data
+/// (`forget_live`) so a queued event from the departing account's attempt can never cross into
+/// the next account's consent decision.
+pub(crate) fn clear_deferred() {
+    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// A process-local session identity. Random and never persisted separately: queued events carry the
@@ -195,6 +343,167 @@ pub(crate) mod zlib;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::consent::{self, Consent};
+
+    /// What `event_for_impl` last resolved as `(occurred_at_ms, session_id)`, recorded right where
+    /// that value is fixed — before anything build-config-dependent (`has_posthog`) can
+    /// short-circuit the function — so this observation works whether or not this checkout carries
+    /// a PostHog key.
+    static LAST_STAMP_USED: std::sync::Mutex<Option<(u64, &'static str)>> =
+        std::sync::Mutex::new(None);
+
+    pub(super) fn record_stamp_used(occurred_at_ms: u64, session_id: &'static str) {
+        *LAST_STAMP_USED.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((occurred_at_ms, session_id));
+    }
+
+    fn take_last_stamp_used() -> Option<(u64, &'static str)> {
+        LAST_STAMP_USED.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Runs `body` under `testlock::serial()` with the published consent snapshot saved and
+    /// restored around it, and the deferral queue cleared before and after — same shape as
+    /// `telemetry::consent`'s own snapshot-install tests, since this module reads that same
+    /// `CURRENT` global.
+    fn with_consent_snapshot(body: impl FnOnce()) {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        clear_deferred();
+        body();
+        clear_deferred();
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    fn answered_yes() -> Consent {
+        Consent {
+            asked_version: consent::POLICY_VERSION,
+            usage: true,
+            errors: true,
+            install_id: Some("i".repeat(32)),
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        }
+    }
+
+    /// **A sign-in `diag::event` cannot send because consent has never been answered is held, not
+    /// dropped**, so a later "yes" can still see it — and is replayed with the stamp it was born
+    /// with, not the moment of the answer.
+    #[test]
+    fn a_signin_event_before_the_consent_answer_is_held_and_replayed_with_its_original_stamp() {
+        with_consent_snapshot(|| {
+            consent::install(Consent::default()); // unanswered
+            event(schema::DiagEvent::SignInStarted);
+            assert_eq!(deferred_len(), 1);
+            let original_stamp = {
+                let q = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
+                q.front().expect("one deferred event").stamp
+            };
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(
+                now_ms() > original_stamp.occurred_at_ms,
+                "the sleep must actually move the clock, or this test proves nothing"
+            );
+            consent::install(answered_yes());
+            take_last_stamp_used(); // clear anything a previous test left behind
+            replay_deferred();
+            assert_eq!(deferred_len(), 0);
+            let used = take_last_stamp_used().expect("event_for_impl resolved a stamp");
+            assert_eq!(
+                used.0, original_stamp.occurred_at_ms,
+                "the replayed event must keep its ORIGINAL occurred_at_ms"
+            );
+            assert_eq!(Some(used.1), original_stamp.session_id);
+        });
+    }
+
+    /// An answered "no" is a real decision: it stays dropped, never held.
+    #[test]
+    fn nothing_is_held_once_consent_is_answered_no() {
+        with_consent_snapshot(|| {
+            consent::install(Consent {
+                asked_version: consent::POLICY_VERSION,
+                ..Default::default()
+            });
+            event(schema::DiagEvent::SignInStarted);
+            assert_eq!(deferred_len(), 0);
+        });
+    }
+
+    /// Only the sign-in family is held back — every other event drops exactly as it always did
+    /// once consent is unanswered, since holding a route or a playback action for a later consent
+    /// answer would misdate it against when it actually happened.
+    #[test]
+    fn a_non_signin_event_is_never_deferred() {
+        with_consent_snapshot(|| {
+            consent::install(Consent::default()); // unanswered
+            event(schema::DiagEvent::RouteEntered { screen: "home" });
+            assert_eq!(deferred_len(), 0);
+        });
+    }
+
+    /// An unanswered flow cannot grow the queue without bound — bounded because this is memory a
+    /// stranger's television carries for as long as the question sits unanswered.
+    #[test]
+    fn the_deferred_queue_is_capped() {
+        with_consent_snapshot(|| {
+            consent::install(Consent::default()); // unanswered
+            for _ in 0..(DEFERRED_CAP + 5) {
+                event(schema::DiagEvent::SignInStarted);
+            }
+            assert_eq!(deferred_len(), DEFERRED_CAP);
+        });
+    }
+
+    /// Replay drains the queue whichever way the decision went. Here consent is STILL unanswered:
+    /// the replayed event hits the gate, is not re-deferred (it carries a stamp), and the queue
+    /// ends up empty.
+    #[test]
+    fn replay_with_consent_still_unanswered_empties_the_queue_without_redeferring() {
+        with_consent_snapshot(|| {
+            consent::install(Consent::default()); // unanswered
+            event(schema::DiagEvent::SignInStarted);
+            assert_eq!(deferred_len(), 1);
+            replay_deferred();
+            assert_eq!(deferred_len(), 0);
+        });
+    }
+
+    /// A replayed event whose stamp never got a real session id is dropped, not sent with an
+    /// empty one — the direct path already drops on `session_id() == None`.
+    #[test]
+    fn a_replayed_stamp_with_no_session_id_is_dropped_not_emitted_empty() {
+        with_consent_snapshot(|| {
+            consent::install(answered_yes());
+            take_last_stamp_used(); // clear anything a previous test left behind
+            event_for_impl(
+                schema::DiagEvent::SignInStarted,
+                ServerContext::None,
+                Some(Stamp {
+                    occurred_at_ms: 1,
+                    session_id: None,
+                }),
+            );
+            assert!(
+                take_last_stamp_used().is_none(),
+                "a stamp with no session id must never reach the point that resolves one"
+            );
+        });
+    }
+
+    /// Sign-out must never let a queued event from the departing account's attempt cross into the
+    /// next account's consent decision.
+    #[test]
+    fn clear_deferred_drops_whatever_was_held() {
+        with_consent_snapshot(|| {
+            consent::install(Consent::default()); // unanswered
+            event(schema::DiagEvent::SignInStarted);
+            assert_eq!(deferred_len(), 1);
+            clear_deferred();
+            assert_eq!(deferred_len(), 0);
+        });
+    }
 
     #[test]
     fn durable_record_and_session_ids_have_their_required_shapes() {
