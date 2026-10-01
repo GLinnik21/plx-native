@@ -52,17 +52,18 @@ pub(crate) const GATE: f32 = 0.1;
 /// page nobody can see).
 const VISIBLE: f32 = 0.01;
 
-/// How many strings [`PanelMotion::drain_queued_text`] rasterises in one presented frame. Counted, not
-/// timed: the UI reads no wall clock (`ci/allow/wall.txt`), and on the TV one string is ~1 ms
-/// (`textx8:7.4`), so eight sit inside the frame's ~15 ms back-buffer wait. The rest, if any, are
-/// rasterised by the draw exactly as before.
-const PREWARM_STRINGS: u64 = 8;
-
-/// [`PREWARM_STRINGS`] for a page nobody is looking at yet
-/// ([`PanelMotion::prewarm_background_text`]). Nothing waits on it, so it costs one string, ~1 ms
-/// on the TV, per presented frame with no live strings to drain: drained eight at a time it was
-/// `warmdrain:11.4`, a 21.3 ms frame right after the track menu opened.
-const BACKGROUND_STRINGS: usize = 1;
+/// What one presented frame may spend rasterising queued text ([`PanelMotion::drain_queued_text`]):
+/// 2.5 ms, a bound on TIME, because a string's cost is not a constant. Measured on the TV, one
+/// string is ~1 ms (`textx8:7.4`) but a long one is 2-3 ms, and the count that stood here (eight
+/// strings) was `warmdrain:22.7` in one frame at playback start (`total=34.9`), `warmdrain:15.8`
+/// at 0.0 s and `warmdrain:9.8` on the menu's open frame (`total=21.7`). The player frame's other
+/// work is ~3-6 ms of a 16.7 ms frame, so ~10 ms is the most it has to give and the open frame
+/// has far less; 2.5 ms keeps the drain to a quarter of that. The clock is read before each next
+/// string, so one may finish past the line (the overshoot is that string), and the first string
+/// is always taken, so a queue makes progress under any budget. What the drain leaves is not
+/// lost: the live queue is rasterised by the draw on demand, exactly as before prewarm existed,
+/// and the parked queue stays for the next presenting frame.
+const PREWARM_BUDGET_US: u64 = 2_500;
 
 /// Stiffness of the card's top/left edges and of the pages' sideways travel (`gfx::spring`'s `k`;
 /// the table's own scroll uses 300). Critically damped, so nothing overshoots.
@@ -182,29 +183,32 @@ impl PanelMotion {
         crate::text::park_prewarm_as_background()
     }
 
-    /// **Rasterise what [`Self::prewarm_text`] queued** — at most [`PREWARM_STRINGS`] of it — or,
-    /// with nothing live queued, [`BACKGROUND_STRINGS`] of the background queue. Called
-    /// from the PRESENTING side of the present decision (`app::run::prepare_window`, step 9's
-    /// upload seam), never from `update`: this uploads GL textures, and §10 says a frame that does
-    /// not present uploads nothing (nor may it reach EGL while the window is backgrounded). It
-    /// still runs before the draw's first `glClear`, so the work overlaps the back-buffer wait.
-    pub(crate) fn drain_queued_text() -> usize {
-        if !crate::text::prewarm_pending() {
-            if !crate::text::background_prewarm_pending() {
-                return 0;
-            }
-            return crate::diag::spans::span("warmdrain", || {
-                crate::text::drain_background_prewarm(BACKGROUND_STRINGS)
-            });
+    /// **Rasterise what [`Self::prewarm_text`] queued**, then what
+    /// [`Self::prewarm_background_text`] parked, for at most [`PREWARM_BUDGET_US`] by `now_us`
+    /// (a microsecond clock; the product passes `diag::heartbeat::now_us`, tests a counted one).
+    /// The live queue goes first and the parked one only with budget left, so speculation yields
+    /// to the page that is about to be drawn; the first string is always taken. Called from the
+    /// PRESENTING side of the present decision (`app::run::prepare_window`, step 9's upload seam),
+    /// never from `update`: this uploads GL textures, and §10 says a frame that does not present
+    /// uploads nothing (nor may it reach EGL while the window is backgrounded). It still runs
+    /// before the draw's first `glClear`, so the work overlaps the back-buffer wait. The wall clock
+    /// makes how many frames a queue takes environmental, which is why a held surface reads its
+    /// readiness through the recorded latch ([`crate::text::latch_surface_text_pending`]).
+    pub(crate) fn drain_queued_text(mut now_us: impl FnMut() -> u64) -> usize {
+        if !crate::text::prewarm_pending() && !crate::text::background_prewarm_pending() {
+            return 0;
         }
-        // `drain_prewarm` reads its clock before each next string: a clock that advances one unit
-        // per read admits exactly `PREWARM_STRINGS` of them.
-        let mut reads = 0u64;
         crate::diag::spans::span("warmdrain", || {
-            crate::text::drain_prewarm(PREWARM_STRINGS, || {
-                reads += 1;
-                reads
-            })
+            let start = now_us();
+            let mut done = crate::text::drain_prewarm(PREWARM_BUDGET_US, &mut now_us);
+            // Live strings left over mean the budget is spent: speculation waits its turn.
+            if !crate::text::prewarm_pending() {
+                let left = PREWARM_BUDGET_US.saturating_sub(now_us().saturating_sub(start));
+                if left > 0 {
+                    done += crate::text::drain_background_prewarm(left, &mut now_us);
+                }
+            }
+            done
         })
     }
 
@@ -385,5 +389,67 @@ impl PanelMotion {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl PanelMotion {
+    /// [`Self::drain_queued_text`] on the host's deterministic clock: one millisecond per string
+    /// rasterised so far, so a drain's budget admits a countable number of strings.
+    pub(crate) fn drain_queued_text_for_test() -> usize {
+        Self::drain_queued_text(|| crate::text::rasterised_for_test() * 1000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(prefix: &str, n: usize) {
+        for i in 0..n {
+            let s = std::ffi::CString::new(format!("{prefix}{i}")).unwrap();
+            crate::text::queue_prewarm(s.as_ptr(), 20, 0);
+        }
+    }
+
+    fn resident(prefix: &str, n: usize) -> usize {
+        (0..n).filter(|i| crate::text::prewarm_resident_any_size_for_test(format!("{prefix}{i}").as_bytes())).count()
+    }
+
+    /// **One presenting frame spends a bounded time in the prewarm drain**, the rest carries to the
+    /// next, and the live page's strings go before the parked page's. On the TV an unbounded drain
+    /// was `warmdrain:22.7` in one frame and `warmdrain:9.8` on the menu's open frame.
+    #[test]
+    fn a_drain_stops_at_its_time_budget_and_the_rest_carries_over_live_first() {
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        queue("bg-", 5);
+        crate::text::park_prewarm_as_background();
+        queue("live-", 7);
+        // The host clock charges 1 ms per string, so the budget admits `per_drain` of them.
+        let per_drain = PREWARM_BUDGET_US.div_ceil(1000) as usize;
+        let mut frames = 0;
+        while crate::text::prewarm_pending() || crate::text::background_prewarm_pending() {
+            frames += 1;
+            let done = PanelMotion::drain_queued_text_for_test();
+            assert!((1..=per_drain).contains(&done), "frame {frames} rasterised {done}, budget admits {per_drain}");
+            if resident("bg-", 5) > 0 {
+                assert_eq!(resident("live-", 7), 7, "a parked string was rasterised before the live page was done");
+            }
+            assert!(frames < 20, "the queues never drained");
+        }
+        assert_eq!((resident("live-", 7), resident("bg-", 5)), (7, 5));
+        assert!(frames > 1, "twelve strings fit one frame's budget");
+
+        // A string that alone overruns the budget still makes progress: exactly one, then stop.
+        crate::text::reset_prewarm_for_test();
+        queue("slow-", 4);
+        let mut t = 0;
+        let done = PanelMotion::drain_queued_text(|| {
+            t += 10_000;
+            t
+        });
+        assert_eq!(done, 1, "the floor is one string per drain");
+        crate::text::reset_prewarm_for_test();
     }
 }

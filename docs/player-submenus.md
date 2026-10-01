@@ -243,8 +243,10 @@ Fixed on the way here:
   or under `FEED_LOW_WATER_NS` of lead) is exempt, so a slow `Feed()` cannot stretch the prime or
   drain the lead.
 - **Cold first tab switch.** The first switch to the other tab rasterised its strings cold
-  (`textx8:9.5`). They are now warmed in the background, one string a frame
-  (`TrackMenuState::warm_other_tab`).
+  (`textx8:9.5`). They are now warmed in the background, in whatever is left of the
+  frame's 2.5 ms prewarm budget after the live page (`TrackMenuState::warm_other_tab`;
+  `PREWARM_BUDGET_US`, a time bound: the count it replaced, eight strings, was `warmdrain:22.7` on
+  one frame).
 
 `more-quality-osc` (trigger `plxnative-more=1` to open More, `plxnative-moreosc=<period_ms>`,
 `dev::scenarios::moreosc_arm`) is the same check for More: RIGHT on the Quality row pushes the rung

@@ -437,7 +437,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // A Tracks/More page's text, recorded in `update` or, on the mount frame, in the overlay's
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
-        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        crate::ui::panel_motion::PanelMotion::drain_queued_text(crate::diag::heartbeat::now_us);
         // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
         // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
         app.pages.nav.modals.preload_underlay();

@@ -3071,8 +3071,8 @@ mod enhancement_menu_tests {
                 "{label:?} was uploaded by update, which may run on a frame that does not present"
             );
         }
-        // The presenting side's drain rasterises them, up to its counted budget.
-        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        // The presenting side's drain rasterises them, up to its time budget.
+        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         let resident =
             labels.iter().filter(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
         assert!(resident > 0, "the drain rasterised none of the page's strings");
@@ -3122,7 +3122,7 @@ mod enhancement_menu_tests {
                 "{label:?} was uploaded by a walk, which may run on a frame that does not present"
             );
         }
-        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         assert!(
             labels.iter().any(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())),
             "the presenting side's drain rasterised none of the root page"
@@ -3164,16 +3164,17 @@ mod enhancement_menu_tests {
         crate::text::reset_prewarm_for_test();
         // A second of presented frames on the Audio tab: open, settle, drain. The first frame
         // drains the live page; every later one drains the other tab's strings in the
-        // background, one string a frame (on the TV the whole tab in one frame was
-        // `warmdrain:11.4`, a 21.3 ms frame right after the open).
+        // background, as many as the frame's time budget admits (the host clock charges 1 ms a
+        // string; on the TV the whole tab in one frame was `warmdrain:11.4`, a 21.3 ms frame right
+        // after the open).
         for frame in 0..60 {
             menu.update(0.016, &M, &ps, store.view());
-            let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // The draw drops whatever the live queue still holds (`ui::dispatch`, every frame
             // with no page warm), which on the TV left the background warm one string deep.
             crate::text::clear_prewarm();
             if frame > 0 {
-                assert!(drained <= 1, "frame {frame} rasterised {drained} background strings");
+                assert!(drained <= 3, "frame {frame} rasterised {drained} background strings");
             }
         }
         menu.focus_tab(&ps, store.view(), 1);
@@ -3239,7 +3240,7 @@ mod enhancement_menu_tests {
         crate::text::reset_prewarm_for_test();
         let frame = |menu: &mut TrackMenuState| {
             menu.update(0.016, &M, &ps, store.view());
-            crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // What the drain left of the live queue, the draw drops (`ui::dispatch`).
             crate::text::clear_prewarm();
         };
