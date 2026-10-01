@@ -133,6 +133,10 @@ impl TraceAge {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliveryClass {
+    /// No route was ever installed — the plan was refused (by the server at `/decision`, or by the
+    /// Direct Play setting) or never resolved — so there is no delivery to name. Honest unknown, not
+    /// a guess at which route the attempt would have taken.
+    Unknown,
     Direct,
     Remux,
     Hls,
@@ -142,6 +146,7 @@ pub(crate) enum DeliveryClass {
 impl DeliveryClass {
     pub(crate) const fn code(self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::Direct => "original_direct",
             Self::Remux => "original_remux",
             Self::Hls => "hls",
@@ -667,8 +672,14 @@ pub(crate) struct PlaybackErrorContext {
     pub(crate) started: bool,
 }
 
+/// The delivery of the route this playback INSTALLED. A refused or unresolved plan installs none
+/// (`tsession` stays empty and `cur_contract` describes an attempt that never ran), so reading the
+/// route would label it `Direct` — the tag Sentry PLX-NATIVE-14 showed on every `decision_refused`
+/// event. No route is `Unknown`.
 fn delivery_class(ps: &crate::route::PlaybackSession) -> DeliveryClass {
-    if crate::route::is_segmented_hls(ps) {
+    if crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
+        DeliveryClass::Unknown
+    } else if crate::route::is_segmented_hls(ps) {
         DeliveryClass::Hls
     } else if crate::route::is_transcoding(ps) && crate::route::is_remux(ps) {
         DeliveryClass::Remux
@@ -796,16 +807,22 @@ pub(crate) fn note_load_gate_for(generation: u32, elapsed: LoadElapsedClass) {
     push_trace_for(generation, TraceEvent::LoadGateOpened { elapsed });
 }
 
+/// The quality the installed route asked the server for. Original-quality routes ask for the
+/// original, a progressive transcode asks for the viewer's selection, and HLS is the controller's
+/// current rung. No route (`Unknown`) asked for nothing recorded, so it is not inferred.
+fn requested_quality(delivery: DeliveryClass, selected: QualityClass) -> QualityClass {
+    match delivery {
+        DeliveryClass::Unknown => QualityClass::Unknown,
+        DeliveryClass::Hls => QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed)),
+        DeliveryClass::Direct | DeliveryClass::Remux => QualityClass::Original,
+        DeliveryClass::Transcode => selected,
+    }
+}
+
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let delivery = delivery_class(ps);
     let selected = QualityClass::selected(crate::route::quality());
-    let requested = if delivery == DeliveryClass::Hls {
-        QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed))
-    } else if matches!(delivery, DeliveryClass::Direct | DeliveryClass::Remux) {
-        QualityClass::Original
-    } else {
-        selected
-    };
+    let requested = requested_quality(delivery, selected);
     PlaybackErrorContext {
         delivery,
         selected,
@@ -822,13 +839,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
 
 fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
     let delivery = delivery_class(ps);
-    let requested = if delivery == DeliveryClass::Hls {
-        QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed))
-    } else if matches!(delivery, DeliveryClass::Direct | DeliveryClass::Remux) {
-        QualityClass::Original
-    } else {
-        QualityClass::selected(crate::route::quality())
-    };
+    let requested = requested_quality(delivery, QualityClass::selected(crate::route::quality()));
     TraceEvent::Presented {
         delivery,
         requested,
@@ -1430,6 +1441,53 @@ mod tests {
         REBUFFER_AT_MS.store(0, Relaxed);
         assert_eq!(held, 0, "a claim hold was counted as a rebuffer");
         assert_eq!(genuine, 1, "a genuine stall still counts");
+    }
+
+    /// PLX-NATIVE-14: a plan the server (or Force Direct Play) REFUSED never installs a route — no
+    /// URL, no encoder session — so reading the delivery off the installed route made every
+    /// `decision_refused` report say `original_direct` / requested `original`, whatever the attempt
+    /// actually asked for. A refusal has no delivery and no requested quality; the report must say so.
+    #[test]
+    fn a_refused_plan_reports_no_delivery_and_no_requested_quality() {
+        let _g = crate::testlock::serial();
+        for verdict in [
+            crate::route::PlayVerdict::Server("Cannot convert this item.".into()),
+            crate::route::PlayVerdict::Server(String::new()),
+            crate::route::PlayVerdict::DirectPlayDisabled,
+            crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
+        ] {
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_for_test(&mut ps, verdict.clone());
+            let ctx = error_context(&ps);
+            assert_eq!(ctx.delivery.code(), "unknown", "{verdict:?}: delivery was inferred");
+            assert_eq!(ctx.requested, QualityClass::Unknown, "{verdict:?}: requested was inferred");
+            // The selected quality is the viewer's own setting, which is recorded and still true.
+            assert_eq!(ctx.selected, QualityClass::selected(crate::route::quality()));
+        }
+    }
+
+    /// The other half: a failure on a playback that DID install a route keeps the real tags.
+    #[test]
+    fn an_installed_route_keeps_its_real_delivery_and_requested_quality() {
+        let _g = crate::testlock::serial();
+        let direct = crate::route::PlaybackSession::default();
+        let ctx = error_context(&direct);
+        assert_eq!((ctx.delivery.code(), ctx.requested), ("original_direct", QualityClass::Original));
+
+        let mut remux = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut remux, true, false);
+        let ctx = error_context(&remux);
+        assert_eq!((ctx.delivery.code(), ctx.requested), ("original_remux", QualityClass::Original));
+
+        let mut transcode = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut transcode, false, false);
+        let ctx = error_context(&transcode);
+        assert_eq!(ctx.delivery.code(), "progressive_transcode");
+        assert_eq!(ctx.requested, ctx.selected);
+
+        let mut hls = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut hls, false, true);
+        assert_eq!(error_context(&hls).delivery.code(), "hls");
     }
 
     use super::super::shared::PlaybackState as S;

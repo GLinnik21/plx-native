@@ -4321,6 +4321,25 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
 pub(crate) fn clear_play_verdict_for_test(ps: &mut PlaybackSession) {
     clear_play_verdict(ps)
 }
+/// Test-only: leave `ps` exactly as a refusing [`apply_plan`] does — the verdict installed, no URL,
+/// no encoder session. For asserting what the failure report says about a playback that never got
+/// a route.
+#[cfg(test)]
+pub(crate) fn refuse_for_test(ps: &mut PlaybackSession, verdict: PlayVerdict) {
+    ps.play_verdict = Some(verdict);
+}
+/// Test-only: install a live transcode route (`encoder` session, optional remux, optional
+/// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
+#[cfg(test)]
+pub(crate) fn install_transcode_for_test(ps: &mut PlaybackSession, remux: bool, hls: bool) {
+    ps.tsession = "test-encoder".to_owned();
+    ps.cur_contract.remux = remux;
+    ps.cur_contract.delivery = if hls {
+        crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+    } else {
+        crate::plex::TranscodeDelivery::ProgressiveMkv
+    };
+}
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
 pub(crate) fn set_subtitle(ps: &mut PlaybackSession, sid: i64) {

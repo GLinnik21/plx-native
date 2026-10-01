@@ -310,7 +310,7 @@ pub(crate) fn preview_domains() -> String {
             ],
             F::code,
         )),
-        (msg::core_preview_domain_delivery(), codes(&[D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
+        (msg::core_preview_domain_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
         (msg::core_preview_domain_quality(), codes(
             &[
                 Q::Unknown,
@@ -741,6 +741,14 @@ mod tests {
             );
             assert_eq!(keys(&crumb["data"]), want);
         }
+    }
+
+    #[test]
+    fn consent_preview_lists_every_delivery_code_including_the_refused_unknown() {
+        // A refused plan reports `unknown`; a value the wire can carry but the consent screen does
+        // not list would be a payload the person was never shown.
+        assert!(preview_domains()
+            .contains("unknown / original_direct / original_remux / hls / progressive_transcode"));
     }
 
     #[test]
