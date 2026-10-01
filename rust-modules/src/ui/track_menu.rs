@@ -1603,7 +1603,8 @@ impl TrackMenuState {
     /// TV `textx8:9.5` inside a 24.8–29.0 ms frame on the first switch to Audio (2026-10-01).
     /// Done once per menu, on a frame with no page slide, no resize and an empty queue, so it
     /// neither competes with the live page's own strings nor adds to the open frame. The work is
-    /// only building the form and recording it; the presenting side's drain uploads it.
+    /// only building the form and recording it; the presenting side's drain uploads it, one
+    /// string a frame ([`PanelMotion::prewarm_background_text`]).
     fn warm_other_tab(
         &mut self,
         ps: &crate::route::PlaybackSession,
@@ -1626,7 +1627,7 @@ impl TrackMenuState {
         let mut other = TrackTable::new(BAND_BASE);
         other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         other.set(form, None);
-        self.motion.prewarm_more_text(table_natural(&other.table, measure), &other.table, measure);
+        self.motion.prewarm_background_text(table_natural(&other.table, measure), &other.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -3131,10 +3132,16 @@ mod enhancement_menu_tests {
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
         crate::text::reset_prewarm_for_test();
-        // A second of presented frames on the Audio tab: open, settle, drain.
-        for _ in 0..60 {
+        // A second of presented frames on the Audio tab: open, settle, drain. The first frame
+        // drains the live page; every later one drains the other tab's strings in the
+        // background, one string a frame (on the TV the whole tab in one frame was
+        // `warmdrain:11.4`, a 21.3 ms frame right after the open).
+        for frame in 0..60 {
             menu.update(0.016, &M, &ps, store.view());
-            crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text();
+            if frame > 0 {
+                assert!(drained <= 1, "frame {frame} rasterised {drained} background strings");
+            }
         }
         menu.focus_tab(&ps, store.view(), 1);
         let labels: Vec<String> = menu
