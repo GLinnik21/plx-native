@@ -71,7 +71,7 @@ v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route c
 TTL whatever happens to your shell. Read what the APP saw from its own log (`net: curl
 rc=6`, `pinned: … name resolved locally`), not from this command's status lines.
 
-`down` hands back the APP (interactive boot, triggers cleared); `tools/tv-lock.sh release` hands
+`down` hands back the APP (triggers cleared, app closed and NOT relaunched); `tools/tv-lock.sh release` hands
 back the TELEVISION. Do both, in that order — a released lock with an automated app still on
 screen is the next lane's confusing morning.
 
@@ -370,8 +370,8 @@ prints that it revoked it, and `status` prints that it is live. Do not leave one
 ## Handback etiquette
 
 This is the user's actual television. When you are done, `tv-session.sh down` strips the
-token and every automation trigger and relaunches a genuine interactive boot (picker or QR,
-as a real user gets). Leaving an injected-token session up means the next person to turn on
+token and every automation trigger and closes the app, leaving the TV as it was (it does not
+relaunch the app). Leaving an injected-token session up means the next person to turn on
 the TV is signed in as whatever the automation chose.
 
 ## Gotchas

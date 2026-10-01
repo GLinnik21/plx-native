@@ -13,7 +13,7 @@
 #                                mute/unmute the TELEVISION, independent of the panel (see below)
 #   tv-session.sh wan off [TTL]|on|status
 #                                cut the TELEVISION's route to the internet, LAN intact (see below)
-#   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
+#   tv-session.sh down           hand the TV back: strip automation, close the app (no relaunch)
 #
 # Options (accepted before OR after the subcommand, because every one of them needs it):
 #   --flavor <f>      which INSTALL to drive: debug (default) | stable. Two builds live side by
@@ -1132,8 +1132,11 @@ cmd_down() {
   ensure_awake || exit 1
   ensure_rundir || exit 1
   clear_triggers                      # strips token/autoplay/capture/everything
-  relaunch                            # a real interactive boot: picker or QR, as a user gets
-  assert_running && ok "relaunched as a normal interactive session ($APPID)"
+  # Close the tested app and leave the television as it is: the owner does not want the debug
+  # app reopened behind them after a test. Triggers are already cleared, so the next launch
+  # (by anyone) is an ordinary interactive boot. `make kill` closes THIS flavour by app id.
+  make -C "$REPO" FLAVOR="$FLAVOR" kill >/dev/null 2>&1
+  ok "app closed ($APPID); TV left as is"
   echo "== TV is yours"
 }
 
