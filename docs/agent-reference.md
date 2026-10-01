@@ -26,9 +26,9 @@ Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **
 in the repo** — it comes from the gitignored **`.tv-host`** (one line, an IP or hostname), which the
 Makefile's `TV` and `tools/`' `TV_HOST` both fall back to; `make TV=1.2.3.4 …` overrides for one
 invocation, and a target that needs a TV with neither set fails saying so. The ssh password
-`alpine` IS still in the Makefile and that is deliberate — it is webosbrew's *published* dev-mode
-root password, identical on every rooted webOS TV, so it identifies nobody and removing it would
-break the loop for everyone. App id `com.beb.plxnative` — and since 2026-08-21 a second
+`alpine` lives in `tools/tv-ssh`, not the Makefile, and is tried only after this machine's ssh key is
+refused. It is webosbrew's *published* dev-mode root password, identical on every rooted TV, so it
+identifies nobody and removing it would break the loop for key-less machines. App id `com.beb.plxnative` — and since 2026-08-21 a second
 install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`, below;
 `docs/two-installs.md`).
 
@@ -36,7 +36,7 @@ install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`,
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
 setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), CMake (Homebrew, for
-the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run). See the
+the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use your ssh key first and need it only when the TV refuses the key). See the
 **`setup-environment` skill** (`.agents/skills/`) for the full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`

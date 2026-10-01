@@ -50,14 +50,22 @@
 # `root@` out of somebody's memory instead. `--git-common-dir` is the MAIN checkout's `.git` from
 # anywhere in the worktree family (and plain `.git` in the main one, where the first cat already won).
 TV       ?= $(strip $(shell cat .tv-host 2>/dev/null || cat "$$(git rev-parse --git-common-dir 2>/dev/null)/../.tv-host" 2>/dev/null))
-# Expanded only inside a recipe, so `make`, `make check` and `make ipk` never need a TV at all —
-# but anything that talks to one fails with this sentence instead of dialling `root@`.
-# `alpine` is NOT a secret: it is webosbrew's published dev-mode root password, the same on every
-# rooted webOS TV. It stays in the clear because removing it would break the loop for everyone and
-# protect nothing. The ADDRESS is the part that identified one household, and that is now local.
-TV_OR_DIE = $(if $(TV),$(TV),$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
-SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV_OR_DIE)
-SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+# Every ssh/scp this Makefile runs goes through `tools/tv-ssh`: the ssh KEY first, `sshpass -p alpine`
+# only when the set refuses the key (so `sshpass` is optional on a machine whose key is authorized),
+# and a fast "the TV is unreachable" for a set that is asleep. `tv` / `tv:` are placeholders the
+# wrapper expands to `root@<address>` itself, which is the point: make echoes recipe lines, and a
+# line that carried the address and the password put both into every terminal and agent transcript
+# a `make deploy` ever scrolled through. The address reaches the wrapper through the environment
+# (`make TV=...` is exported) or the same gitignored `.tv-host`; with neither, the wrapper fails
+# with "no TV configured" instead of dialling `root@`. `alpine` is NOT a secret (webosbrew's
+# published dev-mode root password, the same on every rooted set); the ADDRESS is what identified
+# one household, and that stays local. See tools/tv-ssh for the contract.
+# TV_CHECK expands to nothing when a TV is configured and stops make otherwise, so a recipe never
+# dials an empty address (it used to be `root@$(TV_OR_DIE)`; without this a deploy with no TV
+# says "does not exist ... make install", which is the wrong advice).
+TV_CHECK  = $(if $(TV),,$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
+SSH       = $(TV_CHECK)tools/tv-ssh ssh tv
+SCP       = $(TV_CHECK)tools/tv-ssh scp
 RUN_SECS ?= 18
 
 # --- THE TELEVISION IS A MUTEX, and this is what enforces it -------------------------------
@@ -75,11 +83,13 @@ RUN_SECS ?= 18
 # cannot collide with a fleet job. A SESSION should take a real one (`tools/tv-lock.sh acquire`),
 # because the gap between two of your own commands is where another lane lands.
 #
-# `$(TV)` rather than `$(TV_OR_DIE)`: with no television configured this must stay silent and let
-# the recipe's own ssh produce the familiar error, not replace it with a complaint about a lock.
+# With no television configured this must stay silent and let the recipe's own ssh produce the
+# familiar error, not replace it with a complaint about a lock. The address is deliberately NOT
+# passed on the command line (`TV=$(TV)`): make echoes it, and it reaches tv-lock.sh through the
+# environment or `.tv-host` anyway.
 TVLOCK = tools/tv-lock.sh
 tv-lock-require:
-	@$(if $(TV),TV=$(TV),) $(TVLOCK) require --quiet --why "make $(or $(MAKECMDGOALS),deploy) [$(FLAVOR)]"
+	@$(TVLOCK) require --quiet --why "make $(or $(MAKECMDGOALS),deploy) [$(FLAVOR)]"
 
 # --- WHICH INSTALL: the FLAVOR axis --------------------------------------------------------
 #
@@ -1027,14 +1037,14 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-ide
 deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
-	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
+	  echo "$(APPDIR) does not exist on the TV — the $(FLAVOR) flavour is not installed."; \
 	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
 	# The storage helper's service directory is laid down by `make install` too (`ci/mkipk.py`'s
 	# `stage_storage_service`), never invented by `deploy` — a hand-made one would carry no
 	# `services.json` role manifest, so LS2 would refuse every call the helper makes and the
 	# failure would look like the helper crashing rather than never having been registered.
 	@$(SSH) 'test -d $(SERVICEDIR)' || { \
-	  echo "$(SERVICEDIR) does not exist on $(TV) — the storage helper was never installed for the $(FLAVOR) flavour."; \
+	  echo "$(SERVICEDIR) does not exist on the TV — the storage helper was never installed for the $(FLAVOR) flavour."; \
 	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
 	# The descriptor and the directory it lands in must name the same app: `paths::app_id` reads
 	# the DIRECTORY, so a mismatch means the running binary and its own appinfo disagree about
@@ -1048,13 +1058,13 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# directory. ONE scp for all of them: each connection is a full SSH handshake to a television
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
-	$(SCP) $(FFMPEG_STAGED) root@$(TV):$(APPDIR)/
+	$(SCP) $(FFMPEG_STAGED) tv:$(APPDIR)/
 	# The native crash daemon is a separate process so it can read the dying process's stack while
 	# the signal handler keeps that process parked. It has no network transport of its own. Stage
 	# then rename: an already-running app keeps the old daemon executable open, and scp directly to
 	# that inode fails with ETXTBSY (observed on the first handler upgrade). Renaming is atomic and
 	# leaves the old process on its old inode while the next launch gets this one.
-	$(SCP) $(SENTRY_HANDLER) root@$(TV):$(APPDIR)/sentry-crash.new
+	$(SCP) $(SENTRY_HANDLER) tv:$(APPDIR)/sentry-crash.new
 	$(SSH) 'chmod 755 $(APPDIR)/sentry-crash.new && mv $(APPDIR)/sentry-crash.new $(APPDIR)/sentry-crash'
 	# The storage helper is a registered LS2 SERVICE, not part of the app directory — `ipk` has
 	# shipped it since the service existed (`ci/stage-link-evidence.py` into
@@ -1063,7 +1073,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# reinstall. Same `.new` + `mv` dance as the crash handler and for the same reason: LS2 may
 	# already have this service's OLD binary running (`appinstalld` execs `services.json`'s
 	# `executable` under its own uid), so `scp` straight onto that inode risks `ETXTBSY`.
-	$(SCP) pkg/plxnative-storage root@$(TV):$(SERVICEDIR)/plxnative-storage.new
+	$(SCP) pkg/plxnative-storage tv:$(SERVICEDIR)/plxnative-storage.new
 	$(SSH) 'chmod 755 $(SERVICEDIR)/plxnative-storage.new && mv $(SERVICEDIR)/plxnative-storage.new $(SERVICEDIR)/plxnative-storage'
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
@@ -1073,7 +1083,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# a moment with no FFmpeg on the device.
 	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 
-	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
+	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
 	@# whole path — trigger, snapshot, pinned upload — can be rehearsed on the dev television
 	@# before an hour of Cloud Test Lab is spent on it. A non-LAB deploy REMOVES any file a
@@ -1087,7 +1097,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	@# in that app directory, and the jail — not the mode — is what stands between it and anything
 	@# else on the television. (`ci/mkipk.py` normalises payload modes, so the .ipk path never had
 	@# this problem; only deploy did.)
-	@if [ -n "$(LAB)" ]; then $(SCP) pkg/lab.json root@$(TV):$(APPDIR)/lab.json && \
+	@if [ -n "$(LAB)" ]; then $(SCP) pkg/lab.json tv:$(APPDIR)/lab.json && \
 	   $(SSH) 'chmod 644 $(APPDIR)/lab.json'; \
 	 else $(SSH) 'rm -f $(APPDIR)/lab.json'; fi
 	# The rest of the payload — appinfo, both icon sizes, the splash/launch image, the three font
@@ -1101,16 +1111,16 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# flavour's directory they were read from. A file added to `APP_FILES` now reaches the
 	# television with no separate line to remember here — which is what `pkg/splash.png` needed and
 	# never got: it was staged into every `.ipk` and never scp'd by this recipe.
-	$(SCP) $(DEPLOY_FILES) root@$(TV):$(APPDIR)/
+	$(SCP) $(DEPLOY_FILES) tv:$(APPDIR)/
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
-	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
+	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) tv:$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
 	@# `scp` preserves the host mode. This checkout runs under umask 077, so `chmod +x` left a
 	@# root-owned 0700 binary: SAM could launch it before entering the app jail, but Sentry's
 	@# same-uid external reporter could not `execv` it to spool a crash envelope. The .ipk builder
 	@# already normalises this member to 0755; make the fast deploy path identical.
 	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod 755 $(APPDIR)/plxnative'
-	@$(MAKE) --no-print-directory verify-deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) LAB=$(LAB) TV=$(TV)
+	@$(MAKE) --no-print-directory verify-deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) LAB=$(LAB)
 
 # --- proving the payload actually landed ---------------------------------------------------------
 #
@@ -1201,7 +1211,7 @@ softfloat-probe: tv-lock-require
 	  sleep 12; kill $$LP 2>/dev/null; sleep 1; rm -f $(RUNDIR)/plxnative-softfloat; \
 	  $(CLOSE_SH) grep softfloat $(EVENTLOG) || echo "softfloat: NO LINE (was the build deployed with devtriggers?)"'
 	@mkdir -p tests/fixtures/softfloat
-	-$(SCP) root@$(TV_OR_DIE):$(RUNDIR)/plxnative-softfloat.tbl tests/fixtures/softfloat/arm.tbl 2>/dev/null && echo "table: tests/fixtures/softfloat/arm.tbl"
+	-$(SCP) tv:$(RUNDIR)/plxnative-softfloat.tbl tests/fixtures/softfloat/arm.tbl 2>/dev/null && echo "table: tests/fixtures/softfloat/arm.tbl"
 
 kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
@@ -1481,6 +1491,10 @@ check-python: check-localization
 	@# The cargo seed's own suite (restore only into an absent dir, the app crate never in the seed,
 	@# key refresh, off switch, clone failure), against a fake root and a private cache.
 	python3 ci/test_cargo_seed.py
+	@# `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
+	@# PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
+	@# attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
+	python3 ci/test_tv_ssh.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -1682,8 +1696,8 @@ release-guard:
 # there and leaves the PACKAGED binary behind. Ending here would leave you looking at a build you
 # did not make, which is the "plausible wrong data" failure this repo cares most about.
 install: ipk tv-lock-require
-	@echo "installing $(IPK) as $(APPID) on $(TV)"
-	$(SCP) $(IPK) root@$(TV):/tmp/
+	@echo "installing $(IPK) as $(APPID) on the TV"
+	$(SCP) $(IPK) tv:/tmp/
 	@# `script -qc` because luna-send needs a tty (see the webos-screen-capture note); `-i` keeps
 	@# the subscription open long enough for appinstalld to report, which is the only place a
 	@# failure is ever named.
@@ -1691,7 +1705,7 @@ install: ipk tv-lock-require
 	  luna://com.webos.appInstallService/dev/install \
 	  \"{\\\"id\\\":\\\"$(APPID)\\\",\\\"ipkUrl\\\":\\\"/tmp/$(notdir $(IPK))\\\",\\\"subscribe\\\":true}\"" /dev/null' | head -20
 	$(SSH) 'rm -f /tmp/$(notdir $(IPK))'
-	@$(MAKE) --no-print-directory deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) TV=$(TV)
+	@$(MAKE) --no-print-directory deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE)
 	@echo "installed and deployed $(APPID)"
 
 # Remove a flavour from the television. Refuses the stable id: uninstalling the app the household
@@ -2060,8 +2074,8 @@ fixtures-pipeline:
 # because both lines are `-` prefixed the miss was swallowed — so a profiling run that produced
 # exactly the data asked for reported "no profiler output on the TV".
 fetch-profile:
-	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-gputime.jsonl pkg/plxnative-gputime.jsonl
-	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
+	-$(SCP) tv:$(RUNDIR)/plxnative-gputime.jsonl pkg/plxnative-gputime.jsonl
+	-$(SCP) tv:$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
 .PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \

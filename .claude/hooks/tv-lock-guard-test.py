@@ -46,6 +46,11 @@ CASES = [
     (BLOCK, "tools/capture-screen.sh out.png DISPLAY"),
     (BLOCK, "ssh root@192.0.2.10 'cat /tmp/plxnative-events.log'"),
     (BLOCK, "sshpass -p alpine scp pkg/plxnative root@192.0.2.10:/tmp/"),
+    # tools/tv-ssh is the shared key-first ssh/scp wrapper every TV caller goes through; it spells
+    # the television as the literal word `tv` (no `root@<ip>`), so the raw-ssh pattern cannot see it.
+    (BLOCK, "tools/tv-ssh ssh tv 'cat /tmp/plxnative-events.log'"),
+    (BLOCK, "tools/tv-ssh scp pkg/plxnative tv:/tmp/"),
+    (BLOCK, "./tools/tv-ssh ssh tv true"),
     (BLOCK, "echo hi && make deploy"),
     (BLOCK, "./tests/run.py --fps | tee out.log"),
     (BLOCK, "for f in stable debug; do ssh root@1.2.3.4 fuser x; done"),
@@ -79,6 +84,8 @@ CASES = [
     (ALLOW, 'git commit -m "make deploy now takes the TV lock; tests/run.py releases it"'),
     (ALLOW, 'grep -rn "ssh root@" docs/'),
     (ALLOW, "ssh someserver.example.com uptime"),
+    (ALLOW, 'git commit -m "tools/tv-ssh ssh tv: key first, sshpass only when the key is refused"'),
+    (ALLOW, "grep -rn tv-ssh docs/ tests/README.md"),
     (ALLOW, "PLX_TV_LOCK_BYPASS=1 ssh root@1.2.3.4 uptime"),          # the documented hatch
     # "sound" alone, off the tv-session.sh command word, must not trip the classifier -- it keys
     # on the SUBCOMMAND of tv-session.sh specifically, not on the word appearing anywhere on the

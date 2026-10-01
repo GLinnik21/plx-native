@@ -67,7 +67,7 @@ Whenever you assert something about "the release build", prove the bytes first:
 
 ```sh
 md5 -q pkg/plxnative
-sshpass -p alpine ssh root@$(cat .tv-host) \
+tools/tv-ssh ssh tv \
   "md5sum /media/developer/apps/usr/palm/applications/com.beb.plxnative/plxnative"
 ```
 
@@ -329,8 +329,8 @@ Deploying over ssh does not exercise the package. Install the real `.ipk` — th
 packaging bugs were found that `make deploy` could never have surfaced:
 
 ```sh
-scp pkg/com.beb.plxnative_X.Y.Z_arm.ipk root@$(cat .tv-host):/tmp/
-ssh root@$(cat .tv-host) "script -qc \"luna-send -i -a com.webos.appInstallService \
+tools/tv-ssh scp pkg/com.beb.plxnative_X.Y.Z_arm.ipk tv:/tmp/
+tools/tv-ssh ssh tv "script -qc \"luna-send -i -a com.webos.appInstallService \
   luna://com.webos.appInstallService/dev/install \
   '{\\\"id\\\":\\\"com.beb.plxnative\\\",\\\"ipkUrl\\\":\\\"/tmp/com.beb.plxnative_X.Y.Z_arm.ipk\\\",\\\"subscribe\\\":true}'\" /dev/null"
 ```

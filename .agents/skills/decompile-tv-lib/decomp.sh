@@ -150,14 +150,16 @@ case "$cmd" in
     TV="${TV_HOST:-${TV:-$(cat "$(dirname "$0")/../../../.tv-host" 2>/dev/null || true)}}"
     [ -n "$TV" ] || die "no TV host (.tv-host, or TV_HOST=)"
     mkdir -p "$BIN"
-    echo "decomp: harvesting the media stack from $TV …" >&2
+    echo "decomp: harvesting the media stack from the TV …" >&2
+    TVSSH="$(cd "$(dirname "$0")/../../.." && pwd)/tools/tv-ssh"   # key first, sshpass only if refused
+    export PLX_TV_ADDR="$TV"
     # shellcheck disable=SC2087
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TV" \
+    "$TVSSH" ssh tv \
       'find / -name "*.so*" -type f 2>/dev/null | grep -iE "player|/libpf|acb|cbe|smp|starfish|umedia|vpq|dile|dolby"' \
       > "$LAB/paths.txt" || die "ssh failed (TV asleep? .agents/skills/wake-tv/wake-tv.sh)"
     while read -r p; do
       [ -n "$p" ] || continue
-      scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TV:$p" "$BIN/" 2>/dev/null || true
+      "$TVSSH" scp -q "tv:$p" "$BIN/" 2>/dev/null || true
     done < "$LAB/paths.txt"
     ( cd "$BIN" && shasum -a 256 ./* > "$LAB/MANIFEST.txt" 2>/dev/null || true )
     echo "decomp: $(ls "$BIN" | wc -l | tr -d ' ') files in $BIN (sha256 in MANIFEST.txt)"

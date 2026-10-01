@@ -18,8 +18,8 @@
 #    starts here. Wake typically takes 15-60 s, occasionally ~2-3 min — hence the
 #    generous default timeout and the WoL resend every ~20 s while polling.
 #  - macOS has no `wakeonlan` out of the box; python3 broadcasts the magic packet.
-#  - SSH auth: the installed key is tried first; the Makefile's sshpass fallback covers
-#    a machine without one. Key auth simply wins when both are available.
+#  - SSH auth: tools/tv-ssh tries the installed key first and falls back to sshpass only when
+#    the set refuses the key, so a machine without one still works.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -55,10 +55,11 @@ learn_mac() {
   TV_MAC="$m"
 }
 
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes)
-
-up() { ssh "${SSH_OPTS[@]}" "${TV_USER}@${TV_HOST}" true 2>/dev/null; }
+# Through tools/tv-ssh: the key first, `sshpass` only if the set refuses it, a fast failure while
+# the set is still asleep (which is the answer `up` wants), and no address on any line it prints.
+TVSSH="$REPO/tools/tv-ssh"
+export PLX_TV_ADDR="$TV_HOST" PLX_TV_SSH_TIMEOUT=5
+up() { "$TVSSH" ssh "${TV_USER}@${TV_HOST}" true 2>/dev/null; }
 
 send_wol() {
   python3 - "$TV_MAC" "$TV_HOST" <<'PY'
@@ -79,8 +80,8 @@ case "${1:-wake}" in
   status)
     if up; then
       [ -n "$TV_MAC" ] || learn_mac || true
-      echo "TV ${TV_HOST}: UP"
-    else echo "TV ${TV_HOST}: DOWN"; exit 1; fi
+      echo "TV: UP"
+    else echo "TV: DOWN"; exit 1; fi
     ;;
   standby)
     # Clean standby via the webOS power service. On THIS webOS 4.5 build the method is
@@ -90,17 +91,17 @@ case "${1:-wake}" in
     # ServerAlive: powerOff drops the link while the ssh session is still open — without
     # keepalives the session hangs on TCP for minutes. With them it errors out in ~6s,
     # which is fine (the call already fired); the poll below is the real confirmation.
-    ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=3 -o ServerAliveCountMax=2 "${TV_USER}@${TV_HOST}" \
+    "$TVSSH" ssh -o ServerAliveInterval=3 -o ServerAliveCountMax=2 "${TV_USER}@${TV_HOST}" \
       'script -qc "luna-send -n 1 luna://com.webos.service.tvpower/power/powerOff '\''{\"reason\":\"remoteKey\"}'\''" /dev/null' \
       >/dev/null 2>&1 || true
     # confirm it actually dropped
-    for _ in $(seq 1 10); do up || { echo "TV ${TV_HOST}: standby."; exit 0; }; sleep 2; done
+    for _ in $(seq 1 10); do up || { echo "TV: standby."; exit 0; }; sleep 2; done
     echo "ERROR: TV still answers after turnOff." >&2; exit 1
     ;;
   wake)
     if up; then
       [ -n "$TV_MAC" ] || learn_mac || true   # cache it now, while we still can
-      echo "TV ${TV_HOST}: already up."; exit 0
+      echo "TV: already up."; exit 0
     fi
     if [ -z "$TV_MAC" ]; then
       echo "ERROR: no MAC for the magic packet, and the TV is unreachable so it cannot be" >&2
@@ -108,12 +109,12 @@ case "${1:-wake}" in
       echo "       in .tv-mac), or wake the TV by hand and re-run to cache it." >&2
       exit 2
     fi
-    echo "Waking ${TV_HOST} (MAC ${TV_MAC})..."
+    echo "Waking the TV..."
     t0=$(date +%s)
     send_wol
     while :; do
       if up; then
-        echo "TV ${TV_HOST}: UP after $(( $(date +%s) - t0 ))s."
+        echo "TV: UP after $(( $(date +%s) - t0 ))s."
         exit 0
       fi
       elapsed=$(( $(date +%s) - t0 ))

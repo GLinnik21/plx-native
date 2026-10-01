@@ -27,7 +27,7 @@ environment" means getting three things in place so `make` works:
    a SIGILL on the TV — see "Why build-std" below). That requires the nightly
    toolchain and the `rust-src` component.
 3. **Host CLI tools** — `curl`, `tar`, CMake (the pinned Sentry Native build), and `sshpass`
-   (deploy/run over ssh).
+   (deploy/run over ssh, only when the TV refuses your key).
 
 The end state you're verifying: `make` produces `pkg/plxnative`, and it runs on the
 TV with no missing-symbol or illegal-instruction errors.
@@ -47,7 +47,7 @@ rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
 rustup component add clippy   --toolchain nightly   # `make check` runs `make lint` first
 brew install cmake        # builds the pinned, statically linked Sentry Native capture backend
-brew install sshpass      # deploy/run only; skip if you won't touch the TV
+brew install sshpass      # deploy/run fallback when the TV refuses your ssh key; skip if you won't touch the TV
 ```
 
 Now build:
@@ -179,7 +179,7 @@ the path with `make -s print-eventlog FLAVOR=debug` rather than typing one. The
 | `build-sentry-native: cmake is required` | Install the host build generator with `brew install cmake`. It runs the webOS cross-compiler; it does not compile target code with the Mac toolchain. |
 | Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplxnative_modules.a` and rebuild. |
 | `relocation R_ARM_MOVW_ABS_NC ... recompile with -fPIC` when building a stub | A stub needs PIC. Stubs already use `-fPIC` in `STUBFLAGS`; if you added a bespoke stub rule, add `-fPIC`. |
-| Deploy/run steps fail with `sshpass: command not found` | `brew install sshpass`. The TV must be on and reachable (`make TV=<ip> ...`). |
+| Deploy/run steps fail with `the TV refused this machine's ssh key and sshpass is not installed` | Authorize your key on the TV, or `brew install sshpass`. `the TV is unreachable` means it is off or asleep (wake-tv skill; `make TV=<ip> ...`). |
 
 ## Portability note
 

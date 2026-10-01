@@ -101,17 +101,12 @@ resolve_tv() {
 }
 HOST="$(resolve_tv)"
 
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
-          -o ConnectTimeout=8 -o BatchMode=yes)
-# Key auth first (this Mac has one), sshpass second so a machine without the key still works. The
-# password is webosbrew's published dev-mode root password — the same on every rooted set, so it
-# identifies nobody; the ADDRESS is the part that stays out of the repo.
+# Every ssh goes through tools/tv-ssh: this Mac's key first, `sshpass` (webosbrew's published
+# dev-mode root password -- the same on every rooted set, so it identifies nobody; the ADDRESS is
+# the part that stays out of the repo) only when the set refuses the key, and a fast failure for a
+# set that is unreachable. Its stderr is dropped here: callers decide what an unreachable set means.
 ssh_tv() {
-  ssh "${SSH_OPTS[@]}" "root@$HOST" "$@" 2>/dev/null && return 0
-  local rc=$?
-  command -v sshpass >/dev/null 2>&1 || return $rc
-  sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=8 "root@$HOST" "$@" 2>/dev/null
+  PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@" 2>/dev/null
 }
 
 # ------------------------------------------------------- the protocol itself ---
@@ -320,7 +315,7 @@ parse_opts() {
 do_acquire() {  # $1 = ttl minutes, $2 = force ; assumes TOKEN set
   local ttl_s=$(( $1 * 60 ))
   RESP="$(remote_op acquire "$ttl_s" "$2")"; parse_resp
-  [ -n "$ACT" ] || { bad "no answer from $HOST — the TV is unreachable"; return 2; }
+  [ -n "$ACT" ] || { bad "no answer from the TV — it is unreachable"; return 2; }
   # VERIFY, always. Stealing an expired lease is a write, not a compare-and-swap, so two lanes
   # deciding to steal in the same second can both write — and the loser has to find out here
   # rather than in an fps number three minutes from now.
@@ -393,7 +388,7 @@ cmd_release() {
     absent)   lease_clear; info "lock was already gone (TV rebooted, or someone broke it)" ;;
     notmine)  lease_clear
               warn "your lease was gone — the TV is now held by:"; describe "$OWNER_BLK" >&2 ;;
-    "")       bad "no answer from $HOST; local lease dropped anyway"; lease_clear; exit 2 ;;
+    "")       bad "no answer from the TV; local lease dropped anyway"; lease_clear; exit 2 ;;
   esac
   exit 0
 }
@@ -438,7 +433,7 @@ preflight_note() {
 cmd_status() {
   parse_opts "$@"
   need_host || exit 2
-  echo "== TV lock: $HOST"
+  if [ -n "${PLX_VERBOSE:-}" ]; then echo "== TV lock: $HOST"; else echo "== TV lock: the TV"; fi
   if ! ssh_tv true; then bad "TV unreachable (asleep? see the wake-tv skill)"; exit 2; fi
   lease_load || true
   RESP="$(remote_op status 0 0)"; parse_resp
@@ -505,7 +500,7 @@ cmd_require() {
     # Unreachable is not a collision — an asleep television has nobody on it either. Let the
     # caller's own command produce the real error instead of a lock complaint about a lock the
     # TV cannot even be asked about.
-    [ "$QUIET" = 1 ] || warn "cannot reach $HOST to check the TV lock — continuing"
+    [ "$QUIET" = 1 ] || warn "cannot reach the TV to check the lock — continuing"
     exit 0
   fi
   if lease_load && [ "$(fld token "$OWNER_BLK")" = "$TOKEN" ]; then

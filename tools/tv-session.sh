@@ -209,9 +209,10 @@ stop_viewers() {
 # ssh failed with "hostname contains invalid characters", and `up` reported "TV unreachable" for a
 # television that was awake and answering. `tools/crash-report.sh` and the wake-tv skill were both
 # moved onto `print-tv` already; this was the last copy.
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
-tv()  { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@"; }
-tvq() { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@" 2>/dev/null; }
+# Every ssh goes through tools/tv-ssh: the key first, `sshpass` only if the set refuses it, a fast
+# failure if it is unreachable, and neither the address nor the password on any line it prints.
+tv()  { PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@"; }
+tvq() { PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@" 2>/dev/null; }
 
 # `pidof plxnative` matched BOTH installs the moment a second flavour landed: the binaries are
 # both named `plxnative`, and it hands back two pids in an order busybox does not promise. `fuser`
@@ -778,14 +779,14 @@ cmd_up() {
       echo "  (no boot triggers for this screen)"
     fi
     if [ "$push_guest" = 1 ]; then
-      echo "  would run: printf '%s' '<guest token, not printed>' | ssh root@$HOST 'cat > $RUNDIR/plxnative-token'"
+      echo "  would run: printf '%s' '<guest token, not printed>' | tools/tv-ssh ssh tv 'cat > $RUNDIR/plxnative-token'"
     elif [ "$push_owner" = 1 ]; then
-      echo "  would run: printf '%s' '<owner token from src/config.local.h, not printed>' | ssh root@$HOST 'cat > $RUNDIR/plxnative-token'"
+      echo "  would run: printf '%s' '<owner token from src/config.local.h, not printed>' | tools/tv-ssh ssh tv 'cat > $RUNDIR/plxnative-token'"
     else
       echo "  would inject: nothing ($identity_desc)"
     fi
     echo "  would run: make -C $REPO FLAVOR=$FLAVOR kill"
-    echo "  would run: ssh root@$HOST luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$APPID\"}'"
+    echo "  would run: tools/tv-ssh ssh tv luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$APPID\"}'"
     echo "  would then require: route=${want_route:-<any>}${want_overlay:+ overlay=$want_overlay}"
     echo "== dry run complete — identity: $identity_desc"
     return 0

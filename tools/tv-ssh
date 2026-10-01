@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# tools/tv-ssh -- the ONE front door for ssh and scp to the dev television.
+#
+#   tools/tv-ssh ssh [ssh-options] tv COMMAND...      # run COMMAND on the set
+#   tools/tv-ssh scp [scp-options] FILE... tv:DIR/    # copy to it   (also: tv:REMOTE LOCAL)
+#
+# It is a drop-in for `sshpass -p alpine ssh|scp ...`, with three differences that are the reason
+# it exists:
+#
+#   1. KEY FIRST. The call is tried with this machine's ssh key (BatchMode, publickey only). Only
+#      when the television REFUSES the key ("Permission denied") is it re-run through
+#      `sshpass -p alpine`. So a machine whose key is authorized never needs sshpass installed, and
+#      a machine without one still works. `alpine` is webosbrew's published dev-mode root password,
+#      the same on every rooted set: it identifies nobody, but there is no reason to print it.
+#   2. UNREACHABLE IS NOT A BAD KEY. A set that is asleep or off the network fails FAST with one
+#      sentence ("the TV is unreachable"), and the password is never attempted against it.
+#   3. NOTHING IDENTIFYING IS PRINTED. `tv` / `tv:` are placeholders: this script puts
+#      `root@<address>` in the real argv, so a `make` recipe echoing `tools/tv-ssh ssh tv ...` shows
+#      neither the address nor the password, and ssh's own diagnostics (which carry the address)
+#      are silenced. Set PLX_VERBOSE=1 to get them back when debugging a connection.
+#
+# The address comes from, in order: $PLX_TV_ADDR, $TV, $TV_HOST, the gitignored `.tv-host` of this
+# checkout, then of the main checkout (a linked worktree has none -- the same fallback the Makefile
+# and tools/tv-lock.sh use). Callers that already hold an address (tests/run.py --tv) may instead
+# pass an explicit `<user>@<address>`; it is honoured and used for the probe.
+#
+# Host-key options match what every caller used before (StrictHostKeyChecking=no,
+# UserKnownHostsFile=/dev/null), scp keeps `-O` (the legacy protocol the set's dropbear needs), and
+# arguments are passed through untouched, so a quoted remote command stays ONE argument.
+# The final command is `exec`'d: streaming commands (`tail -F`), stdin pipes, a tty (-tt) and the
+# remote exit status all behave exactly as with a bare ssh.
+#
+# Graded without a television by ci/test_tv_ssh.py (fake ssh/sshpass on PATH).
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TV_PASSWORD="${TV_PASS:-alpine}"   # TV_PASS: the override capture-screen.sh always honoured
+user=root
+TIMEOUT="${PLX_TV_SSH_TIMEOUT:-8}"
+
+die() { printf 'tv-ssh: %s\n' "$1" >&2; exit "${2:-255}"; }
+
+mode="${1:-}"
+case "$mode" in
+  ssh|scp) shift ;;
+  *) die "usage: tv-ssh ssh [opts] tv COMMAND...  |  tv-ssh scp [opts] FILE... tv:DIR/" 2 ;;
+esac
+
+# ---------------------------------------------------------------- which television ---
+configured_host() {
+  local h="${PLX_TV_ADDR:-${TV:-${TV_HOST:-}}}"
+  if [ -z "$h" ] && [ -z "${PLX_TV_NO_HOST_FILE:-}" ]; then
+    h="$(cat "$REPO/.tv-host" 2>/dev/null)"
+    if [ -z "$h" ]; then
+      local common; common="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)"
+      case "$common" in /*) ;; ?*) common="$REPO/$common" ;; esac
+      [ -n "$common" ] && h="$(cat "$common/../.tv-host" 2>/dev/null)"
+    fi
+  fi
+  printf '%s' "$h" | tr -d ' \t\n\r'
+}
+
+# An explicit destination wins (and is left exactly as given). Only the REAL destination counts: for
+# ssh, the first non-option word (the `tv` placeholder ends the search); for scp, an operand of the
+# form <user>@<address>:<path>. A remote-command word or a local file that merely looks like
+# `name@host` (`grep alice@example.net`, `icon@2x.png`) must never become the host we probe and, on a
+# refused key, send the password to.
+DEST_RE='^([A-Za-z0-9_.-]+)@([^:[:space:]]+)(:.*)?$'
+host=""
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$mode" = ssh ]; then
+    case "$a" in
+      -[bcDeEFIiJLlmOopQRSWw]|-B) skip=1; continue ;;   # options that take a separate value
+      -*) continue ;;
+    esac
+    if [ "$a" != tv ] && [[ "$a" =~ $DEST_RE ]]; then user="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"; fi
+    break
+  else
+    case "$a" in
+      -[cFiJloPS]) skip=1; continue ;;
+      -*) continue ;;
+    esac
+    if [[ "$a" == *:* ]] && [[ "$a" =~ $DEST_RE ]]; then user="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"; break; fi
+  fi
+done
+[ -n "$host" ] || host="$(configured_host)"
+[ -n "$host" ] || die "no TV configured — put its IP in .tv-host, or pass TV=<ip>" 2
+
+# ------------------------------------------------------- expand the placeholders ---
+args=()
+placed=0
+for a in "$@"; do
+  if [ "$mode" = ssh ] && [ "$placed" = 0 ] && [ "$a" = tv ]; then
+    args+=("$user@$host"); placed=1
+  elif [ "$mode" = scp ] && [[ "$a" == tv:* ]]; then
+    args+=("$user@$host:${a#tv:}")
+  else
+    args+=("$a")
+  fi
+done
+
+# Option order: OpenSSH keeps the FIRST value of an option, and these come before the caller's, so a
+# caller-supplied ConnectTimeout or LogLevel is silently ignored. Use PLX_TV_SSH_TIMEOUT / PLX_VERBOSE.
+COMMON=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o "ConnectTimeout=$TIMEOUT")
+KEY=(-o BatchMode=yes -o PreferredAuthentications=publickey)
+if [ -n "${PLX_VERBOSE:-}" ]; then FINAL_LOG=ERROR; else FINAL_LOG=QUIET; fi
+
+# ---------------------------------------------------------- is the key accepted? ---
+# One throwaway `true`, stdin from /dev/null so a piped payload reaches the real command intact.
+probe_err="$(command ssh "${COMMON[@]}" "${KEY[@]}" -o LogLevel=ERROR "$user@$host" true \
+              </dev/null 2>&1 >/dev/null)"
+rc=$?
+
+extra=()
+[ "$mode" = scp ] && extra=(-O)
+
+if [ "$rc" -eq 0 ]; then
+  exec "$mode" "${extra[@]}" "${COMMON[@]}" "${KEY[@]}" -o "LogLevel=$FINAL_LOG" "${args[@]}"
+fi
+
+# Only a REFUSED key falls back to the password. Anything else (timeout, no route, connection
+# refused, host down) is a television we cannot reach, and a password cannot help it.
+if [ "$rc" -eq 255 ] && printf '%s' "$probe_err" | grep -qiE 'permission denied|too many authentication failures'; then
+  command -v sshpass >/dev/null 2>&1 \
+    || die "the TV refused this machine's ssh key and sshpass is not installed — authorize your key on the TV (wake-tv skill) or install sshpass"
+  # PubkeyAuthentication=no: with "Too many authentication failures" the agent's keys would be
+  # offered again and exhaust MaxAuthTries before the password is ever sent.
+  exec sshpass -p "$TV_PASSWORD" "$mode" "${extra[@]}" "${COMMON[@]}" -o PubkeyAuthentication=no \
+       -o "LogLevel=$FINAL_LOG" "${args[@]}"
+fi
+
+msg="the TV is unreachable (asleep? see the wake-tv skill)"
+if [ -n "${PLX_VERBOSE:-}" ]; then msg="$msg: $probe_err"; fi
+die "$msg" 255
