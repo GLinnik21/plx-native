@@ -26,16 +26,7 @@ use super::Stream;
 /// RGBA and the player composites them over the video, so they render on the direct-play path;
 /// the menu tags the codec for clarity.
 pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
-    matches!(
-        codec.to_ascii_lowercase().as_str(),
-        "pgs"
-            | "hdmv_pgs_subtitle"
-            | "vobsub"
-            | "dvd_subtitle"
-            | "dvdsub"
-            | "dvb_subtitle"
-            | "dvbsub"
-    )
+    image_codec_badge(codec).is_some()
 }
 
 /// What a Subtitles-panel row IS — one per drawn row. `ui::track_menu` declares each row under it
@@ -207,19 +198,24 @@ fn group_of(s: &Stream, i: usize, lang: &str) -> (LangGroup, Option<Cow<'static,
     (group, key)
 }
 
+/// The language a track row is grouped and drawn under: its own name, or "Unknown" when the
+/// stream carries none. One rule for [`group_firsts`] and [`sub_tracks`], so a codeless track
+/// groups by the same name it shows.
+fn display_lang(s: &Stream) -> String {
+    if s.lang.trim().is_empty() {
+        crate::i18n::msg::widgets_tracks_unknown().to_string()
+    } else {
+        s.lang.clone()
+    }
+}
+
 /// Each group's FIRST track's stream id over the item's full list — offered or not, so a
 /// language's identity never moves when a sidecar becomes offered or leaves, and never follows a
-/// list position (the display name is [`sub_tracks`]'s, so a codeless track groups by the same
-/// name here).
+/// list position.
 fn group_firsts(subs: &[Stream]) -> HashMap<LangGroup, i64> {
     let mut firsts = HashMap::new();
     for (i, s) in subs.iter().enumerate() {
-        let lang = if s.lang.trim().is_empty() {
-            crate::i18n::msg::widgets_tracks_unknown().to_string()
-        } else {
-            s.lang.clone()
-        };
-        firsts.entry(group_of(s, i, &lang).0).or_insert(s.id);
+        firsts.entry(group_of(s, i, &display_lang(s)).0).or_insert(s.id);
     }
     firsts
 }
@@ -235,11 +231,7 @@ fn sub_tracks(
         .iter()
         .filter_map(|&i| {
             let s = subs.get(i)?;
-            let lang = if s.lang.trim().is_empty() {
-                crate::i18n::msg::widgets_tracks_unknown().to_string()
-            } else {
-                s.lang.clone()
-            };
+            let lang = display_lang(s);
             let container = names.sub(super::sub_render_ordinal(subs, i));
             let merged = track_label::track_name(&s.title, container, &lang);
             let label = track_label::parse(&merged, &lang, s.forced, s.sdh);
