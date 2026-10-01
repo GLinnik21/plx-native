@@ -257,7 +257,8 @@ impl LibraryScreen {
         let resume = if shelf.landscape { None } else { item.resume_frac() };
         if focused {
             card_row::draw_focused(p, art, rect, scale, style, resume,
-                &shelf_label(shelf, col).revealed(model.motion.band_reveal()), f.measure);
+                &shelf_label(shelf, col).revealed(model.motion.band_reveal())
+                    .settling(model.motion.settle_lag(model.elems.len(), col, style)), f.measure);
         } else {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }

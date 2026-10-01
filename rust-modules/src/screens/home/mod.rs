@@ -1438,7 +1438,10 @@ impl HomeScreen {
             card_row::TileLabel::title(&item.title)
         };
         label.caption = card_row::focused_caption(item, cw);
-        let label = label.revealed(self.grid.shelves[row].band_reveal());
+        let count = hub.items.len().min(MAX_ITEMS);
+        // The grid draws at `scroll_x * snap` ([`Grid::eff_scroll`]), so the lag it still owes does too.
+        let lag = self.grid.shelves[row].settle_lag(count, col, &RowStyle::HOME) * self.snap.pos;
+        let label = label.revealed(self.grid.shelves[row].band_reveal()).settling(lag);
         card_row::draw_focused(
             p,
             Art::Poster(Some(item)),

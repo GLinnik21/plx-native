@@ -442,7 +442,9 @@ pub(super) fn tile<H: SearchLike>(
             scale,
             &style,
             resume,
-            &TileLabel::titled(item.title(), &fact).revealed(model.motion.band_reveal()),
+            &TileLabel::titled(item.title(), &fact)
+                .revealed(model.motion.band_reveal())
+                .settling(model.motion.settle_lag(model.elems.len(), col, &style)),
             f.measure,
         );
     } else {

@@ -163,7 +163,8 @@ pub(crate) fn draw_focused(
         scale,
         &STYLE,
         None,
-        &TileLabel::titled(title, extra.caption()),
+        &TileLabel::titled(title, extra.caption())
+            .settling(row.settle_lag(d.extras.len(), index, &STYLE)),
         measure,
     );
 }
