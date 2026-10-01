@@ -110,7 +110,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and modifies no
   source or build input; only Python bytecode caches may appear). Each branch's output is held and printed whole in that order, so the log
   never interleaves; a failing branch is printed first and stops the other. `make check-cargo` and
-  `make check-python` run one half alone. The cargo half runs `cargo test --lib`
+  `make check-python` run one half alone. `check-cargo` is itself the serial union of
+  `check-cargo-lint` (clippy + the lab-diagnostics type-check), `check-cargo-unit-default` and
+  `check-cargo-unit-hostsim`, and CI runs those three plus `check-python` as four parallel jobs
+  (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`) behind an aggregator named
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
