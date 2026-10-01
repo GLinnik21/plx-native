@@ -129,6 +129,19 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   player's track menu — rustc does not warn on a repeated condition, and the dispatch is inside the
   SDL event loop where no host test can see it. Needs the **clippy component on nightly** (rustup's
   default profile ships it; a `--profile minimal` nightly does not).
+- `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
+  `cargo test --lib` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
+  forwards a test-name filter; the `test result:` line is cargo's own. Use it for a long series of
+  small edits in one lane: an edit-rebuild is ~10 s against 31-32 s non-incremental, flat across
+  leaf/mid/hub edits (measured 2026-10-01, 5 interleaved rounds; cold is 51.7 s vs 46.2 s, so it
+  loses on a one-off run). The price is disk: the dir grows to ~2.7 GB (`debug/incremental` 2.0 GB)
+  against ~1.0 GB for `target`. `tools/build-gc.sh --incremental` (or `--lanes`) reclaims it, or
+  `rm -rf rust-modules/target-fast`; `tools/cargo-seed.py` never seeds or harvests it. Refused under
+  `RELEASE=1`. Linked worktrees stay non-incremental by default (the Makefile sets
+  `CARGO_INCREMENTAL=0` only when `.git` is a file; the main checkout keeps its cache);
+  `ci/test_test_fast.py` pins that the `check*` and `lint` recipes never name `CARGO_INCREMENTAL=1`
+  or `target-fast`, and that `tools/cargo-seed.py` and `tools/build-gc.sh` treat the dir correctly.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
@@ -153,7 +166,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
   **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
-  worktree is not supposed to write an incremental cache at all — the Makefile says so beside
+  worktree is not supposed to write an incremental cache at all (the one sanctioned exception is
+  the opt-in `make test-fast`) — the Makefile says so beside
   `RUST_FEATFLAGS`, but it can only say it to the cargo runs `make` launches, and a direct
   `cargo test`/`cargo check` in a lane wrote one anyway: 12.9 GB of them, measured 2026-09-17.
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with

@@ -182,7 +182,9 @@ What keeps that in check:
   `incremental = false`, which covers a direct `cargo test`/`cargo check` too and stops above the
   main checkout, so a lane pays object code and nothing
   else and the main checkout keeps its cache. `CARGO_INCREMENTAL=1` in the environment still
-  overrides both — the right call only for a lane genuinely doing long iterative work.
+  overrides both — the right call only for a lane genuinely doing long iterative work, and for the
+  host unit loop that opt-in is `make test-fast` (own `rust-modules/target-fast`, ~2.7 GB, reclaimed
+  by `tools/build-gc.sh --incremental` or `--lanes`) rather than exporting it everywhere.
 - **A fresh lane's first build is seeded with an APFS clone of the third-party output**
   (`tools/cargo-seed.py`, called from the Makefile in linked worktrees only). The registry crates and
   the build-std sysroot are the same bytes in every lane — cargo's hash for them does not depend on
