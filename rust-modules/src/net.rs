@@ -1283,7 +1283,7 @@ fn request_tls_evidence(
             // its OpenSSL and its CA store — the library webosbrew's caniuse data singles out as
             // the one that varies most across firmwares. Collapsing every failure to None made a
             // stale CA bundle on a set nobody here owns indistinguishable from being offline: the
-            // QR sign-in simply never completes. These four are the ones that mean something
+            // QR sign-in simply never completes. These are the ones that mean something
             // different from "the network is down". 60 and 51 are explained by the verify result
             // ([`tls_verify_why`]), not blamed on the CA store: a wrong clock fails them too.
             let why = tls_failure_reason(easy.0, rc).unwrap_or_else(|| match rc {
@@ -1333,7 +1333,9 @@ fn wall_clock_year() -> Option<i64> {
 /// field is ever interpolated, only the numbers.
 ///
 /// 51 is `CURLE_PEER_FAILED_VERIFICATION` on the television's 7.53.1: the name check, which
-/// OpenSSL records outside the verify result, so it is decided from the code alone.
+/// OpenSSL records outside the verify result, so it is decided from the code alone. libcurl 7.62+
+/// retired 51 and reports a name mismatch as 60 with verify result 0 (the macOS host and newer
+/// firmwares), so that case says so rather than hide the likeliest cause.
 pub(crate) fn tls_verify_why(rc: c_int, verify: Option<c_long>, year: Option<i64>) -> Option<String> {
     let clock = |what: &str| match year {
         Some(y) => format!("{what} — the device clock may be wrong (it believes the year is {y})"),
@@ -1348,7 +1350,10 @@ pub(crate) fn tls_verify_why(rc: c_int, verify: Option<c_long>, year: Option<i64
             Some("peer certificate issuer could not be verified (CA store too old?)".to_owned())
         }
         (60, Some(n)) if n != 0 => Some(format!("peer certificate could not be verified (X509 verify result {n})")),
-        (60, _) => Some("peer certificate could not be verified (X509 verify result not reported)".to_owned()),
+        (60, _) => Some(
+            "peer certificate could not be verified (no X509 verify result; on libcurl 7.62+ this is how a certificate name mismatch reads)"
+                .to_owned(),
+        ),
         _ => None,
     }
 }
@@ -2023,8 +2028,9 @@ mod tls_verify_why_tests {
         assert_eq!(why(51, Some(0)), "certificate name does not match host");
         assert_eq!(why(51, None), "certificate name does not match host");
         assert_eq!(why(60, Some(7)), "peer certificate could not be verified (X509 verify result 7)");
-        // Zero after a failure and a getinfo that failed are both "the backend did not say".
-        let unreported = "peer certificate could not be verified (X509 verify result not reported)";
+        // Zero after a failure and a getinfo that failed are both "the backend did not say"; on
+        // libcurl 7.62+ that is how a name mismatch arrives (51 was retired), so the line says so.
+        let unreported = "peer certificate could not be verified (no X509 verify result; on libcurl 7.62+ this is how a certificate name mismatch reads)";
         assert_eq!(why(60, Some(0)), unreported);
         assert_eq!(why(60, None), unreported);
     }

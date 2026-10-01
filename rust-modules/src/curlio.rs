@@ -1762,17 +1762,16 @@ fn trim_ascii(mut v: &[u8]) -> &[u8] {
     v
 }
 
-/// The `CURLcode`s that mean something different from "the network is down". Same list as
-/// `net.rs`'s, because the same firmware-varying OpenSSL and CA store sit under both, and a
-/// support log that says "rc=60" and nothing else has already cost this project a day. 60 here is
-/// only the fallback: a peer-verification failure is explained by `net::tls_failure_reason`.
+/// The `CURLcode`s that mean something different from "the network is down", for a support log
+/// that says "rc=60" and nothing else has already cost this project a day. 60 and 51 never reach
+/// here: `net::tls_failure_reason` answers both, so this covers the codes that are not peer
+/// verification.
 fn curl_why(rc: c_int) -> &'static str {
     match rc {
         6 => "could not resolve host",
         7 => "could not connect",
         28 => "timed out (or stalled below the low-speed floor)",
         35 => "TLS handshake failed (protocol too new for this firmware?)",
-        60 => "peer certificate could not be verified (CA store too old?)",
         77 => "CA bundle could not be read",
         _ => "transport error",
     }
