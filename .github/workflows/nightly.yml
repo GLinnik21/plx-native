@@ -81,6 +81,8 @@ jobs:
   plan:
     name: plan today's nightly
     runs-on: ubuntu-latest
+    # Measured max 0.3 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     # FORK PULL REQUESTS ARE SKIPPED ENTIRELY — see the workflow header. A same-repo PR (including
     # one from a branch of this repo) has the secret and proceeds like any other event.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -187,6 +189,8 @@ jobs:
   publish:
     name: publish nightly prerelease
     runs-on: ubuntu-latest
+    # Measured max 1.4 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     needs: [plan, build]
     # A dry run (workflow_dispatch's `dry_run` input, or any pull_request) still runs this job —
     # only the network-mutating steps below are individually gated on `needs.plan.outputs.dry`.
@@ -301,6 +305,8 @@ jobs:
   prune:
     name: prune nightly releases older than 30 days
     runs-on: ubuntu-latest
+    # Measured max 0.2 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     needs: [plan, publish]
     if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
     permissions:

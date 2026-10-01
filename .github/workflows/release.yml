@@ -70,6 +70,8 @@ jobs:
   prepare:
     name: bump + tag
     runs-on: ubuntu-latest
+    # Measured max 0.2 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     # Skipped for a tag push (the tag already exists) and for an explicit rebuild.
     if: github.event_name == 'workflow_dispatch' && !inputs.rebuild_tag
     permissions:
@@ -181,6 +183,8 @@ jobs:
   guard:
     name: tag / version agreement
     runs-on: ubuntu-latest
+    # Measured max 0.2 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     needs: prepare
     # `prepare` is skipped on a tag push and on a rebuild, and a skipped dependency skips its
     # dependents — so accept any non-failed outcome and take the ref from whichever path ran.
@@ -240,6 +244,8 @@ jobs:
   legal-gate:
     name: redistributable assets
     runs-on: ubuntu-latest
+    # Measured max 0.1 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     needs: [guard]
     # `guard` runs under `always()` because `prepare` is skipped on a tag push — and GitHub
     # propagates that skip DOWN the graph, so a job with no `if:` inherits the default `success()`
@@ -336,6 +342,8 @@ jobs:
   publish:
     name: publish release
     runs-on: ubuntu-latest
+    # Measured max 0.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     # `legal-gate` is listed purely so its verdict can be READ into the release audit's gate table
     # — `needs` exposes only DIRECT dependencies, and `build` already refuses to run without it.
     needs: [build, guard, legal-gate]

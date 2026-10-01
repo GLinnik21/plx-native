@@ -5,6 +5,7 @@ on:
     branches: [main, 'release/v*']
     paths: &simulator_paths
       - '.github/workflows/simulators.yml'
+      - '.github/actions/apt-install/**'
       - 'Makefile'
       - 'rust-modules/**'
       # Nested guides such as rust-modules/src/player/CLAUDE.md read by no gate in this workflow;
@@ -46,13 +47,20 @@ jobs:
   linux:
     name: Linux simulator build + launch
     runs-on: ubuntu-latest
+    # Measured max 32.5 min over the last 40 successful runs, 29 of it one apt stall this change
+    # bounds (typical 4.2); the limit is the apt bound plus the typical build with margin (unset = 360).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install SDL/OpenGL and virtual display
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev \
-            libgl1-mesa-dri xvfb xauth gdb cmake pkg-config
+        # One shared, bounded apt path (cached .debs, `timeout` on every network phase, http AND
+        # https timeouts): a plain `apt-get update` here once stalled a sibling job for 4 h 36 min.
+        # `recommends` stays on: this step has always been a plain `apt-get install -y`.
+        timeout-minutes: 15
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev libgl1-mesa-dri xvfb xauth gdb cmake pkg-config
+          recommends: "true"
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -102,9 +110,14 @@ jobs:
   macos:
     name: macOS simulator build + launch
     runs-on: macos-latest
+    # Measured max 22.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install SDL
+        # A step-level bound: macOS runners have no `timeout(1)`, and a stalled bottle download
+        # would otherwise run to the job's limit.
+        timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -164,6 +177,8 @@ jobs:
   windows-launcher:
     name: Windows launcher syntax
     runs-on: windows-latest
+    # Measured max 0.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Parse with Windows PowerShell 5.1

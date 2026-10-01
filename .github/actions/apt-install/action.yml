@@ -1,0 +1,86 @@
+name: apt-install with a bounded network
+description: >
+  Install apt packages on a hosted Ubuntu runner without ever being able to hang: the .debs ride
+  the actions cache, every network phase runs under `timeout`, and every transport (http AND
+  https) carries an `Acquire::*::Timeout`. Shared by host-rust (the host unit jobs) and
+  simulators.yml (the Linux simulator) so the two cannot drift apart.
+
+# Why every `apt-get update` here is under `timeout`: CI run 36904995113 (job "host unit tests
+# (hostsim)") sat for 4 h 36 min on `apt-get update`, whose last log line was
+# `Get:5 https://archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]`; nothing more until
+# the run was cancelled. The stalled fetch was HTTPS, and the old `-o Acquire::http::Timeout=30`
+# does not cover it (and was not passed to `update` at all). apt's own timeout is per-socket-read,
+# so a trickle that never quite stops defeats it too; `timeout` is the bound that cannot be
+# defeated, and the job's `timeout-minutes` is the backstop behind it.
+#
+# `Acquire::https::Timeout` is a real, separate option: apt's doc/examples/configure-index lists
+# `Timeout "30";` in both the `http` and the `https` blocks of `Acquire` (apt.conf(5) and
+# apt-transport-http(1) document only the http spelling).
+
+inputs:
+  packages:
+    description: Space-separated package names to install.
+    required: true
+  recommends:
+    description: >
+      "true" to let apt install Recommends too (the plain `apt-get install -y` behaviour). Off by
+      default, which is what the host unit jobs have always used.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the apt packages the install downloads
+      # Measured over the host-unit jobs of CI runs 36894250926..36901262288: `apt-get update` is a
+      # steady ~1 s and the toolchain + rust-cache steps a steady ~15 s, while `apt-get install`
+      # spent 3 s - 10 min 17 s FETCHING the same 26.3 MB (95 .deb files) from
+      # azure.archive.ubuntu.com (9 MB/s at best, 42 kB/s at worst). The download is the whole
+      # variance, so it is the one thing kept off the network: the .debs ride the actions cache,
+      # keyed on the OS, the architecture, this file and the package list. The key does
+      # NOT name the runner image: `env.ImageVersion` is not visible to a composite action's
+      # expressions (it keyed as empty), and it is not needed for correctness, because apt
+      # re-validates the cached .debs against its package lists and re-downloads any that no
+      # longer match. A changed action file starts cold, and only the first run per key saves.
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/apt-debs
+        key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/apt-install/action.yml') }}-${{ inputs.recommends }}-${{ inputs.packages }}
+
+    - name: Install the apt packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        RECOMMENDS: ${{ inputs.recommends }}
+      run: |
+        read -r -a pkgs <<< "$PACKAGES"
+        # Both transports named: `Acquire::https::Timeout` is what the 4 h 36 min stall needed.
+        net=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        opts=(-y "${net[@]}")
+        [ "$RECOMMENDS" = "true" ] || opts+=(--no-install-recommends)
+        debs="$HOME/apt-debs"
+        archives=/var/cache/apt/archives
+        mkdir -p "$debs"
+        sudo find "$debs" -maxdepth 1 -name '*.deb' -exec cp -n -t "$archives" {} +
+
+        # Fetch first, install second. The fetch is the only network-bound phase, so it is the
+        # only one a timeout may interrupt: apt resumes a partial .deb, a retry opens a fresh
+        # connection (a throttled one is what made a run take 10 minutes), and nothing is ever
+        # killed halfway through dpkg. The runner image already carries package lists, so try
+        # WITHOUT `apt-get update` first (a cache hit is then entirely local) and refresh the
+        # lists only when that fails, e.g. a mirror that has dropped the version the old lists name.
+        if ! timeout 120 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}"; then
+          echo "::warning::apt fetch without a list refresh failed or stalled; refreshing and retrying"
+          # Two bounded attempts; a refresh that still fails is not fatal by itself (the image's
+          # own lists may be good enough), so the fetches below decide the step's fate.
+          timeout 120 sudo apt-get update "${net[@]}" \
+            || timeout 120 sudo apt-get update "${net[@]}" \
+            || echo "::warning::the list refresh failed or stalled twice; fetching with the image's lists"
+          timeout 180 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}" \
+            || timeout 180 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}" \
+            || timeout 600 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}"  # last resort: a slow mirror costs time, but a bounded amount
+        fi
+
+        sudo apt-get install "${opts[@]}" "${pkgs[@]}"
+        # Hand the downloaded .debs to the cache step's post-job save (a no-op on an exact hit).
+        find "$archives" -maxdepth 1 -name '*.deb' -exec cp -n -t "$debs" {} +

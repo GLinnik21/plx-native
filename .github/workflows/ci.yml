@@ -68,6 +68,8 @@ jobs:
   host-lint:
     name: host lint + type-checks
     runs-on: ubuntu-latest
+    # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     env:
       RUST_NIGHTLY: nightly
     steps:
@@ -112,6 +114,8 @@ jobs:
   host-unit-default:
     name: host unit tests (default features)
     runs-on: ubuntu-latest
+    # Measured max 10.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 25
     env:
       RUST_NIGHTLY: nightly
     outputs:
@@ -147,6 +151,8 @@ jobs:
   host-unit-hostsim:
     name: host unit tests (hostsim)
     runs-on: ubuntu-latest
+    # Measured max 12.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 30
     env:
       RUST_NIGHTLY: nightly
     outputs:
@@ -180,6 +186,8 @@ jobs:
   host-python:
     name: host python/shell/C gates
     runs-on: ubuntu-latest
+    # Measured max 4.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -207,6 +215,8 @@ jobs:
   host-checks:
     name: host checks (NOT a device gate)
     runs-on: ubuntu-latest
+    # Measured max under 1 (the 31.6 in the raw data predates the job split, when this name was the whole suite) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     needs: [host-lint, host-unit-default, host-unit-hostsim, host-python]
     if: always()
     steps:
@@ -246,6 +256,8 @@ jobs:
     # linux-aarch64 for this release — there is NO linux-x86_64 build, so ubuntu-latest cannot
     # obtain the toolchain at all. See the Makefile's NDK bootstrap block.
     runs-on: ubuntu-24.04-arm
+    # Measured max 5.0 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -323,6 +335,9 @@ jobs:
           ./tools/font-hint-audit.py
 
       - name: webosbrew compatibility check
+        # Step-level bound: the curl downloads and the apt install of the local .debs (which pulls
+        # their dependencies from the network) are the only network phases of this step.
+        timeout-minutes: 15
         # THE gate that matters for distribution: resolves the ELF's DT_NEEDED and symbols against
         # 14 real firmware databases — the exact check webosbrew/apps-repo runs on a submission PR,
         # and the error class that is otherwise invisible until a television refuses to start the
@@ -342,7 +357,7 @@ jobs:
           )
           for p in fw-symbols ipk-verify; do
             file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
-            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
+            curl -fsSL --connect-timeout 20 --max-time 120 --retry 3 --retry-delay 5 -o "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
             echo "${SHA256[$p]}  $file" | sha256sum -c -
           done
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
