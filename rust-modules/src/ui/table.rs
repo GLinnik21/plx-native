@@ -360,6 +360,9 @@ const GROUP_DIM_A: f32 = 0.52;
 const NOTE_LEADING: f32 = 32.0;
 const NOTE_PAD: f32 = 14.0;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
+/// Extra air between a page title band and the hairline under it (owner, 2026-10-01: "a bigger gap
+/// under the title"): the title sits on its own, then the divider, then the rows.
+const TITLE_GAP: f32 = 12.0;
 /// The list's own air above its first row. `pub` because a panel that stacks something ABOVE the
 /// list (the Sources panel's level band) has to subtract it to put the SEAM on the space scale —
 /// otherwise the two paddings add and the gap lands between rungs.
@@ -670,7 +673,7 @@ impl TableView {
     /// not a hit target here (the owner that pops on it registers its own stop). Design record:
     /// `docs/player-submenus.md`.
     ///
-    /// The band moves every row down (or up) by [`HDR_H`] + [`DIV_H`], so when it appears or goes
+    /// The band moves every row down (or up) by [`HDR_H`] + [`TITLE_GAP`] + [`DIV_H`], so when it appears or goes
     /// the pill springs are re-jumped to the selected row's new place: installing the title after
     /// the sections must not leave the pill a band off until the spring catches up. The scroll is
     /// left alone (a [`Self::restore_sections`] puts its own back after).
@@ -1181,7 +1184,7 @@ impl TableView {
         let mut gi = 0i32;
         if self.title.is_some() {
             f(y, WALK_TITLE, 0);
-            y += HDR_H + DIV_H;
+            y += HDR_H + TITLE_GAP + DIV_H;
             f(y, WALK_DIVIDER, 0);
         }
         for (si, sec) in self.sections.iter().enumerate() {
@@ -2196,7 +2199,7 @@ mod tests {
         t.set_sections(vec![Section::new("").row(Row::new("a")).row(Row::new("b"))], 0, false);
         let bare = t.measured_height();
         t.set_title(Some("Style".into()));
-        assert_eq!(t.measured_height(), bare + HDR_H + DIV_H);
+        assert_eq!(t.measured_height(), bare + HDR_H + TITLE_GAP + DIV_H);
         let (mut titles, mut dividers, mut first_row_y) = (0, 0, None);
         t.walk(|y, gi, _| match gi {
             WALK_TITLE => titles += 1,
@@ -2205,7 +2208,7 @@ mod tests {
             _ => {}
         });
         assert_eq!((titles, dividers), (1, 1), "the title is followed by the hairline a section boundary has");
-        assert_eq!(first_row_y, Some(HDR_H + DIV_H));
+        assert_eq!(first_row_y, Some(HDR_H + TITLE_GAP + DIV_H));
         t.set_title(None);
         assert_eq!(t.measured_height(), bare);
     }

@@ -605,6 +605,21 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     );
 }
 
+/// A playing item whose audio is English and whose subtitles are `subs`: the audio's language is
+/// "yours" (`subtitle_yours_langs`), so English subtitles are rows on the Subtitles root, not behind
+/// "Other languages".
+fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<crate::metadata::Stream>) -> crate::metadata::PlayingItem {
+    let mut item = crate::metadata::PlayingItem::with_subs(subs);
+    item.audio = vec![crate::metadata::Stream {
+        id: crate::route::cur_audio_sid(ps),
+        lang: "English".into(),
+        lang_code: "eng".into(),
+        codec: "ac3".into(),
+        ..Default::default()
+    }];
+    item
+}
+
 /// **The Timing hand-off.** Selecting the Subtitles menu's own Timing row while a subtitle is
 /// active returns `TrackOk::OpenTiming` (`ui::track_menu`'s own
 /// `timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off`); `activate`'s
@@ -620,7 +635,7 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
     let ps = crate::route::PlaybackSession::IDLE;
     let mut store = crate::stores::metadata::MetadataStore::default();
     assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-        crate::metadata::PlayingItem::with_subs(vec![crate::metadata::Stream {
+        english_audio_with_subs(&ps, vec![crate::metadata::Stream {
             id: 1,
             index: 0,
             lang: "English".into(),
@@ -875,7 +890,7 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
         ..Default::default()
     };
     assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-        crate::metadata::PlayingItem::with_subs(vec![sub(11, 0, "English", "eng"), sub(22, 1, "French", "fra")]),
+        english_audio_with_subs(&ps, vec![sub(11, 0, "English", "eng"), sub(22, 1, "English", "eng")]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let cx = cx();
@@ -900,15 +915,15 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
         assert_eq!((placed.rect.x, placed.rect.y), (stop.rect.x, stop.rect.y), "place and stop agree");
     }
 
-    // click French (subs index 1) while the cursor still sits on Off
-    let french = TrackRow::Sub(1).key().0;
-    let (_, reqs, dismissed) = activate(&mut page, french);
+    // click the second English track (subs index 1) while the cursor still sits on Off
+    let second = TrackRow::Sub(1).key().0;
+    let (_, reqs, dismissed) = activate(&mut page, second);
     assert!(dismissed, "a track pick closes the panel");
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::Subtitle { .. }))));
     // (the harness host's metadata view is empty, so the commit carries no stream id; the id the
     // panel resolved the key to is what it records as the checked track)
     let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-    assert_eq!(menu.active_sub(), 1, "the click picked French (subs index 1), not the row under the cursor");
+    assert_eq!(menu.active_sub(), 1, "the click picked the second English track (subs index 1), not the row under the cursor");
     assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
 }
 

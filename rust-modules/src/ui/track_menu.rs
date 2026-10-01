@@ -9,8 +9,10 @@
 //! **The Subtitles panel is grouped, not one flat list** (plan `subtitle-menu-capsule` §3,
 //! `/tmp/dsplayer/player.html:1104-1162`): Off and every single-track "yours" language sit under
 //! one "Subtitles" header; a "yours" language with several tracks gets its own section (header =
-//! language, `accessory("N tracks")`), ranked full < SDH < forced < commentary; a headerless
-//! section holds Timing and Style; and everything else falls under "Other languages". That
+//! language, `accessory("N tracks")`), ranked full < SDH < forced < commentary; everything else is
+//! ONE "Other languages" row (a drill-in to [`TrackPage::OtherLanguages`], one row per language
+//! A-Z; a multi-track language there drills in again to [`TrackPage::Language`], its tracks
+//! ranked); and a headerless section holds Timing and Style. That
 //! grouping is a pure DATA model, `metadata::sub_layout` (host-tested without a
 //! `PlaybackSession`/`MetadataView` fixture); this module only turns it into `TableView` sections
 //! ([`table_form`]) and answers focus/OK by the focused row's [`TrackRow`] identity. "Yours" is
@@ -62,8 +64,17 @@
 //! longer holds (the renderer, or whether Style is shown / locked). The replay canon
 //! ([`TrackMenuState::canon`]) carries the tab, the page path with each return key, and the
 //! selected key.
+//!
+//! **The Other languages flow** is data-driven by [`TrackMenuState::other`] (one `OtherLang` per
+//! language, from the same `sub_layout` answer as the root), so a page lists exactly what its
+//! opener promised. A language is identified by the Plex stream id of its first track in the item's
+//! FULL list ([`LangId`], carried by [`TrackRow::OpenLang`] and [`TrackPage::Language`]), never a
+//! list position, so tracks leaving or arriving cannot relabel an open page. A track pick on any
+//! page commits and dismisses like a root pick. A page whose listing is gone (the language left the
+//! offered list) pops to the root ([`TrackMenuState::pages_hold`]); a language page that drops to a
+//! single track stays open, and popping it lands on that track's direct row.
 use crate::metadata;
-use crate::metadata::sub_layout::{self, RowBadge, RowTarget, SubHeader, SubRow, SubSection, SubTrack};
+use crate::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
 use crate::metadata::track_label;
 use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 use crate::ui::consts::SCR_H;
@@ -107,6 +118,13 @@ pub(crate) enum TrackRow {
     Timing,
     /// The Style drill-in on the Subtitles root ([`TrackPage::Style`]).
     Style,
+    /// The Other languages drill-in on the Subtitles root ([`TrackPage::OtherLanguages`]).
+    OpenOther,
+    /// Other languages page: a multi-track language's drill-in ([`TrackPage::Language`]). Carries
+    /// the language's identity — the stream id of its first track in the item's FULL list
+    /// ([`LangId`]) — so it stays that language when tracks leave, arrive or the offered subset
+    /// changes; the id's slot only picks the row's focus key.
+    OpenLang(LangId),
     /// Style page: the drill-in to one field's picker ([`TrackPage::Picker`]); reads out the
     /// field's current value.
     OpenField(StyleField),
@@ -121,6 +139,7 @@ impl From<RowTarget> for TrackRow {
             RowTarget::Sub(i) => TrackRow::Sub(i),
             RowTarget::Timing => TrackRow::Timing,
             RowTarget::Style => TrackRow::Style,
+            RowTarget::Other => TrackRow::OpenOther,
         }
     }
 }
@@ -170,22 +189,32 @@ impl StyleField {
 }
 
 /// **A drill-in page of the Subtitles tab** — the form's `Dest`. The Subtitles root is the empty
-/// page stack, not a value of this type. PR 3's language pages are added here as further variants
-/// (`docs/player-submenus.md`).
+/// page stack, not a value of this type (`docs/player-submenus.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrackPage {
     /// Size, Position and Color, each a drill-in showing its current value.
     Style,
     /// One field's picker: a checked [`TrackRow::Choice`] per rung.
     Picker(StyleField),
+    /// One row per language the viewer has not marked as theirs, A-Z: a single-track language is a
+    /// direct pick row, a multi-track one a drill-in to its [`Self::Language`] page.
+    OtherLanguages,
+    /// One multi-track language's tracks (ranked), a pick row each; the payload is the language's
+    /// [`LangId::stream`].
+    Language(i64),
 }
 
 impl TrackPage {
-    /// The title band's text.
-    fn title(self) -> &'static str {
+    /// The title band's text; a language page is titled by its language (`other` is the page
+    /// model, [`TrackMenuState::other`]).
+    fn title(self, other: &[OtherLang]) -> String {
         match self {
-            Self::Style => crate::i18n::msg::widgets_tracks_style(),
-            Self::Picker(field) => field.label(),
+            Self::Style => crate::i18n::msg::widgets_tracks_style().to_string(),
+            Self::Picker(field) => field.label().to_string(),
+            Self::OtherLanguages => crate::i18n::msg::widgets_tracks_other_languages().to_string(),
+            Self::Language(stream) => {
+                other.iter().find(|o| o.id.stream == stream).map(|o| o.name.clone()).unwrap_or_default()
+            }
         }
     }
 
@@ -194,6 +223,8 @@ impl TrackPage {
         match self {
             Self::Style => 1,
             Self::Picker(field) => 0x10 + field.ordinal(),
+            Self::OtherLanguages => 0x20,
+            Self::Language(stream) => 0x2000_0000 | (stream as u32 & 0x00FF_FFFF),
         }
     }
 }
@@ -205,7 +236,8 @@ pub(crate) const TITLE_KEY: u32 = BAND_BASE;
 /// The hand-assigned focus key of each row: a family base per kind of row plus the track's own
 /// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
 /// track list that sorts differently, the DSP pair appearing) moves no key. Free families for the
-/// language pages (PR 3) start at `0x0008_0000`.
+/// language pages: `0x0008_0000` the Other languages drill-in, `0x0009_0000 +` the slot a language
+/// holds on that page.
 impl FormId for TrackRow {
     fn key(&self) -> RowKey {
         // a picker's rungs: one 256-wide block per field (a ladder is a handful of rungs)
@@ -220,6 +252,8 @@ impl FormId for TrackRow {
             TrackRow::Style => 0x0005_0001,
             TrackRow::OpenField(f) => 0x0006_0000 + f.ordinal(),
             TrackRow::Choice(f, i) => rung(f, i),
+            TrackRow::OpenOther => 0x0008_0000,
+            TrackRow::OpenLang(lang) => 0x0009_0000 + (lang.slot as u32).min(0xFFFF),
         })
     }
 }
@@ -333,6 +367,13 @@ pub(crate) struct TrackMenuState {
     renderer: SubRenderer,
     /// What the Subtitles root was last built from; a live poll rebuilds when it moves.
     sub_sig: Option<SubSig>,
+    /// The Other languages page's model — one entry per language, as of the last root build or
+    /// live poll. The Other languages and language pages draw from it, so what a page lists and
+    /// what its opener promised cannot disagree, and a language whose entry is gone pops its page.
+    other: Vec<OtherLang>,
+    /// The subtitle indices the Subtitles ROOT lists as track rows, in display order — what the
+    /// harness's `track:N` counts first ([`Self::sub_track_for_target`]).
+    root_tracks: Vec<usize>,
     /// "Your languages" this play resolved under, in PREFERENCE order — the pref's BCP-47 code (if
     /// the play resolved under one), the playing audio's language, and the current subtitle's own,
     /// exactly as `metadata::sub_layout::sub_sections`' `yours` parameter reads them (compared by
@@ -459,6 +500,8 @@ impl TrackMenuState {
             pages: Vec::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
+            other: Vec::new(),
+            root_tracks: Vec::new(),
             yours,
             enhance_shown: None,
             enhance_route: None,
@@ -657,31 +700,50 @@ impl TrackMenuState {
             return;
         }
         self.active_sub = live_sub;
-        match self.pages.first().copied() {
-            None => {
-                let form = self.layout(ps, meta);
-                // not the viewer's row any more (its track left the offered list): the checked row
-                self.form.refresh_with(form, None, Some(&self.active_sub_id()));
-            }
-            Some(first) if self.sub_sig.as_ref().is_some_and(|built| built.page_availability() != sig.page_availability()) => {
-                // The page was opened on a root that no longer holds (the renderer changed under
-                // Size/Position, a burn landed or left): pop to the root, restoring the opener and
-                // scroll the stack saved at its first push.
-                self.pages.clear();
-                let form = self.layout(ps, meta);
-                self.form.restore(form, Some(&first.return_id), first.scroll);
-                self.form.table.set_title(None);
-            }
-            Some(_) => {
-                // The page still holds: remember what the root is now built from (the pop back
-                // rebuilds it) and refresh this page in place, focus kept by id.
-                self.sub_sig = Some(sig);
-                if let Some(page) = self.pages.last().map(|s| s.page) {
-                    let form = self.page_form(page);
-                    self.form.refresh(form);
-                }
+        let Some(first) = self.pages.first().copied() else {
+            let form = self.layout(ps, meta);
+            // not the viewer's row any more (its track left the offered list): the checked row
+            self.form.refresh_with(form, None, Some(&self.active_sub_id()));
+            return;
+        };
+        // the pages' own data is read BEFORE judging them: a language whose entry is gone is as
+        // unavailable as a changed renderer
+        self.other = self.sub_model(ps, meta, true).other;
+        let availability_moved =
+            self.sub_sig.as_ref().is_some_and(|built| built.page_availability() != sig.page_availability());
+        if availability_moved || !self.pages_hold() {
+            // The page was opened on a root that no longer holds (the renderer changed under
+            // Size/Position, a burn landed or left, the language it lists left the offered list):
+            // pop to the root, restoring the opener and scroll the stack saved at its first push.
+            self.pages.clear();
+            let form = self.layout(ps, meta);
+            self.form.restore(form, Some(&first.return_id), first.scroll);
+            self.form.table.set_title(None);
+        } else {
+            // The page still holds: remember what the root is now built from (the pop back
+            // rebuilds it) and refresh this page in place, focus kept by id.
+            self.sub_sig = Some(sig);
+            if let Some(page) = self.pages.last().map(|s| s.page) {
+                let form = self.page_form(page);
+                // a language can change shape under the viewer (one track <-> several): the row
+                // they were on follows it to its new one
+                let prefer = (page == TrackPage::OtherLanguages)
+                    .then(|| self.form.selected_id().map(|id| self.other_row_for(*id)))
+                    .flatten();
+                self.form.refresh_with(form, prefer.as_ref(), None);
             }
         }
+    }
+
+    /// Does every pushed page still have what it lists? An Other languages page needs a language
+    /// to list; a language page needs ITS language (the same [`LangId`], whatever its tracks'
+    /// positions are now) still offered, with however many tracks it has left.
+    fn pages_hold(&self) -> bool {
+        self.pages.iter().all(|saved| match saved.page {
+            TrackPage::OtherLanguages => !self.other.is_empty(),
+            TrackPage::Language(stream) => self.other_lang(stream).is_some(),
+            TrackPage::Style | TrackPage::Picker(_) => true,
+        })
     }
 
     /// The Subtitles root's rebuild signature for `active`, read fresh off the route and the
@@ -707,9 +769,40 @@ impl TrackMenuState {
         }
     }
 
-    /// The Subtitles row carrying the checkmark: the active track, or Off.
+    /// The language entry of the Other languages model that [`LangId::stream`] names.
+    fn other_lang(&self, stream: i64) -> Option<&OtherLang> {
+        self.other.iter().find(|o| o.id.stream == stream)
+    }
+
+    /// The row that stands for a language on the Other languages page NOW: its direct pick row
+    /// while it offers one track, its drill-in while it offers several. A language changes shape
+    /// under a viewer (a sidecar becomes offered or leaves), and the row they were on must follow
+    /// it, not be looked up in a shape that no longer exists. Any other id is returned unchanged.
+    fn other_row_for(&self, id: TrackRow) -> TrackRow {
+        let lang = match id {
+            TrackRow::OpenLang(l) => self.other_lang(l.stream),
+            TrackRow::Sub(i) => self.other.iter().find(|o| o.tracks.iter().any(|t| t.i == i)),
+            _ => None,
+        };
+        lang.map_or(id, Self::other_lang_row)
+    }
+
+    /// A language's row on the Other languages page: the pick row of its only track, or its
+    /// drill-in.
+    fn other_lang_row(o: &OtherLang) -> TrackRow {
+        match o.tracks.as_slice() {
+            [t] => TrackRow::Sub(t.i),
+            _ => TrackRow::OpenLang(o.id),
+        }
+    }
+
+    /// The Subtitles ROOT's row carrying the checkmark: the active track, or Off — or, when the
+    /// active track is not listed on the root at all (its language is not "yours": a codeless or
+    /// unrecognised-language track, or one a live change moved), the Other languages row that
+    /// stands for it.
     fn active_sub_id(&self) -> TrackRow {
         match self.active_sub {
+            i if i >= 0 && self.other.iter().any(|o| o.tracks.iter().any(|t| t.i == i as usize)) => TrackRow::OpenOther,
             i if i >= 0 => TrackRow::Sub(i as usize),
             _ => TrackRow::SubOff,
         }
@@ -748,19 +841,18 @@ impl TrackMenuState {
         self.form.index_of(&target).map(|i| i as c_int)
     }
 
-    /// Resolve a NAMED Subtitles-tab target to its absolute table row, for the
-    /// `/tmp/plxnative-menupick` trigger: `"track:N"` is the N-th (0-based) TRACK row in display
-    /// order, skipping Off, Timing, Style and the footnote. A hand-written row number drifts every
+    /// Resolve a NAMED Subtitles-tab target to a TRACK, for the `/tmp/plxnative-menupick` trigger:
+    /// `"track:N"` is the N-th (0-based) track in PAGE ORDER — the root's track rows first, then the
+    /// Other languages page A-Z with a multi-track language expanded into its own ranked page —
+    /// never Off, Timing or Style. It answers the track's index in the item's list, not a table
+    /// row: a track behind Other languages has no row on the page that is showing, and
+    /// [`Self::commit_sub_track`] commits by that index. A hand-written row number drifts every
     /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
-    /// the Style row); reading the position back through the form's identities, the same
-    /// ones [`Self::on_ok`] dispatches on, cannot. `None` for an unrecognized name or an N past the
-    /// last track.
-    pub(crate) fn row_for_sub_target(&self, name: &str) -> Option<c_int> {
+    /// the Style row); a position in this order cannot. `None` for an unrecognized name or an N past
+    /// the last track.
+    pub(crate) fn sub_track_for_target(&self, name: &str) -> Option<usize> {
         let n: usize = name.strip_prefix("track:")?.trim().parse().ok()?;
-        (0..self.form.table.n_rows() as usize)
-            .filter(|i| matches!(self.form.id_at(*i), Some(TrackRow::Sub(_))))
-            .nth(n)
-            .map(|row| row as c_int)
+        self.root_tracks.iter().copied().chain(self.other.iter().flat_map(|o| o.tracks.iter().map(|t| t.i))).nth(n)
     }
 
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
@@ -859,41 +951,49 @@ impl TrackMenuState {
             // no rebuild) must make the next OK on Timing open the capsule.
             TrackRow::Timing if self.active_sub >= 0 => TrackOk::OpenTiming,
             TrackRow::Timing => TrackOk::Inert, // dim and inert while subtitles are Off
-            TrackRow::SubOff | TrackRow::Sub(_) => {
-                // Off → -1; else the row's own subs-list index
-                let new_sub: c_int = match id {
-                    TrackRow::Sub(i) => i as c_int,
-                    _ => -1,
-                };
-                let changed = self.active_sub != new_sub;
-                self.active_sub = new_sub;
-                // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
-                // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
-                // renderer on direct play, or burned
-                let ridx = tracks(meta)
-                    .filter(|_| new_sub >= 0)
-                    .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
-                    .unwrap_or(-1);
-                if changed {
-                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                        feature: crate::diag::schema::Feature::SubtitleTrack,
-                    });
-                }
-                let sidecar = tracks(meta)
-                    .filter(|_| new_sub >= 0)
-                    .and_then(|t| t.subs.get(new_sub as usize))
-                    .filter(|s| s.sidecar_renderable());
-                TrackOk::Commit {
-                    commit: TrackCommit::Subtitle {
-                        render_ordinal: ridx,
-                        stream_id: self.sub_stream_id(meta),
-                        sidecar_key: sidecar.map(|s| s.key.clone()),
-                        sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
-                    },
-                    keep_open: false,
-                }
-            }
+            TrackRow::SubOff => self.commit_sub(-1, meta),
+            TrackRow::Sub(i) => self.commit_sub(i as c_int, meta),
             _ => TrackOk::Inert,
+        }
+    }
+
+    /// Commit the subtitle track at `i` in the item's list as the active one, exactly as OK on its
+    /// row does ([`Self::on_ok`]): by the track's own index, wherever its row sits (the root, the
+    /// Other languages page or a language page), so a caller that names a track never needs the row
+    /// to be on the current page.
+    pub(crate) fn commit_sub_track(&mut self, i: usize, meta: metadata::MetadataView<'_>) -> TrackOk {
+        self.commit_sub(i as c_int, meta)
+    }
+
+    /// The subtitle commit behind OK on Off (`-1`) or on a track row: records the pick, and answers
+    /// the commit.
+    fn commit_sub(&mut self, new_sub: c_int, meta: metadata::MetadataView<'_>) -> TrackOk {
+        let changed = self.active_sub != new_sub;
+        self.active_sub = new_sub;
+        // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
+        // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
+        // renderer on direct play, or burned
+        let ridx = tracks(meta)
+            .filter(|_| new_sub >= 0)
+            .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
+            .unwrap_or(-1);
+        if changed {
+            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                feature: crate::diag::schema::Feature::SubtitleTrack,
+            });
+        }
+        let sidecar = tracks(meta)
+            .filter(|_| new_sub >= 0)
+            .and_then(|t| t.subs.get(new_sub as usize))
+            .filter(|s| s.sidecar_renderable());
+        TrackOk::Commit {
+            commit: TrackCommit::Subtitle {
+                render_ordinal: ridx,
+                stream_id: self.sub_stream_id(meta),
+                sidecar_key: sidecar.map(|s| s.key.clone()),
+                sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
+            },
+            keep_open: false,
         }
     }
 
@@ -949,7 +1049,39 @@ impl TrackMenuState {
         match page {
             TrackPage::Style => self.style_form(),
             TrackPage::Picker(field) => self.picker_form(field),
+            TrackPage::OtherLanguages => self.other_form(),
+            TrackPage::Language(stream) => self.language_form(stream),
         }
+    }
+
+    /// The Other languages page: one row per language, A-Z. A single-track language is a direct
+    /// pick row (checked when it is the active track); a multi-track one is a drill-in reading out
+    /// its track count, or — when the active track is inside it — a check and that variant.
+    fn other_form(&self) -> TrackForm {
+        let active = self.active_sub;
+        let sec = self.other.iter().fold(FormSection::new(""), |sec, lang| match lang.tracks.as_slice() {
+            [t] => sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), flat_row(t, active)),
+            tracks => {
+                let current = tracks.iter().find(|t| active >= 0 && t.i == active as usize);
+                let value = match current {
+                    Some(t) => in_lang_label(t),
+                    None => crate::i18n::msg::widgets_tracks_count(tracks.len() as i64),
+                };
+                let row = Row::new(lang.name.clone()).value(value).checked(current.is_some());
+                sec.item(TrackRow::OpenLang(lang.id), RowKind::Nav(TrackPage::Language(lang.id.stream)), (), row)
+            }
+        });
+        Form::new().section(sec)
+    }
+
+    /// A language page: its tracks ranked full < SDH < forced < commentary, a pick row each.
+    fn language_form(&self, stream: i64) -> TrackForm {
+        let active = self.active_sub;
+        let tracks = self.other_lang(stream).map(|o| o.tracks.as_slice()).unwrap_or_default();
+        let sec = tracks.iter().fold(FormSection::new(""), |sec, t| {
+            sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), in_lang_row(t, active))
+        });
+        Form::new().section(sec)
     }
 
     /// The Style page: one drill-in per field, each reading out its current value. Under an image
@@ -997,12 +1129,29 @@ impl TrackMenuState {
     }
 
     /// The explicit initial focus of a pushed page: the Style page opens on Size, a picker on its
-    /// checked rung.
-    fn page_initial(&self, page: TrackPage) -> TrackRow {
+    /// checked rung, Other languages on the checked row (the active track's, or its language's
+    /// drill-in) else the first, a language page on the active variant if it is inside, else its
+    /// first track. `None` (a language already gone) leaves it to the table's opening row.
+    fn page_initial(&self, page: TrackPage) -> Option<TrackRow> {
+        let active = usize::try_from(self.active_sub).ok();
+        let holds_active = |o: &OtherLang| active.is_some_and(|a| o.tracks.iter().any(|t| t.i == a));
         match page {
-            TrackPage::Style => TrackRow::OpenField(StyleField::Size),
-            TrackPage::Picker(field) => TrackRow::Choice(field, self.current_rung(field)),
+            TrackPage::Style => Some(TrackRow::OpenField(StyleField::Size)),
+            TrackPage::Picker(field) => Some(TrackRow::Choice(field, self.current_rung(field))),
+            TrackPage::OtherLanguages => {
+                self.other.iter().find(|o| holds_active(o)).or(self.other.first()).map(Self::other_lang_row)
+            }
+            TrackPage::Language(stream) => {
+                let tracks = &self.other_lang(stream)?.tracks;
+                let t = tracks.iter().find(|t| active == Some(t.i)).or(tracks.first())?;
+                Some(TrackRow::Sub(t.i))
+            }
         }
+    }
+
+    /// The title band's text of `page`.
+    fn page_title(&self, page: TrackPage) -> String {
+        page.title(&self.other)
     }
 
     /// Open `page` above the current one: remember the opener and its scroll, install the page's
@@ -1012,9 +1161,9 @@ impl TrackMenuState {
         let Some(return_id) = self.form.selected_id().copied() else { return };
         self.pages.push(Saved { page, return_id, scroll: self.form.table.scroll_pos() });
         let form = self.page_form(page);
-        self.form.open(form, Some(&self.page_initial(page)));
+        self.form.open(form, self.page_initial(page).as_ref());
         // after the sections: the band moves every row, so the pill is re-jumped onto the focused one
-        self.form.table.set_title(Some(page.title().to_string()));
+        self.form.table.set_title(Some(self.page_title(page)));
     }
 
     /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
@@ -1029,8 +1178,12 @@ impl TrackMenuState {
             }
             Some(page) => {
                 let form = self.page_form(page);
-                self.form.restore(form, Some(&saved.return_id), saved.scroll);
-                self.form.table.set_title(Some(page.title().to_string()));
+                // the opener may have changed shape while its page was open: a language that
+                // dropped to one track is a direct row now (and the reverse)
+                let return_id =
+                    if page == TrackPage::OtherLanguages { self.other_row_for(saved.return_id) } else { saved.return_id };
+                self.form.restore(form, Some(&return_id), saved.scroll);
+                self.form.table.set_title(Some(self.page_title(page)));
             }
         }
         true
@@ -1185,10 +1338,6 @@ impl TrackMenuState {
     /// what was drawn. Also stores the [`SubSig`] and renderer the root is built from, for the
     /// poll and the Style page's locks.
     fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
-        let item = tracks(meta);
-        let subs: &[metadata::Stream] = item.map(|t| t.subs.as_slice()).unwrap_or(&[]);
-        let offered = visible_subs(ps, meta);
-        let names = crate::player::SHARED.track_names.lock().unwrap();
         // M7 follow-up: while the live route is actually burning a subtitle in, Timing and Style
         // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
         // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
@@ -1198,8 +1347,28 @@ impl TrackMenuState {
         self.renderer = sig.renderer;
         self.sub_sig = Some(sig);
         let show_timing = !crate::route::is_transcoding(ps) || locked;
-        let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing);
+        let model = self.sub_model(ps, meta, show_timing);
+        self.other = model.other.clone();
+        self.root_tracks = model
+            .sections
+            .iter()
+            .flat_map(|sec| &sec.rows)
+            .filter_map(|row| match row {
+                SubRow::Flat(t) | SubRow::InLanguage(t) => Some(t.i),
+                _ => None,
+            })
+            .collect();
         table_form(&model, self.active_sub, self.offset_ms, locked)
+    }
+
+    /// The Subtitles model for the current item and route — the one place the root and the pages
+    /// behind it are asked for, so what the root's Other languages row promises and what its page
+    /// lists come from the same answer.
+    fn sub_model(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, show_timing: bool) -> SubModel {
+        let subs: &[metadata::Stream] = tracks(meta).map(|t| t.subs.as_slice()).unwrap_or(&[]);
+        let offered = visible_subs(ps, meta);
+        let names = crate::player::SHARED.track_names.lock().unwrap();
+        sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing)
     }
 
     /// The [`TrackRow::Boost`]/[`TrackRow::Loudness`] pair's three inputs, read fresh
@@ -1633,7 +1802,7 @@ fn row_badge(b: &RowBadge) -> Badge {
         RowBadge::Forced => Badge::Forced,
         RowBadge::Sdh => Badge::Sdh,
         RowBadge::External => Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()),
-        RowBadge::Codec(c) => Badge::Text(c.clone()),
+        RowBadge::Codec(c) => Badge::Text((*c).to_string()),
     }
 }
 
@@ -1651,7 +1820,7 @@ fn flat_row(t: &SubTrack, active_sub: c_int) -> Row {
     if !parts.is_empty() {
         row = row.detail(parts.join(" \u{b7} "));
     }
-    if let Some(b) = &t.badge {
+    for b in &t.badges {
         row = row.badge(row_badge(b));
     }
     row
@@ -1662,8 +1831,23 @@ fn flat_row(t: &SubTrack, active_sub: c_int) -> Row {
 /// "SDH", "Full", "Commentary"), in which case a Forced/SDH badge that would only repeat the
 /// label is dropped.
 fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
+    let mut row = Row::new(in_lang_label(t)).checked(active_sub >= 0 && t.i == active_sub as usize);
+    // a Forced/SDH chip that would only repeat the kind word the label already is, is dropped; the
+    // image codec never is
+    let label_is_kind = t.detail.is_empty() && t.ordinal.is_none();
+    for b in &t.badges {
+        if !(label_is_kind && matches!(b, RowBadge::Forced | RowBadge::Sdh)) {
+            row = row.badge(row_badge(b));
+        }
+    }
+    row
+}
+
+/// A track's label inside its language: the source (+ "Track N" if needed), or the kind word for a
+/// nameless one. Also the value a language's drill-in reads out for its active variant.
+fn in_lang_label(t: &SubTrack) -> String {
     let nth = t.ordinal.map(|n| crate::i18n::msg::widgets_tracks_track_ordinal(n as i64));
-    let label = if !t.detail.is_empty() {
+    if !t.detail.is_empty() {
         match &nth {
             Some(n) => format!("{} \u{b7} {}", t.detail, n),
             None => t.detail.clone(),
@@ -1676,24 +1860,16 @@ fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
         }
     } else {
         t.kind.fallback_label().to_string()
-    };
-    let mut row = Row::new(label).checked(active_sub >= 0 && t.i == active_sub as usize);
-    let drop_badge_for_kind = t.detail.is_empty()
-        && t.ordinal.is_none()
-        && matches!(t.badge, Some(RowBadge::Forced) | Some(RowBadge::Sdh));
-    if !drop_badge_for_kind {
-        if let Some(b) = &t.badge {
-            row = row.badge(row_badge(b));
-        }
     }
-    row
 }
 
 /// **Declare the Subtitles root** from its model (`metadata::sub_layout::sub_sections`) as a keyed
 /// form — the catalog words for each header, the checkmark on `active_sub` (-1 for Off), and the
 /// Timing read-out (`offset_ms`). Each row is declared once: a track carries its subs-list index
 /// as its id and key; Timing is dim while subtitles are Off and hands off to the capsule (so it has
-/// no chevron); Style is the one Nav row, the drill-in to [`TrackPage::Style`].
+/// no chevron); Style and Other languages are Nav rows, the drill-ins to [`TrackPage::Style`] and
+/// [`TrackPage::OtherLanguages`] (the latter reads out the language count, or — when the active
+/// track lives behind it — a check and that track's language).
 ///
 /// `locked` (M7 follow-up): while the live route is actually burning a subtitle into the picture,
 /// Timing and Style do nothing — the text is already in the pixels — so they are DISABLED (dim,
@@ -1701,17 +1877,17 @@ fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
 /// non-selectable [`FormSection::note`] naming why follows Style, the same "visible, dim, plain
 /// reason" idiom the Audio tab's own Boost dialog / Normalize loudness rows use when THEY are
 /// disabled.
-fn table_form(model: &[SubSection], active_sub: c_int, offset_ms: i64, locked: bool) -> TrackForm {
+fn table_form(model: &SubModel, active_sub: c_int, offset_ms: i64, locked: bool) -> TrackForm {
     use crate::i18n::msg;
-    model.iter().fold(Form::new(), |form, sec| {
+    let active_other =
+        model.other.iter().find(|o| o.tracks.iter().any(|t| active_sub >= 0 && t.i == active_sub as usize));
+    model.sections.iter().fold(Form::new(), |form, sec| {
         let head = match &sec.header {
             SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
             SubHeader::Language { name, tracks } => {
                 Section::new(name.clone()).accessory(msg::widgets_tracks_count(*tracks as i64))
             }
             SubHeader::Bare => Section::new(""),
-            SubHeader::OtherLanguages { languages } => Section::new(msg::widgets_tracks_other_languages())
-                .accessory(msg::widgets_tracks_language_count(*languages as i64)),
         };
         let out = sec.rows.iter().fold(FormSection::from_head(head), |out, row| {
             // the identity comes from the model's own row target, never from the position
@@ -1725,6 +1901,18 @@ fn table_form(model: &[SubSection], active_sub: c_int, offset_ms: i64, locked: b
                 ),
                 SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, active_sub)),
                 SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, active_sub)),
+                SubRow::OtherLanguages { languages } => {
+                    let (value, checked) = match active_other {
+                        Some(o) => (o.name.clone(), true),
+                        None => (languages.to_string(), false),
+                    };
+                    out.item(
+                        id,
+                        RowKind::Nav(TrackPage::OtherLanguages),
+                        (),
+                        Row::new(msg::widgets_tracks_other_languages()).value(value).checked(checked),
+                    )
+                }
                 SubRow::Timing => out
                     .item(
                         id,
@@ -1882,7 +2070,7 @@ mod tests {
     // ---- sub_layout: one badge per row, by priority --------------------------------------------
 
     #[test]
-    fn one_badge_per_row_by_priority_forced_over_sdh_over_external_over_codec() {
+    fn one_kind_badge_per_row_by_priority_forced_over_sdh_over_external_and_an_image_codec_always_adds_its_own() {
         let mk = |sdh: bool, external: bool, codec: &str| metadata::Stream {
             sdh,
             external,
@@ -1894,46 +2082,52 @@ mod tests {
         let names = TrackNames::new();
 
         let subs = vec![mk(true, false, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
-        assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Sdh]));
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
+        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh]));
 
         let subs = vec![mk(false, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
-        assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
+        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
 
         let subs = vec![mk(true, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
         assert!(
-            matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Sdh]),
+            matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh]),
             "SDH beats EXTERNAL"
         );
 
         let subs = vec![mk(false, false, "pgs")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
-        assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
+        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
+
+        // an image subtitle keeps its format whatever else it is: the codec chip follows the kind
+        let subs = vec![mk(true, false, "pgs")];
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
+        assert!(
+            matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh, Badge::Text(t)] if t == "PGS"),
+            "SDH + PGS"
+        );
+        // a text subtitle never shows a format, external or not
+        let subs = vec![mk(false, true, "ass")];
+        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
+        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
     }
 
-    // ---- sub_layout: "Other languages", "N languages", name sort ------------------------------
+    // ---- sub_layout: "Other languages" is ONE drill-in row on the root -------------------------
 
     #[test]
-    fn other_languages_are_flat_sorted_by_name_with_a_language_count_accessory() {
+    fn other_languages_are_one_chevron_row_reading_the_language_count() {
         let subs = vec![
             stream(1, 0, "German", "deu", ""),
             stream(2, 1, "Arabic", "ara", ""),
+            stream(3, 2, "Arabic", "ara", "SDH"),
         ];
         let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &[], -1, true, 0);
-        let other = sections.last().unwrap();
-        assert_eq!(other.header, "Other languages");
-        assert_eq!(other.accessory, "2 languages");
-        let labels: Vec<&str> = other.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Arabic", "German"], "sorted by language name");
-
-        let subs = vec![stream(1, 0, "German", "deu", "")];
-        let (sections, _targets) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
-        assert_eq!(sections.last().unwrap().accessory, "1 language");
+        let (sections, ids) = sub_layout(&subs, &offered, &TrackNames::new(), &[], -1, true, 0);
+        assert_eq!(ids, [Some(TrackRow::SubOff), Some(TrackRow::OpenOther), Some(TrackRow::Timing), Some(TrackRow::Style)]);
+        let row = &sections[1].rows[0];
+        assert_eq!((row.label.as_str(), row.value.as_deref()), ("Other languages", Some("2")), "two languages, three tracks");
+        assert!(!row.checked, "no active track behind it");
     }
 
     /// **Every Subtitles-panel row fits the panel in every shipped language** — the grouped
@@ -2068,10 +2262,10 @@ mod tests {
             codec: "srt".into(),
             ..Default::default()
         }]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         assert_eq!(
             menu.ids(),
-            vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Sub(0)]
+            vec![TrackRow::SubOff, TrackRow::Sub(0), TrackRow::Timing, TrackRow::Style]
         );
     }
 
@@ -2108,11 +2302,11 @@ mod tests {
         assert_eq!(menu.form.selected_id().copied(), Some(TrackRow::Sub(1)));
     }
 
-    /// `row_for_sub_target("track:N")` names the N-th TRACK row, never Off/Timing/Style: the
+    /// `sub_track_for_target("track:N")` names the N-th TRACK, never Off/Timing/Style: the
     /// `subtitle_text_srt` manifest case once hard-coded row 3, which stopped being a track when
     /// the panel's layout changed (it resolved to Style and committed nothing).
     #[test]
-    fn row_for_sub_target_finds_track_rows_and_skips_off_timing_and_color() {
+    fn sub_track_for_target_finds_tracks_and_skips_off_timing_and_color() {
         let _g = crate::testlock::serial();
         crate::player::sidecar::reset();
         let ps = crate::route::PlaybackSession::IDLE;
@@ -2120,22 +2314,19 @@ mod tests {
             stream(1, 0, "English", "eng", "A"),
             stream(2, 1, "French", "fra", "B"),
         ]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec![]);
-        let row_of = |t: TrackRow| menu.form.index_of(&t).map(|r| r as c_int);
-        assert_eq!(menu.row_for_sub_target("track:0"), row_of(TrackRow::Sub(0)));
-        assert_eq!(menu.row_for_sub_target("track:1"), row_of(TrackRow::Sub(1)));
-        assert!(menu.row_for_sub_target("track:0").unwrap() >= 1, "row 0 is Off");
-        assert_eq!(menu.row_for_sub_target("track:2"), None, "past the last track");
-        assert_eq!(menu.row_for_sub_target("boost"), None);
-        assert_eq!(menu.row_for_sub_target("track:x"), None);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fra".into()]);
+        assert_eq!(menu.sub_track_for_target("track:0"), Some(0));
+        assert_eq!(menu.sub_track_for_target("track:1"), Some(1));
+        assert_eq!(menu.sub_track_for_target("track:2"), None, "past the last track");
+        assert_eq!(menu.sub_track_for_target("boost"), None);
+        assert_eq!(menu.sub_track_for_target("track:x"), None);
     }
 
     // ---- track_menu: sidecar, tone and Timing rows dispatch to their own outcomes -------------
 
     /// **A Subtitles-panel row is a track, Style, or Timing, never ambiguous — and the split is
-    /// by `targets[sel]`.** Off + an embedded English track + an external French sidecar (none of
-    /// them "yours", so all three land flat under "Subtitles"/"Other languages" respectively),
-    /// then the headerless Timing/Style section.
+    /// by `targets[sel]`.** Off + an embedded English track + an external French sidecar (both
+    /// "yours", so both land flat under "Subtitles"), then the headerless Timing/Style section.
     #[test]
     fn sidecar_and_settings_rows_map_to_their_own_commits_in_one_menu() {
         let _g = crate::testlock::serial();
@@ -2163,21 +2354,20 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        // Off(0), Timing(1), Style(2), English(3), French sidecar(4) — "Other languages" sorts
-        // English before French, and the settings section always precedes it.
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fre".into()]);
+        // Off(0), English(1), French sidecar(2), then the headerless Timing(3) / Style(4) section
         assert_eq!(
             menu.ids(),
             vec![
                 TrackRow::SubOff,
-                TrackRow::Timing,
-                TrackRow::Style,
                 TrackRow::Sub(0),
                 TrackRow::Sub(1),
+                TrackRow::Timing,
+                TrackRow::Style,
             ]
         );
 
-        menu.focus_row(4);
+        menu.focus_row(2);
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::Commit {
@@ -2191,7 +2381,7 @@ mod tests {
             }
         );
 
-        menu.focus_row(1);
+        menu.focus_row(3);
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::OpenTiming,
@@ -2199,7 +2389,7 @@ mod tests {
         );
 
         // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
-        menu.focus_row(2);
+        menu.focus_row(4);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size is first and live for a text subtitle");
         assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Size)]);
@@ -2229,7 +2419,7 @@ mod tests {
             codec: "srt".into(),
             ..Default::default()
         }]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         let timing_row = menu
             .form
             .index_of(&TrackRow::Timing)
@@ -3010,7 +3200,7 @@ mod enhancement_menu_tests {
     fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
         let (ps, _sid) = enhancement_test_session(route);
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         (menu, ps)
     }
 
@@ -3279,6 +3469,8 @@ mod focus_tests {
             pages: Vec::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
+            other: Vec::new(),
+            root_tracks: Vec::new(),
             yours: Vec::new(),
             enhance_shown: None,
             enhance_route: None,
@@ -3513,16 +3705,52 @@ mod keyed_form_tests {
         let ps = crate::route::PlaybackSession::IDLE;
         let two = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
         let mut three = two.clone();
-        three.push(stream(3, 2, "Arabic", "ara", "")); // "Other languages" sorts Arabic first
+        three.push(stream(3, 2, "Arabic", "ara", "")); // "yours" ranks Arabic first
+        let yours = || vec!["ara".to_string(), "eng".to_string(), "fra".to_string()];
         let (a, b) = (store_with(two), store_with(three));
-        let before = TrackMenuState::new(&ps, a.view(), 1, Vec::new());
-        let after = TrackMenuState::new(&ps, b.view(), 1, Vec::new());
+        let before = TrackMenuState::new(&ps, a.view(), 1, yours());
+        let after = TrackMenuState::new(&ps, b.view(), 1, yours());
         assert!(after.form.index_of(&TrackRow::Sub(2)) < after.form.index_of(&TrackRow::Sub(0)),
             "premise: the new track is drawn ABOVE the existing ones");
         for id in [TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Sub(0), TrackRow::Sub(1)] {
             assert!(key_of(&before, id).is_some(), "{id:?} is built");
             assert_eq!(key_of(&before, id), key_of(&after, id), "{id:?} kept its key");
         }
+    }
+
+    /// **A language's drill-in keeps its identity when tracks are added** — a track of another
+    /// language that sorts above it, a second track of its own language, a later track of a new
+    /// language: `OpenLang` is the stream id of the language's first track, never a list position.
+    /// Its KEY is its ordinal on the page (what the focus engine needs: unique, below the ceiling),
+    /// so it follows the language when another sorts above it, and the form's `reseat` carries the
+    /// engine along.
+    #[test]
+    fn an_open_lang_is_the_same_row_when_tracks_are_added() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let base = vec![
+            stream(1, 0, "German", "deu", ""),
+            stream(2, 1, "French", "fra", ""),
+            stream(3, 2, "French", "fra", "SDH"),
+        ];
+        let mut more = base.clone();
+        more.push(stream(4, 3, "Arabic", "ara", "")); // sorts above French on the page
+        more.push(stream(5, 4, "French", "fra", "Commentary"));
+        let other_page = |subs: Vec<metadata::Stream>| {
+            let store = store_with(subs);
+            let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+            menu.push(TrackPage::OtherLanguages);
+            menu
+        };
+        let (before, after) = (other_page(base), other_page(more));
+        let french = TrackRow::OpenLang(LangId { stream: 2, slot: 0 });
+        assert!(key_of(&before, french).is_some(), "French is a drill-in on the page");
+        assert!(after.form.index_of(&french).is_some(), "the same identity is on the page after");
+        assert!(after.form.index_of(&TrackRow::Sub(3)) < after.form.index_of(&french), "premise: Arabic is drawn above it");
+        let keys = after.keys();
+        assert_eq!(keys.len(), keys.iter().collect::<std::collections::HashSet<_>>().len(), "keys are unique on the page");
+        assert_ne!(key_of(&after, french), key_of(&after, TrackRow::OpenOther));
     }
 
     /// **Initial focus is the active track on both tabs** — and Off when no subtitle is active.
@@ -3540,7 +3768,7 @@ mod keyed_form_tests {
         // Subtitles: Off when none is active, else the active track (even inside "Other languages")
         let subs = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
         let store = store_with(subs);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fra".into()]);
         assert_eq!(menu.selected_id(), Some(TrackRow::SubOff));
         menu.active_sub = 1;
         menu.rebuild(&ps, store.view(), 1, false);
@@ -3575,7 +3803,7 @@ mod style_page_tests {
         let mut s = stream(999, 0, "English", "eng", "");
         s.codec = codec.into();
         let store = store_with(vec![s]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         (menu, ps, store)
     }
 
@@ -3604,7 +3832,7 @@ mod style_page_tests {
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         assert_eq!(menu.page_path(), [TrackPage::Style]);
         assert_eq!(menu.selected_id(), Some(TrackRow::OpenField(StyleField::Size)));
-        assert_eq!(menu.form.table.title(), Some(TrackPage::Style.title().as_ref()));
+        assert_eq!(menu.form.table.title(), Some(TrackPage::Style.title(&[]).as_str()));
 
         focus_id(&mut menu, TrackRow::OpenField(StyleField::Position));
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
@@ -3939,5 +4167,516 @@ mod style_page_tests {
         menu.on_left(&ps, store.view());
         assert_eq!(hash(&menu), style_color, "a pop returns to the recorded state");
         teardown(&ps);
+    }
+}
+
+/// **The Other languages page and the language pages** (`docs/player-submenus.md`, PR 3).
+#[cfg(test)]
+mod language_page_tests {
+    use super::tests::{store_with, stream};
+    use super::*;
+    use crate::route::reset_player_control_for_test;
+
+    fn teardown(ps: &crate::route::PlaybackSession) {
+        reset_player_control_for_test(ps);
+        crate::plex::reset_servers_for_test();
+    }
+
+    fn pgs(mut s: metadata::Stream) -> metadata::Stream {
+        s.codec = "pgs".into();
+        s
+    }
+
+    /// English is "yours" (index 0, a root row); Dutch (PGS) and German are single-track others;
+    /// French has a full, an SDH and a forced PGS track.
+    fn subs() -> Vec<metadata::Stream> {
+        vec![
+            stream(10, 0, "English", "eng", ""),
+            stream(11, 1, "French", "fra", ""),
+            stream(12, 2, "French", "fra", "SDH"),
+            pgs(stream(13, 3, "French", "fra", "Forced")),
+            stream(14, 4, "German", "deu", ""),
+            pgs(stream(15, 5, "Dutch", "nld", "")),
+        ]
+    }
+
+    /// [`subs`] plus Italian: a text full track and a VobSub SDH one (`dvd_subtitle` is Plex's
+    /// own name for it), the long raw codec the badge must shorten.
+    fn subs_with_vobsub() -> Vec<metadata::Stream> {
+        let mut v = subs();
+        v.push(stream(16, 6, "Italian", "ita", "Netflix"));
+        let mut sdh = stream(17, 7, "Italian", "ita", "Netflix");
+        sdh.codec = "dvd_subtitle".into();
+        sdh.sdh = true;
+        v.push(sdh);
+        v
+    }
+
+    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+        let _ = crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = store_with(subs);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        (menu, ps, store)
+    }
+
+    fn focus_id(menu: &mut TrackMenuState, id: TrackRow) {
+        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.selected_id(), Some(id));
+    }
+
+    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
+        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
+        menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap()
+    }
+
+    /// OK on the root's Other languages row opens the page A-Z (a single-track language is a pick
+    /// row, French a drill-in reading its track count); OK on French opens its page, ranked; LEFT
+    /// pops each back onto the row that opened it, by id, and the title follows the page.
+    #[test]
+    fn push_and_pop_walk_root_other_languages_and_a_language() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        assert_eq!(menu.ids()[..3], [TrackRow::SubOff, TrackRow::Sub(0), TrackRow::OpenOther]);
+        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("3"), "Dutch, French, German");
+
+        focus_id(&mut menu, TrackRow::OpenOther);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
+        assert_eq!(menu.form.table.title(), Some("Other languages"));
+        assert_eq!(
+            menu.ids(),
+            [TrackRow::Sub(5), TrackRow::OpenLang(LangId { stream: 11, slot: 1 }), TrackRow::Sub(4)],
+            "Dutch, French, German"
+        );
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(5)), "nothing checked: the first row");
+        assert_eq!(row_of(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 })).value.as_deref(), Some("3 tracks"));
+
+        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)]);
+        assert_eq!(menu.form.table.title(), Some("French"));
+        assert_eq!(
+            menu.ids(),
+            [TrackRow::Sub(1), TrackRow::Sub(2), TrackRow::Sub(3)],
+            "full, SDH, forced"
+        );
+
+        assert!(menu.pop(&ps, store.view()));
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenLang(LangId { stream: 11, slot: 1 })), "the opener, by id");
+        assert_eq!(menu.form.table.title(), Some("Other languages"));
+        assert!(menu.pop(&ps, store.view()));
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "the root's row");
+        assert_eq!(menu.form.table.title(), None);
+        teardown(&ps);
+    }
+
+    /// RIGHT on a drill-in enters it like OK; LEFT on a page pops, never switches tab.
+    #[test]
+    fn right_enters_a_language_and_left_leaves_it() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_right(&ps, store.view());
+        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
+        menu.on_right(&ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)]);
+        menu.on_left(&ps, store.view());
+        menu.on_left(&ps, store.view());
+        assert!(menu.page_path().is_empty());
+        assert_eq!(menu.tab, 1, "still the Subtitles tab");
+        teardown(&ps);
+    }
+
+    /// **Only image subtitles carry a format badge**: PGS shows one, a text track (SRT) none — on
+    /// the Other languages page and on a language page alike.
+    #[test]
+    fn the_format_badge_is_only_on_image_subtitles() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, _store) = open(subs_with_vobsub());
+        menu.push(TrackPage::OtherLanguages);
+        let badges = |m: &TrackMenuState, id| row_of(m, id).badges.iter().map(|b| b.text().to_string()).collect::<Vec<_>>();
+        assert_eq!(badges(&menu, TrackRow::Sub(5)), ["PGS"], "Dutch is an image subtitle");
+        assert!(badges(&menu, TrackRow::Sub(4)).is_empty(), "German SRT shows no format");
+        assert!(badges(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 })).is_empty(), "a drill-in is not a track");
+        menu.push(TrackPage::Language(11));
+        assert!(badges(&menu, TrackRow::Sub(1)).is_empty(), "French full is SRT");
+        assert!(badges(&menu, TrackRow::Sub(2)).is_empty(), "the SDH chip would only repeat its label");
+        assert_eq!(row_of(&menu, TrackRow::Sub(2)).label, "SDH");
+        assert_eq!(badges(&menu, TrackRow::Sub(3)), ["PGS"], "a forced image track still shows its format");
+        assert_eq!(row_of(&menu, TrackRow::Sub(3)).label, "Forced");
+        // a VobSub SDH track: its raw codec ("dvd_subtitle") shows as the short name, after the kind
+        menu.push(TrackPage::Language(16));
+        assert!(badges(&menu, TrackRow::Sub(6)).is_empty(), "Italian text shows no format");
+        assert_eq!(badges(&menu, TrackRow::Sub(7)), ["SDH", "VOBSUB"]);
+        // a row whose only badge could be the codec: the same French forced track, unlabelled
+        let (mut menu2, ps2, _s2) = open(vec![
+            stream(1, 0, "French", "fra", ""),
+            pgs(stream(2, 1, "French", "fra", "")),
+        ]);
+        menu2.push(TrackPage::OtherLanguages);
+        menu2.push(TrackPage::Language(1));
+        assert!(badges(&menu2, TrackRow::Sub(0)).is_empty());
+        assert_eq!(badges(&menu2, TrackRow::Sub(1)), ["PGS"]);
+        teardown(&ps);
+        teardown(&ps2);
+    }
+
+    /// **Initial focus**: Other languages opens on the checked row (the language's drill-in when
+    /// the active track is inside one), a language page on its active variant, else on its first.
+    #[test]
+    fn a_page_opens_on_the_active_track_when_it_is_inside() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        menu.active_sub = 2; // French SDH
+        menu.rebuild(&ps, store.view(), 1, false);
+        assert!(row_of(&menu, TrackRow::OpenOther).checked, "the active track lives behind it");
+        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("French"));
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_ok(store.view());
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenLang(LangId { stream: 11, slot: 1 })), "the language holding the active track");
+        let french = row_of(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
+        assert!(french.checked);
+        assert_eq!(french.value.as_deref(), Some("SDH"), "reads the active variant");
+        menu.on_ok(store.view());
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(2)), "the active variant");
+        assert!(row_of(&menu, TrackRow::Sub(2)).checked);
+
+        // a single-track active language: its pick row on Other languages
+        let (mut menu, ps2, store) = open(subs());
+        menu.active_sub = 4; // German
+        menu.rebuild(&ps2, store.view(), 1, false);
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_ok(store.view());
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(4)));
+
+        // the active track is NOT in the language: its first track
+        let (mut menu, ps3, store) = open(subs());
+        menu.active_sub = 0; // English, on the root
+        menu.push(TrackPage::OtherLanguages);
+        menu.push(TrackPage::Language(11));
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
+        teardown(&ps);
+        teardown(&ps2);
+        teardown(&ps3);
+        let _ = store;
+    }
+
+    /// A pick on a language page commits like a root pick does and dismisses the panel.
+    #[test]
+    fn a_pick_on_a_language_page_commits_and_dismisses() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        menu.push(TrackPage::OtherLanguages);
+        menu.push(TrackPage::Language(11));
+        focus_id(&mut menu, TrackRow::Sub(2));
+        match menu.on_ok(store.view()) {
+            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, .. }, keep_open } => {
+                assert_eq!(stream_id, 12);
+                assert!(!keep_open, "a track pick at any depth dismisses");
+            }
+            other => panic!("expected a subtitle commit, got {other:?}"),
+        }
+        assert_eq!(menu.active_sub, 2);
+        teardown(&ps);
+    }
+
+    /// French as sidecars the client can draw only while each has a `key`: an empty one is not
+    /// offered on this route, which is how a language leaves the offered list under a fixed item.
+    fn sidecar_french(keys: [&str; 3]) -> Vec<metadata::Stream> {
+        let mut v = subs();
+        for (n, key) in keys.iter().enumerate() {
+            v[1 + n].external = true;
+            v[1 + n].codec = "srt".into();
+            v[1 + n].key = key.to_string();
+        }
+        v
+    }
+
+    /// **A language page never outlives its language**: the live offered list loses French while
+    /// its page is open, so the stack pops to the root (opener and root restored by id). A change
+    /// that leaves the language offered (one of its tracks going away) refreshes the page in place
+    /// and keeps the viewer's row.
+    #[test]
+    fn a_vanished_language_pops_to_the_root_and_a_changed_one_refreshes_in_place() {
+        let _g = crate::testlock::serial();
+        let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
+        let _ = crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
+        menu.on_ok(store.view());
+        assert_eq!(menu.ids().len(), 3);
+        focus_id(&mut menu, TrackRow::Sub(2));
+        let measure = crate::ui::fixture::FixtureMeasure;
+        menu.update(0.016, &measure, &ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)], "an unchanged signature leaves it");
+
+        // one French sidecar is no longer offered: still a page, refreshed in place
+        let store2 = store_with(sidecar_french(["/a.srt", "/b.srt", ""]));
+        menu.update(0.016, &measure, &ps, store2.view());
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)], "French is still offered");
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(2)), "on the row the viewer was on");
+        assert_eq!(menu.ids().len(), 2, "the departed track left the page");
+
+        // none of French is offered: its page cannot be listed any more
+        let store3 = store_with(sidecar_french(["", "", ""]));
+        menu.update(0.016, &measure, &ps, store3.view());
+        assert!(menu.page_path().is_empty(), "popped to the root");
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "on the row that opened the stack");
+        assert_eq!(menu.form.table.title(), None);
+        teardown(&ps);
+    }
+
+    /// With no language left to list, an open Other languages page pops too.
+    #[test]
+    fn the_other_languages_page_pops_when_nothing_is_left_to_list() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_ok(store.view());
+        let store2 = store_with(vec![stream(10, 0, "English", "eng", "")]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert!(menu.page_path().is_empty());
+        assert!(menu.form.index_of(&TrackRow::OpenOther).is_none(), "and the root no longer offers it");
+        teardown(&ps);
+    }
+
+    /// Open the Other languages page, then `name`'s drill-in, the way a viewer's keys would.
+    fn open_language_named(menu: &mut TrackMenuState, store: &crate::stores::metadata::MetadataStore, name: &str) {
+        focus_id(menu, TrackRow::OpenOther);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        let at = (0..menu.form.table.n_rows().max(0) as usize)
+            .find(|&i| {
+                matches!(menu.form.id_at(i), Some(TrackRow::OpenLang(_)))
+                    && menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).is_some_and(|r| r.label == name)
+            })
+            .unwrap_or_else(|| panic!("{name} has no drill-in on the Other languages page"));
+        menu.focus_row(at as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+    }
+
+    /// **Finding 1: the harness can pick a subtitle that sits behind Other languages.** An item
+    /// whose subs are all non-"yours" has no root track row at all; `track:N` still resolves, and
+    /// commits by the track's own id.
+    #[test]
+    fn the_harness_picks_a_subtitle_behind_other_languages() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(vec![stream(21, 0, "German", "deu", ""), stream(22, 1, "Dutch", "nld", "")]);
+        // page order: Dutch (A-Z) is the first Other-languages row, German the second
+        let i = menu.sub_track_for_target("track:0").expect("track:0 resolves behind Other languages");
+        assert_eq!(i, 1, "track N follows page order, root tracks first");
+        match menu.commit_sub_track(i, store.view()) {
+            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, .. }, .. } => assert_eq!(stream_id, 22),
+            other => panic!("expected a subtitle commit, got {other:?}"),
+        }
+        assert_eq!(menu.active_sub, 1);
+        assert_eq!(menu.sub_track_for_target("track:1"), Some(0));
+        assert_eq!(menu.sub_track_for_target("track:2"), None);
+        teardown(&ps);
+    }
+
+    /// `track:N` counts root tracks first, then Other languages in page order, expanding a
+    /// multi-track language's own ranked page.
+    #[test]
+    fn the_harness_track_order_is_root_then_other_pages_expanded() {
+        let _g = crate::testlock::serial();
+        let (menu, ps, _store) = open(subs());
+        // root: English(0); Other A-Z: Dutch(5), French full/SDH/forced (1,2,3), German(4)
+        let order: Vec<_> = (0..7).map(|n| menu.sub_track_for_target(&format!("track:{n}"))).collect();
+        assert_eq!(order, [Some(0), Some(5), Some(1), Some(2), Some(3), Some(4), None]);
+        teardown(&ps);
+    }
+
+    /// **Finding 2: the menu opens on Other languages when the active track is behind it** — a
+    /// codeless or unrecognised-language subtitle is never "yours", so its own row is not on the
+    /// root.
+    #[test]
+    fn opening_with_the_active_track_behind_other_languages_focuses_that_row() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(vec![stream(10, 0, "English", "eng", ""), stream(11, 1, "Unknown", "", "")]);
+        menu.active_sub = 1;
+        menu.rebuild(&ps, store.view(), 1, false);
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther));
+        teardown(&ps);
+    }
+
+    /// The same landing on the live poll's fallback, when the viewer's own row left the root.
+    #[test]
+    fn the_poll_fallback_lands_on_other_languages_when_the_active_track_is_behind_it() {
+        use crate::route::{enhancement_test_session, EnhTestFixture, SubtitleEffect};
+        let _g = crate::testlock::serial();
+        let _ = crate::player::sidecar::reset();
+        // cur_sub_sid is 999: no such stream yet
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture { subtitle_effect: SubtitleEffect::Embedded, ..Default::default() });
+        let yours = vec!["eng".into(), "spa".into(), "fra".into()];
+        let store = store_with(vec![
+            stream(10, 0, "English", "eng", ""),
+            stream(11, 1, "Spanish", "spa", ""),
+            stream(12, 2, "French", "fra", ""),
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, yours);
+        focus_id(&mut menu, TrackRow::Sub(2));
+        // the three languages leave, and the playing subtitle (999) is a codeless track
+        let store2 = store_with(vec![stream(999, 0, "Unknown", "", "")]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert_eq!(menu.active_sub, 0);
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "the viewer's row is gone: the checked row, which is Other languages");
+        teardown(&ps);
+    }
+
+    /// **Finding 3: a language page is its language, not a list position.** Two earlier tracks
+    /// leave while French's page is open and Dutch now starts where French used to; the page must
+    /// stay French (it must never show Dutch under a French stack).
+    #[test]
+    fn a_language_page_survives_earlier_tracks_leaving() {
+        let _g = crate::testlock::serial();
+        let before = vec![
+            stream(10, 0, "English", "eng", ""),
+            stream(11, 1, "German", "deu", ""),
+            stream(12, 2, "French", "fra", ""),
+            stream(13, 3, "French", "fra", "SDH"),
+            stream(14, 4, "Dutch", "nld", ""),
+            stream(15, 5, "Dutch", "nld", "SDH"),
+        ];
+        let (mut menu, ps, store) = open(before);
+        open_language_named(&mut menu, &store, "French");
+        assert_eq!(menu.form.table.title(), Some("French"));
+        let after = store_with(vec![
+            stream(12, 0, "French", "fra", ""),
+            stream(13, 1, "French", "fra", "SDH"),
+            stream(14, 2, "Dutch", "nld", ""),
+            stream(15, 3, "Dutch", "nld", "SDH"),
+        ]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, after.view());
+        if !menu.page_path().is_empty() {
+            assert_eq!(menu.form.table.title(), Some("French"), "a page stays its language");
+            assert_eq!(menu.ids(), [TrackRow::Sub(0), TrackRow::Sub(1)], "and lists its tracks");
+        }
+        teardown(&ps);
+    }
+
+    /// If the page's language is gone altogether the page pops to the root.
+    #[test]
+    fn a_language_page_pops_when_its_language_is_gone_whatever_the_indices() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open(subs());
+        open_language_named(&mut menu, &store, "French");
+        let after = store_with(vec![
+            stream(10, 0, "English", "eng", ""),
+            stream(14, 1, "German", "deu", ""),
+            pgs(stream(15, 2, "Dutch", "nld", "")),
+            stream(16, 3, "Dutch", "nld", "SDH"),
+        ]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, after.view());
+        assert!(menu.page_path().is_empty(), "French is gone: popped to the root");
+        teardown(&ps);
+    }
+
+    /// **Finding 4, shrink**: French drops to one offered track while its page is open. The page
+    /// stays (a language page lists whatever its language still offers), and a pop returns to the
+    /// Other languages page on French's now-direct row.
+    #[test]
+    fn a_language_page_that_drops_to_one_track_stays_and_pops_onto_the_single_row() {
+        let _g = crate::testlock::serial();
+        let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
+        let _ = crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        open_language_named(&mut menu, &store, "French");
+        let store2 = store_with(sidecar_french(["/a.srt", "", ""]));
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert_eq!(menu.page_path().len(), 2, "the page stays open at one track");
+        assert_eq!(menu.form.table.title(), Some("French"));
+        assert_eq!(menu.ids(), [TrackRow::Sub(1)]);
+        assert!(menu.pop(&ps, store2.view()));
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)), "French is a direct row now");
+        teardown(&ps);
+    }
+
+    /// **Finding 4, grow**: French is a single direct row on the Other languages page and gains
+    /// tracks while the viewer sits on it; focus follows it to its drill-in.
+    #[test]
+    fn a_single_track_language_that_grows_keeps_the_focus_on_its_new_row() {
+        let _g = crate::testlock::serial();
+        let store = store_with(sidecar_french(["/a.srt", "", ""]));
+        let _ = crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        focus_id(&mut menu, TrackRow::OpenOther);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRow::Sub(1));
+        let store2 = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
+        let french = menu.ids().into_iter().find(|id| matches!(id, TrackRow::OpenLang(_)));
+        assert!(french.is_some(), "French is a drill-in now");
+        assert_eq!(menu.selected_id(), french, "French, in its new shape");
+        teardown(&ps);
+    }
+
+    /// The canon tells the three new pages and their openers apart.
+    #[test]
+    fn the_canon_tells_the_language_pages_apart() {
+        let _g = crate::testlock::serial();
+        let hash = |menu: &TrackMenuState| {
+            let mut c = Canon::new();
+            menu.canon(&mut c);
+            c.finish()
+        };
+        let (mut menu, ps, store) = open(subs());
+        focus_id(&mut menu, TrackRow::OpenOther);
+        let root = hash(&menu);
+        menu.on_ok(store.view());
+        let other = hash(&menu);
+        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
+        let other_french = hash(&menu);
+        menu.on_ok(store.view());
+        let french = hash(&menu);
+        let all = [root, other, other_french, french];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        teardown(&ps);
+    }
+
+    /// **Every new page fits the panel in every shipped language**: the root with its Other
+    /// languages row (also while the active track lives behind it), the page, and a language page,
+    /// judged by the same gates as the rest of the menu.
+    #[test]
+    fn the_language_pages_fit_the_panel_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let (mut menu, ps, store) = open(subs_with_vobsub());
+            let judge = |menu: &TrackMenuState, out: &mut Vec<_>| {
+                out.extend(menu.form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+                out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+                out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+            };
+            judge(&menu, &mut out);
+            for active in [-1, 2] {
+                menu.active_sub = active;
+                menu.rebuild(&ps, store.view(), 1, false);
+                judge(&menu, &mut out);
+                menu.push(TrackPage::OtherLanguages);
+                judge(&menu, &mut out);
+                menu.push(TrackPage::Language(11));
+                judge(&menu, &mut out);
+                menu.pop(&ps, store.view());
+                menu.push(TrackPage::Language(16)); // the VobSub + SDH row
+                judge(&menu, &mut out);
+            }
+            teardown(&ps);
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
     }
 }

@@ -851,17 +851,7 @@
   },
   "widgets.tracks.other_languages": {
     "value": "Other languages",
-    "description": "Subtitles panel of the player's track selector. Heading of the section listing subtitle languages that are not the viewer's own."
-  },
-  "widgets.tracks.language_count": {
-    "value": {
-      "one": "{count} language",
-      "other": "{count} languages"
-    },
-    "description": "Subtitles panel of the player's track selector. Count of distinct languages beside the Other languages heading.",
-    "args": {
-      "count": "i64"
-    }
+    "description": "Subtitles panel of the player's track selector. Row that opens the page of subtitle languages that are not the viewer's own, and that page's title."
   },
   "widgets.tracks.track_ordinal": {
     "value": "Track {number}",

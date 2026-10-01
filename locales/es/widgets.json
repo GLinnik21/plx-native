@@ -210,11 +210,6 @@
   "widgets.badge.sdh": "SDH",
   "widgets.badge.ad": "AD",
   "widgets.tracks.other_languages": "Otros idiomas",
-  "widgets.tracks.language_count": {
-    "one": "{count} idioma",
-    "many": "{count} idiomas",
-    "other": "{count} idiomas"
-  },
   "widgets.tracks.track_ordinal": "Pista {number}",
   "widgets.tracks.kind_full": "Completos",
   "widgets.tracks.kind_commentary": "Comentarios",

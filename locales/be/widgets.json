@@ -214,12 +214,6 @@
   "widgets.badge.sdh": "SDH",
   "widgets.badge.ad": "AD",
   "widgets.tracks.other_languages": "Іншыя мовы",
-  "widgets.tracks.language_count": {
-    "one": "{count} мова",
-    "few": "{count} мовы",
-    "many": "{count} моў",
-    "other": "{count} мовы"
-  },
   "widgets.tracks.track_ordinal": "Дарожка {number}",
   "widgets.tracks.kind_full": "Поўныя",
   "widgets.tracks.kind_commentary": "Каментарый",
