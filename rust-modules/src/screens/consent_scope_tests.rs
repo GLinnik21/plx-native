@@ -150,7 +150,7 @@ fn a_settings_toggle_commits_through_the_activate_event() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let errors_row = page.rows.iter().position(|r| *r == RowId::Errors).unwrap() as u32;
+    let errors_row = page.key_of(RowId::Errors);
 
     out.clear();
     let handled = page.step(&ScreenEvent::Activate(errors_row), &c, &mut mk_fx(&mut out, &mut present));

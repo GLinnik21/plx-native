@@ -140,13 +140,13 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
     let menu = d.nav.modals.top().unwrap().entry.id;
     assert_eq!(d.nav.top_page().unwrap().id, entry);
     // Partial movie: Go to Movie / separator / Watched / Unwatched / Play from Start.
-    // Filmstrip: Watched / Play from Start.
+    // Filmstrip: Watched / Play from Start. Rows are addressed by identity, not position.
     for _ in 0..if episode { 1 } else { 3 } {
         frame(&mut d, &mut rig, &mut now, Some(Key::Down));
     }
     assert_eq!(
         d.focus().map(|f| (f.entry, f.elem)),
-        Some((menu, if episode { 1 } else { 4 }))
+        Some((menu, crate::screens::item_menu::ItemRow::PlayFromStart.focus_key()))
     );
     frame(&mut d, &mut rig, &mut now, Some(Key::Ok));
     assert_eq!(

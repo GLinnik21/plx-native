@@ -2,6 +2,7 @@
 //! highlight spring, including the real-`FocusEngine` navigation checks in `mod composed`.
 
 use super::*;
+use crate::ui::table::Section;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -75,19 +76,19 @@ fn every_row_id_has_a_row() {
     let (mut out, mut present) = sink();
 
     let crash = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
-    assert_eq!(crash.table.n_rows(), crash.rows.len() as i32, "first run, Crash stage");
-    assert_eq!(crash.rows, vec![RowId::PreviewCrash, RowId::Policy], "Crash stage");
+    assert_eq!(crash.form.table.n_rows(), crash.row_ids().len() as i32, "first run, Crash stage");
+    assert_eq!(crash.row_ids(), vec![RowId::PreviewCrash, RowId::Policy], "Crash stage");
 
     out.clear();
     let product = ConsentPage::first_run(EntryId(1), STAGE_PRODUCT, &c, &mut mk_fx(&mut out, &mut present));
-    assert_eq!(product.table.n_rows(), product.rows.len() as i32, "first run, Product stage");
-    assert_eq!(product.rows, vec![RowId::PreviewUsage, RowId::Policy], "Product stage");
+    assert_eq!(product.form.table.n_rows(), product.row_ids().len() as i32, "first run, Product stage");
+    assert_eq!(product.row_ids(), vec![RowId::PreviewUsage, RowId::Policy], "Product stage");
 
     out.clear();
     let settings = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    assert_eq!(settings.table.n_rows(), settings.rows.len() as i32, "settings");
+    assert_eq!(settings.form.table.n_rows(), settings.row_ids().len() as i32, "settings");
     assert_eq!(
-        settings.rows,
+        settings.row_ids(),
         vec![
             RowId::Errors,
             RowId::Usage,
@@ -115,16 +116,16 @@ fn toggling_a_switch_shows_done_without_resizing_the_table_and_reversing_hides_i
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
     assert!(page.band_labels().is_empty(), "no Done until a value differs from what is stored");
-    let rows_before = page.table.n_rows();
+    let rows_before = page.form.table.n_rows();
 
     out.clear();
-    page.row_commit(0, &mut mk_fx(&mut out, &mut present)); // row 0 is Crash reports
+    page.row_commit(page.key_of(RowId::Errors), &mut mk_fx(&mut out, &mut present)); // row 0 is Crash reports
     assert_eq!(page.draft, (true, false));
-    assert_eq!(page.table.n_rows(), rows_before, "Done never changes table geometry");
+    assert_eq!(page.form.table.n_rows(), rows_before, "Done never changes table geometry");
     assert_eq!(page.band_labels().len(), 1, "exactly one action appears");
 
     out.clear();
-    page.row_commit(0, &mut mk_fx(&mut out, &mut present));
+    page.row_commit(page.key_of(RowId::Errors), &mut mk_fx(&mut out, &mut present));
     assert_eq!(page.draft, (false, false), "toggled back to the stored answer");
     assert!(page.band_labels().is_empty(), "…and Done goes away with it");
 
@@ -261,7 +262,7 @@ fn left_off_the_bands_leading_control_is_a_wall_at_every_first_run_stage() {
 
 /// **Ported from legacy's `toggling_a_value_preserves_in_flight_focus_motion`.** A value-only
 /// `row_commit` calls `rebuild`, and `rebuild`'s `keep` expression (`let keep = sel >= 0 &&
-/// self.table.n_rows() > 0;`) exists so the rebuild does not reset the shared `TableView`'s
+/// self.form.table.n_rows() > 0;`) exists so the rebuild does not reset the shared `TableView`'s
 /// highlight spring mid-flight — legacy's own test names the regression directly: "a
 /// value-only rebuild snapped the pill". Nothing in the restructured file exercised `keep`
 /// before this pin: every other row-commit test here only checks the resulting VALUE, never
@@ -276,14 +277,14 @@ fn a_value_only_row_commit_preserves_in_flight_focus_motion() {
     // Row 1 (Usage) is a toggle: move the shared table's selection there and let its
     // highlight spring start travelling before the value-only rebuild that flipping it
     // triggers.
-    page.table.move_sel(1);
-    page.table.update(1.0 / 60.0, page.list_frame().h);
-    let moving = page.table.highlight_motion();
+    page.form.table.move_sel(1);
+    page.form.table.update(1.0 / 60.0, page.list_frame().h);
+    let moving = page.form.table.highlight_motion();
 
     out.clear();
-    page.row_commit(1, &mut mk_fx(&mut out, &mut present)); // flips Usage, calls `rebuild(1)`
+    page.row_commit(page.key_of(RowId::Usage), &mut mk_fx(&mut out, &mut present)); // flips Usage, calls `rebuild(1)`
     assert_eq!(
-        page.table.highlight_motion(),
+        page.form.table.highlight_motion(),
         moving,
         "a value-only rebuild must not teleport the highlight spring — `rebuild`'s `keep` flag exists exactly for this"
     );
@@ -292,7 +293,7 @@ fn a_value_only_row_commit_preserves_in_flight_focus_motion() {
 /// **Ported from legacy's `the_consent_update_advances_the_shared_table_focus_pill`** — filed
 /// there as "Regression for the TV report: the row selection changed its ink, but this screen
 /// never advanced the TableView springs". The risk carries over unchanged: `ScreenEvent::Tick`'s
-/// arm calls `self.table.update(dt, …)`, and nothing before this test drove a `Tick` through
+/// arm calls `self.form.table.update(dt, …)`, and nothing before this test drove a `Tick` through
 /// `step` to prove that call is actually REACHED, rather than only present in the source.
 #[test]
 fn a_tick_advances_the_shared_table_highlight_spring() {
@@ -301,11 +302,11 @@ fn a_tick_advances_the_shared_table_highlight_spring() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    page.table.move_sel(1);
-    let before = page.table.highlight_motion();
+    page.form.table.move_sel(1);
+    let before = page.form.table.highlight_motion();
 
     page.step(&ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &c, &mut mk_fx(&mut out, &mut present));
-    let after = page.table.highlight_motion();
+    let after = page.form.table.highlight_motion();
     assert!(
         after.0 != before.0 || after.1.abs() > 0.0,
         "a Tick delivered through the machine must advance the shared table's highlight spring: {before:?} -> {after:?}"
@@ -320,7 +321,7 @@ fn a_tick_advances_the_shared_table_highlight_spring() {
 /// false` (its focus is the answer band), so the inherited value silently drew Settings with
 /// focus on nothing at all, while the keys still moved and committed an invisible selection.
 /// **That channel does not exist any more to leak through**: `ConsentPage::bare` (this file,
-/// above) builds a fresh `TableView::new()` into `self.table` on every call, so `first_run`
+/// above) builds a fresh `TableView::new()` into `self.form.table` on every call, so `first_run`
 /// and `settings` each own a table that belongs to their OWN struct instance rather than to
 /// the module. Proven here by holding both alive at once and mutating the first before the
 /// second is ever built — the shape a shared static would have to survive, and a plain
@@ -339,18 +340,18 @@ fn settings_opens_on_the_list_after_a_first_run_left_focus_in_the_answer_band() 
     let (mut out, mut present) = sink();
 
     let mut crash = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
-    assert!(!crash.table.list_focused, "first run parks focus on the answers, not the list");
+    assert!(!crash.form.table.list_focused, "first run parks focus on the answers, not the list");
     // Stand in for whatever a live session would have left a SHARED static at, were there
     // still one to leave anything at — a selection made on a totally different question.
-    crash.table.move_sel(1);
+    crash.form.table.move_sel(1);
 
     out.clear();
     let settings = ConsentPage::settings(EntryId(2), &c, &mut mk_fx(&mut out, &mut present));
     assert!(
-        settings.table.list_focused,
+        settings.form.table.list_focused,
         "…and a wholly independent Settings mounting must put focus back on its OWN list"
     );
-    assert_eq!(settings.table.sel, 0, "…starting at its own top row, not `crash`'s leftover selection");
+    assert_eq!(settings.form.table.sel, 0, "…starting at its own top row, not `crash`'s leftover selection");
 
     restore_consent_snapshot(saved);
 }
@@ -472,12 +473,12 @@ fn toggling_a_value_back_never_leaves_focus_on_nothing() {
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
 
-    page.row_commit(0, &mut mk_fx(&mut out, &mut present)); // Crash reports -> On, Done appears
+    page.row_commit(page.key_of(RowId::Errors), &mut mk_fx(&mut out, &mut present)); // Crash reports -> On, Done appears
     assert_eq!(page.draft, (true, false));
     assert_eq!(page.band_labels().len(), 1, "Done is now on screen");
 
     out.clear();
-    page.row_commit(0, &mut mk_fx(&mut out, &mut present)); // …and back Off again
+    page.row_commit(page.key_of(RowId::Errors), &mut mk_fx(&mut out, &mut present)); // …and back Off again
     assert_eq!(page.draft, (false, false), "the draft matches the stored answer again");
     assert!(page.band_labels().is_empty(), "…and Done goes away with it");
     assert!(
@@ -577,7 +578,7 @@ mod composed {
         let c = test_cx(&m);
         let (mut out, mut present) = sink();
         let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-        page.row_commit(0, &mut mk_fx(&mut out, &mut present)); // Crash reports -> On
+        page.row_commit(page.key_of(RowId::Errors), &mut mk_fx(&mut out, &mut present)); // Crash reports -> On
         assert_eq!(page.band_labels().len(), 1, "Done is on screen once a value differs");
 
         let mut engine: FocusEngine<u32> = FocusEngine::new();
@@ -623,7 +624,7 @@ mod composed {
 
         // Seat on the list's LAST row before asking DOWN off it: the property under test is
         // that the LAST row (not the first) returns to the band.
-        let last_row = page.table.n_rows() - 1;
+        let last_row = page.form.table.n_rows() - 1;
         engine.set(owner, FocusKey { entry: EntryId(1), elem: last_row as u32 }, Some(TABLE_GROUP), By::Dir);
         let outcome = go(&mut engine, owner, &page, Dir::Down, &c);
         assert!(matches!(outcome, Outcome::Moved { .. }), "DOWN off the last row returns to the answers: {outcome:?}");
@@ -748,7 +749,7 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
         page.step(&key_down(Key::Up), &cx, &mut mk_fx(&mut out, &mut present));
         assert_eq!(page.state.hash(), before, "either answer can scroll back to the same position");
         engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
-        assert!(engine.current(owner).is_some_and(|key| key.elem < page.rows.len() as u32));
+        assert!(engine.current(owner).is_some_and(|key| page.form.index_of_key(RowKey(key.elem)).is_some()));
         page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
         assert!(out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
         [before, after, page.state.hash()]
@@ -760,4 +761,28 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
     let replay = Measurements::Replay(TableMeasure::new(table));
     assert_eq!(run(&replay), expected);
     replay.drain().expect("mount layout and no-draw scrolling must use recorded measurements");
+}
+
+/// **Each first-run row pushes exactly its own preview**, addressed by identity, for both stages —
+/// the dispatcher-driven structural test cannot reach the first-run page (focus starts in the
+/// answer band there), so this states the same property on the page itself: a press on a row
+/// emits exactly one `Nav` push, and its destination is what the page's form declares for that row.
+#[test]
+fn every_first_run_row_pushes_exactly_its_preview() {
+    let _g = crate::testlock::serial();
+    let m = FixtureMeasure;
+    let c = test_cx(&m);
+    for (stage, product) in [(0, false), (STAGE_PRODUCT, true)] {
+        let items = nav_items_for_test(Some(product));
+        assert_eq!(items.len(), 2, "stage {stage}: the example and the policy");
+        for (key, dest) in items {
+            let (mut out, mut present) = sink();
+            let mut page = ConsentPage::first_run(EntryId(1), stage, &c, &mut mk_fx(&mut out, &mut present));
+            out.clear();
+            page.row_commit(key, &mut mk_fx(&mut out, &mut present));
+            let pushes: Vec<_> = out.iter().filter_map(|e| match &e.fx {
+                Fx::Nav(NavOp::Push(d)) => Some(*d), _ => None }).collect();
+            assert_eq!(pushes, [dest], "stage {stage}: key {key}");
+        }
+    }
 }

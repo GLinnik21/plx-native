@@ -446,7 +446,6 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
     // The empty-rk guard the head of this function used to carry is the SURFACE's now
     // (`ItemMenuScreen::activate`): a row with no target never becomes a request at all.
     match act {
-        Action::None => {}
         Action::GoToItem(rk) => {
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);

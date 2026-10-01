@@ -296,12 +296,32 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// starts on a destructive row. The pill snaps and the scroll returns to the top; for a page
     /// that keeps its scroll use [`Self::refresh`], to reinstate a saved one [`Self::restore`].
     pub fn set(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>) {
+        self.install_keeping(form, keep, false, true);
+    }
+
+    /// [`Self::set`] for an ACTION MENU rebuilt under an open panel: a `keep` that vanished does
+    /// NOT slide onto its neighbour (which could be a destructive row — *Sign out* once *Change
+    /// profile* is hidden) but opens afresh on [`TableView::opening_row`], exactly as the first build does.
+    pub fn set_or_open(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>) {
+        self.install_keeping(form, keep, false, false);
+    }
+
+    /// [`Self::set`] for a rebuild that happens UNDER the cursor and must not move the scroll or
+    /// the highlight pill — a toggled switch on a list that has scrolled: the pill and the scroll
+    /// keep gliding from where they are instead of snapping (`TableView::set_sections`'s `slide`).
+    /// A landing that finds no row to keep still OPENS afresh, snapped.
+    pub fn set_sliding(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>) {
+        self.install_keeping(form, keep, true, true);
+    }
+
+    /// The shared body of [`Self::set`], [`Self::set_or_open`] and [`Self::set_sliding`]: land on
+    /// `keep` by identity (`neighbour`: else its nearest survivor), snapping unless `slide`.
+    fn install_keeping(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>, slide: bool, neighbour: bool) {
         let (sections, bindings) = self.check(form);
-        let landing = keep.and_then(|k| self.landing_for(k, &bindings));
+        let landing = keep.and_then(|k| self.landing_for(k, &bindings, neighbour));
         self.bindings = bindings;
-        // snap, never glide: a rebuild re-derives the page, as the pre-form root did (`slide=false`)
         match landing {
-            Some(i) => self.table.set_sections(sections, i as i32, false),
+            Some(i) => self.table.set_sections(sections, i as i32, slide),
             None => self.table.open_sections(sections),
         }
         self.reseat_after_install();
@@ -329,7 +349,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     pub fn refresh(&mut self, form: Form<Id, A, Dest>) {
         let (sections, bindings) = self.check(form);
         let keep = self.selected_id().cloned();
-        let landing = keep.and_then(|k| self.landing_for(&k, &bindings));
+        let landing = keep.and_then(|k| self.landing_for(&k, &bindings, true));
         self.bindings = bindings;
         self.table.set_sections_or_open(sections, landing.map(|i| i as i32), true);
         self.reseat_after_install();
@@ -390,10 +410,13 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     }
 
     /// The new index `keep` lands on, or `None` when nothing (keep or a neighbour) survives.
-    fn landing_for(&self, keep: &Id, new: &[Option<Binding<Id, A, Dest>>]) -> Option<usize> {
+    fn landing_for(&self, keep: &Id, new: &[Option<Binding<Id, A, Dest>>], neighbour: bool) -> Option<usize> {
         let find = |id: &Id| new.iter().position(|b| b.as_ref().is_some_and(|b| &b.id == id));
         if let Some(i) = find(keep) {
             return Some(i);
+        }
+        if !neighbour {
+            return None;
         }
         let old_at = self.index_of(keep)?;
         let survivor = |j: usize| self.bindings[j].as_ref().and_then(|b| find(&b.id));
@@ -429,6 +452,26 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         usize::try_from(self.table.sel)
             .ok()
             .and_then(|i| self.id_at(i))
+    }
+    /// The key of the selected row.
+    pub fn selected_key(&self) -> Option<RowKey> {
+        usize::try_from(self.table.sel).ok().and_then(|i| self.key_at(i))
+    }
+    /// The key of the row a menu OPENS on ([`TableView::opening_row`]): never a destructive row
+    /// while any other is on offer.
+    pub fn opening_key(&self) -> Option<RowKey> {
+        usize::try_from(self.table.opening_row()).ok().and_then(|i| self.key_at(i))
+    }
+    /// How many rows can be focused (the items, not the separators and notes).
+    pub fn focusable_len(&self) -> usize {
+        self.bindings.iter().flatten().count()
+    }
+    /// The focusable row one step `delta` (-1 / +1) from `from`, or `None` at either end (a menu
+    /// never wraps). Separators and notes are stepped over.
+    pub fn step_key(&self, from: RowKey, delta: i32) -> Option<RowKey> {
+        let at = self.index_of_key(from)?;
+        let next = self.table.next_selectable(at as i32, delta)?;
+        self.key_at(usize::try_from(next).ok()?)
     }
     /// What activating the row at `index` asks for: `Push(dest)` for a Nav item, else the action.
     /// `None` for an inert slot, an index off the end, or a [`FormSection::disabled`] item.

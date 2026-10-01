@@ -165,12 +165,12 @@ fn first_run_leaves_only_the_two_documents_in_its_reading_list() {
     let (mut out, mut present) = sink();
     let crash = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
     assert_eq!(
-        crash.rows,
+        crash.row_ids(),
         vec![RowId::PreviewCrash, RowId::Policy],
         "only the two readable documents remain in the list, and the preview is the crash \
          channel's own — Stage::Crash is where a fresh question always starts"
     );
-    assert_eq!(crash.table.n_rows(), 2);
+    assert_eq!(crash.form.table.n_rows(), 2);
     assert_eq!(crash.band_labels().len(), 2, "first run always carries its two answers in the band");
 }
 

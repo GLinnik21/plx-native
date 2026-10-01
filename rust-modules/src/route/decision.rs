@@ -5235,7 +5235,7 @@ impl Quality {
     }
 
     /// An in-memory index back to a rung — out of range is `Original`, never a neighbouring rung,
-    /// for the same reason `more_menu::action_at` refuses one: the ladder can grow or shrink.
+    /// for the same reason the more menu resolves a press by row identity rather than position: the ladder can grow or shrink.
     fn from_index(i: u8) -> Quality {
         QUALITY_LADDER
             .get(i as usize)

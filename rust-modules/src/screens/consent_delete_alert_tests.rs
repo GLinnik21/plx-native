@@ -28,7 +28,7 @@ fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_a
         cx.measure = measure;
         let (mut out, mut present) = sink();
         let mut page = ConsentPage::settings(EntryId(1), &cx, &mut mk_fx(&mut out, &mut present));
-        let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+        let delete_row = page.key_of(RowId::Delete);
         page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
         cx.focus.current = Some(FocusKey { entry: EntryId(1), elem: ALERT });
         out.clear();
@@ -65,7 +65,7 @@ fn the_delete_row_opens_the_alert_and_asks_to_be_reseated_on_it() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
     out.clear();
     page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
     assert!(page.alert.is_open());
@@ -120,10 +120,10 @@ fn the_open_alert_refuses_a_stray_activate_or_presscommit_on_the_table_or_band()
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
     page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
     assert!(page.alert.is_open());
-    let errors_row = page.rows.iter().position(|r| *r == RowId::Errors).unwrap() as u32;
+    let errors_row = page.key_of(RowId::Errors);
     let draft_before = page.draft;
 
     // A click landing on the "Crash reports" row underneath the scrim: the same event a real
@@ -162,7 +162,7 @@ fn the_alert_index_mapping_is_pinned_through_a_real_press_commit() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
 
     // A freshly opened alert seats on Cancel (element 0) — `open_inner` resets `choice` to
     // `Choice::Cancel`, and `seat` is what the ENGINE actually calls on a fresh `Enter`, not a
@@ -225,7 +225,7 @@ fn a_stale_presscommit_after_the_alert_was_already_dismissed_deletes_nothing() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
     page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
     assert!(page.alert.is_open());
 
@@ -268,7 +268,7 @@ fn the_dismissal_fade_traps_activate_presscommit_and_keys_the_same_as_the_open_a
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
     page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
 
     // Cancel: the alert dismisses (a fade begins) but stays `visible()` until that fade
@@ -280,7 +280,7 @@ fn the_dismissal_fade_traps_activate_presscommit_and_keys_the_same_as_the_open_a
     assert!(page.alert.visible(), "…but it is still fading — the test is vacuous otherwise");
 
     // A click on a switch during the fade must not toggle it.
-    let errors_row = page.rows.iter().position(|r| *r == RowId::Errors).unwrap() as u32;
+    let errors_row = page.key_of(RowId::Errors);
     let draft_before = page.draft;
     out.clear();
     page.step(&ScreenEvent::Activate(errors_row), &c, &mut mk_fx(&mut out, &mut present));
@@ -335,7 +335,7 @@ fn reconcile_keeps_the_alerts_own_choice_when_a_stray_key_names_something_outsid
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    let delete_row = page.rows.iter().position(|r| *r == RowId::Delete).unwrap() as i32;
+    let delete_row = page.key_of(RowId::Delete);
     page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
     assert!(page.alert.is_open());
 

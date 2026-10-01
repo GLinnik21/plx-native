@@ -29,8 +29,11 @@
 
 use std::borrow::Cow;
 
+use std::convert::Infallible;
+
 use crate::plex::session::Account;
 use crate::screens::registry::{AppFx, AppLike, AuthLike, LoopReq};
+use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
@@ -46,7 +49,6 @@ use crate::ui::Rect;
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Action {
-    None,
     ChangeProfile,
     SignIn,
     SignOut,
@@ -66,6 +68,27 @@ pub(crate) enum Action {
     SendDiagnostics,
 }
 
+/// A row's identity IS its action. Its focus key is hand-assigned, never the enum's discriminant,
+/// so reordering the form (or adding a variant) moves no key.
+impl FormId for Action {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            Action::ChangeProfile => 1,
+            Action::SignIn => 2,
+            Action::SignOut => 3,
+            Action::Settings => 4,
+            Action::SendDiagnostics => 5,
+        })
+    }
+}
+
+impl Action {
+    /// The focus element of this row (for a test, or a probe, that addresses it by identity).
+    #[cfg(test)]
+    pub(crate) fn focus_key(self) -> u32 {
+        self.key().0
+    }
+}
 
 /// The pinned ~24px corner radius.
 const PANEL_RAD: f32 = 24.0;
@@ -73,35 +96,37 @@ const PANEL_RAD: f32 = 24.0;
 pub(crate) const SHAPE: &str =
     "AccountMenu{header:str,rows:[u32],sel:u32,table:TableViewMotion}";
 
-/// The rows for an account state, in order. Signed out, the only truthful action is signing in;
-/// offering "Change profile" there dead-ends in an empty who's-watching screen. Signed in, "Sign
-/// in" is a lie, so it is never offered — "Change profile" is, whenever plex.tv can serve a roster.
-///
-/// `switch_refused` is the Session's published verdict that it CANNOT for the identity in use
-/// ([`crate::auth::owner::SessionSnapshot::switch_refused`]): plex.tv refused this identity a
-/// roster with nothing cached, or the session is a dev-token one. The row is hidden then, the same
-/// way a server-only session's is — it would open #132's read-out and nothing else. No verdict
-/// (never asked, plex.tv unreachable) keeps the row, because the row is what asks.
-fn rows_for(acc: &Account, switch_refused: bool) -> &'static [Action] {
-    // The lab row is a THIRD axis rather than an append, so every row set stays a `&'static`
-    // slice and [`action_at`]'s index mapping keeps working unchanged. Six arms is the price of
-    // not allocating a row vector per open; the alternative was a `Vec` in a static.
-    match (
-        acc.signed_in,
-        acc.can_switch && !switch_refused,
-        crate::lab::menu_row_enabled(),
-    ) {
-        (false, _, false) => &[Action::SignIn, Action::Settings],
-        (false, _, true) => &[Action::SignIn, Action::Settings, Action::SendDiagnostics],
-        (true, true, false) => &[Action::ChangeProfile, Action::SignOut, Action::Settings],
-        (true, true, true) => &[
-            Action::ChangeProfile,
-            Action::SignOut,
-            Action::Settings,
-            Action::SendDiagnostics,
-        ],
-        (true, false, false) => &[Action::SignOut, Action::Settings],
-        (true, false, true) => &[Action::SignOut, Action::Settings, Action::SendDiagnostics],
+/// What the menu's rows depend on — the account state, as plain values, so the builder reads no
+/// global and a test can drive it with any combination.
+struct AccountInputs {
+    /// The account's own name (a managed profile or the roster owner), if it has one.
+    name: Option<String>,
+    signed_in: bool,
+    /// *Change profile* is on offer: plex.tv can serve a roster and the Session has not refused this
+    /// identity one (`switch_refused`, [`crate::auth::owner::SessionSnapshot::switch_refused`]).
+    can_switch: bool,
+    /// The lab-only *Send diagnostics* row ([`crate::lab::menu_row_enabled`], compile-time `false`
+    /// outside lab builds).
+    lab: bool,
+}
+
+impl AccountInputs {
+    /// Signed out, the only truthful action is signing in; offering "Change profile" there
+    /// dead-ends in an empty who's-watching screen. Signed in, "Sign in" is a lie, so it is never
+    /// offered — "Change profile" is, whenever plex.tv can serve a roster.
+    ///
+    /// `switch_refused` is the Session's published verdict that it CANNOT for the identity in use:
+    /// plex.tv refused this identity a roster with nothing cached, or the session is a dev-token
+    /// one. The row is hidden then, the same way a server-only session's is — it would open #132's
+    /// read-out and nothing else. No verdict (never asked, plex.tv unreachable) keeps the row,
+    /// because the row is what asks.
+    fn of(acc: &Account, switch_refused: bool) -> Self {
+        Self {
+            name: acc.name.clone(),
+            signed_in: acc.signed_in,
+            can_switch: acc.can_switch && !switch_refused,
+            lab: crate::lab::menu_row_enabled(),
+        }
     }
 }
 
@@ -136,47 +161,46 @@ fn label(a: Action) -> &'static str {
         Action::SignOut => crate::i18n::msg::settings_account_sign_out(),
         Action::Settings => crate::i18n::msg::settings_account_settings(),
         Action::SendDiagnostics => crate::i18n::msg::settings_account_diagnostics(),
-        Action::None => "",
     }
 }
 
-/// Rows that leave for another screen carry the drill-in chevron; "Sign out" acts in place.
-fn drills_in(a: Action) -> bool {
-    matches!(a, Action::ChangeProfile | Action::SignIn | Action::Settings)
-}
-
-/// Rows whose action ends something in place. Never where the menu's focus starts
-/// ([`crate::ui::table::TableView::opening_row`]): with *Change profile* hidden (a refused roster, a
-/// server-only session) *Sign out* is the FIRST row, and a stray OK on a freshly opened menu must
-/// not sign anyone out.
-fn destructive(a: Action) -> bool {
-    matches!(a, Action::SignOut)
-}
-
-/// The row list IS the mapping — a selection outside it (an empty menu, a stale index) is `None`
-/// rather than whatever action happens to sit at that position in the other row set.
-fn action_at(rows: &[Action], sel: i32) -> Action {
-    usize::try_from(sel)
-        .ok()
-        .and_then(|i| rows.get(i))
-        .copied()
-        .unwrap_or(Action::None)
-}
-
-/// The menu's header text and its one section, from the account's name (if it has one) and the
-/// action rows — pure, so the text-fit suite drives the real builder. A named account's own name
-/// is user text (the managed profile or the roster owner), so it is a `server_header`; the
-/// fallback "Account" label is this app's own word for a nameless signed-in account.
-fn menu_section(name: Option<&str>, rows: &[Action]) -> (String, Section) {
-    let header = name.map_or_else(|| crate::i18n::msg::settings_account_title().to_string(), str::to_string);
-    let mut sec = Section::new(header.clone());
-    if name.is_some() {
-        sec = sec.server_header();
+/// The menu's header text and its one-section [`Form`], from [`AccountInputs`] — pure, so the
+/// text-fit suite drives the real builder. A named account's own name is user text (the managed
+/// profile or the roster owner), so it is a `server_header`; the fallback "Account" label is this
+/// app's own word for a nameless signed-in account. **Reordering the menu is moving a line.**
+fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infallible>) {
+    let header = inputs
+        .name
+        .clone()
+        .unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string());
+    let mut head = Section::new(header.clone());
+    if inputs.name.is_some() {
+        head = head.server_header();
     }
-    for a in rows {
-        sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)).destructive(destructive(*a)));
+    let mut sec = FormSection::from_head(head);
+    let signed_in = inputs.signed_in;
+    let rows = [
+        (Action::ChangeProfile, signed_in && inputs.can_switch),
+        (Action::SignIn, !signed_in),
+        (Action::SignOut, signed_in),
+        (Action::Settings, true),
+        (Action::SendDiagnostics, inputs.lab),
+    ];
+    for (action, offered) in rows {
+        sec = sec.item_if(offered, action, RowKind::Button, action, action_row(action));
     }
-    (header, sec)
+    (header, Form::new().section(sec))
+}
+
+/// One action's row. Rows that leave for another screen carry the drill-in chevron ("Sign out"
+/// acts in place); rows whose action ends something in place are destructive and so never where
+/// the menu's focus starts ([`crate::ui::table::TableView::opening_row`]): with *Change profile*
+/// hidden *Sign out* is the FIRST row, and a stray OK on a freshly opened menu must not sign
+/// anyone out.
+fn action_row(a: Action) -> Row {
+    Row::new(label(a))
+        .chevron(matches!(a, Action::ChangeProfile | Action::SignIn | Action::Settings))
+        .destructive(matches!(a, Action::SignOut))
 }
 
 /// Top-left popover, tucked under the profile chip.
@@ -207,8 +231,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, crate::ui::Rect)>) {
 pub(crate) struct AccountMenuScreen {
     entry: EntryId,
     header: String,
-    rows: &'static [Action],
-    table: TableView,
+    form: FormTable<Action, Action, Infallible>,
     /// Rebuild on visible session landings as well as the initial mount. Focus keys name
     /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
     session_watch: crate::plex::session::VisibleSessionWatch,
@@ -223,8 +246,7 @@ impl AccountMenuScreen {
         Self {
             entry,
             header: crate::i18n::msg::settings_account_title().to_string(),
-            rows: &[],
-            table: TableView::new(),
+            form: FormTable::new(crate::screens::registry::BAND),
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
@@ -238,65 +260,55 @@ impl AccountMenuScreen {
         }
         let Some(sess) = crate::plex::session::peek_settled() else { return };
         self.built = true;
-        let selected = action_at(self.rows, self.table.sel);
+        let keep = self.form.selected_id().copied();
         let cur = crate::plex::session::current();
         let acc = sess.account(cur.as_ref());
         self.switch_refused = switch_refused;
-        self.rows = rows_for(&acc, switch_refused);
-        let (header, sec) = menu_section(acc.name.as_deref(), self.rows);
+        let (header, form) = account_form(&AccountInputs::of(&acc, switch_refused));
         self.header = header;
         // small one-word action list — BODY labels, not menu-size HEADLINE bold
-        self.table.compact = true;
+        self.form.table.compact = true;
         // The action that was focused keeps its row when it survives the rebuild; otherwise (the
-        // first build, or the row was taken away under an open menu) the menu OPENS afresh.
-        match self.rows.iter().position(|a| *a == selected) {
-            Some(row) => self.table.set_sections(vec![sec], row as i32, false),
-            None => self.table.open_sections(vec![sec]),
-        }
-        // `rows` *is* the index→action map, so it must stay one-to-one with what was built above;
-        // a row appended here and not to `rows_for` is exactly the drift this replaced.
-        debug_assert_eq!(self.rows.len() as i32, self.table.n_rows());
-    }
-
-    fn row_of(&self, elem: u32) -> Option<usize> {
-        self.rows.iter().position(|action| *action as u32 == elem)
+        // first build, or the row was taken away under an open menu) the menu OPENS afresh — on
+        // its safe opening row, never on the neighbour that slid into the vacated place.
+        self.form.set_or_open(form, keep.as_ref());
     }
 
     fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
-        panel_rect(&self.table, measure)
+        panel_rect(&self.form.table, measure)
     }
 
     /// Commit the focused row. **Every action dismisses**, exactly as the legacy `on_ok` did by
     /// closing before it returned; what differs per action is the request the loop then performs.
     fn activate<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
-        let act = self.row_of(elem).map_or(Action::None, |row| self.rows[row]);
+        let act = self
+            .form
+            .index_of_key(RowKey(elem))
+            .and_then(|i| self.form.activate(i))
+            .and_then(|a| match a {
+                Activation::Action(action) => Some(action),
+                Activation::Push(never) => match never {},
+            });
         // The five that need the LOOP: three flip `app.route` after an `auth` call, one presents
         // another surface (whose `Style` is the application's to choose, not a screen's), and one
         // reaches `crate::lab`. None of them is expressible as a `Fx::Nav`, which is why they are
         // requests rather than effects a screen performs itself (§2.1, §14).
-        let req = match act {
-            Action::ChangeProfile => Some(LoopReq::AccountChangeProfile),
-            Action::SignIn => Some(LoopReq::AccountSignIn),
-            Action::SignOut => Some(LoopReq::AccountSignOut),
-            Action::Settings => Some(LoopReq::AccountSettings),
-            Action::SendDiagnostics => Some(LoopReq::AccountSendDiagnostics),
-            Action::None => None,
-        };
+        let req = act.map(|act| match act {
+            Action::ChangeProfile => LoopReq::AccountChangeProfile,
+            Action::SignIn => LoopReq::AccountSignIn,
+            Action::SignOut => LoopReq::AccountSignOut,
+            Action::Settings => LoopReq::AccountSettings,
+            Action::SendDiagnostics => LoopReq::AccountSendDiagnostics,
+        });
         if let Some(req) = req {
             fx.push(Fx::App(AppFx::Loop(req)));
         }
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
     }
 
-    /// The action a focus with nowhere better to go lands on — the table's opening row, which is
-    /// never a destructive one while any other is on offer.
-    fn opening_action(&self) -> Action {
-        action_at(self.rows, self.table.opening_row())
-    }
-
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
     pub(crate) fn sel(&self) -> i32 {
-        self.table.sel
+        self.form.table.sel
     }
 }
 
@@ -314,16 +326,16 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
                     self.build(switch_refused);
                     if self.built { fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session)); }
                 }
-                self.table.sel = cx
+                self.form.table.sel = cx
                     .focus
                     .current
                     .filter(|key| key.entry == self.entry)
-                    .and_then(|key| self.row_of(key.elem).map(|row| row as i32))
-                    .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame(cx.measure).h);
+                    .and_then(|key| self.form.index_of_key(RowKey(key.elem)).map(|row| row as i32))
+                    .unwrap_or(self.form.table.sel);
+                self.form.table.update(tick.dt(), self.frame(cx.measure).h);
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                if let Some(row) = self.row_of(to.elem) { self.table.sel = row as i32; }
+                if let Some(row) = self.form.index_of_key(RowKey(to.elem)) { self.form.table.sel = row as i32; }
             }
             ScreenEvent::Activate(elem) => self.activate(*elem, fx),
             ScreenEvent::PressCommit(_) => {
@@ -357,31 +369,27 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
             extent: self.frame(cx.measure),
-            len: self.rows.len(),
+            len: self.form.focusable_len(),
             elem: ElemKind::Bare,
         });
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
-        self.row_of(*elem).map(|_| GroupId(0))
+        self.form.index_of_key(RowKey(*elem)).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
-        let Some(row) = self.row_of(key.elem) else { return Step::Edge };
-        let next = match dir {
-            Dir::Up => row.checked_sub(1),
-            Dir::Down => Some(row + 1),
-            _ => None,
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
         };
-        match next.filter(|i| *i < self.rows.len()) {
-            Some(i) => Step::Move(FocusKey {
-                entry: self.entry,
-                elem: self.rows[i] as u32,
-            }),
+        match self.form.step_key(RowKey(key.elem), delta) {
+            Some(next) => Step::Move(FocusKey { entry: self.entry, elem: next.0 }),
             None => Step::Edge,
         }
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
-        let row = self.row_of(*elem)?;
-        let rect = self.table.row_frame(self.frame(cx.measure), row as i32)?;
+        let row = self.form.index_of_key(RowKey(*elem))?;
+        let rect = self.form.table.row_frame(self.frame(cx.measure), row as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
@@ -395,14 +403,14 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.opening_action() as u32,
+                elem: self.form.opening_key().map_or(0, |k| k.0),
             }
         }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         FocusKey {
             entry: self.entry,
-            elem: action_at(self.rows, self.table.sel) as u32,
+            elem: self.form.selected_key().map_or(0, |k| k.0),
         }
     }
 }
@@ -437,10 +445,9 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let r = self.frame(measure);
         crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         crate::ui::profile::phase("glass.foreground", || {
-            self.table.draw(p, r, measure);
+            self.form.table.draw(p, r, measure);
         });
-        for action in self.rows {
-            let elem = *action as u32;
+        for elem in (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)) {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                 f.stop(
                     p,
@@ -466,12 +473,14 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
 
 impl LogicalState for AccountMenuScreen {
     fn write(&self, c: &mut Canon) {
-        c.str(&self.header).seq(self.rows.len());
-        for a in self.rows {
-            c.u32(*a as u32);
+        c.str(&self.header).seq(self.form.focusable_len());
+        for i in 0..self.form.table.n_rows() as usize {
+            if let Some(key) = self.form.key_at(i) {
+                c.u32(key.0);
+            }
         }
-        c.u32(self.table.sel as u32);
-        self.table.write_motion(c);
+        c.u32(self.form.table.sel as u32);
+        self.form.table.write_motion(c);
     }
     fn probe(&self, out: &mut String) {
         out.push_str("account_menu");
@@ -482,13 +491,26 @@ impl LogicalState for AccountMenuScreen {
 /// words the menu says about the user, and the actions it maps them to.
 ///
 /// All eleven moved by NAME from `ui/account_menu.rs` (restructure phase 10). They drive the pure
-/// functions — `Session::account`, [`rows_for`], [`action_at`] — with sessions built in the test,
+/// functions — `Session::account`, [`account_form`] and the [`FormTable`] lookups over it (a press resolves by row identity, never by position) — with sessions built in the test,
 /// so they touch no global and need no lock; the seventh drives the live `session::set_current`
 /// and takes `crate::testlock::serial()` for its whole body.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plex::session::{HomeUserRef, ServerRef, Session, UserRef};
+
+    /// The action of every row, in order — read back off the built form, the one place row order lives.
+    fn ids(form: Form<Action, Action, Infallible>) -> Vec<Action> {
+        let mut t = FormTable::<Action, Action, Infallible>::new(crate::screens::registry::BAND);
+        t.set(form, None);
+        (0..t.table.n_rows() as usize).filter_map(|i| t.id_at(i).copied()).collect()
+    }
+    fn rows_of(acc: &Account, switch_refused: bool) -> Vec<Action> {
+        ids(account_form(&AccountInputs::of(acc, switch_refused)).1)
+    }
+    fn menu_rows(menu: &AccountMenuScreen) -> Vec<Action> {
+        (0..menu.form.table.n_rows() as usize).filter_map(|i| menu.form.id_at(i).copied()).collect()
+    }
 
     /// A host whose only view is the Session publication — the one fact the menu reads off it.
     struct MenuHost;
@@ -543,20 +565,20 @@ mod tests {
     fn a_known_switch_refusal_hides_change_profile_and_no_verdict_keeps_it() {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let acc = s.account(None);
-        assert_eq!(rows_for(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
+        assert_eq!(rows_of(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
             vec!["Sign out", "Settings"]);
-        assert_eq!(rows_for(&acc, false)[0], Action::ChangeProfile);
+        assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
         let _serial = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-menu-verdict");
         crate::plex::session::save(&s);
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(false));
-        assert!(menu.rows.contains(&Action::ChangeProfile), "rig: switching is offered");
+        assert!(menu_rows(&menu).contains(&Action::ChangeProfile), "rig: switching is offered");
         tick(&mut menu, &published(true));
-        assert!(!menu.rows.contains(&Action::ChangeProfile),
+        assert!(!menu_rows(&menu).contains(&Action::ChangeProfile),
             "a verdict landing under an open menu takes the row away");
-        assert!(menu.rows.contains(&Action::SignOut));
+        assert!(menu_rows(&menu).contains(&Action::SignOut));
     }
 
     /// **A menu never opens with its focus on a destructive action.** #237 hid *Change profile*
@@ -573,20 +595,20 @@ mod tests {
 
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(true));
-        assert!(!menu.rows.contains(&Action::ChangeProfile), "rig: the roster was refused");
-        assert_eq!(menu.rows[0], Action::SignOut, "rig: Sign out is the first row");
-        assert_ne!(action_at(menu.rows, menu.sel()), Action::SignOut,
+        assert!(!menu_rows(&menu).contains(&Action::ChangeProfile), "rig: the roster was refused");
+        assert_eq!(menu_rows(&menu)[0], Action::SignOut, "rig: Sign out is the first row");
+        assert_ne!(menu.form.selected_id(), Some(&Action::SignOut),
             "the menu opened focused on Sign out");
-        assert_eq!(action_at(menu.rows, menu.sel()), Action::Settings);
-        assert_eq!(menu.opening_action(), Action::Settings,
+        assert_eq!(menu.form.selected_id(), Some(&Action::Settings));
+        assert_eq!(menu.form.opening_key(), Some(Action::Settings.key()),
             "the focus fallback lands on Sign out");
 
         // The verdict landing under an open menu whose focus sits on Change profile.
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(false));
-        assert_eq!(action_at(menu.rows, menu.sel()), Action::ChangeProfile, "rig");
+        assert_eq!(menu.form.selected_id(), Some(&Action::ChangeProfile), "rig");
         tick(&mut menu, &published(true));
-        assert_eq!(action_at(menu.rows, menu.sel()), Action::Settings,
+        assert_eq!(menu.form.selected_id(), Some(&Action::Settings),
             "a removed row's focus fell onto Sign out");
     }
 
@@ -614,11 +636,11 @@ mod tests {
         crate::plex::session::install_transient_for_test(true);
         let mut menu = AccountMenuScreen::new(EntryId(0));
         menu.build(false);
-        assert!(!menu.rows.contains(&Action::SignOut));
+        assert!(!menu_rows(&menu).contains(&Action::SignOut));
         crate::plex::session::save(&saved);
         tick(&mut menu, &published(false));
-        assert!(menu.rows.contains(&Action::SignOut));
-        assert!(!menu.rows.contains(&Action::SignIn));
+        assert!(menu_rows(&menu).contains(&Action::SignOut));
+        assert!(!menu_rows(&menu).contains(&Action::SignIn));
         assert_eq!(menu.header, "Synthetic owner");
     }
 
@@ -628,14 +650,14 @@ mod tests {
         let _session = crate::plex::session::TempSession::new("account-action-identity");
         let mut menu = AccountMenuScreen::new(EntryId(0));
         menu.build(false);
-        let settings_key = Action::Settings as u32;
-        assert_eq!(menu.row_of(settings_key), Some(1));
+        let settings_key = Action::Settings.focus_key();
+        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
         crate::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
         menu.build(false);
-        assert_eq!(menu.row_of(settings_key), Some(2));
-        assert_eq!(menu.row_of(Action::SignIn as u32), None,
+        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(2));
+        assert_eq!(menu.form.index_of_key(RowKey(Action::SignIn.focus_key())), None,
             "an old Sign in key cannot become the new Sign out action");
     }
 
@@ -651,7 +673,7 @@ mod tests {
     }
     fn menu(s: &Session, active: Option<&UserRef>) -> (String, Vec<&'static str>) {
         let acc = s.account(active);
-        let rows = rows_for(&acc, false);
+        let rows = rows_of(&acc, false);
         (
             acc.name.unwrap_or_else(|| crate::i18n::msg::settings_account_title().to_string()),
             rows.iter().map(|a| label(*a)).collect(),
@@ -787,7 +809,7 @@ mod tests {
             "chip and header, one name"
         );
         assert!(
-            !rows_for(&acc, false).contains(&Action::SignIn),
+            !rows_of(&acc, false).contains(&Action::SignIn),
             "…and the menu never offered Sign in"
         );
 
@@ -805,7 +827,7 @@ mod tests {
         // for.
         let out = Session::default().account(None);
         assert_eq!(chip_label(&out), label(Action::SignIn));
-        assert_eq!(rows_for(&out, false)[0], Action::SignIn);
+        assert_eq!(rows_of(&out, false)[0], Action::SignIn);
     }
 
     /// Settings is about the SOFTWARE rather than the account and is offered in every state.
@@ -814,8 +836,8 @@ mod tests {
         // LG's Privacy Guideline requires the privacy notice to be reachable IN the app, and the
         // one state where it is easiest to forget is signed OUT — where someone who cannot get past
         // the QR screen has still received a copy of this software. Asserted across every row set
-        // rather than on one, because `rows_for` is a six-arm match and five of the arms are the
-        // easy ones.
+        // rather than on one, because `account_form` has a row set per account state and most of them
+        // are the easy ones.
         for s in [
             Session::default(),
             local(Session {
@@ -824,7 +846,7 @@ mod tests {
             }),
             local(Session::default()),
         ] {
-            let rows = rows_for(&s.account(None), false);
+            let rows = rows_of(&s.account(None), false);
             assert!(
                 rows.contains(&Action::Settings),
                 "no Settings row in {rows:?}"
@@ -842,7 +864,7 @@ mod tests {
             }),
             local(Session::default()),
         ] {
-            let rows = rows_for(&s.account(None), false);
+            let rows = rows_of(&s.account(None), false);
             assert!(
                 rows.iter().any(|a| label(*a) == "Settings"),
                 "no Settings row in {rows:?}"
@@ -850,48 +872,75 @@ mod tests {
         }
     }
 
-    /// Every row set maps position → action by the list it drew, and anything off the end is None
-    /// (not the other set's action at that index, which is exactly what the old fixed 0/1 map did).
+    /// Every account state names the rows it offers, in order, by identity — and a key the form
+    /// does not hold (a stale Sign in after signing in) activates nothing but the dismissal.
     #[test]
-    fn selection_maps_by_the_drawn_row_list() {
-        let signed_out = rows_for(&Session::default().account(None), false);
-        assert_eq!(action_at(signed_out, 0), Action::SignIn);
-        assert_eq!(action_at(signed_out, 1), Action::Settings);
-        assert_eq!(action_at(signed_out, 2), Action::None);
-        let s = local(Session {
-            account_token: "acct".into(),
-            ..Default::default()
-        });
-        let full = rows_for(&s.account(None), false);
-        assert_eq!(action_at(full, 0), Action::ChangeProfile);
-        assert_eq!(action_at(full, 1), Action::SignOut);
-        assert_eq!(action_at(full, 2), Action::Settings);
-        assert_eq!(action_at(full, 3), Action::None);
-        assert_eq!(action_at(full, -1), Action::None);
-        let no_switch = rows_for(&local(Session::default()).account(None), false);
-        assert_eq!(action_at(no_switch, 0), Action::SignOut);
-        assert_eq!(action_at(no_switch, 1), Action::Settings);
-        assert_eq!(action_at(no_switch, 2), Action::None);
+    fn each_account_state_offers_its_rows_in_order() {
+        assert_eq!(rows_of(&Session::default().account(None), false),
+            [Action::SignIn, Action::Settings]);
+        let s = local(Session { account_token: "acct".into(), ..Default::default() });
+        assert_eq!(rows_of(&s.account(None), false),
+            [Action::ChangeProfile, Action::SignOut, Action::Settings]);
+        assert_eq!(rows_of(&local(Session::default()).account(None), false),
+            [Action::SignOut, Action::Settings]);
+    }
+
+    /// Reordering the form moves no focus key and no behaviour: two forms that differ only in the
+    /// order of their rows resolve every key to the same action.
+    #[test]
+    fn a_reordered_menu_resolves_every_key_to_the_same_action() {
+        let table = |reverse: bool| {
+            let mut sec = FormSection::new("");
+            let mut rows = vec![Action::ChangeProfile, Action::SignOut, Action::Settings];
+            if reverse { rows.reverse(); }
+            for a in rows { sec = sec.item(a, RowKind::Button, a, action_row(a)); }
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::screens::registry::BAND);
+            t.set(Form::new().section(sec), None);
+            t
+        };
+        let (fwd, rev) = (table(false), table(true));
+        for a in [Action::ChangeProfile, Action::SignOut, Action::Settings] {
+            let act = |t: &FormTable<Action, Action, Infallible>| {
+                match t.activate(t.index_of_key(a.key()).unwrap()) {
+                    Some(Activation::Action(x)) => x,
+                    _ => panic!("{a:?} is an action row"),
+                }
+            };
+            assert_eq!(act(&fwd), a);
+            assert_eq!(act(&rev), a);
+        }
+        assert_ne!(fwd.index_of_key(Action::ChangeProfile.key()), rev.index_of_key(Action::ChangeProfile.key()),
+            "rig: the two forms really differ in order");
+        assert_eq!(fwd.opening_key(), Some(Action::ChangeProfile.key()));
+        assert_eq!(rev.opening_key(), Some(Action::Settings.key()),
+            "a reversed menu still never opens on the destructive row");
     }
 
     /// **Every app-owned run of the account menu fits its panel, in every shipped language.** Built
-    /// through the real [`menu_section`] over every action the menu can ever offer (the lab-only
+    /// through the real [`account_form`] over every action the menu can ever offer (the lab-only
     /// diagnostics row included), for a named account (the header is the user's own name, exempt)
     /// and a nameless one (the header is this app's own "Account" word, judged), in the same
     /// compact table `build` draws, at the shared menu cap.
     #[test]
     fn every_app_owned_run_fits_the_panel_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let all = [Action::ChangeProfile, Action::SignIn, Action::SignOut, Action::Settings, Action::SendDiagnostics];
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            for name in [None, Some("a-managed-profile-with-a-very-long-name")] {
-                let (_, sec) = menu_section(name, &all);
-                let mut table = TableView::new();
-                table.compact = true;
-                table.set_sections(vec![sec], 0, false);
-                let what = format!("{} name={name:?}", language.tag());
+            for (name, signed_in) in [None, Some("a-managed-profile-with-a-very-long-name")]
+                .into_iter()
+                .flat_map(|n| [(n, false), (n, true)])
+            {
+                // the two account states between them offer every row the menu can (the lab-only
+                // diagnostics row included), so every label is judged
+                let (_, form) = account_form(&AccountInputs {
+                    name: name.map(str::to_string), signed_in, can_switch: true, lab: true,
+                });
+                let mut form_table = FormTable::<Action, Action, Infallible>::new(crate::screens::registry::BAND);
+                form_table.table.compact = true;
+                form_table.set(form, None);
+                let table = &form_table.table;
+                let what = format!("{} name={name:?} signed_in={signed_in}", language.tag());
                 // Only the nameless menu is app text end to end; a real profile name is server
                 // text that may push the hug to the cap, where it ellipsizes.
                 if name.is_none() {

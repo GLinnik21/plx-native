@@ -670,7 +670,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     Panel::Tracks(p) => p.set_sel(i),
                     Panel::Info(p) => p.set_focus(i),
                     Panel::Chapters(p) => p.set_sel(i),
-                    Panel::More(p) => p.set_sel(i),
+                    Panel::More(p) => p.focus_key(to.elem),
                     // Timing has no cursor the engine could have moved — its own `key()` owns
                     // every press and always returns `Handled::Yes`, so this arm is unreached for
                     // it in practice.
