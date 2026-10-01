@@ -1316,7 +1316,7 @@ check-localization:
 # printed first and stops the other. At most two run at once: this Mac's swap is routinely full.
 # Run one half alone with `make check-cargo` / `make check-python` (each is the exact set of
 # lines that branch runs here, so a half that fails is reproduced without the other).
-.PHONY: check-cargo check-python
+.PHONY: check-cargo check-cargo-lint check-cargo-unit-default check-cargo-unit-hostsim check-python
 check-unlocked:
 	@python3 tools/check-parallel.py \
 	  cargo='$(MAKE) --no-print-directory check-cargo' \
@@ -1325,7 +1325,35 @@ check-unlocked:
 	@# `target`.
 	$(CARGO_SEED) harvest target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 
-check-cargo: lint
+# `check-cargo` is the serial union of three targets, in this order, and each is also a CI job
+# (.github/workflows/ci.yml runs them as parallel jobs on separate runners; ci/test_ci_split.py
+# pins that every cargo gate lives in exactly one of them and that CI runs each). A gate added to
+# `check-cargo` goes into ONE of the three, never into this recipe. The Python half stays
+# `check-python`, untouched.
+check-cargo:
+	@$(MAKE) --no-print-directory check-cargo-lint
+	@$(MAKE) --no-print-directory check-cargo-unit-default
+	@$(MAKE) --no-print-directory check-cargo-unit-hostsim
+
+# Static analysis: clippy (`lint`, whose shadowed-branch lints are the gate) and the
+# `lab-diagnostics` type-check. No test binary is linked, so a runner needs no SDL/GL packages.
+check-cargo-lint: lint
+	@# The THIRD feature set, `lab-diagnostics`, TYPE-CHECKED. It is not in the default set
+	@# at all (that is what makes it unshippable by forgetting a flag), so nothing in the unit passes compiles a
+	@# line of `lab/` or of `ui/lab_toast.rs` — and until 2026-09-10 nothing anywhere did: not this
+	@# target, not .github/workflows/ci.yml, not the PostToolUse release hook. The configuration had
+	@# been BROKEN since phase 9 moved `player::diag` onto the session (`lab/snapshot.rs` still
+	@# called the old arity), and `ui/lab_toast.rs`'s two tests had never been compiled by anything,
+	@# which is why an orphaned `#[test]` attribute sat in `lab/snapshot.rs` unnoticed.
+	@# `--tests` rather than a bare `--lib` for exactly that second reason: a feature-gated module's
+	@# TEST code is the half no other gate here can see. `CARGO_INCREMENTAL=0` because a one-shot
+	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
+	@# LAB=1`'s requirement (a live session secret), not the compiler's.
+	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_NIGHTLY) check --lib --tests --features lab-diagnostics
+
+# The default-feature unit suite and everything that drives cargo through ci/ self-tests.
+check-cargo-unit-default:
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
 	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
 	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
@@ -1350,30 +1378,6 @@ check-cargo: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) test --lib
-	@# The SAME suite again under `hostsim`, which is not a duplicate run: the host feed seam
-	@# (`player/ffi_host.rs`) only exists in that configuration, so every test that drives an AU
-	@# through `sf_feed` is COMPILED OUT of the line above and cannot fail it. The prime-livelock
-	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
-	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
-	@# Cargo keys fingerprints by feature set, so the two configurations coexist in one target/ and
-	@# this costs a few seconds warm rather than a rebuild.
-	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
-	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
-	@# ...and the THIRD feature set, `lab-diagnostics`, TYPE-CHECKED. It is not in the default set
-	@# at all (that is what makes it unshippable by forgetting a flag), so nothing above compiles a
-	@# line of `lab/` or of `ui/lab_toast.rs` — and until 2026-09-10 nothing anywhere did: not this
-	@# target, not .github/workflows/ci.yml, not the PostToolUse release hook. The configuration had
-	@# been BROKEN since phase 9 moved `player::diag` onto the session (`lab/snapshot.rs` still
-	@# called the old arity), and `ui/lab_toast.rs`'s two tests had never been compiled by anything,
-	@# which is why an orphaned `#[test]` attribute sat in `lab/snapshot.rs` unnoticed.
-	@# `--tests` rather than a bare `--lib` for exactly that second reason: a feature-gated module's
-	@# TEST code is the half no other gate here can see. `CARGO_INCREMENTAL=0` because a one-shot
-	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
-	@# LAB=1`'s requirement (a live session secret), not the compiler's.
-	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_NIGHTLY) check --lib --tests --features lab-diagnostics
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1390,6 +1394,20 @@ check-cargo: lint
 	@# 30-40 s each, 8 times per `make check`), and keeps the `RELEASE_LINE` marker's appear / edit /
 	@# disappear rebuilds honest in a scratch workspace that uses the real build.rs.
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_build_not_always_dirty.py
+
+# The `hostsim` unit suite (the host feed seam exists only there).
+check-cargo-unit-hostsim:
+	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
+	@# not a duplicate run: the host feed seam (`player/ffi_host.rs`) only exists in that configuration,
+	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
+	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
+	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
+	@# Cargo keys fingerprints by feature set, so the two configurations coexist in one target/ and
+	@# this costs a few seconds warm rather than a rebuild.
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
 
 check-python: check-localization
 	python3 ci/test_ass_composite.py
@@ -1505,6 +1523,8 @@ check-python: check-localization
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
+	@# CI runs the cargo half as three parallel jobs: this pins that no gate fell between them.
+	python3 ci/test_ci_split.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py

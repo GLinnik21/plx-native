@@ -1,0 +1,50 @@
+name: Provision the host Rust toolchain
+description: >
+  The nightly toolchain and the cargo cache every Rust job of ci.yml's host checks shares, plus
+  (only when asked) the desktop SDL/GL libraries a host test binary LINKS against. Three jobs used
+  to be one, and each of them needs these same steps; the copies are this one file so they cannot
+  drift apart.
+
+# The job names ONE toolchain in its own `env:` (RUST_NIGHTLY): `cargo +<name>` against a
+# toolchain the job never installed fails with a rustup error that reads nothing like "these two
+# lines disagree", so the install here and the `cargo +$RUST_NIGHTLY` in the job read the same
+# variable. A composite action sees the calling job's `env:`.
+
+inputs:
+  sdl:
+    description: >
+      "true" to apt-install libsdl2-dev, libsdl2-ttf-dev and libgl1-mesa-dev. Only a job that
+      LINKS a test binary needs them: build.rs links SDL2/SDL2_ttf/GL for every host test binary
+      (the default `cargo test --lib` as well as the `hostsim` one), whereas clippy and
+      `cargo check` never link, and the apt step has taken 132-1174 s on a noisy runner.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install the desktop SDL/GL libraries the unit suites LINK against
+      if: inputs.sdl == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev
+
+    - name: Install nightly Rust
+      # Both components are load-bearing for ci.yml's jobs as a set and neither is in rustup's
+      # `minimal` profile:
+      #   clippy   -> `make lint`, the shadowed-branch gate
+      #   rust-src -> `-Z build-std`, which the ARM build cannot work without
+      # They are installed in every Rust job, as the single job always did, so a host job's
+      # toolchain is byte-for-byte the one `make check` ran against.
+      shell: bash
+      run: |
+        rustup toolchain install "$RUST_NIGHTLY" --profile minimal \
+          --component clippy --component rust-src
+        rustup run "$RUST_NIGHTLY" rustc --version
+
+    - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      # The cache key already carries the calling job's id, so the three Rust jobs each keep their
+      # own `target/` instead of racing to save one.
+      with:
+        workspaces: rust-modules
