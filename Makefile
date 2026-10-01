@@ -448,6 +448,21 @@ CARGO_INCREMENTAL ?= 0
 export CARGO_INCREMENTAL
 endif
 
+# A new lane's first build recompiles every registry crate and the build-std sysroot, which are
+# byte-for-byte what the last lane built (cargo's hash for them does not depend on the checkout's
+# path) and are 40% of a lane's target bytes. `tools/cargo-seed.py` fills an ABSENT target dir with
+# an APFS clone of those artifacts (the app crate is stripped from it: cargo judges a path package
+# by mtime alone, so a cloned app artifact could be linked silently) and refreshes the seed under
+# ~/.cache/plxnative/cargo-seed/ after a build finishes. A clone costs no disk until a file is
+# rewritten, and nothing else about the build changes: each checkout still builds into its own
+# target dirs, which is what keeps `make` outputs per-checkout. Linked worktrees only (the main
+# checkout is not a lane and keeps what it has); `true` swallows the call elsewhere, and
+# PLX_CARGO_SEED=off turns it off here. It is never fatal: the script exits 0 and a build never
+# waits on it. See the script's docstring for the safety argument. Not hooked into
+# `pkg/plxnative-storage`, on purpose: that rule sets the linker to an absolute path in the lane,
+# cargo hashes it into every unit, so a seeded helper tree recompiled in full (measured).
+CARGO_SEED = $(if $(filter yes,$(PLX_LINKED_WORKTREE)),python3 tools/cargo-seed.py,true)
+
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
@@ -756,6 +771,8 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # all, and this target is an ordinary timestamp comparison.
 RUST_INPUTS := $(shell find rust-modules/src rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
+	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
+	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
 	mkdir -p rust-modules/$(RUST_TDIR)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
@@ -768,6 +785,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	@# `make` fail): if cargo did not write the archive make links, the next step would relink an
 	@# OLD one with no comment.
 	python3 ci/check-staticlib-artifact.py rust-modules/$(RUST_TDIR)/.lib-artifacts.json $(RUST_LIB)
+	$(CARGO_SEED) harvest $(RUST_TDIR) rust-modules/$(RUST_TDIR)
 
 # The helper is an independent executable: it has its own auxv implementation and must never
 # link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
@@ -1264,6 +1282,9 @@ check-unlocked:
 	@python3 tools/check-parallel.py \
 	  cargo='$(MAKE) --no-print-directory check-cargo' \
 	  python='$(MAKE) --no-print-directory check-python'
+	@# Last, so only a fully green run (both branches) refreshes the seed from this lane's host
+	@# `target`.
+	$(CARGO_SEED) harvest target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 
 check-cargo: lint
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
@@ -1457,6 +1478,9 @@ check-python: check-localization
 	@# running it.
 	python3 ci/test_check_lock.py
 	python3 tools/test_check_parallel.py
+	@# The cargo seed's own suite (restore only into an absent dir, the app crate never in the seed,
+	@# key refresh, off switch, clone failure), against a fake root and a private cache.
+	python3 ci/test_cargo_seed.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -1475,6 +1499,10 @@ check-python: check-localization
 # is full of. The escape hatch is this repo's own habit: clippy suppresses it when each arm carries
 # its own comment. Comment the arms, do not reach for an `#[allow]`.
 lint:
+	@# The first cargo call of `make check`, so the host `target` is seeded here (CARGO_TARGET_DIR,
+	@# when a lane exports one, is the dir cargo really uses; a relative one is relative to
+	@# rust-modules).
+	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) clippy --workspace --all-targets -- \
 	  -A clippy::all \
 	  -D clippy::ifs_same_cond -D clippy::same_functions_in_if_condition -D clippy::if_same_then_else

@@ -155,7 +155,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
   `incremental = false`, which every cargo reads and which stops above the main checkout. Since
   2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
-  for third-party packages in lanes (main keeps full DWARF). None of this reclaim has to be run by
+  for third-party packages in lanes (main keeps full DWARF). A lane's target dirs are also no longer
+  all built from scratch: in a linked worktree the Makefile seeds an ABSENT target dir with an APFS
+  clone of the third-party output (registry crates and the build-std sysroot, about 40% of a lane's
+  target bytes) from `~/.cache/plxnative/cargo-seed/`, via `tools/cargo-seed.py`; the app crate is
+  stripped from the seed, builds stay per-checkout, and `PLX_CARGO_SEED=off` disables it. Because
+  a clone shares blocks, **`du` (and so `make disk`'s per-checkout numbers) counts them in full:
+  `df` is what is really free.** None of this reclaim has to be run by
   hand anymore: `tools/build-gc.sh --auto` runs the same modes on its own, staged by free-space
   pressure, from a `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs —
   `make disk` remains the report to read before deciding whether to intervene yourself.)

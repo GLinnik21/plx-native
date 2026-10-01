@@ -183,6 +183,21 @@ What keeps that in check:
   main checkout, so a lane pays object code and nothing
   else and the main checkout keeps its cache. `CARGO_INCREMENTAL=1` in the environment still
   overrides both — the right call only for a lane genuinely doing long iterative work.
+- **A fresh lane's first build is seeded with an APFS clone of the third-party output**
+  (`tools/cargo-seed.py`, called from the Makefile in linked worktrees only). The registry crates and
+  the build-std sysroot are the same bytes in every lane — cargo's hash for them does not depend on
+  the checkout's path — and are about 40% of a lane's target bytes (0.9 GB for a `make check`-only
+  lane, 1.3 GB with the ARM release tree as well; the storage helper's tree and `make sim`'s are not
+  seeded: the helper's absolute linker path is part of every unit's fingerprint, and the simulator
+  has not been proven). The seed lives under `$PLX_BUILD_CACHE/cargo-seed/`, is filled at the end of
+  a green `make check` or an ARM build, and is cloned into a target dir only when that dir does not exist yet. The app
+  crate is never in it (cargo judges a path package by mtime alone, so a cloned app artifact could
+  be linked silently), and it clones or does nothing: on another volume, off APFS, with
+  `PLX_CARGO_SEED=off`, or when the toolchain, `Cargo.lock` or a cargo config differ from the
+  seed's, the lane builds cold exactly as before. Builds are still per-checkout. **`du` counts a
+  clone's blocks in full**, in the seed and in every lane cloned from it, so `make disk` overstates
+  what is on the volume once lanes are seeded: `df` is the truth. `tools/build-gc.sh --cache` prunes
+  a seed nothing has used for 30 days.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 
@@ -209,8 +224,9 @@ export SIM_TDIR=$HOME/plx-fleet/<lane>/target-sim           # `make sim` DOES pa
 Give each lane its **own** path: one shared dir makes concurrent cargo runs block on the target
 lock and re-fingerprint each other's sources.
 
-**That does not save disk** — the bytes move, they do not vanish. What it buys is that
-**`git worktree remove` stays meaningful.**
+**Moving the dir does not save disk by itself** — the bytes move, they do not vanish (the seed above
+is what saves some, and it follows an exported `CARGO_TARGET_DIR` for `make check` when it is on the
+same volume). What moving buys is that **`git worktree remove` stays meaningful.**
 
 **And moving them is how they become permanent, which is the failure this advice caused.** A tree
 under `$HOME/plx-fleet/<lane>` outlives its worktree by construction: remove the lane and the
