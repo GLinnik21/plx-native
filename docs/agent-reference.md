@@ -104,7 +104,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   seven concurrent ones stretched one run to 60 min). A second caller waits and gets the holder's
   pid/worktree/start time printed every 60 s rather than silently sharing the CPU/RAM; `PLX_CHECK_LOCK=off`
   bypasses the lock, and `--timeout` (passed to the wrapper directly, not through `make`) exits 75
-  instead of waiting forever. It runs `cargo test --lib`
+  instead of waiting forever. `check-unlocked` runs two independent branches at once
+  (`tools/check-parallel.py`, never more than two): `check-cargo` (clippy, both unit-test passes,
+  the lab-diagnostics type-check and the ci/ self-tests that drive cargo) and `check-python` (every
+  Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and modifies no
+  source or build input; only Python bytecode caches may appear). Each branch's output is held and printed whole in that order, so the log
+  never interleaves; a failing branch is printed first and stops the other. `make check-cargo` and
+  `make check-python` run one half alone. The cargo half runs `cargo test --lib`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the

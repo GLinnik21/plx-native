@@ -1242,9 +1242,30 @@ check-localization:
 	python3 ci/test_check_localization.py
 	python3 ci/check-localization.py
 
-check-unlocked: lint check-localization
-	python3 ci/test_ass_composite.py
-	python3 ci/test_ass_regions.py
+# `check-unlocked` is TWO independent branches run at once (tools/check-parallel.py), not one
+# serial chain. `check-cargo` is everything that compiles or runs Rust through cargo: clippy, the
+# two unit-test passes, the lab-diagnostics type-check, and the ci/ self-tests that drive cargo
+# themselves. `check-python` is everything else: the Python and shell gates, the C unit tests
+# and tests/test_harness.py. The second never invokes cargo and never writes under `rust-modules/`
+# (the harness's DepGates copy the tree they plant violations into), so it cannot hand cargo a
+# changed input or contend for its `target/` lock (checked 2026-10-01 by running the branch alone
+# and listing every file under the checkout, `target/` and the worktree's own metadata that
+# changed: no source or build input; at most Python bytecode caches under ci/, tools/ and tests/,
+# which build.rs does not watch). Before the split the compiler sat idle for the ~5 minutes these took, and they
+# waited behind the compile-and-test branch for just as long.
+#
+# Each branch's output is held until it ends and printed whole, in this order (cargo, python), so
+# the log reads the same as the old serial one and two lines never interleave; a failing branch is
+# printed first and stops the other. At most two run at once: this Mac's swap is routinely full.
+# Run one half alone with `make check-cargo` / `make check-python` (each is the exact set of
+# lines that branch runs here, so a half that fails is reproduced without the other).
+.PHONY: check-cargo check-python
+check-unlocked:
+	@python3 tools/check-parallel.py \
+	  cargo='$(MAKE) --no-print-directory check-cargo' \
+	  python='$(MAKE) --no-print-directory check-python'
+
+check-cargo: lint
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
 	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
 	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
@@ -1295,6 +1316,26 @@ check-unlocked: lint check-localization
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) check --lib --tests --features lab-diagnostics
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
+	@# The helper is its own package, so building it compiles no copy of the app library; this reads
+	@# cargo's artifact records for both invocations the repo uses for it and fails if one does.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_package_isolated.py
+	@# The crate builds as an rlib only (the ARM archive is `cargo rustc --crate-type staticlib`, see
+	@# $(RUST_LIB)); this builds the library directly (`cargo build --lib`), reads cargo's own
+	@# artifact records, and fails if a host build ever writes a ~200 MB archive again.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
+	@# Right after it on purpose, with the environment inherited unchanged: the same `cargo build
+	@# --lib` unit (same CARGO_INCREMENTAL, hence the same metadata hash), so its first build is a
+	@# reuse of that one rather than a cold compile. Builds the app crate twice and fails if the second run recompiles it
+	@# or re-runs its build script (a `rerun-if-changed` on a MISSING path made every build dirty:
+	@# 30-40 s each, 8 times per `make check`), and keeps the `RELEASE_LINE` marker's appear / edit /
+	@# disappear rebuilds honest in a scratch workspace that uses the real build.rs.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_build_not_always_dirty.py
+
+check-python: check-localization
+	python3 ci/test_ass_composite.py
+	python3 ci/test_ass_regions.py
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
 	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is
@@ -1403,22 +1444,6 @@ check-unlocked: lint check-localization
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
-	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
-	@# The helper is its own package, so building it compiles no copy of the app library; this reads
-	@# cargo's artifact records for both invocations the repo uses for it and fails if one does.
-	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_package_isolated.py
-	@# The crate builds as an rlib only (the ARM archive is `cargo rustc --crate-type staticlib`, see
-	@# $(RUST_LIB)); this builds the library directly (`cargo build --lib`), reads cargo's own
-	@# artifact records, and fails if a host build ever writes a ~200 MB archive again.
-	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
-	@# Right after it on purpose, with the environment inherited unchanged: the same `cargo build
-	@# --lib` unit (same CARGO_INCREMENTAL, hence the same metadata hash), so its first build is a
-	@# reuse of that one rather than a cold compile. Builds the app crate twice and fails if the second run recompiles it
-	@# or re-runs its build script (a `rerun-if-changed` on a MISSING path made every build dirty:
-	@# 30-40 s each, 8 times per `make check`), and keeps the `RELEASE_LINE` marker's appear / edit /
-	@# disappear rebuilds honest in a scratch workspace that uses the real build.rs.
-	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_build_not_always_dirty.py
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
@@ -1431,6 +1456,7 @@ check-unlocked: lint check-localization
 	@# ~/.cache/plxnative/check.lock — so it cannot contend with the `check` that is
 	@# running it.
 	python3 ci/test_check_lock.py
+	python3 tools/test_check_parallel.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
