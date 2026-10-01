@@ -500,6 +500,13 @@ fn ticon_box_dx(icon: crate::ui::icons::Icon) -> f32 {
 /// reserves both runs before measuring the label.
 const VALUE_BOLD: std::os::raw::c_int = 1;
 
+/// The next layout stamp: unique across tables, so a cache keyed on one cannot be fooled by two
+/// tables that happen to have mutated the same number of times.
+fn next_rev() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct TableView {
     pub sections: Vec<Section>,
     pub sel: i32, // global index across all sections' rows (headers are not selectable)
@@ -537,6 +544,13 @@ pub struct TableView {
     scroll: Spring,
     /// A drill-in page's title band, see [`TableView::set_title`].
     title: Option<String>,
+    /// Re-stamped by every mutation that can change the table's measured size (new sections, a new
+    /// title, a row edited in place), so a panel that caches its layout target can tell whether
+    /// the table it measured is still the table it holds ([`Self::layout_rev`]). The stamp comes
+    /// from one process-wide counter ([`next_rev`]), not a per-table one: a panel swaps whole
+    /// tables in and out ([`Self::blank_like`]), and two tables each on their second mutation must
+    /// not look like the same layout.
+    rev: u32,
 }
 /// [`TableView::walk`]'s event index for the hairline that divides a section from the one above
 /// it (`-1` is a header, `>= 0` a row). Emitted for EVERY section after the first, headed or not.
@@ -552,7 +566,7 @@ impl TableView {
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _ } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -587,7 +601,35 @@ impl TableView {
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
             title: None,
+            rev: 0,
         }
+    }
+
+    /// This table drawn WITHOUT the focus pill (and without the focused-row ink flip): the page
+    /// that is leaving a transition, where only the arriving page owns the selection.
+    pub(crate) fn unfocused(mut self) -> Self {
+        self.list_focused = false;
+        self
+    }
+
+    /// **An empty table dressed like this one**: the same size class, header ink, row height and
+    /// panel-width floor, with no rows, no title and every spring at rest. A panel that moves its
+    /// outgoing page aside for a transition (`ui::panel_motion`) swaps this in for the page it
+    /// builds next, so the next page needs no re-configuration and the old one is kept whole, to
+    /// draw once more, without a `Clone` of every row.
+    pub(crate) fn blank_like(&self) -> Self {
+        let mut t = Self::new();
+        t.list_focused = self.list_focused;
+        t.compact = self.compact;
+        t.tall = self.tall;
+        t.header_ink = self.header_ink;
+        t.min_panel_w = self.min_panel_w;
+        t
+    }
+
+    /// A counter that moves whenever the table's measured size could have: see the field.
+    pub(crate) fn layout_rev(&self) -> u32 {
+        self.rev
     }
 
     /// The row under the pointer in a `frame`-anchored draw (screen coords), or None — popover
@@ -678,6 +720,7 @@ impl TableView {
     /// the sections must not leave the pill a band off until the spring catches up. The scroll is
     /// left alone (a [`Self::restore_sections`] puts its own back after).
     pub fn set_title(&mut self, title: Option<String>) {
+        self.rev = next_rev();
         let moved = self.title.is_some() != title.is_some();
         self.title = title;
         if moved && self.n_rows() > 0 {
@@ -734,6 +777,7 @@ impl TableView {
     /// replace the contents and re-anchor selection. `slide=false` snaps the pill to the new
     /// selection (use when the whole list changed, e.g. Audio↔Subtitles); `true` lets it glide.
     pub fn set_sections(&mut self, sections: Vec<Section>, sel: i32, slide: bool) {
+        self.rev = next_rev();
         self.sections = sections;
         let n = self.n_rows();
         self.sel = if n == 0 { 0 } else { self.settle_sel(sel) };
@@ -1683,6 +1727,7 @@ impl TableView {
     /// Subtitles panel's Color value), so a press re-writes that row alone instead of rebuilding
     /// every section. `None` past the end. The caller must not change the row's height class.
     pub(crate) fn row_mut(&mut self, gi: i32) -> Option<&mut Row> {
+        self.rev = next_rev();
         usize::try_from(gi).ok().and_then(|gi| row_mut_in(&mut self.sections, gi))
     }
 

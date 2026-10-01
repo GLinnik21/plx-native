@@ -7,8 +7,9 @@ model reviewer over several rounds; this file keeps the decisions and their reas
 **Status:** PR 1 (table groundwork), the track menu on keyed forms (Settings form migration 5/5,
 #339: `ui::track_menu::TrackRow`) and PR 2 (the page stack in the Subtitles tab on that form: Style,
 the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay
-state) and PR 3 (Other languages, the language pages, the image-subtitle badge) are what this
-repository has; PRs 4-5 (animation, More -> Quality) are open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
+state) and PR 3 (Other languages, the language pages, the image-subtitle badge) and PR 4 (the animated
+panel resize and page slide for Tracks and More, `ui::panel_motion`, plus the device frame-time
+scene) are what this repository has; PR 5 (More -> Quality) is open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
 purpose.
 
 ## Behaviour
@@ -109,6 +110,25 @@ re-recorded.
   animates only the panel rect and the two content layers' x offset and alpha under the clip stack.
   One panel background, no backdrop capture or transition textures. Key presses act on the logical
   state immediately (a push during a push retargets; push then pop mid-slide reverses).
+  Built as `ui::panel_motion::PanelMotion`, owned by `TrackMenuState` and `MoreMenuState`: the
+  natural layout is cached against `TableView::layout_rev` (re-stamped by every content change) and
+  only recomputed then; springs animate the panel's top and left edges (bottom and right stay
+  anchored, so the card grows and shrinks away from the HUD); a push or pop hands the OUTGOING page's
+  table to `begin_slide` (stored without its focus pill: only the arriving page draws one), and
+  `draw` paints one background, opens `ClipScope::open_in` at the animated rect pulled in by
+  `CLIP_INSET` (the scissor is rectangular and cannot follow the card's rounded corners), and draws
+  the leaving page(s) and the live page on a STAGGERED fade so they never read on top of each other:
+  a leaving page fades out in 0.14 s while it travels 22% of the card's width toward the exit side
+  (push left, pop right), and the arriving page starts from transparent only once every leaving page
+  is at or below `GATE` (0.1) and fades in over 0.22 s from the entry side. A layer below 1% alpha is
+  not drawn. Every layer owns its alpha and offset, and a swap hands them to the layer's new role:
+  an opposite-direction key (push then pop) revives the page that was arriving from its own alpha,
+  and a push during a push turns the arriving page into a leaving one from where it is, so no key
+  steps the picture. Audio <-> Subtitles resizes the
+  card only; More resizes when its row set changes. Only the live page registers focus stops, at
+  the animated position (`place` agrees with `Part::draw`), and `Screen::pointer_held` makes the
+  dispatcher record but never resolve pointer input for the slide plus the rect lag. A settled
+  panel reports no motion to `ui::idle` and asks for no frames.
 
 ## Rebuild signature
 
@@ -124,7 +144,7 @@ On the root the change refreshes in place. On a sub-page the page is refreshed i
 2. Keyed track forms (Audio + Subtitles), the page stack, Style pickers, persistence, locks, replay
    state, pointer and BACK behaviour.
 3. Other languages, language pages, the badge change, the invalidation fingerprint.
-4. Resize/slide animation for all table popovers (Tracks, More).
+4. Resize/slide animation for all table popovers (Tracks, More); the `track-menu-submenu-osc` scene.
 5. Later: More -> Quality drill-in.
 
 ## Decisions
@@ -137,3 +157,34 @@ On the root the change refreshes in place. On a sub-page the page is refreshed i
   frame-time capture during repeated push/pop with cues uploading, plus a motion capture the owner
   watches; an idle ceiling only on a plane-unbound fixture, because a bound video plane forces
   presents.
+
+## Device frame-time check
+
+`track-menu-submenu-osc` (`tests/manifest.json`; trigger `plxnative-submenuosc=<period_ms>`,
+`dev::scenarios::submenuosc_arm`) loops real keys through the Subtitles menu: Style, the Size
+picker, back, back, Other languages and back (when the item has more than one subtitle language),
+the Audio tab and back. It needs no Plex account. Its `worst_ceiling_ms` of 25 is a budget, not a
+measurement; nobody has run it on the TV yet, so the first run records the observed worst there.
+
+Panel OFF does not stop presents on the player route: while the hardware video plane is bound
+`ui::idle`'s `VIDEO_PLANE` gate forces a present every frame, so the frame times are the real
+ones. (The general advice against `screen off` for fps scenes is about screens that DO rely on the
+gate.) Sequence, each device command under the TV lock, the lock released between the device work
+and any building or reading:
+
+1. `tools/tv-lock.sh acquire --why 'submenu osc frame-time'`; wake the set.
+2. On the host, mock PMS reachable from the TV: `python3 tests/mock_pms.py --host 0.0.0.0 --port
+   <port> --media <mockverify dir>` (`tests/fixtures/make_fixtures.py --only mockverify`; an
+   embedded subrip track and a sidecar), or `--extra-media <file.mkv>` with two subtitle languages
+   to include the Other languages leg. Note the printed `rk=`.
+3. `tools/tv-session.sh up --guest --mock --screen player=<rk> --arm menu=1 --arm submenuosc=900
+   --arm framedrop=25` (the triggers are read once at boot, so they ride the `up`).
+4. `tools/tv-session.sh screen off`, then `tools/tv-session.sh sound off`.
+5. Let it run ~30 s after the menu is up, then `tools/tv-session.sh log` and read `loop=`,
+   `worstframe=` and `FRAMEDROP` lines for `route=player overlay=menu` (the harness's grade is the
+   2nd-highest post-warmup `worstframe=` against 25 ms). `submenuosc:` lines name any step the
+   script skipped.
+6. `tools/tv-session.sh down`, `sound on`, `screen on`, `tools/tv-lock.sh release`.
+
+The same scene through `tests/run.py --filter track-menu-submenu-osc` needs the `manifest.local.json`
+mapping for `movie_h264_ac3_1080p` and an account; the sequence above does not.

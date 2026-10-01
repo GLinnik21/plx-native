@@ -752,7 +752,21 @@ impl Machine<FixtureHost> for FixtureModal {
     }
 }
 
+thread_local! {
+    /// What [`FixtureModal::pointer_held`] answers — a test raises it to model a surface whose
+    /// content is in motion (`ui::panel_motion`). Thread-local like every other piece of test state.
+    static MODAL_HOLDS_POINTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Raise or lower the fixture modal's pointer hold ([`Screen::pointer_held`]).
+pub fn hold_modal_pointer(on: bool) {
+    MODAL_HOLDS_POINTER.with(|h| h.set(on));
+}
+
 impl Screen<FixtureHost> for FixtureModal {
+    fn pointer_held(&self) -> bool {
+        MODAL_HOLDS_POINTER.with(|h| h.get())
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
     fn name(&self) -> &'static str {

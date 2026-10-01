@@ -500,6 +500,14 @@ where
             .map_or(false, |i| i.screen.focus_source() == FocusSource::Engine)
     }
 
+    /// Does the owner's screen hold the pointer ([`Screen::pointer_held`])?
+    fn pointer_held(&self) -> bool {
+        self.owner_entry()
+            .and_then(|e| self.nav.entry(e))
+            .and_then(|e| e.inst.as_ref())
+            .map_or(false, |i| i.screen.pointer_held())
+    }
+
     fn hit_page(&self) -> bool {
         if self.focus_override == Some(FocusSource::Legacy) {
             return false;
@@ -776,6 +784,12 @@ where
                 InputKind::Drag { x, y, .. } => Some((PointerKind::Drag, x, y)),
                 _ => None,
             };
+            // a screen that holds the pointer (its content is in motion) takes none of it: the
+            // event is recorded, never resolved and never delivered, so it cannot be a miss
+            if pointer.is_some() && self.pointer_held() {
+                tap.input(f, &ev);
+                continue;
+            }
             if let Some((kind, x, y)) = pointer {
                 {
                     if self.hit_page() {

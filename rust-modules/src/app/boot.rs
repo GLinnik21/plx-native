@@ -1301,6 +1301,7 @@ pub(crate) unsafe fn construct(
             menupick_tried,
             menupick_target,
             subtiming: Default::default(),
+            submenu_osc: Default::default(),
             pause_tried,
             pause_script,
             pause_resume_at,

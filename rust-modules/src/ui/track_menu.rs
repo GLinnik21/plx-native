@@ -87,7 +87,8 @@ use crate::ui::screen::{
     Hover, Part, Placed, Seat, Step, Stop,
 };
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::table::{Badge, Row, Section};
+use crate::ui::panel_motion::PanelMotion;
+use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::table_screen::BAND_BASE;
 use crate::ui::theme;
 use crate::ui::{Painter, Rect};
@@ -412,6 +413,9 @@ pub(crate) struct TrackMenuState {
     /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
     /// rows are back. `None` once consumed, or when nothing needs remembering.
     sticky_audio_target: Option<TrackRow>,
+    /// The card's resize and the page slide ([`crate::ui::panel_motion`]): the layout target is
+    /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
+    motion: PanelMotion,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -508,6 +512,7 @@ impl TrackMenuState {
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
+            motion: PanelMotion::new(),
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -534,6 +539,12 @@ impl TrackMenuState {
             c.u32(saved.page.code()).u32(saved.return_id.key().0);
         }
         c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
+    }
+
+    /// What the `submenuosc` trigger needs to choose its next key: the tab (0 Audio, 1 Subtitles),
+    /// how many pages are pushed above the root, and whether the root offers Other languages.
+    pub(crate) fn osc_probe(&self) -> (c_int, usize, bool) {
+        (self.tab, self.pages.len(), self.form.index_of(&TrackRow::OpenOther).is_some())
     }
 
     /// The pages pushed above the Subtitles root, outermost first, for tests and probes.
@@ -579,9 +590,8 @@ impl TrackMenuState {
         self.form.index_of(&id).map(|_| id.key().0)
     }
 
-    /// Move focus onto the row `id` names (a test's way of pressing DOWN to it); `false` when this
-    /// tab has no such row.
-    #[cfg(test)]
+    /// Move focus onto the row `id` names (a test's, or the `submenuosc` trigger's, way of
+    /// pressing DOWN to it); `false` when this tab has no such row.
     pub(crate) fn focus_id(&mut self, id: TrackRow) -> bool {
         self.focus_key(id.key().0);
         self.form.selected_id() == Some(&id)
@@ -719,6 +729,7 @@ impl TrackMenuState {
             let form = self.layout(ps, meta);
             self.form.restore(form, Some(&first.return_id), first.scroll);
             self.form.table.set_title(None);
+            self.motion.cancel_slide();
         } else {
             // The page still holds: remember what the root is now built from (the pop back
             // rebuilds it) and refresh this page in place, focus kept by id.
@@ -1160,16 +1171,28 @@ impl TrackMenuState {
     fn push(&mut self, page: TrackPage) {
         let Some(return_id) = self.form.selected_id().copied() else { return };
         self.pages.push(Saved { page, return_id, scroll: self.form.table.scroll_pos() });
+        let leaving = self.leave_page();
         let form = self.page_form(page);
         self.form.open(form, self.page_initial(page).as_ref());
         // after the sections: the band moves every row, so the pill is re-jumped onto the focused one
         self.form.table.set_title(Some(self.page_title(page)));
+        self.motion.begin_slide(leaving, 1.0);
+    }
+
+    /// Take the page that is showing OUT of the form, whole, leaving a blank table of the same
+    /// kind for the next page to be built into: the page slide draws the old one once more, so it
+    /// is moved, never cloned.
+    fn leave_page(&mut self) -> TableView {
+        let blank = self.form.table.blank_like();
+        std::mem::replace(&mut self.form.table, blank)
     }
 
     /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
     /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
     pub(crate) fn pop(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
         let Some(saved) = self.pages.pop() else { return false };
+        let leaving = self.leave_page();
+        self.motion.begin_slide(leaving, -1.0);
         match self.pages.last().map(|s| s.page) {
             None => {
                 let form = self.layout(ps, meta);
@@ -1410,9 +1433,11 @@ impl TrackMenuState {
                 self.form.set(form, Some(&keep));
             }
         }
-        // an open or a tab switch always lands on a tab's root
+        // an open or a tab switch always lands on a tab's root; the card resizes to it, the
+        // content just stops sliding
         self.pages.clear();
         self.form.table.set_title(None);
+        self.motion.cancel_slide();
     }
 
     /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
@@ -1471,22 +1496,27 @@ impl TrackMenuState {
         }
     }
 
-    /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
+    /// The panel's NATURAL geometry — the layout of the page that is showing, shared by `update`,
+    /// `draw` and the focus queries so scrolling math matches. Cached against the table's
+    /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
+    /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
-        // Each tab hugs its own rows (shared menu rule); the right edge is fixed, so switching
-        // tabs moves only the left edge.
-        let pw = self.form.table.menu_panel_width(measure);
-        // the transport control row's own right edge — one number for the discs and both panels
-        let px = crate::ui::player_hud::CTRL_RIGHT - pw;
-        // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
-        // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
-        // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
-        // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
-        // the bottom edge steady.
-        let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
-        let ph = self.panel_h(measure, pw);
-        let py = bottom - ph; // ≥ top_min by construction
-        Rect::new(px, py, pw, ph)
+        self.motion.natural(self.form.table.layout_rev(), || {
+            // Each tab hugs its own rows (shared menu rule); the right edge is fixed, so switching
+            // tabs moves only the left edge.
+            let pw = self.form.table.menu_panel_width(measure);
+            // the transport control row's own right edge — one number for the discs and both panels
+            let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+            // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
+            // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
+            // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
+            // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
+            // the bottom edge steady.
+            let bottom = SCR_H - 316.0; // 764 — ~28px above the buttons
+            let ph = self.panel_h(measure, pw);
+            let py = bottom - ph; // ≥ top_min by construction
+            Rect::new(px, py, pw, ph)
+        })
     }
 
     /// The panel's height at width `pw`. A note row wraps, so its line count depends on the
@@ -1497,6 +1527,19 @@ impl TrackMenuState {
         self.form.table.fit_notes(pw, measure);
         let (bottom, top_min) = (SCR_H - 316.0, 60.0);
         self.form.table.measured_height().clamp(160.0, bottom - top_min)
+    }
+
+    /// The card as it is drawn this frame: its top and left edges on their springs toward
+    /// [`Self::panel_rect`], the bottom and right on the anchor.
+    fn shown_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        self.motion.shown(self.panel_rect(measure))
+    }
+
+    /// **Is the panel mid-transition** — resizing to a new layout or sliding a page? The player
+    /// overlay holds the pointer while this is true (`Screen::pointer_held`): hover and clicks are
+    /// swallowed rather than resolved against pages in motion.
+    pub(crate) fn transitioning(&self) -> bool {
+        self.motion.transitioning()
     }
 
     /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
@@ -1527,8 +1570,9 @@ impl TrackMenuState {
             self.poll_subtitle_state(ps, meta);
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_h(measure, self.form.table.menu_panel_width(measure));
-        self.form.table.update(dt, h);
+        let natural = self.panel_rect(measure);
+        self.form.table.update(dt, natural.h);
+        self.motion.step(dt, natural);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -1538,13 +1582,10 @@ impl TrackMenuState {
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, Popover::RISE * (1.0 - appear));
-        let r = self.panel_rect(measure);
-
         // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
-        // dark card approximates it); only a hint of video shows through
-        p.rect(r, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-
-        self.form.table.draw(p, r, measure);
+        // dark card approximates it); only a hint of video shows through. ONE background at the
+        // animated rect, the page(s) under its clip (`PanelMotion::draw`).
+        self.motion.draw(p, self.panel_rect(measure), 28.0, &self.form.table, measure);
     }
 }
 
@@ -1606,20 +1647,25 @@ where
         }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        // Where the stop is DRAWN: the page's slide offset on x and the animated card as the clip,
+        // the same numbers `Part::draw` registers (replay compares the two). `rest_rect` is the
+        // layout, where the row settles.
+        let natural = self.state.panel_rect(cx.measure);
+        let clip = self.state.shown_rect(cx.measure);
+        let dx = self.state.motion.live_dx();
+        let placed = |rest: Rect, index: Option<u32>| Placed {
+            rect: Rect::new(rest.x + dx, rest.y, rest.w, rest.h),
+            rest_rect: rest,
+            clip,
+            index,
+        };
         // the title band's pointer-only key: not a row, but replay and hit validation must be able
         // to place it (`docs/player-submenus.md`)
         if key.index() == Some(TITLE_KEY) {
-            let r = self.state.form.table.title_rect(self.state.panel_rect(cx.measure))?;
-            return Some(Placed { rect: r, rest_rect: r, clip: self.state.panel_rect(cx.measure), index: None });
+            return Some(placed(self.state.form.table.title_rect(natural)?, None));
         }
         let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
-        let r = self.state.form.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
-        Some(Placed {
-            rect: r,
-            rest_rect: r,
-            clip: self.state.panel_rect(cx.measure),
-            index: Some(i),
-        })
+        Some(placed(self.state.form.table.row_frame(natural, i as i32)?, Some(i)))
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         // Trust the panel's OWN cursor (`table.sel`), not `want`. The cursor is where
@@ -1653,6 +1699,11 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
         let r = self.state.panel_rect(f.measure);
+        // only the ACTIVE page registers stops, where it is drawn this frame: the slide's x offset
+        // and the animated card as the clip (`PanelMotion`); the pointer is held while either moves
+        let dx = self.state.motion.live_dx();
+        let clip = self.state.shown_rect(f.measure);
+        let moved = |rect: Rect| Rect::new(rect.x + dx, rect.y, rect.w, rect.h);
         for i in 0..self.state.form.table.n_rows() {
             let Some(key) = self.state.form.key_at(i as usize) else {
                 continue;
@@ -1665,9 +1716,9 @@ where
                             entry: self.entry,
                             elem: H::Elem::of_index(key.0),
                         },
-                        rect: row,
+                        rect: moved(row),
                         rest_rect: row,
-                        clip: r,
+                        clip,
                         hover: Hover::Focus,
                         activate: Activate::Direct,
                     },
@@ -1680,9 +1731,9 @@ where
                 p,
                 Stop {
                     key: FocusKey { entry: self.entry, elem: H::Elem::of_index(TITLE_KEY) },
-                    rect: band,
+                    rect: moved(band),
                     rest_rect: band,
-                    clip: r,
+                    clip,
                     hover: Hover::Ignore,
                     activate: Activate::Direct,
                 },
@@ -3477,6 +3528,7 @@ mod focus_tests {
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
+            motion: PanelMotion::new(),
         }
     }
 
@@ -4678,5 +4730,289 @@ mod language_page_tests {
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+/// **The panel's resize and page slide** (`ui::panel_motion`, `docs/player-submenus.md`,
+/// "Animation"): running vs resting, an interrupted transition, the layout the card lands on, and
+/// the Audio/Subtitles tab switch.
+#[cfg(test)]
+mod motion_tests {
+    use super::tests::{store_with, stream};
+    use super::*;
+    use crate::fontcov::advances::ShippedMeasure;
+    use crate::route::reset_player_control_for_test;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    fn teardown(ps: &crate::route::PlaybackSession) {
+        reset_player_control_for_test(ps);
+        crate::plex::reset_servers_for_test();
+    }
+
+    fn subs() -> Vec<metadata::Stream> {
+        vec![
+            stream(10, 0, "English", "eng", ""),
+            stream(11, 1, "French", "fra", ""),
+            stream(12, 2, "French", "fra", "SDH"),
+            stream(14, 4, "German", "deu", ""),
+        ]
+    }
+
+    fn open() -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+        let _ = crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = store_with(subs());
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        // the first update places the card AT its layout: the open is the appear animation's
+        frame(&mut menu, &ps, &store);
+        assert!(!menu.transitioning(), "a freshly opened panel is at rest");
+        (menu, ps, store)
+    }
+
+    /// One loop frame, as the dispatcher runs it: forget last frame's motion, then update. Returns
+    /// whether a spring moved (what keeps the present gate awake).
+    fn frame(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore) -> bool {
+        crate::ui::idle::frame_begin(DT);
+        menu.update(DT, &ShippedMeasure, ps, store.view());
+        crate::ui::idle::present_moving()
+    }
+
+    fn run(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore, n: usize) {
+        for _ in 0..n {
+            frame(menu, ps, store);
+        }
+    }
+
+    fn shown(menu: &TrackMenuState) -> Rect {
+        menu.shown_rect(&ShippedMeasure)
+    }
+
+    fn natural(menu: &TrackMenuState) -> Rect {
+        menu.panel_rect(&ShippedMeasure)
+    }
+
+    fn push_style(menu: &mut TrackMenuState, store: &crate::stores::metadata::MetadataStore) {
+        let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+    }
+
+    /// **A push animates, reports motion each frame it runs and stops asking for frames at rest.**
+    #[test]
+    fn a_push_is_animating_then_asks_for_no_more_frames_at_rest() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let root = natural(&menu);
+        push_style(&mut menu, &store);
+        assert!(menu.transitioning(), "the page slide is running the moment the page is pushed");
+        assert!(frame(&mut menu, &ps, &store), "a running transition keeps the present gate awake");
+        assert!(menu.motion.sliding());
+        assert_ne!(shown(&menu), natural(&menu), "the card is between the two layouts");
+        assert_ne!(natural(&menu), root, "the Style page has its own layout");
+
+        let mut frames_moving = 1;
+        while frame(&mut menu, &ps, &store) {
+            frames_moving += 1;
+            assert!(frames_moving < 240, "the transition never settles");
+        }
+        assert!((6..120).contains(&frames_moving), "a transition spans a handful of frames, not {frames_moving}");
+        assert!(!menu.transitioning());
+        assert!(!menu.motion.sliding());
+        assert_eq!(shown(&menu), natural(&menu), "the card lands EXACTLY on the layout");
+        // idle is truly idle: a settled panel steps without a single frame requested
+        for _ in 0..30 {
+            assert!(!frame(&mut menu, &ps, &store), "a settled panel must not ask for frames");
+        }
+        teardown(&ps);
+    }
+
+    /// **A push then a pop mid-slide reverses from where it is and settles on the root.** The
+    /// page that was arriving becomes the one returned to, carrying its own alpha, and the page
+    /// that was live leaves from its own: no layer's alpha steps at the swap.
+    #[test]
+    fn an_interrupted_push_then_pop_reverses_and_settles_at_the_root_rect() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let root = natural(&menu);
+        let root_shown = shown(&menu);
+        assert_eq!(root_shown, root);
+        push_style(&mut menu, &store);
+        run(&mut menu, &ps, &store, 11);
+        let mid = shown(&menu);
+        assert_ne!(mid, root, "mid-slide the card is not at the root layout");
+        let before = menu.motion.live_dx();
+        assert!(before > 0.0, "a push arrives from the right: {before}");
+        let (leaving_before, live_before) = menu.motion.alphas();
+        assert!(live_before > 0.0 && live_before < 1.0, "caught mid-fade: {live_before}");
+
+        assert!(menu.pop(&ps, store.view()));
+        assert_eq!(shown(&menu), mid, "the reversal continues from the drawn rect, no jump");
+        assert!(menu.motion.sliding(), "the slide reverses rather than ending");
+        let (leaving_after, live_after) = menu.motion.alphas();
+        assert_eq!(leaving_after, vec![live_before], "the page that was live leaves from its own alpha");
+        let revived = leaving_before.last().copied().unwrap_or(0.0);
+        assert_eq!(live_after, revived, "the page returned to continues from its own alpha");
+        let after = menu.motion.live_dx();
+        assert!(after <= 0.0, "a pop returns the root from the left, not the right: {after}");
+        assert!(menu.transitioning());
+
+        let mut n = 0;
+        while frame(&mut menu, &ps, &store) {
+            n += 1;
+            assert!(n < 240, "the reversed transition never settles");
+        }
+        assert_eq!(shown(&menu), root, "settles on the root layout");
+        assert!(!menu.transitioning());
+        assert!(menu.pages.is_empty());
+        assert_eq!(menu.selected_id(), Some(TrackRow::Style), "the opener is focused again");
+        teardown(&ps);
+    }
+
+    /// **The two pages never read on top of each other**: on every frame of a push, a pop and an
+    /// interrupted one, at most one layer is above the gate alpha (`panel_motion::GATE`), and the leaving page draws no
+    /// focus pill (the arriving page owns the only one).
+    #[test]
+    fn the_two_pages_are_never_both_above_the_gate_and_only_one_draws_a_pill() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let check = |menu: &TrackMenuState, what: &str| {
+            let (leaving, live) = menu.motion.alphas();
+            let loudest = leaving.iter().copied().fold(0.0_f32, f32::max);
+            assert!(loudest.min(live) <= crate::ui::panel_motion::GATE + 1e-4, "{what}: leaving {leaving:?} and live {live} overlap");
+            assert_eq!(menu.motion.leaving_pills(), 0, "{what}: a leaving page draws a focus pill");
+        };
+        push_style(&mut menu, &store);
+        let mut saw_leaving_only = false;
+        let mut saw_live_only = false;
+        for i in 0..90 {
+            frame(&mut menu, &ps, &store);
+            check(&menu, &format!("push frame {i}"));
+            let (leaving, live) = menu.motion.alphas();
+            saw_leaving_only |= !leaving.is_empty() && live == 0.0;
+            saw_live_only |= leaving.is_empty() && live > 0.0 && live < 1.0;
+        }
+        assert!(saw_leaving_only, "the outgoing page is alone on screen at first");
+        assert!(saw_live_only, "and the incoming page alone at the end of its fade");
+        assert!(menu.pop(&ps, store.view()));
+        for i in 0..90 {
+            frame(&mut menu, &ps, &store);
+            check(&menu, &format!("pop frame {i}"));
+        }
+        // interrupted at every depth of a push
+        for stop in [1, 3, 6, 9, 12, 20] {
+            push_style(&mut menu, &store);
+            run(&mut menu, &ps, &store, stop);
+            check(&menu, &format!("before the interrupt at {stop}"));
+            assert!(menu.pop(&ps, store.view()));
+            check(&menu, &format!("right after the interrupt at {stop}"));
+            for i in 0..90 {
+                frame(&mut menu, &ps, &store);
+                check(&menu, &format!("interrupted at {stop}, frame {i}"));
+            }
+        }
+        teardown(&ps);
+    }
+
+    /// **A push during a push is continuous too**: the page that was arriving leaves from the
+    /// alpha and offset it had, the older leaving page keeps fading, and the new page starts clear.
+    #[test]
+    fn a_push_during_a_push_steps_no_layer() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        push_style(&mut menu, &store);
+        run(&mut menu, &ps, &store, 12);
+        let (old_leaving, live) = menu.motion.alphas();
+        let dx = menu.motion.live_dx();
+        assert!(live > 0.0 && live < 1.0, "mid-fade: {live}");
+        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        let (leaving, new_live) = menu.motion.alphas();
+        assert_eq!(new_live, 0.0, "the new page arrives from transparent");
+        assert_eq!(leaving.last().copied(), Some(live), "the page that was arriving leaves from its own alpha");
+        for (kept, was) in leaving.iter().zip(old_leaving.iter()) {
+            assert_eq!(kept, was, "an older leaving page is not touched by the swap");
+        }
+        assert_eq!(menu.motion.leaving_pills(), 0);
+        assert_ne!(dx, 0.0);
+        run(&mut menu, &ps, &store, 240);
+        assert!(!menu.motion.sliding());
+        assert_eq!(shown(&menu), natural(&menu));
+        teardown(&ps);
+    }
+
+    /// Rapid repeated pushes and pops (a held key, a double press) never stack layers or leave the
+    /// card off its layout.
+    #[test]
+    fn rapid_pushes_and_pops_leave_one_slide_and_land_on_the_logical_page() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let root = natural(&menu);
+        for _ in 0..4 {
+            push_style(&mut menu, &store);
+            frame(&mut menu, &ps, &store);
+            assert!(menu.pop(&ps, store.view()));
+            frame(&mut menu, &ps, &store);
+        }
+        // and a push that goes deeper while the first is still sliding
+        push_style(&mut menu, &store);
+        run(&mut menu, &ps, &store, 2);
+        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.pages.len(), 2);
+        run(&mut menu, &ps, &store, 240);
+        assert!(!menu.transitioning());
+        assert_eq!(shown(&menu), natural(&menu));
+        assert!(menu.pop(&ps, store.view()));
+        assert!(menu.pop(&ps, store.view()));
+        run(&mut menu, &ps, &store, 240);
+        assert_eq!(shown(&menu), root);
+        assert!(!menu.transitioning());
+        teardown(&ps);
+    }
+
+    /// An Audio/Subtitles tab switch resizes the card with the same spring, and the content
+    /// does not slide.
+    #[test]
+    fn a_tab_switch_animates_the_height() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let tall = natural(&menu);
+        menu.focus_tab(&ps, store.view(), 0);
+        let short = natural(&menu);
+        assert!(short.h < tall.h, "the empty Audio tab is shorter than the Subtitles tab: {} < {}", short.h, tall.h);
+        assert_eq!(short.y + short.h, tall.y + tall.h, "the bottom edge is the anchor");
+        assert_eq!(short.x + short.w, tall.x + tall.w, "and so is the right edge");
+        assert!(frame(&mut menu, &ps, &store), "the resize is motion");
+        let first = shown(&menu);
+        assert!(first.h > short.h && first.h <= tall.h, "mid-resize the card is between the two heights: {first:?}");
+        assert!(!menu.motion.sliding(), "a tab switch swaps the content, it does not slide it");
+        assert_eq!(menu.motion.live_dx(), 0.0);
+        run(&mut menu, &ps, &store, 240);
+        assert_eq!(shown(&menu), short);
+        // and back
+        menu.focus_tab(&ps, store.view(), 1);
+        assert!(frame(&mut menu, &ps, &store));
+        run(&mut menu, &ps, &store, 240);
+        assert_eq!(shown(&menu), tall);
+        assert!(!frame(&mut menu, &ps, &store));
+        teardown(&ps);
+    }
+
+    /// The layout target is measured when the table changed and not otherwise.
+    #[test]
+    fn the_layout_is_cached_until_the_table_changes() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open();
+        let rev = menu.form.table.layout_rev();
+        let a = natural(&menu);
+        run(&mut menu, &ps, &store, 3);
+        assert_eq!(menu.form.table.layout_rev(), rev, "update/draw/place do not touch the table's layout");
+        assert_eq!(natural(&menu), a);
+        push_style(&mut menu, &store);
+        assert_ne!(menu.form.table.layout_rev(), rev, "a page change moves the revision");
+        teardown(&ps);
     }
 }
