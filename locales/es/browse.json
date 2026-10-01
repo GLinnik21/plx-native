@@ -177,6 +177,7 @@
   "browse.diagnostics.stalled": "{state} (bloqueado {seconds} s)",
   "browse.auth.timeout": "Se agotó el tiempo para iniciar sesión; inténtalo de nuevo.",
   "browse.auth.no_servers": "Esta cuenta de Plex aún no tiene ningún servidor.",
+  "browse.auth.no_servers_signed_in_as": "Has iniciado sesión como {account}.\nEsta cuenta de Plex aún no tiene ningún servidor.",
   "browse.auth.refused": "Tu servidor Plex rechazó la conexión; comprueba sus ajustes de acceso a la red.",
   "browse.auth.unreachable": "No se pudo conectar con ningún servidor Plex; comprueba la conexión.",
   "browse.auth.plex_unreachable": "No se pudo conectar con Plex. Comprueba tu conexión a internet. Para iniciar sesión necesitas conexión a internet.",

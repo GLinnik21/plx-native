@@ -925,6 +925,47 @@ fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
     output.terminal(LoginProgress::Failed { epoch, message: message.into(), incident, plaintext }.into());
 }
 
+/// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
+/// (`browse.auth.no_servers_signed_in_as`: "Signed in as {account}." over "This Plex account has
+/// no server yet."), the break between them a `\n` the read-out honours
+/// (`StatusOverlay::reason_segments`).
+///
+/// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
+/// the read-out's reason column, the NAME is shortened with an ellipsis and the sentence keeps its
+/// words and its final period. `None` for a blank name — the caller says
+/// `browse.auth.no_servers` instead, which needs no name.
+///
+/// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
+/// no font to ask, which is why this takes the capability rather than reading one.
+pub(crate) fn signed_in_reason(account: &str, measure: &dyn crate::ui::machine::Measure) -> Option<String> {
+    use crate::ui::widgets::StatusOverlay;
+    // A name is one run of text: a control character or a stray line break in it would cut the
+    // first line short of its sentence.
+    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    if account.is_empty() {
+        return None;
+    }
+    let sz = crate::ui::theme::size::BODY;
+    let message = |name: &str| crate::i18n::msg::browse_auth_no_servers_signed_in_as(name);
+    let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
+    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
+    let full = message(&account);
+    if first_line_w(&full) <= column {
+        return Some(full);
+    }
+    // The room the name has is the column less the sentence around it; shave a pixel at a time if
+    // the sum of the parts under-reads the whole (kerning across the name's edges).
+    let mut room = column - first_line_w(&message(""));
+    loop {
+        let name = crate::text::elide_by(&account, room, false, |t| measure.width_str(t, sz, false));
+        let out = message(&name);
+        if first_line_w(&out) <= column || room <= 0.0 {
+            return Some(out);
+        }
+        room -= 1.0;
+    }
+}
+
 /// The caption and the incident for a discovery that found nothing usable. One table for the
 /// sign-in and the rediscovery paths, so the two cannot word — or report — the same verdict
 /// differently: the rediscovery worker is reached only through *Try again* after a discovery

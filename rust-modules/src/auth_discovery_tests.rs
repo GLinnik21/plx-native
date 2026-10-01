@@ -2767,6 +2767,52 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
     }
 }
 
+/// **The "no server yet" reason keeps its two lines for every name.** Line 1 is always the
+/// sentence naming the account and fits the reason column (it never wraps); a short name is left
+/// alone; a long one is shortened with an ellipsis and the sentence keeps its final period; line 2
+/// is always the plain no-server sentence; a blank name has no line 1 at all, so the caller says
+/// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
+#[test]
+fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
+    use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+    use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+    use crate::ui::machine::Measure;
+    use crate::ui::widgets::StatusOverlay;
+    let column = StatusOverlay::REASON_W * HEADROOM;
+    for language in [Preference::En, Preference::Es, Preference::Be] {
+        let _guard = language_on_this_thread_for_test(language);
+        let second = msg::browse_auth_no_servers();
+        for name in ["alexandra", "alexandra.konstantinopolskaya",
+            "alexandra.konstantinopolskaya.with.a.very.long.name.indeed",
+            "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА"] {
+            let reason = signed_in_reason(name, &ShippedMeasure).expect("a name gives a reason");
+            let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
+            assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
+            assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
+            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
+            assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
+            assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
+            if name == "alexandra" {
+                assert_eq!(reason, msg::browse_auth_no_servers_signed_in_as(name), "a short name is untouched");
+            }
+            if first.contains('\u{2026}') {
+                assert!(name.chars().count() > 20, "{language:?} {name}: shortened without need");
+                assert!(!first.contains(name), "{language:?}: the full name survived");
+            } else {
+                assert!(first.contains(name), "{language:?} {name}: {first:?}");
+            }
+        }
+        // the long name really was cut, in the language that says the most around it
+        let cut = signed_in_reason("alexandra.konstantinopolskaya.with.a.very.long.name.indeed", &ShippedMeasure).unwrap();
+        assert!(cut.lines().next().unwrap().contains('\u{2026}'), "{language:?}: {cut:?}");
+        assert_eq!(signed_in_reason("", &ShippedMeasure), None);
+        assert_eq!(signed_in_reason("  \n\t ", &ShippedMeasure), None);
+        // whitespace inside a name cannot break the first line
+        let spaced = signed_in_reason("Alex\nandra  K", &ShippedMeasure).unwrap();
+        assert_eq!(spaced.matches('\n').count(), 1, "{spaced:?}");
+    }
+}
+
 #[test]
 fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
     use crate::i18n::{LocaleContext, Preference};

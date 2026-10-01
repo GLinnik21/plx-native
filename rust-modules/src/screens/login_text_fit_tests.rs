@@ -23,6 +23,7 @@ fn reasons() -> Vec<(&'static str, String)> {
         ("insecure", msg::browse_auth_insecure().into()),
         ("no_access", msg::browse_auth_no_access(profile)),
         ("no_servers", msg::browse_auth_no_servers().into()),
+        ("no_servers_signed_in_as", msg::browse_auth_no_servers_signed_in_as("alexandra.konstantinopolskaya")),
         ("no_source_access", msg::browse_auth_no_source_access(profile)),
         ("offline_profile", msg::browse_auth_offline_profile().into()),
         ("plaintext_allowed", msg::browse_auth_plaintext_allowed().into()),
