@@ -47,17 +47,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 crate::ui::idle::invalidate();
             });
         }
-        PreferenceCmd::SubtitleSize { size, reply } => {
-            let _ = crate::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_subtitle_size(size));
-                crate::ui::idle::invalidate();
-            });
-        }
+        // The optimistic picks run HERE, on the main thread: the live value is published before
+        // anything is persisted and the persistence rides the storage worker on its own
+        // (`route::select_subtitle_size`), so there is no outer worker submission to republish.
+        PreferenceCmd::SubtitleSize { size, reply } => crate::route::select_subtitle_size(size, Some(reply)),
         PreferenceCmd::SubtitlePosition { position, reply } => {
-            let _ = crate::storage_worker::submit_retained(move || {
-                let _ = reply.send(crate::route::set_subtitle_position(position));
-                crate::ui::idle::invalidate();
-            });
+            crate::route::select_subtitle_position(position, Some(reply))
         }
     }
 }

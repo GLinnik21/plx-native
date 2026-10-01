@@ -2,14 +2,15 @@
 //! animated `TableView` (Apple-TV "settings" look — a sliding pill selection, section header with
 //! a codec accessory, per-row badges, a leading checkmark on the active track). app.rs routes
 //! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
-//! panels. The selection commit (native audio switch / server transcode / burn) is unchanged
+//! panels on a root (on the Subtitles tab LEFT pops a sub-page and RIGHT on a Nav row enters it;
+//! BACK pops a sub-page before it dismisses). The selection commit (native audio switch / server transcode / burn) is unchanged
 //! from the previous procedural version — only the presentation moved onto the table.
 //!
 //! **The Subtitles panel is grouped, not one flat list** (plan `subtitle-menu-capsule` §3,
 //! `/tmp/dsplayer/player.html:1104-1162`): Off and every single-track "yours" language sit under
 //! one "Subtitles" header; a "yours" language with several tracks gets its own section (header =
 //! language, `accessory("N tracks")`), ranked full < SDH < forced < commentary; a headerless
-//! section holds Timing and Color; and everything else falls under "Other languages". That
+//! section holds Timing and Style; and everything else falls under "Other languages". That
 //! grouping is a pure DATA model, `metadata::sub_layout` (host-tested without a
 //! `PlaybackSession`/`MetadataView` fixture); this module only turns it into `TableView` sections
 //! ([`table_form`]) and answers focus/OK by the focused row's [`TrackRow`] identity. "Yours" is
@@ -17,46 +18,76 @@
 //! current subtitle's own language, in that order (`route::cur_sub_pref_lang`, carried in by
 //! `screens::player::overlay`).
 //!
-//! **Timing** is a single row that reads out the current offset; OK on it does not step anything
-//! here — it returns [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns
-//! into a hand-off: it dismisses this panel and presents the Timing capsule overlay
-//! (`OverlayKind::Timing`, `ui::timing_capsule`) in its place. The row is dim and inert while
-//! subtitles are Off (OK there neither opens the capsule nor closes the panel), and the whole
-//! section is omitted during an ordinary transcode, which burns captions into the picture where
-//! no client-side offset can reach. When the live route is instead a Plex Pass audio-enhancement
-//! Burn specifically (M7), Timing and Color stay visible — dim, with a one-line reason
-//! (`Row::note`) — so the viewer who turned Boost dialog / Normalize loudness on sees why the
-//! control is locked rather than finding it simply gone.
+//! **Both tabs are keyed declarative forms** (`ui::form`, `docs/player-submenus.md`): each row is
+//! declared once with its semantic [`TrackRow`] identity, a stable [`RowKey`] (a family base plus
+//! the track's index in the playing item's list, which is fixed for the item's lifetime, never the
+//! list position), its kind and its [`Row`]. The focus layer's element is the row's key, so a row
+//! added above another (a subtitle offered mid-play, the enhancement pair returning) moves no key,
+//! and a rebuild restores the viewer's row by id.
 //!
-//! **Color** is a single cycling row: OK steps `SubtitleTone::LADDER` with wrap and keeps the
-//! panel open ([`TrackOk::Commit`]'s `keep_open`), so a run of presses is felt immediately — and
-//! re-writes that one row's read-out in place rather than rebuilding the list.
+//! **Timing** is a single value row that reads out the current offset (no chevron: it is a
+//! hand-off, not a page); OK on it does not step anything here — it returns
+//! [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns into a hand-off: it
+//! dismisses this panel and presents the Timing capsule overlay (`OverlayKind::Timing`,
+//! `ui::timing_capsule`) in its place. The row is dim and inert while subtitles are Off (OK there
+//! neither opens the capsule nor closes the panel), and Timing together with Style is omitted
+//! during an ordinary transcode, which burns captions into the picture where no client-side offset
+//! or style can reach. When the live route is instead this app's OWN Plex Pass audio-enhancement
+//! Burn (M7), both stay visible — dim, with a one-line reason (`Row::note`) — so the viewer who
+//! turned Boost dialog / Normalize loudness on sees why the control is locked rather than finding
+//! it simply gone.
+//!
+//! **Style is a drill-in, and the Subtitles tab is a page stack** (`docs/player-submenus.md`). The
+//! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
+//! each read out their current value and push a picker page ([`TrackPage::Picker`]) of
+//! [`RowKind::Choice`] rows with the current rung checked. A push remembers the opener's id and the
+//! scroll ([`Saved`]); a pop ([`TrackMenuState::pop`], LEFT or BACK, or a click on the title band,
+//! whose pointer-only stop is [`TITLE_KEY`]) restores both, so focus returns to the row that opened
+//! the page by id. OK or RIGHT on a Nav row pushes ([`TrackMenuState::on_right`]); LEFT on the root
+//! is still the tab switch and BACK on the root dismisses. Every page opens on an explicit id
+//! ([`TrackMenuState::page_initial`]). A picker pick commits live and leaves the panel and page
+//! open ([`TrackOk::Commit`]'s `keep_open`), so a run of picks is felt at once.
+//!
+//! **What Style can reach depends on the active renderer** ([`SubRenderer`]): only the client's
+//! plain-text caption follows Size and Position, so under an image (PGS/VobSub) or native ASS/SSA
+//! subtitle those two rows are dim, focusable and inert, with a separate note each. Color stays
+//! live under every renderer: the subtitle ink tints bitmaps and ASS alike. Size and Position are
+//! persisted by `route::select_subtitle_size` / `select_subtitle_position` (live value first, a
+//! persist-only write second); Color by `player::set_subtitle_tone`.
+//!
+//! **A sub-page never outlives the root it was built on.** The root's [`SubSig`] — subs
+//! fingerprint, active index, renderer kind, transcoding, own-burn and enhancement route — is
+//! stored when the root is built and compared on every live poll; a mismatch refreshes the root in
+//! place, and a sub-page in place too — it pops straight to the root only when its availability no
+//! longer holds (the renderer, or whether Style is shown / locked). The replay canon
+//! ([`TrackMenuState::canon`]) carries the tab, the page path with each return key, and the
+//! selected key.
 use crate::metadata;
 use crate::metadata::sub_layout::{self, RowBadge, RowTarget, SubHeader, SubRow, SubSection, SubTrack};
 use crate::metadata::track_label;
-use crate::plex::session::SubtitleTone;
+use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host};
 use crate::ui::popover::Popover;
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::table::{Badge, Row, Section};
+use crate::ui::table_screen::BAND_BASE;
 use crate::ui::theme;
 use crate::ui::{Painter, Rect};
-use std::convert::Infallible;
 use std::os::raw::c_int;
 
 
 /// **What a focusable row of either tab IS** — the identity the [`FormTable`] resolves a press, a
 /// focus move and a rebuild's landing by, never a position. The Audio tab's track rows, the two Plex
-/// Pass DSP toggles and the Subtitles tab's rows share one alphabet so one [`FormTable`] serves both
-/// tabs. The non-selectable footnotes under the DSP pair and under Color are inert slots
-/// ([`FormSection::note`]) and have no identity at all.
+/// Pass DSP toggles and the Subtitles tab's rows (root, Style page and pickers) share one alphabet
+/// so one [`FormTable`] serves every page. The non-selectable footnotes under the DSP pair and under
+/// Style are inert slots ([`FormSection::note`]) and have no identity at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrackRow {
     /// An Audio-tab track row — the index into the playing item's audio list
@@ -74,8 +105,13 @@ pub(crate) enum TrackRow {
     Sub(usize),
     /// The Timing row (hands off to the Timing capsule).
     Timing,
-    /// The Color row (cycles the tone ladder).
-    Color,
+    /// The Style drill-in on the Subtitles root ([`TrackPage::Style`]).
+    Style,
+    /// Style page: the drill-in to one field's picker ([`TrackPage::Picker`]); reads out the
+    /// field's current value.
+    OpenField(StyleField),
+    /// A picker page's choice: the field and the rung's index on that field's ladder.
+    Choice(StyleField, usize),
 }
 
 impl From<RowTarget> for TrackRow {
@@ -84,29 +120,183 @@ impl From<RowTarget> for TrackRow {
             RowTarget::Off => TrackRow::SubOff,
             RowTarget::Sub(i) => TrackRow::Sub(i),
             RowTarget::Timing => TrackRow::Timing,
-            RowTarget::Color => TrackRow::Color,
+            RowTarget::Style => TrackRow::Style,
         }
     }
 }
 
+/// One caption style field: the Style page lists one drill-in per field, and each opens a picker
+/// page of that field's ladder with the current rung checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StyleField {
+    Size,
+    Position,
+    Color,
+}
+
+impl StyleField {
+    pub(crate) const ALL: [StyleField; 3] = [StyleField::Size, StyleField::Position, StyleField::Color];
+
+    fn ordinal(self) -> u32 {
+        self as u32
+    }
+
+    fn label(self) -> &'static str {
+        use crate::i18n::msg;
+        match self {
+            Self::Size => msg::widgets_tracks_style_size(),
+            Self::Position => msg::widgets_tracks_style_position(),
+            Self::Color => msg::widgets_tracks_color(),
+        }
+    }
+
+    /// How many rungs this field's ladder has.
+    fn rungs(self) -> usize {
+        match self {
+            Self::Size => SubtitleSize::LADDER.len(),
+            Self::Position => SubtitlePosition::LADDER.len(),
+            Self::Color => SubtitleTone::LADDER.len(),
+        }
+    }
+
+    /// The localized name of rung `i` of this field's ladder.
+    fn rung_label(self, i: usize) -> &'static str {
+        match self {
+            Self::Size => subtitle_size_label(SubtitleSize::from_index(i as u8)),
+            Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)),
+            Self::Color => tone_label(SubtitleTone::from_index(i as u8)),
+        }
+    }
+}
+
+/// **A drill-in page of the Subtitles tab** — the form's `Dest`. The Subtitles root is the empty
+/// page stack, not a value of this type. PR 3's language pages are added here as further variants
+/// (`docs/player-submenus.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackPage {
+    /// Size, Position and Color, each a drill-in showing its current value.
+    Style,
+    /// One field's picker: a checked [`TrackRow::Choice`] per rung.
+    Picker(StyleField),
+}
+
+impl TrackPage {
+    /// The title band's text.
+    fn title(self) -> &'static str {
+        match self {
+            Self::Style => crate::i18n::msg::widgets_tracks_style(),
+            Self::Picker(field) => field.label(),
+        }
+    }
+
+    /// A stable small number for the replay canon. Never reordered: recordings hash it.
+    fn code(self) -> u32 {
+        match self {
+            Self::Style => 1,
+            Self::Picker(field) => 0x10 + field.ordinal(),
+        }
+    }
+}
+
+/// The pointer-only key of the page title band ("< STYLE"): OUTSIDE the form's key range (at the
+/// ceiling), so it is never a row and never in the D-pad column. A click on it pops.
+pub(crate) const TITLE_KEY: u32 = BAND_BASE;
+
 /// The hand-assigned focus key of each row: a family base per kind of row plus the track's own
 /// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
-/// track list that sorts differently, the DSP pair appearing) moves no key.
+/// track list that sorts differently, the DSP pair appearing) moves no key. Free families for the
+/// language pages (PR 3) start at `0x0008_0000`.
 impl FormId for TrackRow {
     fn key(&self) -> RowKey {
-        RowKey(match self {
-            TrackRow::Audio(i) => 0x0001_0000 + *i as u32,
+        // a picker's rungs: one 256-wide block per field (a ladder is a handful of rungs)
+        let rung = |f: StyleField, i: usize| 0x0007_0000 + f.ordinal() * 0x100 + (i as u32).min(0xFF);
+        RowKey(match *self {
+            TrackRow::Audio(i) => 0x0001_0000 + i as u32,
             TrackRow::Boost => 0x0002_0000,
             TrackRow::Loudness => 0x0002_0001,
             TrackRow::SubOff => 0x0003_0000,
-            TrackRow::Sub(i) => 0x0004_0000 + *i as u32,
+            TrackRow::Sub(i) => 0x0004_0000 + i as u32,
             TrackRow::Timing => 0x0005_0000,
-            TrackRow::Color => 0x0005_0001,
+            TrackRow::Style => 0x0005_0001,
+            TrackRow::OpenField(f) => 0x0006_0000 + f.ordinal(),
+            TrackRow::Choice(f, i) => rung(f, i),
         })
     }
 }
 
-type TrackForm = Form<TrackRow, (), Infallible>;
+/// Both tabs' form: the action type is `()` (the id says what a row does); `Dest` is the page a
+/// Nav row opens.
+type TrackForm = Form<TrackRow, (), TrackPage>;
+type TrackTable = FormTable<TrackRow, (), TrackPage>;
+
+/// **What a pushed page remembers of the page beneath it**: the opener's id and the scroll the
+/// list was left at, so a pop ([`FormTable::restore`]) brings the page back exactly as it was.
+#[derive(Clone, Copy, Debug)]
+struct Saved {
+    /// The page this entry opened.
+    page: TrackPage,
+    /// The row that opened it, on the page beneath.
+    return_id: TrackRow,
+    scroll: f32,
+}
+
+/// The renderer the ACTIVE subtitle is drawn by — what decides whether the caption's Size and
+/// Position can reach it. Only the client's plain-text caption draw follows them
+/// (`ui::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
+/// native ASS/SSA its authored layout. The subtitle INK tints all three, so Color is always live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubRenderer {
+    Text,
+    Image,
+    Styled,
+}
+
+impl SubRenderer {
+    fn of_codec(codec: &str) -> Self {
+        if sub_layout::is_image_sub_codec(codec) {
+            Self::Image
+        } else if codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa") {
+            Self::Styled
+        } else {
+            Self::Text
+        }
+    }
+
+    /// The note under the Style rows, when Size and Position cannot reach this renderer.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Text => None,
+            Self::Image => Some(crate::i18n::msg::widgets_tracks_style_image_note()),
+            Self::Styled => Some(crate::i18n::msg::widgets_tracks_style_styled_note()),
+        }
+    }
+}
+
+/// **What the Subtitles root's rows and locks were built from** — the rebuild signature. A live
+/// poll compares it to the current answers and rebuilds when any input changed: the subs list
+/// (stream ids and whether each is offered on this route), the active index, the renderer kind,
+/// whether the route is transcoding, and the enhancement route and subtitle effect (what the Style
+/// lock and Timing's omission read).
+#[derive(Clone, Debug, PartialEq)]
+struct SubSig {
+    subs: Vec<(i64, bool)>,
+    active: c_int,
+    renderer: SubRenderer,
+    transcoding: bool,
+    own_burn: bool,
+    enhancement: Option<crate::route::EnhancementRoute>,
+    effect: crate::route::SubtitleEffect,
+}
+
+impl SubSig {
+    /// What a pushed Style page's availability was built from: the renderer (Size / Position reach
+    /// only text), whether the app's own burn locks Style, and whether an ordinary server burn
+    /// omits it (`transcoding && !own_burn`, the gate [`TrackMenuState::layout`] shows Style by).
+    /// A page is popped when this changes and refreshed in place otherwise.
+    fn page_availability(&self) -> (SubRenderer, bool, bool) {
+        (self.renderer, self.own_burn, self.transcoding && !self.own_burn)
+    }
+}
 
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
@@ -120,17 +310,29 @@ pub(crate) struct TrackMenuState {
     /// position (and so cannot disagree with what was drawn, the way a fresh call to
     /// [`visible_subs`] could once a transcode starts). Whichever tab is built owns the table; a
     /// tab switch replaces it whole ([`Self::rebuild`]).
-    form: FormTable<TrackRow, (), Infallible>,
+    form: TrackTable,
     /// The timing offset (ms) the Timing row reads out — seeded from the player on open. Kept
     /// locally (rather than re-reading the player's atomic on every draw) so the Timing capsule's
     /// eventual hand-off starts from what THIS panel showed, not from a commit the loop has not
     /// yet performed.
     offset_ms: i64,
-    /// The caption tone the Color row reads out and cycles — seeded from the player on open, same
-    /// reasoning as [`Self::offset_ms`]: a burst of OK presses in one frame must count from what
-    /// this panel last drew, not from the global the loop has not yet written
-    /// (`TrackCommit::SubtitleTone` is dispatched to the loop, not applied inline by `on_ok`).
+    /// The caption tone the Color rows read out and check — seeded from the player on open, same
+    /// reasoning as [`Self::offset_ms`]: what this panel last drew must not depend on the global
+    /// the loop has not yet written (`TrackCommit::SubtitleTone` is dispatched to the loop, not
+    /// applied inline by `on_ok`). The size and position below follow the same rule.
     tone: SubtitleTone,
+    /// The caption size the Size rows read out and check.
+    size: SubtitleSize,
+    /// The caption position the Position rows read out and check.
+    position: SubtitlePosition,
+    /// The pages pushed above the Subtitles root, outermost first (empty = the root). Each entry
+    /// carries the opener and scroll of the page beneath it.
+    pages: Vec<Saved>,
+    /// The renderer of the ACTIVE subtitle, captured when the root is (re)built — what the Style
+    /// page's Size and Position lock reads.
+    renderer: SubRenderer,
+    /// What the Subtitles root was last built from; a live poll rebuilds when it moves.
+    sub_sig: Option<SubSig>,
     /// "Your languages" this play resolved under, in PREFERENCE order — the pref's BCP-47 code (if
     /// the play resolved under one), the playing audio's language, and the current subtitle's own,
     /// exactly as `metadata::sub_layout::sub_sections`' `yours` parameter reads them (compared by
@@ -169,15 +371,6 @@ pub(crate) struct TrackMenuState {
     /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
     /// rows are back. `None` once consumed, or when nothing needs remembering.
     sticky_audio_target: Option<TrackRow>,
-    /// M7 follow-up: is the live route actually burning a subtitle into the picture RIGHT NOW
-    /// (`route::live_is_own_burn`)? Set on every (re)build of the Subtitles tab (see
-    /// [`Self::layout`]) and read back by [`Self::on_ok`], which does not receive `ps` and so
-    /// cannot re-derive it at press time — the same "state captured at rebuild, read at commit"
-    /// shape [`Self::offset_ms`]/[`Self::tone`] already use. While true, Timing and Color are drawn
-    /// dim with a one-line reason and OK on either is inert: the text is already in the pixels, and
-    /// nothing this panel does can reach it. Track-selection rows are unaffected — picking another
-    /// subtitle (or Off) still re-routes normally.
-    sub_style_locked: bool,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -207,6 +400,12 @@ pub(crate) enum TrackCommit {
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
     SubtitleTone(SubtitleTone),
+    /// The caption's size, picked on the Style > Size page: the loop publishes it live and
+    /// persists it (`route::select_subtitle_size`).
+    SubtitleSize(SubtitleSize),
+    /// The caption's vertical position, picked on the Style > Position page
+    /// (`route::select_subtitle_position`).
+    SubtitlePosition(SubtitlePosition),
     /// The caption's timing offset in ms (`player::set_subtitle_offset`) — produced by the Timing
     /// capsule overlay (plan §4), not by this panel: the Timing ROW here only opens that capsule
     /// ([`TrackOk::OpenTiming`]). The variant stays here because `TrackCommit` is the one
@@ -221,16 +420,20 @@ pub(crate) enum TrackCommit {
 /// decision this panel can state but not perform, since it does not own the overlay stack.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackOk {
-    /// Perform `commit`. `keep_open` is true for Color, so a run of presses (cycling the ladder)
-    /// is felt without a reopen-and-rewalk between them; every track pick closes the panel.
+    /// Perform `commit`. `keep_open` is true for a Style pick (the viewer is watching the caption
+    /// change, so a run of picks needs no reopen-and-rewalk between them) and for the Audio
+    /// toggles; every track pick closes the panel.
     Commit { commit: TrackCommit, keep_open: bool },
+    /// A Nav row opened a page ([`TrackMenuState::push`]): the panel stays, its rows replaced.
+    Navigated,
     /// Nothing changed (the already-playing audio track): close the panel.
     Dismiss,
     /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
     /// Tracks panel and asks for `OverlayKind::Timing` in its place.
     OpenTiming,
-    /// The dim Timing row while subtitles are Off: OK does nothing, and so must not close the
-    /// panel either.
+    /// OK does nothing and must not close the panel either: the dim Timing row while subtitles are
+    /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
+    /// rung that is already checked.
     Inert,
 }
 
@@ -248,17 +451,22 @@ impl TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
-            form: FormTable::new(crate::ui::table_screen::BAND_BASE),
+            form: TrackTable::new(BAND_BASE),
             offset_ms: crate::player::subtitle_offset_ms(),
             tone: crate::player::subtitle_tone(),
+            size: crate::route::subtitle_size(),
+            position: crate::route::subtitle_position(),
+            pages: Vec::new(),
+            renderer: SubRenderer::Text,
+            sub_sig: None,
             yours,
             enhance_shown: None,
             enhance_route: None,
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
-            sub_style_locked: false,
         };
+        s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
         s.rebuild(ps, meta, tab, false);
         s
@@ -270,6 +478,42 @@ impl TrackMenuState {
     /// nothing between.
     pub(crate) fn sel(&self) -> i32 {
         self.form.table.sel
+    }
+
+    /// **The replay canon** of this panel: the tab, the page path (each pushed page and the row
+    /// that opened it) and the selected row's [`RowKey`] — not its index, which moves when a row
+    /// is added above it. `screens::player::overlay` writes this in place of the bare row index, so
+    /// a replay tells Subtitles from Audio, the root from a Style page, and two return stacks
+    /// apart.
+    pub(crate) fn canon(&self, c: &mut Canon) {
+        c.u32(self.tab as u32).u32(self.pages.len() as u32);
+        for saved in &self.pages {
+            c.u32(saved.page.code()).u32(saved.return_id.key().0);
+        }
+        c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
+    }
+
+    /// The pages pushed above the Subtitles root, outermost first, for tests and probes.
+    #[cfg(test)]
+    pub(crate) fn page_path(&self) -> Vec<TrackPage> {
+        self.pages.iter().map(|s| s.page).collect()
+    }
+
+    /// Is this the pointer-only key of the title band ([`TITLE_KEY`])?
+    pub(crate) fn is_title_key(elem: u32) -> bool {
+        elem == TITLE_KEY
+    }
+
+    /// Was the Subtitles root last built under the app's own live burn (what locks Timing and Style)?
+    #[cfg(test)]
+    pub(crate) fn own_burn_built(&self) -> bool {
+        self.sub_sig.as_ref().is_some_and(|sig| sig.own_burn)
+    }
+
+    /// The highlighted row's id (`None` on a note or an empty list).
+    #[cfg(test)]
+    pub(crate) fn selected_id(&self) -> Option<TrackRow> {
+        self.form.selected_id().copied()
     }
 
     /// The focusable rows at the current tab, in drawn order, by identity — for a test that needs
@@ -390,33 +634,85 @@ impl TrackMenuState {
     /// a real network call) — seconds later. A panel that stays open across that window (the
     /// diagnostic `screens::player::overlay::pick_track_row` trigger deliberately does, "so a
     /// capture can show the picked track") was built and never touched again, so its drawn
-    /// checkmark and its Color/Timing dim state both kept whatever `Self::layout` baked at open,
+    /// checkmark and its Style/Timing dim state both kept whatever `Self::layout` baked at open,
     /// disagreeing with the route by the time a capture actually looked at it. `rebuild`'s own
     /// subtitle arm always re-homes the cursor onto the checked row — correct for an open or a tab
     /// switch, wrong for a background poll that must not steal focus from wherever the viewer's
-    /// cursor actually is (the exact focus-desync class `rebuild_audio`'s doc above already names)
-    /// — so this looks the current row up by [`TrackRow`] identity in the freshly built list
-    /// instead of snapping to the active track, the same fix `rebuild_audio` applies for the Audio
+    /// cursor actually is (the exact focus-desync class `refresh_audio`'s doc names)
+    /// — so this refreshes the form, which restores the current row by [`TrackRow`] in the
+    /// freshly built list instead of snapping to the active track, the same fix `refresh_audio` applies for the Audio
     /// tab's own poll.
+    ///
+    /// **It rebuilds on a [`SubSig`] change**, not on the two values it once compared: the subs
+    /// list, the active index, the renderer kind, transcoding, and the enhancement route and
+    /// subtitle effect. On the root that is a refresh in place. ON A SUB-PAGE the page is refreshed in
+    /// place too (focus kept by id) and popped to the root only when its availability no longer
+    /// holds ([`SubSig::page_availability`]: the renderer, or whether Style is shown / locked), so a
+    /// Style page never outlives the renderer or the lock its Size and Position rows were built for
+    /// while a track list or enhancement change it does not read leaves it alone.
     fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let live_sub = Self::derive_active_sub(ps, meta);
-        let locked = crate::route::live_is_own_burn(ps);
-        if live_sub == self.active_sub && locked == self.sub_style_locked {
+        let sig = self.sub_sig_for(ps, meta, live_sub);
+        if self.sub_sig.as_ref() == Some(&sig) {
             return;
         }
-        let current = self.form.selected_id().copied();
         self.active_sub = live_sub;
-        let form = self.layout(ps, meta);
-        let keep = Self::landing(&form, current, self.active_sub);
-        self.form.set(form, Some(&keep));
+        match self.pages.first().copied() {
+            None => {
+                let form = self.layout(ps, meta);
+                // not the viewer's row any more (its track left the offered list): the checked row
+                self.form.refresh_with(form, None, Some(&self.active_sub_id()));
+            }
+            Some(first) if self.sub_sig.as_ref().is_some_and(|built| built.page_availability() != sig.page_availability()) => {
+                // The page was opened on a root that no longer holds (the renderer changed under
+                // Size/Position, a burn landed or left): pop to the root, restoring the opener and
+                // scroll the stack saved at its first push.
+                self.pages.clear();
+                let form = self.layout(ps, meta);
+                self.form.restore(form, Some(&first.return_id), first.scroll);
+                self.form.table.set_title(None);
+            }
+            Some(_) => {
+                // The page still holds: remember what the root is now built from (the pop back
+                // rebuilds it) and refresh this page in place, focus kept by id.
+                self.sub_sig = Some(sig);
+                if let Some(page) = self.pages.last().map(|s| s.page) {
+                    let form = self.page_form(page);
+                    self.form.refresh(form);
+                }
+            }
+        }
     }
 
-    /// The row a Subtitles rebuild lands on: `current` if the new form still has it, else the
-    /// checked track (or Off) — [`Self::active_sub`] — else the form's opening row (`set` finds no
-    /// `keep` to land on). The focused row is followed by IDENTITY, never by where it used to sit.
-    fn landing(form: &TrackForm, current: Option<TrackRow>, active_sub: c_int) -> TrackRow {
-        let checked = if active_sub < 0 { TrackRow::SubOff } else { TrackRow::Sub(active_sub as usize) };
-        current.filter(|c| form.contains(c)).unwrap_or(checked)
+    /// The Subtitles root's rebuild signature for `active`, read fresh off the route and the
+    /// item. [`Self::layout`] stores the same value it builds from.
+    fn sub_sig_for(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, active: c_int) -> SubSig {
+        let item = tracks(meta);
+        let offered = visible_subs(ps, meta);
+        let subs = item
+            .map(|t| t.subs.iter().enumerate().map(|(i, s)| (s.id, offered.contains(&i))).collect())
+            .unwrap_or_default();
+        let renderer = item
+            .and_then(|t| t.subs.get(usize::try_from(active).ok()?))
+            .map_or(SubRenderer::Text, |s| SubRenderer::of_codec(&s.codec));
+        let (_, enhancement, _, effect) = Self::enh_state(ps);
+        SubSig {
+            subs,
+            active,
+            renderer,
+            transcoding: crate::route::is_transcoding(ps),
+            own_burn: crate::route::live_is_own_burn(ps),
+            enhancement,
+            effect,
+        }
+    }
+
+    /// The Subtitles row carrying the checkmark: the active track, or Off.
+    fn active_sub_id(&self) -> TrackRow {
+        match self.active_sub {
+            i if i >= 0 => TrackRow::Sub(i as usize),
+            _ => TrackRow::SubOff,
+        }
     }
 
     /// Focus an ABSOLUTE table row — the /tmp/plxnative-menupick trigger's contract ("row N"), the
@@ -454,9 +750,9 @@ impl TrackMenuState {
 
     /// Resolve a NAMED Subtitles-tab target to its absolute table row, for the
     /// `/tmp/plxnative-menupick` trigger: `"track:N"` is the N-th (0-based) TRACK row in display
-    /// order, skipping Off, Timing, Color and the footnote. A hand-written row number drifts every
+    /// order, skipping Off, Timing, Style and the footnote. A hand-written row number drifts every
     /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
-    /// the Color row); reading the position back through the form's identities, the same
+    /// the Style row); reading the position back through the form's identities, the same
     /// ones [`Self::on_ok`] dispatches on, cannot. `None` for an unrecognized name or an N past the
     /// last track.
     pub(crate) fn row_for_sub_target(&self, name: &str) -> Option<c_int> {
@@ -478,7 +774,10 @@ impl TrackMenuState {
     }
 
     /// commit the focused row as the active track for its tab — dismissing the panel afterward is
-    /// the container's job now, not this method's; the answer says whether it should.
+    /// the container's job now, not this method's; the answer says whether it should. The row is
+    /// read back by its [`TrackRow`] (never by position), and a row the form declared DISABLED (the
+    /// dim Timing/Style under a live burn, a Size/Position row the renderer cannot reach) is inert
+    /// at the form layer.
     pub(crate) fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
         let tab = self.tab;
         let sel = self.form.table.sel;
@@ -541,31 +840,29 @@ impl TrackMenuState {
             };
         }
 
-        match focused {
+        let Some(id) = focused else { return TrackOk::Inert };
+        match self.form.activate(sel.max(0) as usize) {
             // M7 follow-up: while the live route is actually burning a subtitle into the picture,
-            // Timing and Color are drawn dim with a reason (`Self::layout`) and OK on either is a
-            // no-op — the same "focusable but inert" shape `TrackRow::Timing`'s "subtitles are
-            // Off" case already uses.
-            Some(TrackRow::Color) if self.sub_style_locked => TrackOk::Inert,
-            Some(TrackRow::Color) => {
-                // cycle with wrap: no track changes, so no `TrackCommit::Subtitle` — that one
-                // always republishes, and re-committing the track would re-burn a transcode
-                let n = SubtitleTone::LADDER.len() as u8;
-                self.tone = SubtitleTone::from_index((self.tone.index() + 1) % n);
-                // the panel stays up: re-write this row's read-out in place, focus unmoved — the
-                // grouping does not depend on the tone, so nothing else is rebuilt
-                if let Some(row) = self.form.table.row_mut(sel) {
-                    row.value = Some(tone_label(self.tone).to_string());
-                }
-                TrackOk::Commit { commit: TrackCommit::SubtitleTone(self.tone), keep_open: true }
+            // Timing and Style are declared disabled (`Self::layout`) — the text is already in
+            // the pixels — and so are Size/Position under an image or styled subtitle: OK on any
+            // of them is a no-op.
+            None => return TrackOk::Inert,
+            Some(Activation::Push(dest)) => {
+                self.push(dest);
+                return TrackOk::Navigated;
             }
-            Some(TrackRow::Timing) if self.sub_style_locked => TrackOk::Inert,
-            Some(TrackRow::Timing) if self.active_sub >= 0 => TrackOk::OpenTiming,
-            Some(TrackRow::Timing) => TrackOk::Inert, // dim and inert while subtitles are Off
-            target => {
-                // Off (or no selection) → -1; else the row's own subs-list index
-                let new_sub: c_int = match target {
-                    Some(TrackRow::Sub(i)) => i as c_int,
+            Some(Activation::Action(())) => {}
+        }
+        match id {
+            TrackRow::Choice(field, rung) => self.pick_style(field, rung),
+            // Read LIVE, not from the form: a pick in this same open (`active_sub` written below,
+            // no rebuild) must make the next OK on Timing open the capsule.
+            TrackRow::Timing if self.active_sub >= 0 => TrackOk::OpenTiming,
+            TrackRow::Timing => TrackOk::Inert, // dim and inert while subtitles are Off
+            TrackRow::SubOff | TrackRow::Sub(_) => {
+                // Off → -1; else the row's own subs-list index
+                let new_sub: c_int = match id {
+                    TrackRow::Sub(i) => i as c_int,
                     _ => -1,
                 };
                 let changed = self.active_sub != new_sub;
@@ -596,6 +893,166 @@ impl TrackMenuState {
                     keep_open: false,
                 }
             }
+            _ => TrackOk::Inert,
+        }
+    }
+
+    /// A Style picker's pick: the field's new rung, committed live, the panel and page staying so a
+    /// run of picks is felt at once. The page's checkmark moves by refreshing it in place (scroll
+    /// and focus kept). The already-checked rung is inert: nothing changes, nothing is written.
+    fn pick_style(&mut self, field: StyleField, rung: usize) -> TrackOk {
+        let commit = match field {
+            StyleField::Size => {
+                let size = SubtitleSize::from_index(rung as u8);
+                if size == self.size {
+                    return TrackOk::Inert;
+                }
+                self.size = size;
+                TrackCommit::SubtitleSize(size)
+            }
+            StyleField::Position => {
+                let position = SubtitlePosition::from_index(rung as u8);
+                if position == self.position {
+                    return TrackOk::Inert;
+                }
+                self.position = position;
+                TrackCommit::SubtitlePosition(position)
+            }
+            StyleField::Color => {
+                let tone = SubtitleTone::from_index(rung as u8);
+                if tone == self.tone {
+                    return TrackOk::Inert;
+                }
+                self.tone = tone;
+                TrackCommit::SubtitleTone(tone)
+            }
+        };
+        if let Some(page) = self.pages.last().map(|s| s.page) {
+            let form = self.page_form(page);
+            self.form.refresh(form);
+        }
+        TrackOk::Commit { commit, keep_open: true }
+    }
+
+    /// The rung of `field` the panel currently reads out and checks.
+    fn current_rung(&self, field: StyleField) -> usize {
+        let rung = match field {
+            StyleField::Size => self.size.index(),
+            StyleField::Position => self.position.index(),
+            StyleField::Color => self.tone.index(),
+        };
+        rung as usize
+    }
+
+    /// The form of a pushed page, from the panel's own read-outs.
+    fn page_form(&self, page: TrackPage) -> TrackForm {
+        match page {
+            TrackPage::Style => self.style_form(),
+            TrackPage::Picker(field) => self.picker_form(field),
+        }
+    }
+
+    /// The Style page: one drill-in per field, each reading out its current value. Under an image
+    /// or styled subtitle Size and Position are disabled (dim, focusable, inert) and one note names
+    /// why; Color is live under every renderer — the subtitle ink tints bitmaps and ASS alike.
+    fn style_form(&self) -> TrackForm {
+        let field_row = |field: StyleField| {
+            Row::new(field.label()).value(field.rung_label(self.current_rung(field)))
+        };
+        let reaches = self.renderer == SubRenderer::Text;
+        let mut sec = FormSection::new("")
+            .item(
+                TrackRow::OpenField(StyleField::Size),
+                RowKind::Nav(TrackPage::Picker(StyleField::Size)),
+                (),
+                field_row(StyleField::Size),
+            )
+            .disabled(!reaches)
+            .item(
+                TrackRow::OpenField(StyleField::Position),
+                RowKind::Nav(TrackPage::Picker(StyleField::Position)),
+                (),
+                field_row(StyleField::Position),
+            )
+            .disabled(!reaches)
+            .item(
+                TrackRow::OpenField(StyleField::Color),
+                RowKind::Nav(TrackPage::Picker(StyleField::Color)),
+                (),
+                field_row(StyleField::Color),
+            );
+        if let Some(note) = self.renderer.note() {
+            sec = sec.note(note);
+        }
+        Form::new().section(sec)
+    }
+
+    /// A picker page: one choice per rung of `field`'s ladder, the current one checked.
+    fn picker_form(&self, field: StyleField) -> TrackForm {
+        let current = TrackRow::Choice(field, self.current_rung(field));
+        let sec = (0..field.rungs()).fold(FormSection::new(""), |sec, rung| {
+            sec.choice(TrackRow::Choice(field, rung), (), Row::new(field.rung_label(rung)), |id| *id == current)
+        });
+        Form::new().section(sec)
+    }
+
+    /// The explicit initial focus of a pushed page: the Style page opens on Size, a picker on its
+    /// checked rung.
+    fn page_initial(&self, page: TrackPage) -> TrackRow {
+        match page {
+            TrackPage::Style => TrackRow::OpenField(StyleField::Size),
+            TrackPage::Picker(field) => TrackRow::Choice(field, self.current_rung(field)),
+        }
+    }
+
+    /// Open `page` above the current one: remember the opener and its scroll, install the page's
+    /// rows (the pill snaps, the scroll returns to the top, focus lands on
+    /// [`Self::page_initial`]) and its title band.
+    fn push(&mut self, page: TrackPage) {
+        let Some(return_id) = self.form.selected_id().copied() else { return };
+        self.pages.push(Saved { page, return_id, scroll: self.form.table.scroll_pos() });
+        let form = self.page_form(page);
+        self.form.open(form, Some(&self.page_initial(page)));
+        // after the sections: the band moves every row, so the pill is re-jumped onto the focused one
+        self.form.table.set_title(Some(page.title().to_string()));
+    }
+
+    /// Pop the top page: the page beneath comes back exactly as it was left — the opener focused
+    /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
+    pub(crate) fn pop(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
+        let Some(saved) = self.pages.pop() else { return false };
+        match self.pages.last().map(|s| s.page) {
+            None => {
+                let form = self.layout(ps, meta);
+                self.form.restore(form, Some(&saved.return_id), saved.scroll);
+                self.form.table.set_title(None);
+            }
+            Some(page) => {
+                let form = self.page_form(page);
+                self.form.restore(form, Some(&saved.return_id), saved.scroll);
+                self.form.table.set_title(Some(page.title().to_string()));
+            }
+        }
+        true
+    }
+
+    /// **LEFT**: pop a sub-page, else (on a root) the tab switch as before.
+    pub(crate) fn on_left(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        if !self.pop(ps, meta) {
+            self.focus_tab(ps, meta, 0);
+        }
+    }
+
+    /// **RIGHT**: on a Nav row it enters — the same as OK, and inert on a disabled one at the form
+    /// layer — else the tab switch as before.
+    pub(crate) fn on_right(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        let sel = self.form.table.sel.max(0) as usize;
+        if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
+            if let Some(Activation::Push(dest)) = self.form.activate(sel) {
+                self.push(dest);
+            }
+        } else {
+            self.focus_tab(ps, meta, 1);
         }
     }
 
@@ -636,7 +1093,7 @@ impl TrackMenuState {
     /// OR [`Self::enhance_disabled`] is `Some` (every gate but no Plex Pass is now a visible
     /// reason, owner direction 2026-09-29) — a second, headerless section carrying the two Plex
     /// Pass DSP toggles (enabled, or dim with their reason), the same "own section, no header"
-    /// idiom the Subtitles tab's Timing/Color pair uses, plus an optional non-selectable note (an
+    /// idiom the Subtitles tab's Timing/Style pair uses, plus an optional non-selectable note (an
     /// inert slot: it takes a layout row and has no identity). Mirrors [`Self::layout`] for the
     /// Subtitles tab.
     fn audio_form(&self, meta: metadata::MetadataView<'_>) -> TrackForm {
@@ -723,24 +1180,26 @@ impl TrackMenuState {
         form
     }
 
-    /// Build the Subtitles tab's form from the CURRENT state — the one place the model
-    /// (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree
-    /// with what was drawn. Also writes [`Self::sub_style_locked`] for [`Self::on_ok`] to read back
-    /// (M7 follow-up).
+    /// Build the Subtitles root's form from the CURRENT state — the one place the model
+    /// (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree with
+    /// what was drawn. Also stores the [`SubSig`] and renderer the root is built from, for the
+    /// poll and the Style page's locks.
     fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
         let item = tracks(meta);
         let subs: &[metadata::Stream] = item.map(|t| t.subs.as_slice()).unwrap_or(&[]);
         let offered = visible_subs(ps, meta);
         let names = crate::player::SHARED.track_names.lock().unwrap();
-        // M7 follow-up: while the live route is actually burning a subtitle in, Timing stays
-        // drawn (dim, with a reason) instead of being omitted the way an ordinary non-enhancement
-        // transcode omits it — a viewer who turned the enhancement on must still see why the
-        // control they had is gone, not just find it missing.
+        // M7 follow-up: while the live route is actually burning a subtitle in, Timing and Style
+        // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
+        // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
+        // see why the control they had is gone, not just find it missing.
         let locked = crate::route::live_is_own_burn(ps);
-        self.sub_style_locked = locked;
+        let sig = self.sub_sig_for(ps, meta, self.active_sub);
+        self.renderer = sig.renderer;
+        self.sub_sig = Some(sig);
         let show_timing = !crate::route::is_transcoding(ps) || locked;
         let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing);
-        table_form(&model, self.active_sub, self.offset_ms, self.tone, locked)
+        table_form(&model, self.active_sub, self.offset_ms, locked)
     }
 
     /// The [`TrackRow::Boost`]/[`TrackRow::Loudness`] pair's three inputs, read fresh
@@ -775,13 +1234,16 @@ impl TrackMenuState {
             self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, slide);
         } else {
             let form = self.layout(ps, meta);
-            let keep = Self::landing(&form, None, self.active_sub);
+            let keep = self.active_sub_id();
             if slide {
                 self.form.set_sliding(form, Some(&keep));
             } else {
                 self.form.set(form, Some(&keep));
             }
         }
+        // an open or a tab switch always lands on a tab's root
+        self.pages.clear();
+        self.form.table.set_title(None);
     }
 
     /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
@@ -922,8 +1384,9 @@ impl TrackMenuState {
 /// each frame from a `&TrackMenuState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`
 /// and `ui::table_screen::TablePart` use for the other bare-`TableView` panels, so this popover
 /// answers the same [`Focusable`]/[`Part`] query protocol they do. LEFT/RIGHT are NOT a move
-/// within the group — they switch the whole row set to the other tab, which only the owning
-/// screen can do (mirroring [`TrackMenuState::focus_tab`]), so both edges answer
+/// within the group — LEFT pops a sub-page, else switches the whole row set to the other tab, and
+/// RIGHT enters a Nav row, else switches tab; both replace the rows, which only the owning screen
+/// can do (mirroring [`TrackMenuState::on_left`] / [`TrackMenuState::on_right`]), so both edges answer
 /// [`EdgeRule::Screen`], the same idiom `TablePart` uses for a RIGHT edge the screen itself must
 /// interpret.
 ///
@@ -974,6 +1437,12 @@ where
         }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        // the title band's pointer-only key: not a row, but replay and hit validation must be able
+        // to place it (`docs/player-submenus.md`)
+        if key.index() == Some(TITLE_KEY) {
+            let r = self.state.form.table.title_rect(self.state.panel_rect(cx.measure))?;
+            return Some(Placed { rect: r, rest_rect: r, clip: self.state.panel_rect(cx.measure), index: None });
+        }
         let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
         let r = self.state.form.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
         Some(Placed {
@@ -1036,6 +1505,20 @@ where
                 );
             }
         }
+        // "< STYLE": a click pops. A pointer-only stop — no hover focus, never in the D-pad column.
+        if let Some(band) = self.state.form.table.title_rect(r) {
+            f.stop(
+                p,
+                Stop {
+                    key: FocusKey { entry: self.entry, elem: H::Elem::of_index(TITLE_KEY) },
+                    rect: band,
+                    rest_rect: band,
+                    clip: r,
+                    hover: Hover::Ignore,
+                    activate: Activate::Direct,
+                },
+            );
+        }
     }
 }
 
@@ -1075,6 +1558,28 @@ fn tone_label(tone: SubtitleTone) -> &'static str {
         SubtitleTone::Grey => crate::i18n::msg::widgets_tracks_tone_grey(),
         SubtitleTone::DarkGrey => crate::i18n::msg::widgets_tracks_tone_dark_grey(),
         SubtitleTone::Charcoal => crate::i18n::msg::widgets_tracks_tone_charcoal(),
+    }
+}
+
+/// The localized name of a caption size rung — the one place both the player's Style pages and
+/// Settings' Playback read it.
+pub(crate) fn subtitle_size_label(size: SubtitleSize) -> &'static str {
+    use crate::i18n::msg;
+    match size {
+        SubtitleSize::Small => msg::settings_playback_subtitle_size_small(),
+        SubtitleSize::Medium => msg::settings_playback_subtitle_size_medium(),
+        SubtitleSize::Large => msg::settings_playback_subtitle_size_large(),
+        SubtitleSize::ExtraLarge => msg::settings_playback_subtitle_size_extra_large(),
+    }
+}
+
+/// The localized name of a caption position rung, shared like [`subtitle_size_label`].
+pub(crate) fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
+    use crate::i18n::msg;
+    match position {
+        SubtitlePosition::Low => msg::settings_playback_subtitle_position_low(),
+        SubtitlePosition::Middle => msg::settings_playback_subtitle_position_middle(),
+        SubtitlePosition::High => msg::settings_playback_subtitle_position_high(),
     }
 }
 
@@ -1184,28 +1689,21 @@ fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
     row
 }
 
-/// **Declare the Subtitles model** (`metadata::sub_layout::sub_sections`) as a form — the catalog
-/// words for each header, the checkmark on `active_sub` (-1 for Off), and the Timing/Color
-/// read-outs (`offset_ms`, `tone`; Timing is dim while subtitles are Off).
+/// **Declare the Subtitles root** from its model (`metadata::sub_layout::sub_sections`) as a keyed
+/// form — the catalog words for each header, the checkmark on `active_sub` (-1 for Off), and the
+/// Timing read-out (`offset_ms`). Each row is declared once: a track carries its subs-list index
+/// as its id and key; Timing is dim while subtitles are Off and hands off to the capsule (so it has
+/// no chevron); Style is the one Nav row, the drill-in to [`TrackPage::Style`].
 ///
-/// Every row is declared with its [`TrackRow`] identity beside its drawing, so
-/// [`TrackMenuState::on_ok`] reads back what a row IS from the focused id.
-///
-/// **M7 follow-up**: while the live route is actually burning a subtitle into the picture right
-/// now (`locked`), Timing and Color do nothing — the text is already in the pixels — so they are
-/// drawn dim and one non-selectable note naming why follows Color, the same "visible, dim, plain
-/// reason" idiom the Audio tab's own Boost dialog/Normalize loudness rows use when THEY are
-/// disabled ([`TrackMenuState::audio_form`]).
-fn table_form(
-    model: &[SubSection],
-    active_sub: c_int,
-    offset_ms: i64,
-    tone: SubtitleTone,
-    locked: bool,
-) -> TrackForm {
+/// `locked` (M7 follow-up): while the live route is actually burning a subtitle into the picture,
+/// Timing and Style do nothing — the text is already in the pixels — so they are DISABLED (dim,
+/// focusable so the viewer can read why, inert under OK and RIGHT at the form layer) and one
+/// non-selectable [`FormSection::note`] naming why follows Style, the same "visible, dim, plain
+/// reason" idiom the Audio tab's own Boost dialog / Normalize loudness rows use when THEY are
+/// disabled.
+fn table_form(model: &[SubSection], active_sub: c_int, offset_ms: i64, locked: bool) -> TrackForm {
     use crate::i18n::msg;
-    let mut form = Form::new();
-    for sec in model {
+    model.iter().fold(Form::new(), |form, sec| {
         let head = match &sec.header {
             SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
             SubHeader::Language { name, tracks } => {
@@ -1215,40 +1713,40 @@ fn table_form(
             SubHeader::OtherLanguages { languages } => Section::new(msg::widgets_tracks_other_languages())
                 .accessory(msg::widgets_tracks_language_count(*languages as i64)),
         };
-        let mut out = FormSection::from_head(head);
-        for row in &sec.rows {
+        let out = sec.rows.iter().fold(FormSection::from_head(head), |out, row| {
+            // the identity comes from the model's own row target, never from the position
             let id = TrackRow::from(row.target());
-            out = match row {
-                SubRow::Off => out.item(id, RowKind::Choice, (), Row::new(msg::widgets_tracks_off()).checked(active_sub < 0)),
+            match row {
+                SubRow::Off => out.item(
+                    id,
+                    RowKind::Choice,
+                    (),
+                    Row::new(msg::widgets_tracks_off()).checked(active_sub < 0),
+                ),
                 SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, active_sub)),
                 SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, active_sub)),
-                SubRow::Timing => out.item(
-                    id,
-                    RowKind::Button,
-                    (),
-                    Row::new(msg::widgets_tracks_timing())
-                        .value(format_offset(offset_ms))
-                        .chevron(true)
-                        .dim(active_sub < 0 || locked),
-                ),
-                SubRow::Color => {
-                    let color = out.item(
+                SubRow::Timing => out
+                    .item(
                         id,
                         RowKind::Button,
                         (),
-                        Row::new(msg::widgets_tracks_color()).value(tone_label(tone)).dim(locked),
-                    );
+                        Row::new(msg::widgets_tracks_timing()).value(format_offset(offset_ms)).dim(active_sub < 0),
+                    )
+                    .disabled(locked),
+                SubRow::Style => {
+                    let out = out
+                        .item(id, RowKind::Nav(TrackPage::Style), (), Row::new(msg::widgets_tracks_style()))
+                        .disabled(locked);
                     if locked {
-                        color.note(msg::widgets_tracks_style_locked_note())
+                        out.note(msg::widgets_tracks_style_locked_note())
                     } else {
-                        color
+                        out
                     }
                 }
-            };
-        }
-        form = form.section(out);
-    }
-    form
+            }
+        });
+        form.section(out)
+    })
 }
 
 /// The panel at its WIDEST ([`crate::ui::table::MENU_MAX_W`], the shared cap — either tab may hug
@@ -1287,12 +1785,11 @@ mod tests {
         active_sub: c_int,
         show_timing: bool,
         offset_ms: i64,
-        tone: SubtitleTone,
     ) -> (Vec<Section>, Vec<Option<TrackRow>>) {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
         let mut built = FormTable::new(crate::ui::table_screen::BAND_BASE);
-        built.set(table_form(&model, active_sub, offset_ms, tone, false), None);
+        built.set(table_form(&model, active_sub, offset_ms, false), None);
         let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
         (std::mem::take(&mut built.table.sections), ids)
     }
@@ -1336,7 +1833,7 @@ mod tests {
     fn a_single_track_yours_language_is_a_flat_row_under_subtitles() {
         let subs = vec![stream(1, 0, "Spanish", "spa", "")];
         let names = TrackNames::new();
-        let (sections, targets) = sub_layout(&subs, &[0], &names, &["spa"], -1, true, 0, SubtitleTone::White);
+        let (sections, targets) = sub_layout(&subs, &[0], &names, &["spa"], -1, true, 0);
         assert_eq!(sections[0].header, "Subtitles");
         assert_eq!(sections[0].rows.len(), 2, "Off + the one track");
         assert_eq!(sections[0].rows[1].label, "Spanish");
@@ -1354,7 +1851,7 @@ mod tests {
         let offered: Vec<usize> = (0..subs.len()).collect();
         let names = TrackNames::new();
         let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0, SubtitleTone::White);
+            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0);
         let forced_row = sections[1]
             .rows
             .iter()
@@ -1377,7 +1874,7 @@ mod tests {
         let offered: Vec<usize> = (0..subs.len()).collect();
         let names = TrackNames::new();
         let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0, SubtitleTone::White);
+            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0);
         let labels: Vec<&str> = sections[1].rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, ["iTunes \u{b7} Track 1", "iTunes \u{b7} Track 2"]);
     }
@@ -1397,22 +1894,22 @@ mod tests {
         let names = TrackNames::new();
 
         let subs = vec![mk(true, false, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Sdh]));
 
         let subs = vec![mk(false, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
 
         let subs = vec![mk(true, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         assert!(
             matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Sdh]),
             "SDH beats EXTERNAL"
         );
 
         let subs = vec![mk(false, false, "pgs")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         assert!(matches!(sections.last().unwrap().rows[0].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
     }
 
@@ -1427,7 +1924,7 @@ mod tests {
         let offered: Vec<usize> = (0..subs.len()).collect();
         let names = TrackNames::new();
         let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &[], -1, true, 0, SubtitleTone::White);
+            sub_layout(&subs, &offered, &names, &[], -1, true, 0);
         let other = sections.last().unwrap();
         assert_eq!(other.header, "Other languages");
         assert_eq!(other.accessory, "2 languages");
@@ -1435,7 +1932,7 @@ mod tests {
         assert_eq!(labels, ["Arabic", "German"], "sorted by language name");
 
         let subs = vec![stream(1, 0, "German", "deu", "")];
-        let (sections, _targets) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _targets) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         assert_eq!(sections.last().unwrap().accessory, "1 language");
     }
 
@@ -1464,7 +1961,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let (sections, _) =
-                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -60_000, SubtitleTone::LightGrey);
+                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -60_000);
             let mut table = TableView::new();
             table.set_sections(sections, 0, false);
             out.extend(table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
@@ -1498,7 +1995,7 @@ mod tests {
         subs[7].external = true;
         let offered: Vec<usize> = (0..subs.len()).collect();
         let (sections, _) =
-            sub_layout(&subs, &offered, &TrackNames::new(), &["rus"], 1, true, 300, SubtitleTone::Grey);
+            sub_layout(&subs, &offered, &TrackNames::new(), &["rus"], 1, true, 300);
         let mut runs: Vec<String> = Vec::new();
         for sec in &sections {
             runs.push(sec.header.clone());
@@ -1532,13 +2029,13 @@ mod tests {
         let subs = vec![stream(1, 0, "English", "eng", "")];
         let names = TrackNames::new();
 
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, false, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, false, 0);
         assert!(
             sections.iter().flat_map(|s| &s.rows).all(|r| r.label != "Timing"),
             "a transcode burns captions; no client offset can reach them"
         );
 
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
         let timing = sections
             .iter()
             .flat_map(|s| &s.rows)
@@ -1546,7 +2043,7 @@ mod tests {
             .expect("Timing row");
         assert!(timing.dim, "subtitles are Off");
 
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], 0, true, 0, SubtitleTone::White);
+        let (sections, _) = sub_layout(&subs, &[0], &names, &[], 0, true, 0);
         let timing = sections
             .iter()
             .flat_map(|s| &s.rows)
@@ -1558,7 +2055,7 @@ mod tests {
     // ---- track_menu: the targets mapping -------------------------------------------------------
 
     #[test]
-    fn targets_map_flat_rows_to_off_sub_timing_and_color_in_drawn_order() {
+    fn targets_map_flat_rows_to_off_sub_timing_and_style_in_drawn_order() {
         let _g = crate::testlock::serial();
         crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
@@ -1574,7 +2071,7 @@ mod tests {
         let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         assert_eq!(
             menu.ids(),
-            vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Color, TrackRow::Sub(0)]
+            vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Sub(0)]
         );
     }
 
@@ -1611,9 +2108,9 @@ mod tests {
         assert_eq!(menu.form.selected_id().copied(), Some(TrackRow::Sub(1)));
     }
 
-    /// `row_for_sub_target("track:N")` names the N-th TRACK row, never Off/Timing/Color: the
+    /// `row_for_sub_target("track:N")` names the N-th TRACK row, never Off/Timing/Style: the
     /// `subtitle_text_srt` manifest case once hard-coded row 3, which stopped being a track when
-    /// the panel's layout changed (it resolved to Color and committed nothing).
+    /// the panel's layout changed (it resolved to Style and committed nothing).
     #[test]
     fn row_for_sub_target_finds_track_rows_and_skips_off_timing_and_color() {
         let _g = crate::testlock::serial();
@@ -1635,10 +2132,10 @@ mod tests {
 
     // ---- track_menu: sidecar, tone and Timing rows dispatch to their own outcomes -------------
 
-    /// **A Subtitles-panel row is a track, Color, or Timing, never ambiguous — and the split is
+    /// **A Subtitles-panel row is a track, Style, or Timing, never ambiguous — and the split is
     /// by `targets[sel]`.** Off + an embedded English track + an external French sidecar (none of
     /// them "yours", so all three land flat under "Subtitles"/"Other languages" respectively),
-    /// then the headerless Timing/Color section.
+    /// then the headerless Timing/Style section.
     #[test]
     fn sidecar_and_settings_rows_map_to_their_own_commits_in_one_menu() {
         let _g = crate::testlock::serial();
@@ -1667,14 +2164,14 @@ mod tests {
             },
         ]);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        // Off(0), Timing(1), Color(2), English(3), French sidecar(4) — "Other languages" sorts
+        // Off(0), Timing(1), Style(2), English(3), French sidecar(4) — "Other languages" sorts
         // English before French, and the settings section always precedes it.
         assert_eq!(
             menu.ids(),
             vec![
                 TrackRow::SubOff,
                 TrackRow::Timing,
-                TrackRow::Color,
+                TrackRow::Style,
                 TrackRow::Sub(0),
                 TrackRow::Sub(1),
             ]
@@ -1694,46 +2191,26 @@ mod tests {
             }
         );
 
-        menu.focus_row(2);
-        assert_eq!(
-            menu.on_ok(store.view()),
-            TrackOk::Commit { commit: TrackCommit::SubtitleTone(SubtitleTone::LADDER[1]), keep_open: true }
-        );
-
         menu.focus_row(1);
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::OpenTiming,
             "the sidecar is now the active subtitle, so Timing is no longer inert"
         );
-    }
 
-    // ---- track_menu: Color cycles and wraps and keeps the panel open --------------------------
-
-    #[test]
-    fn color_cycles_the_tone_ladder_with_wrap_and_keeps_the_panel_open() {
-        let _g = crate::testlock::serial();
-        crate::player::sidecar::reset();
-        crate::player::restore_subtitle_tone(SubtitleTone::White);
-        let ps = crate::route::PlaybackSession::IDLE;
-        let store = crate::stores::metadata::MetadataStore::default();
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        let color_row = menu
-            .form
-            .index_of(&TrackRow::Color)
-            .expect("Color row");
-        menu.focus_row(color_row as c_int);
-
-        let ladder = SubtitleTone::LADDER;
-        for want in ladder.iter().cycle().skip(1).take(ladder.len()) {
-            assert_eq!(
-                menu.on_ok(store.view()),
-                TrackOk::Commit { commit: TrackCommit::SubtitleTone(*want), keep_open: true }
-            );
-            // the read-out is re-written in place on the focused row
-            let row = menu.form.table.row_mut(color_row as c_int).expect("Color row");
-            assert_eq!(row.value.as_deref(), Some(tone_label(*want)));
-        }
+        // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
+        menu.focus_row(2);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size is first and live for a text subtitle");
+        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Size)]);
+        assert!(menu.pop(&ps, store.view()));
+        menu.focus_key(TrackRow::OpenField(StyleField::Color).key().0);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        menu.focus_key(TrackRow::Choice(StyleField::Color, 1).key().0);
+        assert_eq!(
+            menu.on_ok(store.view()),
+            TrackOk::Commit { commit: TrackCommit::SubtitleTone(SubtitleTone::LADDER[1]), keep_open: true }
+        );
     }
 
     // ---- track_menu: Timing returns OpenTiming, and is inert while Off ------------------------
@@ -2542,7 +3019,7 @@ mod enhancement_menu_tests {
     }
 
     /// **The failing case this fix closes**: while the audio enhancement is actually burning the
-    /// on-screen (embedded) subtitle into the picture, the Subtitles tab's Timing and Color rows
+    /// on-screen (embedded) subtitle into the picture, the Subtitles tab's Timing and Style rows
     /// must stay VISIBLE (not omitted the way an ordinary transcode omits Timing), drawn dim, with
     /// one plain-language note — the text is already in the video, and neither control can reach
     /// it. The track-selection rows (Off, the embedded track itself) are unaffected.
@@ -2555,16 +3032,16 @@ mod enhancement_menu_tests {
             applied_burn: true,
             ..Default::default()
         });
-        assert!(menu.sub_style_locked, "the live route is burning this subtitle in");
+        assert!(menu.own_burn_built(), "the live route is burning this subtitle in");
 
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        let color_i = menu.form.index_of(&TrackRow::Color).expect("Color row present");
+        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
         let rows = flat_rows(&menu);
         assert!(rows[timing_i].dim, "Timing is dim under a live burn");
-        assert!(rows[color_i].dim, "Color is dim under a live burn");
+        assert!(rows[style_i].dim, "Style is dim under a live burn");
 
-        let note_i = color_i + 1;
-        assert!(menu.form.id_at(note_i).is_none(), "the note is an inert slot: no id, no key, no action");
+        let note_i = style_i + 1;
+        assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
         assert_eq!(rows[note_i].label, crate::i18n::msg::widgets_tracks_style_locked_note());
         assert!(rows[note_i].sep, "a note row is non-selectable");
 
@@ -2590,19 +3067,16 @@ mod enhancement_menu_tests {
             subtitle_effect: crate::route::SubtitleEffect::Embedded,
             ..Default::default()
         });
-        assert!(!menu.sub_style_locked);
+        assert!(!menu.own_burn_built());
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         assert!(!flat_rows(&menu)[timing_i].dim);
-        assert!(
-            !flat_rows(&menu).iter().any(|r| r.label == crate::i18n::msg::widgets_tracks_style_locked_note()),
-            "no note while the rows are live",
-        );
+        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()));
         teardown(&ps);
     }
 
-    /// OK on the dimmed Timing/Color rows is a no-op (`TrackOk::Inert`), the same "focusable but
+    /// OK on the dimmed Timing/Style rows is a no-op (`TrackOk::Inert`), the same "focusable but
     /// inert" contract `TrackRow::Timing` already had while subtitles are Off — it must not open
-    /// the Timing capsule or cycle Color while the server owns the picture.
+    /// the Timing capsule or push Style while the server owns the picture.
     #[test]
     fn subtitles_ok_on_locked_timing_and_color_is_inert() {
         let _g = crate::testlock::serial();
@@ -2618,15 +3092,16 @@ mod enhancement_menu_tests {
         menu.focus_row(timing_i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
 
-        let color_i = menu.form.index_of(&TrackRow::Color).unwrap();
-        menu.focus_row(color_i as c_int);
+        let style_i = menu.form.index_of(&TrackRow::Style).unwrap();
+        menu.focus_row(style_i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
+        assert!(menu.page_path().is_empty(), "a locked Style row opens no page");
 
         teardown(&ps);
     }
 
     /// Turning the subtitle Off while a Burn is live is still a live pick, not inert — the panel
-    /// must keep re-routing normally; only Timing/Color are locked.
+    /// must keep re-routing normally; only Timing/Style are locked.
     #[test]
     fn subtitles_off_stays_live_under_a_burn() {
         let _g = crate::testlock::serial();
@@ -2673,7 +3148,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         assert_eq!(menu.active_sub, -1, "off is checked before the pick");
-        assert!(!menu.sub_style_locked, "not a burn yet");
+        assert!(!menu.own_burn_built(), "not a burn yet");
 
         // Seconds later: the SAME session's route has actually landed the Burn (a fresh
         // `PlaybackSession` standing in for the live one having moved on while this menu instance
@@ -2688,9 +3163,9 @@ mod enhancement_menu_tests {
         menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps_after, store.view());
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
-        assert!(menu.sub_style_locked, "Color/Timing must lock once the live route is really a Burn");
-        let color_i = menu.form.index_of(&TrackRow::Color).expect("Color row present");
-        assert!(flat_rows(&menu)[color_i].dim, "Color must actually redraw dim, not just flag it internally");
+        assert!(menu.own_burn_built(), "Color/Timing must lock once the live route is really a Burn");
+        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
+        assert!(flat_rows(&menu)[style_i].dim, "Style must actually redraw dim, not just flag it internally");
         let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
         assert!(!flat_rows(&menu)[off_i].checked, "Off must no longer read checked");
         let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
@@ -2799,13 +3274,17 @@ mod focus_tests {
             form,
             offset_ms: 0,
             tone: SubtitleTone::White,
+            size: SubtitleSize::Medium,
+            position: SubtitlePosition::Low,
+            pages: Vec::new(),
+            renderer: SubRenderer::Text,
+            sub_sig: None,
             yours: Vec::new(),
             enhance_shown: None,
             enhance_route: None,
             enhance_disabled: None,
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
-            sub_style_locked: false,
         }
     }
 
@@ -2965,5 +3444,500 @@ mod localized_offset_tests {
             assert_eq!(crate::ui::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
             assert_eq!(crate::ui::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
         }
+    }
+}
+
+#[cfg(test)]
+mod keyed_form_tests {
+    use super::tests::{store_with, store_with_audio, stream};
+    use super::*;
+    use crate::ui::form::RowKeys;
+    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
+
+    fn audio(id: i64, index: i64, default: bool) -> metadata::Stream {
+        metadata::Stream { id, index, codec: "aac".into(), channels: 2, default, ..Default::default() }
+    }
+
+    fn key_of(menu: &TrackMenuState, id: TrackRow) -> Option<RowKey> {
+        menu.form.index_of(&id).and_then(|i| menu.form.key_at(i))
+    }
+
+    #[test]
+    fn keys_are_distinct_across_both_tabs_and_below_the_ceiling() {
+        let mut ids = vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Boost, TrackRow::Loudness];
+        for field in StyleField::ALL {
+            ids.push(TrackRow::OpenField(field));
+            ids.extend((0..field.rungs()).map(|i| TrackRow::Choice(field, i)));
+        }
+        ids.extend((0..40).flat_map(|i| [TrackRow::Sub(i), TrackRow::Audio(i)]));
+        let keys: Vec<u32> = ids.iter().map(|i| i.key().0).collect();
+        for (n, a) in keys.iter().enumerate() {
+            assert!(*a < BAND_BASE);
+            assert!(!keys[n + 1..].contains(a), "duplicate key {a:#x}");
+        }
+    }
+
+    /// **A live refresh that inserts the enhancement rows leaves focus on the same audio track**,
+    /// found by id, with no pending reseat (the engine's key still names the landed row).
+    #[test]
+    fn a_live_refresh_inserting_the_enhancement_rows_keeps_focus_on_the_same_audio_track() {
+        let _g = crate::testlock::serial();
+        let store = store_with_audio(vec![audio(501, 0, true), audio(502, 1, false)]);
+        let (ps_hidden, _s1) = enhancement_test_session(EnhTestFixture {
+            pass: crate::plex::serverinfo::Subscription::No,
+            ..Default::default()
+        });
+        let mut menu = TrackMenuState::new(&ps_hidden, store.view(), 0, Vec::new());
+        assert_eq!(menu.ids(), vec![TrackRow::Audio(0), TrackRow::Audio(1)]);
+        menu.focus_key(TrackRow::Audio(1).key().0);
+        let before = key_of(&menu, TrackRow::Audio(1));
+
+        let (ps_offered, _s2) = enhancement_test_session(EnhTestFixture::default());
+        menu.update(0.0, &crate::ui::fixture::FixtureMeasure, &ps_offered, store.view());
+
+        assert!(menu.enhance_shown.is_some(), "premise: the pair was inserted");
+        assert_eq!(menu.ids().len(), 4, "two tracks + Boost + Loudness");
+        assert_eq!(menu.selected_id(), Some(TrackRow::Audio(1)));
+        assert_eq!(key_of(&menu, TrackRow::Audio(1)), before, "the track's key did not move");
+        assert_eq!(RowKeys::reseat(&menu.form), None, "the engine's key still names the landed row");
+        reset_player_control_for_test(&ps_hidden);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// **Adding a subtitle track to the offered list moves no other row's key**, even though the
+    /// added track sorts above them on screen (its key is its subs-list index, not its position).
+    #[test]
+    fn focus_keys_are_stable_when_a_subtitle_track_is_added() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        let two = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
+        let mut three = two.clone();
+        three.push(stream(3, 2, "Arabic", "ara", "")); // "Other languages" sorts Arabic first
+        let (a, b) = (store_with(two), store_with(three));
+        let before = TrackMenuState::new(&ps, a.view(), 1, Vec::new());
+        let after = TrackMenuState::new(&ps, b.view(), 1, Vec::new());
+        assert!(after.form.index_of(&TrackRow::Sub(2)) < after.form.index_of(&TrackRow::Sub(0)),
+            "premise: the new track is drawn ABOVE the existing ones");
+        for id in [TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Sub(0), TrackRow::Sub(1)] {
+            assert!(key_of(&before, id).is_some(), "{id:?} is built");
+            assert_eq!(key_of(&before, id), key_of(&after, id), "{id:?} kept its key");
+        }
+    }
+
+    /// **Initial focus is the active track on both tabs** — and Off when no subtitle is active.
+    #[test]
+    fn initial_focus_lands_on_the_active_track_on_both_tabs() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        let ps = crate::route::PlaybackSession::IDLE;
+        // Audio: the flagged default (IDLE records no sid) is the SECOND track
+        let store = store_with_audio(vec![audio(501, 0, false), audio(502, 1, true), audio(503, 2, false)]);
+        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        assert_eq!(menu.selected_id(), Some(TrackRow::Audio(1)));
+        assert_eq!(menu.sel(), 1);
+
+        // Subtitles: Off when none is active, else the active track (even inside "Other languages")
+        let subs = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
+        let store = store_with(subs);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        assert_eq!(menu.selected_id(), Some(TrackRow::SubOff));
+        menu.active_sub = 1;
+        menu.rebuild(&ps, store.view(), 1, false);
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
+        menu.focus_tab(&ps, store.view(), 0); // a tab switch re-opens on that tab's own active row
+        menu.focus_tab(&ps, store.view(), 1);
+        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
+    }
+}
+
+#[cfg(test)]
+mod style_page_tests {
+    use super::tests::{store_with, stream};
+    use super::*;
+    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture, SubtitleEffect};
+
+    fn teardown(ps: &crate::route::PlaybackSession) {
+        reset_player_control_for_test(ps);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A direct-play route with the subtitle `codec` active (or none when `effect` is `None`).
+    fn open_with(
+        codec: &str,
+        effect: SubtitleEffect,
+    ) -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture {
+            remux: None,
+            subtitle_effect: effect,
+            ..Default::default()
+        });
+        let mut s = stream(999, 0, "English", "eng", "");
+        s.codec = codec.into();
+        let store = store_with(vec![s]);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        (menu, ps, store)
+    }
+
+    fn open_text() -> (TrackMenuState, crate::route::PlaybackSession, crate::stores::metadata::MetadataStore) {
+        open_with("srt", SubtitleEffect::Sidecar)
+    }
+
+    fn focus_id(menu: &mut TrackMenuState, id: TrackRow) {
+        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.selected_id(), Some(id));
+    }
+
+    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
+        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
+        menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap()
+    }
+
+    /// OK on Style pushes the Style page, focus on Size by id; OK on Size pushes its picker with
+    /// the checked rung focused; LEFT pops each back onto the row that opened it.
+    #[test]
+    fn push_lands_on_an_explicit_id_and_pop_restores_the_opener() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.page_path(), [TrackPage::Style]);
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenField(StyleField::Size)));
+        assert_eq!(menu.form.table.title(), Some(TrackPage::Style.title().as_ref()));
+
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Position));
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Position)]);
+        assert_eq!(
+            menu.selected_id(),
+            Some(TrackRow::Choice(StyleField::Position, menu.position.index() as usize)),
+            "a picker opens on its checked rung"
+        );
+
+        menu.on_left(&ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::Style]);
+        assert_eq!(menu.selected_id(), Some(TrackRow::OpenField(StyleField::Position)), "the opener, by id");
+        menu.on_left(&ps, store.view());
+        assert!(menu.page_path().is_empty());
+        assert_eq!(menu.selected_id(), Some(TrackRow::Style));
+        assert_eq!(menu.form.table.title(), None, "the root has no title band");
+        teardown(&ps);
+    }
+
+    /// RIGHT on a Nav row enters the page exactly as OK does; RIGHT off one is the tab switch.
+    #[test]
+    fn right_on_a_nav_row_pushes_and_left_at_the_root_switches_tab() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_right(&ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::Style]);
+        assert!(!menu.pop(&ps, store.view()) || menu.page_path().is_empty());
+        assert!(!menu.pop(&ps, store.view()), "BACK at the root pops nothing: the caller dismisses");
+        menu.on_left(&ps, store.view());
+        assert_eq!(menu.tab, 0, "LEFT at the root is still the tab switch");
+        teardown(&ps);
+    }
+
+    /// A pop reinstates the scroll the page was left at, not the top.
+    #[test]
+    fn pop_restores_the_scroll_the_root_was_left_at() {
+        let _g = crate::testlock::serial();
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture {
+            remux: None,
+            subtitle_effect: SubtitleEffect::Sidecar,
+            ..Default::default()
+        });
+        let subs: Vec<_> = (0..40).map(|i| stream(999 + i, i, "English", "eng", &format!("Track {i}"))).collect();
+        let store = store_with(subs);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".to_string()]);
+        focus_id(&mut menu, TrackRow::Style);
+        for _ in 0..240 {
+            menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store.view());
+        }
+        let left_at = menu.form.table.scroll_pos();
+        assert!(left_at > 0.0, "the premise: 40 tracks push Style below the fold ({left_at})");
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert!(menu.form.table.scroll_pos() < left_at, "a page starts at its top");
+        assert!(menu.pop(&ps, store.view()));
+        assert_eq!(menu.form.table.scroll_pos(), left_at);
+        assert_eq!(menu.selected_id(), Some(TrackRow::Style));
+        teardown(&ps);
+    }
+
+    /// Picking a rung commits it live, keeps the panel and page open and moves the checkmark; the
+    /// already-checked rung is inert.
+    #[test]
+    fn a_picker_pick_commits_live_and_moves_the_checkmark() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size");
+        let current = menu.current_rung(StyleField::Size);
+        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "the focused rung is the checked one");
+
+        let other = (current + 1) % StyleField::Size.rungs();
+        focus_id(&mut menu, TrackRow::Choice(StyleField::Size, other));
+        assert_eq!(
+            menu.on_ok(store.view()),
+            TrackOk::Commit {
+                commit: TrackCommit::SubtitleSize(SubtitleSize::from_index(other as u8)),
+                keep_open: true
+            }
+        );
+        assert_eq!(menu.page_path().len(), 2, "the page stays");
+        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, other)).checked);
+        assert!(!row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
+        teardown(&ps);
+    }
+
+    /// The Style page reads the current value of each field on its Nav row.
+    #[test]
+    fn the_style_page_shows_each_fields_current_value() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        for field in StyleField::ALL {
+            let row = row_of(&menu, TrackRow::OpenField(field));
+            assert_eq!(row.label, field.label());
+            assert_eq!(row.value.as_deref(), Some(field.rung_label(menu.current_rung(field))));
+        }
+        teardown(&ps);
+    }
+
+    /// Locks per renderer kind: plain text leaves all three live; an image subtitle dims Size and
+    /// Position with the image note; ASS dims them with its own; Color stays live in every case,
+    /// and a dimmed row is inert for OK.
+    #[test]
+    fn size_and_position_lock_by_renderer_kind_and_color_never_does() {
+        let _g = crate::testlock::serial();
+        for (codec, renderer, note) in [
+            ("srt", SubRenderer::Text, None),
+            ("pgs", SubRenderer::Image, Some(crate::i18n::msg::widgets_tracks_style_image_note())),
+            ("ass", SubRenderer::Styled, Some(crate::i18n::msg::widgets_tracks_style_styled_note())),
+        ] {
+            let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
+            assert_eq!(menu.renderer, renderer, "{codec}");
+            focus_id(&mut menu, TrackRow::Style);
+            assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "{codec}: Style itself is live");
+            let locked = renderer != SubRenderer::Text;
+            for field in [StyleField::Size, StyleField::Position] {
+                assert_eq!(row_of(&menu, TrackRow::OpenField(field)).dim, locked, "{codec} {field:?}");
+            }
+            assert!(!row_of(&menu, TrackRow::OpenField(StyleField::Color)).dim, "{codec}: Color stays live");
+            let notes: Vec<_> = menu
+                .form
+                .table
+                .sections
+                .iter()
+                .flat_map(|s| &s.rows)
+                .filter(|r| r.is_note())
+                .map(|r| r.label.to_string())
+                .collect();
+            assert_eq!(notes, note.map(|n| n.to_string()).into_iter().collect::<Vec<_>>(), "{codec}");
+            if locked {
+                focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "{codec}: a dim Size row opens nothing");
+                menu.on_right(&ps, store.view());
+                assert_eq!(menu.page_path(), [TrackPage::Style], "{codec}: RIGHT is inert on it too");
+            }
+            focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
+            assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "{codec}: Color opens its picker");
+            teardown(&ps);
+        }
+    }
+
+    /// Style is dimmed with the locked note only for the actual own burn, and follows Timing's
+    /// availability: an ordinary transcode omits both, an own burn keeps both drawn and dim.
+    #[test]
+    fn style_follows_timings_availability() {
+        let _g = crate::testlock::serial();
+        let has = |menu: &TrackMenuState, id| menu.form.index_of(&id).is_some();
+        // an ordinary transcode that is not the own burn: neither row
+        let (ps, _) = enhancement_test_session(EnhTestFixture { remux: Some(false), ..Default::default() });
+        let store = store_with(vec![stream(999, 0, "English", "eng", "")]);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
+        assert!(!has(&menu, TrackRow::Timing) && !has(&menu, TrackRow::Style));
+        teardown(&ps);
+        // direct play: both, live
+        let (menu, ps, _store) = open_text();
+        assert!(has(&menu, TrackRow::Timing) && has(&menu, TrackRow::Style));
+        assert!(!row_of(&menu, TrackRow::Style).dim);
+        teardown(&ps);
+    }
+
+    /// **A Style page never outlives what it was built for**: a change of the
+    /// page's availability (here the renderer kind) while on a sub-page pops to the root (opener and
+    /// scroll restored); an unchanged signature leaves the page alone; on the root any change
+    /// refreshes in place.
+    #[test]
+    fn a_rebuild_signature_mismatch_on_a_sub_page_pops_to_the_root() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_with("srt", SubtitleEffect::Sidecar);
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::Style], "an unchanged signature leaves the page");
+
+        // the same subtitle, now an image one: the renderer kind moved under the page
+        let mut image = stream(999, 0, "English", "eng", "");
+        image.codec = "pgs".into();
+        let store2 = store_with(vec![image]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert!(menu.page_path().is_empty(), "popped to the root");
+        assert_eq!(menu.renderer, SubRenderer::Image);
+        assert_eq!(menu.selected_id(), Some(TrackRow::Style), "on the row that opened it");
+        assert_eq!(menu.form.table.title(), None);
+        teardown(&ps);
+    }
+
+    /// **Only an availability change pops a sub-page.** A subs fingerprint change (a track offered
+    /// mid-play) or an enhancement-route change that leaves the renderer and the Style gate alone
+    /// refreshes the open Size picker in place: same page, same focused row, new signature stored.
+    #[test]
+    fn a_signature_change_that_keeps_the_pages_availability_refreshes_in_place() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
+        menu.on_ok(store.view());
+        let picker = [TrackPage::Style, TrackPage::Picker(StyleField::Size)];
+        assert_eq!(menu.page_path(), picker);
+        let focused = TrackRow::Choice(StyleField::Size, 0);
+        focus_id(&mut menu, focused);
+        let before = menu.sub_sig.clone();
+
+        // a second subtitle offered mid-play: the fingerprint moves, the renderer does not
+        let store2 = store_with(vec![stream(999, 0, "English", "eng", ""), stream(1000, 1, "French", "fra", "")]);
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps, store2.view());
+        assert_ne!(menu.sub_sig, before, "the new fingerprint is stored");
+        assert_eq!(menu.page_path(), picker, "the picker stays");
+        assert_eq!(menu.selected_id(), Some(focused), "on the row the viewer was on");
+        teardown(&ps);
+
+        // the enhancement's subtitle effect moves (an embedded track is now the one on screen), still no own burn
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
+        menu.on_ok(store.view());
+        focus_id(&mut menu, focused);
+        let before = menu.sub_sig.clone();
+        teardown(&ps);
+        let (ps2, _sid) = enhancement_test_session(EnhTestFixture {
+            remux: None,
+            subtitle_effect: SubtitleEffect::Embedded,
+            ..Default::default()
+        });
+        menu.update(0.016, &crate::ui::fixture::FixtureMeasure, &ps2, store.view());
+        assert_ne!(menu.sub_sig, before, "the enhancement route is part of the signature");
+        assert_eq!(menu.page_path(), picker, "the picker stays");
+        assert_eq!(menu.selected_id(), Some(focused));
+        teardown(&ps2);
+    }
+
+    /// **Every Style surface fits the panel in every shipped language**: the Subtitles root with
+    /// its Style row, the Style page under each renderer kind (Size and Position dim with their
+    /// notes), and each picker page, judged by the same gates as the rest of the menu.
+    #[test]
+    fn every_style_page_fits_the_panel_in_every_language() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            for codec in ["srt", "pgs", "ass"] {
+                let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
+                let mut judge = |menu: &TrackMenuState| {
+                    out.extend(menu.form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+                    out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+                    out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+                };
+                judge(&menu);
+                menu.push(TrackPage::Style);
+                judge(&menu);
+                for field in StyleField::ALL {
+                    menu.push(TrackPage::Picker(field));
+                    judge(&menu);
+                    assert!(menu.pop(&ps, store.view()));
+                }
+                teardown(&ps);
+            }
+        }
+        crate::ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The locked-renderer notes wrap to two lines at the player-menu floor (three in Spanish).** A Style page is a few
+    /// short rows; without [`theme::layout::PLAYER_MENU_MIN_W`] it shrank to its labels and the
+    /// note wrapped to three lines in a sliver.
+    #[test]
+    fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let measure = crate::fontcov::advances::ShippedMeasure;
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _g = crate::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            for codec in ["pgs", "ass"] {
+                let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
+                menu.push(TrackPage::Style);
+                let w = menu.form.table.menu_panel_width(&measure);
+                assert!(w >= theme::layout::PLAYER_MENU_MIN_W, "{language:?}: the page is not a sliver ({w})");
+                menu.form.table.fit_notes(w, &measure);
+                let lines = menu.form.table.sections.iter().flat_map(|s| &s.rows)
+                    .filter(|r| r.is_note()).map(|r| r.note_lines.get()).max().expect("a note row");
+                // Spanish's longer wording needs ~520px for two lines; at the 440 floor it takes three
+                // (measured), English and Belarusian take two
+                let allowed = if language == Preference::Es { 3 } else { 2 };
+                assert!(lines <= allowed, "{language:?} {codec}: the note takes {lines} lines at {w}px");
+                teardown(&ps);
+            }
+        }
+    }
+
+    /// The title band is a pointer-only stop: its key is recognised, no row owns it.
+    #[test]
+    fn the_title_key_is_the_bands_and_no_rows() {
+        let _g = crate::testlock::serial();
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        assert!(TrackMenuState::is_title_key(TITLE_KEY));
+        assert!(menu.keys().iter().all(|k| !TrackMenuState::is_title_key(*k)));
+        teardown(&ps);
+    }
+
+    /// The replay canon carries the tab, the page path, each opener and the selected key: two
+    /// states that differ in any of them hash apart.
+    #[test]
+    fn the_canon_tells_pages_openers_and_selections_apart() {
+        let _g = crate::testlock::serial();
+        let hash = |menu: &TrackMenuState| {
+            let mut c = Canon::new();
+            menu.canon(&mut c);
+            c.finish()
+        };
+        let (mut menu, ps, store) = open_text();
+        focus_id(&mut menu, TrackRow::Style);
+        let root = hash(&menu);
+        menu.on_ok(store.view());
+        let style = hash(&menu);
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
+        let style_color = hash(&menu);
+        menu.on_ok(store.view());
+        let picker = hash(&menu);
+        let all = [root, style, style_color, picker];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        menu.on_left(&ps, store.view());
+        assert_eq!(hash(&menu), style_color, "a pop returns to the recorded state");
+        teardown(&ps);
     }
 }

@@ -157,3 +157,26 @@ fn the_field_list_rereads_a_local_value_a_picker_committed() {
     assert_eq!(parent.state.values[0], Quality::P480.label());
     crate::route::restore_quality(previous);
 }
+
+/// A Size/Position pick made anywhere (the player's Style pages publish the live value before
+/// their write lands) shows in the list's cached read-outs on its next tick.
+#[test]
+fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
+    let _serial = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("pref-parent-look");
+    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
+    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+    crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
+    let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let size_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleSize)).unwrap();
+    let position_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap();
+    assert_eq!(parent.state.values[size_row], crate::i18n::msg::settings_playback_subtitle_size_medium());
+
+    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Large);
+    crate::route::restore_subtitle_position(crate::route::SubtitlePosition::High);
+    drive(&mut parent, tick(), 0);
+    assert_eq!(parent.state.values[size_row], crate::i18n::msg::settings_playback_subtitle_size_large());
+    assert_eq!(parent.state.values[position_row], crate::i18n::msg::settings_playback_subtitle_position_high());
+    crate::route::restore_subtitle_size(size);
+    crate::route::restore_subtitle_position(position);
+}

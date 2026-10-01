@@ -2089,7 +2089,9 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 // picker's busy state and the login report alert (0x677d_0944_ef25_3900 before the collections).
 // Settings form PR 3: the picker is its own page (`PickerV1`) and the field list is a FormTable
 // page (`PreferencesV3`); the previous pin was 0x668c_44dc_797c_5b0f.
-const SCREEN_SHAPES_PIN: u64 = 0x1a5c_e155_557b_e949;
+// Player sub-menus PR 2b: the track menu owns a page stack (`TrackPage`) and the overlay shape
+// carries it; the previous pin was 0x1a5c_e155_557b_e949.
+const SCREEN_SHAPES_PIN: u64 = 0x97ff_59c7_9aab_e35e;
 
 #[cfg(test)]
 mod arg_tests {

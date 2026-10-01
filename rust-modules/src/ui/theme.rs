@@ -244,6 +244,16 @@ pub mod space {
     pub const XL: f32 = 64.0;
 }
 
+/// **Panel geometry tokens** — widths a whole class of popover shares, so no panel carries a width
+/// literal of its own.
+pub mod layout {
+    /// Narrowest an in-player popover (Tracks, More) is drawn, at 1080p. A small page (Style, a
+    /// Size / Position / Color picker, the More menu) would otherwise shrink to its labels and wrap
+    /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
+    /// content still grows the panel up to `ui::table::MENU_MAX_W`.
+    pub const PLAYER_MENU_MIN_W: f32 = 440.0;
+}
+
 /// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
 /// system, beside [`size`] (type) and [`space`] (gaps), and it exists for the same reason: a logo
 /// used to be sized by a per-screen literal (96 on the home hero, 120 on the detail hero, 54 on the

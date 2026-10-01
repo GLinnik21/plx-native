@@ -11,7 +11,9 @@
 //! loads one when there is none), asks the Direct Play *Forced* question before persisting it,
 //! submits through the same `AppFx::Preferences` paths, and pops on a DURABLE receipt. Choosing the
 //! checked option pops without a write (compared against the canonical current value, so a stored
-//! deprecated code is never rewritten by a pick that changed nothing). A failed write keeps the
+//! deprecated code is never rewritten by a pick that changed nothing) — except Size and Position,
+//! which publish their live value before the write lands: there the checked row must also match the
+//! STORED value, so OK on it after a failed write retries instead of popping over an unsaved pick. A failed write keeps the
 //! page, shows the status and — for the account fields — a Retry row. BACK is held while an account
 //! write is in flight, so the receipt always lands on a page that can publish it to its parent.
 use super::*;
@@ -82,6 +84,23 @@ impl PickerPage {
     fn current(&self) -> Value {
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }
+    /// Whether the STORED setting already is `value`. Only Size and Position can differ from
+    /// [`Self::current`]: they publish the live value before the write lands, so after a failed
+    /// write the checked row is live but not on disk, and OK on it must retry rather than pop.
+    fn durable(&self, value: &Value) -> bool {
+        match value {
+            Value::SubtitleSize(v) => crate::plex::session::peek().subtitle_size() == *v,
+            Value::SubtitlePosition(v) => crate::plex::session::peek().subtitle_position() == *v,
+            _ => true,
+        }
+    }
+    /// Position of the checked option right now. Size and Position publish their live value the
+    /// moment a pick is made (before the write lands), so this can move without a receipt.
+    fn checked_position(&self) -> u32 {
+        let current = self.current();
+        field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+            .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
+    }
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.kind().title()),
             self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
@@ -139,7 +158,7 @@ impl PickerPage {
         // OK on the checked row is not a change. Compared against the CANONICAL current value, so a
         // stored deprecated code (`pb`) is not rewritten to `pt-BR` on the user's account by a pick
         // that changed nothing.
-        if self.current() == value { self.pop(fx); return; }
+        if self.current() == value && self.durable(&value) { self.pop(fx); return; }
         if value == Value::DirectPlay(DirectPlayMode::Forced) && self.state.direct_play != DirectPlayMode::Forced {
             self.alert.open(crate::i18n::msg::settings_playback_force_question_c(), crate::i18n::msg::settings_playback_force_body());
             self.state.confirming = true; self.state.affirmative = false;
@@ -226,6 +245,11 @@ impl Machine<InnerHost> for PickerPage {
                             self.state.selected = RETRY_KEY;
                             self.focus(fx, GroupId(0));
                         } else if !had_rows && cx.focus.current.is_none() { self.focus(fx, GroupId(0)); }
+                        fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                    }
+                    // an optimistic Size/Position pick published its value: move the checkmark now
+                    Landed::Nothing if !started && self.checked_position() != self.state.checked => {
+                        self.rebuild(false);
                         fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
                     }
                     Landed::Nothing if started => { self.rebuild(true); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
