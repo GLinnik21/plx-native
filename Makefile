@@ -1493,7 +1493,7 @@ check-python: check-localization
 	python3 ci/test_cargo_seed.py
 	@# `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
 	@# PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
-	@# attempt; no address or password on any line; and `make -n deploy` stays silent about both.
+	@# attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
 	python3 ci/test_tv_ssh.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
