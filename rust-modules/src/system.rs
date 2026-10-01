@@ -514,6 +514,267 @@ pub(crate) fn opaque_route(player: bool) {
 #[cfg(feature = "hostsim")]
 pub(crate) fn opaque_route(_player: bool) {}
 
+// ---- The COMPOSITOR FRAME-CALLBACK PROBE (`/tmp/plxnative-framecb`) -----------------------------
+//
+// A present's wait for a free back buffer is paid inside the frame's first framebuffer-0 command
+// (the `clear` span), and from inside the app that wait reads the same whether the compositor
+// repainted late, skipped a repaint, or repainted on time and we were slow to notice. This probe
+// asks the compositor directly: one `wl_surface.frame` request per presented frame, placed before
+// the swap that commits it, whose `done(time)` event carries the COMPOSITOR'S OWN millisecond
+// stamp of the repaint that picked the commit up. Printed beside the frame's `FRAMEDROP` line
+// with our own monotonic clock, the two tell those cases apart.
+//
+// It also prices the frame thread over the three stretches of a player frame's present: `w` (the
+// first framebuffer command, where the driver waits for a back buffer), `d` (the draw after it)
+// and `s` (the swap). Each prints `<p>=<wall>/<cpu>/<runq>` in ms and `<p>sw=<slept>/<preempted>`
+// context switches: wall time that is neither CPU nor run-queue wait was spent BLOCKED, run-queue
+// wait is a thread that wanted to run and was not given a CPU, and CPU is work. `wait_at=` is the
+// monotonic ms at which the wait began, for lining a frame up with a kernel trace.
+//
+// Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
+// from the process's own scope, ONCE (`frame_syms`, on the first armed present, before the swap
+// stretch is marked), so the probe adds no symbol to the link and its lookups are not charged to
+// the `s` stretch. Unarmed it is one latched bool per presented frame. The whole probe is
+// compiled only with `devtriggers` (and not in the simulator); the shipping build has the empty
+// stubs at the end of this section.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-framecb` — see the section comment above.
+    pub(crate) fn frame_probe_armed = "framecb";
+);
+
+/// `(frame seq, compositor stamp ms, our CLOCK_MONOTONIC µs at dispatch)` for every `done` that
+/// arrived since the last [`frame_probe_fields`].
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+static FRAME_DONE: std::sync::Mutex<Vec<(u32, u32, u64)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+static FRAME_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+fn mono_us() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a plain clock read into a local.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
+}
+
+/// What the frame thread has cost so far, read at each boundary of a frame's present.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+#[derive(Clone, Copy, Default)]
+struct ThreadCost {
+    /// `CLOCK_MONOTONIC`, µs.
+    at: u64,
+    /// On-CPU time, µs.
+    cpu: u64,
+    /// Time spent RUNNABLE but waiting for a CPU, µs (`/proc/thread-self/schedstat`, field 2).
+    /// Wall minus `cpu` minus this is time spent blocked.
+    runq: u64,
+    /// Voluntary context switches: the thread slept.
+    slept: u64,
+    /// Involuntary ones: it was preempted.
+    preempted: u64,
+}
+
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+impl ThreadCost {
+    fn now() -> Self {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a plain clock read into a local.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        let cpu = ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000;
+        #[cfg(target_os = "linux")]
+        let (slept, preempted) = {
+            // SAFETY: `getrusage` fills the zeroed struct it is handed.
+            let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) };
+            (ru.ru_nvcsw as u64, ru.ru_nivcsw as u64)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (slept, preempted) = (0, 0);
+        Self { at: mono_us(), cpu, runq: Self::runq_us(), slept, preempted }
+    }
+
+    /// The scheduler's own run-queue wait for this thread. One `pread` on a descriptor opened
+    /// once, by the frame thread, for itself; 0 where the file does not exist.
+    fn runq_us() -> u64 {
+        static FD: std::sync::OnceLock<c_int> = std::sync::OnceLock::new();
+        // SAFETY: a NUL-terminated literal path; the descriptor lives for the process.
+        let fd = *FD.get_or_init(|| unsafe {
+            libc::open(c"/proc/thread-self/schedstat".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
+        });
+        if fd < 0 {
+            return 0;
+        }
+        let mut buf = [0u8; 96];
+        // SAFETY: `buf` is a live local of the length passed.
+        let n = unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
+        let text = std::str::from_utf8(&buf[..n.max(0) as usize]).unwrap_or("");
+        // "<run ns> <run-queue wait ns> <timeslices>"
+        text.split_ascii_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) / 1000
+    }
+
+    /// ` <p>=<wall>/<cpu>/<runq> <p>sw=<slept>/<preempted>` for the stretch from `from` to `self`.
+    fn since(&self, from: &Self, phase: &str) -> String {
+        let ms = |a: u64, b: u64| a.saturating_sub(b) as f64 / 1000.0;
+        format!(
+            " {phase}={:.2}/{:.2}/{:.2} {phase}sw={}/{}",
+            ms(self.at, from.at),
+            ms(self.cpu, from.cpu),
+            ms(self.runq, from.runq),
+            self.slept.saturating_sub(from.slept),
+            self.preempted.saturating_sub(from.preempted)
+        )
+    }
+}
+
+/// This frame's boundaries: `[before the first framebuffer command, back buffer acquired, before
+/// the swap]`. Frame-thread only; a `Mutex` because it is a `static`.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+static FRAME_COST: std::sync::Mutex<[Option<ThreadCost>; 3]> = std::sync::Mutex::new([None; 3]);
+
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+fn frame_probe_mark(slot: usize) {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = FRAME_COST.lock() {
+        cost[slot] = Some(ThreadCost::now());
+    }
+}
+
+/// The frame's first framebuffer command is next: the wait for a back buffer starts here.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_waiting() {
+    frame_probe_mark(0);
+}
+
+/// The frame's first framebuffer command has returned: the back buffer is acquired.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_acquired() {
+    frame_probe_mark(1);
+}
+
+/// The libwayland entry points the probe calls, as addresses (a raw pointer is not `Sync`).
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+struct FrameSyms {
+    ctor: usize,
+    add_listener: usize,
+    callback_interface: usize,
+    /// Absent on a libwayland without it: the callback is then simply not destroyed.
+    destroy: Option<usize>,
+}
+
+/// Resolved once. `None` when any of the three request symbols is missing, which makes the probe a
+/// silent no-op.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+fn frame_syms() -> Option<&'static FrameSyms> {
+    static SYMS: std::sync::OnceLock<Option<FrameSyms>> = std::sync::OnceLock::new();
+    SYMS.get_or_init(|| {
+        Some(FrameSyms {
+            ctor: wl_sym("wl_proxy_marshal_constructor")? as usize,
+            add_listener: wl_sym("wl_proxy_add_listener")? as usize,
+            callback_interface: wl_sym("wl_callback_interface")? as usize,
+            destroy: wl_sym("wl_proxy_destroy").map(|p| p as usize),
+        })
+    })
+    .as_ref()
+}
+
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+unsafe extern "C" fn on_frame_done(data: *mut c_void, callback: *mut c_void, time: c_uint) {
+    if let Ok(mut done) = FRAME_DONE.lock() {
+        done.push((data as usize as u32, time, mono_us()));
+    }
+    // `wl_callback` is a one-shot: the client destroys it from its own `done`.
+    if let Some(destroy) = frame_syms().and_then(|s| s.destroy) {
+        let destroy: unsafe extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(destroy) };
+        unsafe { destroy(callback) };
+    }
+}
+
+/// Ask for this frame's callback. Call on a PRESENTING frame, before the swap that commits it.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_request() {
+    if !frame_probe_armed() {
+        return;
+    }
+    // Before the swap stretch is marked, so a first-use lookup is not charged to it.
+    let syms = frame_syms();
+    frame_probe_mark(2);
+    let surface = unsafe { G_WL_SURFACE };
+    if surface.is_null() {
+        return;
+    }
+    let Some(syms) = syms else {
+        return;
+    };
+    let iface = syms.callback_interface as *const c_void;
+    let ctor: unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, ...) -> *mut c_void =
+        unsafe { std::mem::transmute(syms.ctor) };
+    let add_listener: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> c_int =
+        unsafe { std::mem::transmute(syms.add_listener) };
+    // `struct wl_callback_listener` is one function pointer.
+    static LISTENER: unsafe extern "C" fn(*mut c_void, *mut c_void, c_uint) = on_frame_done;
+    const WL_SURFACE_FRAME: c_uint = 3;
+    let seq = FRAME_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    unsafe {
+        let callback = ctor(surface, WL_SURFACE_FRAME, iface, std::ptr::null_mut::<c_void>());
+        if !callback.is_null() {
+            add_listener(
+                callback,
+                std::ptr::from_ref(&LISTENER).cast::<c_void>(),
+                seq as usize as *mut c_void,
+            );
+        }
+    }
+}
+
+/// The probe's trailing `FRAMEDROP` fields for the frame just presented: `seq=` (the request this
+/// frame made), `mono=` (our monotonic clock, ms, now), the three stretches described in the
+/// section comment, then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each callback that
+/// arrived since the previous line. `""` unarmed.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_fields() -> String {
+    if !frame_probe_armed() {
+        return String::new();
+    }
+    let done = FRAME_DONE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default();
+    let mut out = format!(
+        " seq={} mono={:.1}",
+        FRAME_SEQ.load(std::sync::atomic::Ordering::Relaxed),
+        mono_us() as f64 / 1000.0
+    );
+    let [waiting, acquired, before_swap] =
+        FRAME_COST.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default();
+    if let Some(before_swap) = before_swap {
+        if let (Some(waiting), Some(acquired)) = (waiting, acquired) {
+            out.push_str(&format!(" wait_at={:.2}", waiting.at as f64 / 1000.0));
+            out.push_str(&acquired.since(&waiting, "w"));
+            out.push_str(&before_swap.since(&acquired, "d"));
+        }
+        out.push_str(&ThreadCost::now().since(&before_swap, "s"));
+    }
+    out.push_str(" cb=");
+    for (i, (seq, stamp, at)) in done.iter().enumerate() {
+        if i > 0 {
+            out.push('|');
+        }
+        out.push_str(&format!("{seq}:{stamp}:{:.1}", *at as f64 / 1000.0));
+    }
+    out
+}
+
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_request() {}
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_waiting() {}
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_acquired() {}
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_fields() -> String {
+    String::new()
+}
+
 // Publish SDL's borrowed handles. Kept separate from the native query so failed queries can
 // be exercised without loading the television's SDL or marshalling a fake proxy.
 #[cfg(any(not(feature = "hostsim"), test))]

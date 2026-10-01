@@ -36,6 +36,79 @@ fn fmt_time(ns: i64, neg: bool) -> String {
     }
 }
 
+/// The position the playbar SHOWS: a loading seek's target, else the live scrub preview, else the
+/// real playhead. One function because the draw ([`Playbar::live`]) and the clock prewarm
+/// ([`ClockWarm::queue_live`]) must resolve the same value, or the prewarm warms the wrong string.
+fn display_pos_ns(loading: bool, seekdisp: i64, scrub: i64, livepos: i64) -> i64 {
+    if loading && seekdisp >= 0 {
+        seekdisp
+    } else if scrub >= 0 {
+        scrub
+    } else {
+        livepos
+    }
+}
+
+/// **The transport's two clocks, rasterised AHEAD of the draw's back-buffer wait.**
+///
+/// The elapsed and remaining clocks are new strings once a second, and the draw met each of them
+/// cold: `FRAMEDROP … clear:12.4 … textx2:1.1` on the TV (1 to 3.5 ms depending on the digits),
+/// once a second for as long as the transport is up, which under an open Tracks/More popover is
+/// the whole time. On the player route the frame's first framebuffer command waits for the
+/// compositor to release a back buffer, so anything rasterised after it is added to the frame's
+/// commit time and moves the commit toward (and past) the compositor's next repaint; anything
+/// rasterised before it overlaps the wait and costs nothing (`PanelMotion::prewarm_text` is the
+/// same argument for a page's rows).
+///
+/// So the page's `prepare` hands the strings to the text queue, which `app::run::prepare_window`
+/// drains before the clear: this second's pair, and the NEXT second's, so the string a tick is
+/// about to need was rasterised up to a second earlier and a playhead that crosses the boundary
+/// between `prepare` and the draw still finds it resident. The strings are formatted only when a
+/// displayed second changes; the queue is offered every prepared frame, because the draw empties
+/// it (`ui::dispatch`) and an offer for a resident string is one cache probe.
+#[derive(Default)]
+pub(crate) struct ClockWarm {
+    /// The (elapsed, remaining) seconds `strings` were formatted for.
+    key: Option<(i64, i64)>,
+    /// `(text, bold)` exactly as [`draw_playbar`] hands them to `Painter::text`.
+    strings: Vec<(CString, c_int)>,
+}
+
+impl ClockWarm {
+    /// Queue the clocks for the playhead the playbar would draw right now.
+    pub(crate) fn queue_live(&mut self, ps: &crate::route::PlaybackSession) {
+        let pos = display_pos_ns(
+            crate::player::loading(ps),
+            crate::player::seek_display_ns(),
+            crate::player::TX.scrub_ns.load(Relaxed),
+            crate::player::playpos_ns(),
+        );
+        self.queue(pos, crate::player::duration_ns());
+    }
+
+    /// Queue the clocks [`draw_playbar`] draws at `pos_ns` of `dur_ns`, and one second on.
+    pub(crate) fn queue(&mut self, pos_ns: i64, dur_ns: i64) {
+        const SEC_NS: i64 = 1_000_000_000;
+        // `fmt::clock` floors to whole seconds and clamps at zero; the key is that same second.
+        let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0));
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.strings.clear();
+            let (el, rem) = key;
+            let clocks = [
+                (fmt_time(el * SEC_NS, false), 1),
+                (fmt_time(rem * SEC_NS, true), 0),
+                (fmt_time((el + 1) * SEC_NS, false), 1),
+                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0),
+            ];
+            self.strings.extend(clocks.into_iter().filter_map(|(s, bold)| Some((CString::new(s).ok()?, bold))));
+        }
+        for (s, bold) in &self.strings {
+            crate::text::queue_prewarm(s.as_ptr(), theme::size::CAPTION, *bold);
+        }
+    }
+}
+
 /// naive word-wrap to `max` chars/line (on word boundaries)
 fn wrap(s: &str, max: usize) -> Vec<String> {
     if s.chars().count() <= max {
@@ -1489,13 +1562,7 @@ impl Playbar {
         // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
         // condition and the value were two loads of the same live atomic and could straddle a tick.
         let seekdisp = crate::player::seek_display_ns();
-        let dispos = if loading && seekdisp >= 0 {
-            seekdisp
-        } else if scrub >= 0 {
-            scrub
-        } else {
-            livepos
-        };
+        let dispos = display_pos_ns(loading, seekdisp, scrub, livepos);
         let knob = if focus == 0 {
             Knob::Focused
         } else if scrub >= 0 {
@@ -1854,6 +1921,48 @@ mod tests {
     }
 
     use super::*;
+
+    /// **The transport's clocks are resident before the draw, this second's and the next one's.**
+    /// On the TV the draw met each new clock string cold AFTER the back-buffer wait (`clear:12.4 …
+    /// textx2:1.1`, once a second under an open Tracks/More popover), which is what pushed those
+    /// frames past 20 ms. `ClockWarm::queue` is what `PlayerScreen::prepare` calls; the drain is
+    /// the presenting side's (`app::run::prepare_window`), ahead of the clear.
+    #[test]
+    fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        let sz = theme::size::CAPTION;
+        let mut warm = ClockWarm::default();
+        // 1:23.4 into a 2:00 item: the draw shows "1:23" (bold) and "-0:36" (regular).
+        let (pos, dur) = (83_400_000_000, 120_000_000_000);
+        assert_eq!((fmt_time(pos, false), fmt_time(dur - pos, true)), ("1:23".into(), "-0:36".into()));
+        warm.queue(pos, dur);
+        // `prepare` may run on a frame the loop then does not present: it records, uploads nothing.
+        assert!(crate::text::prewarm_pending(), "prepare queued the clocks");
+        assert!(!crate::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        for (text, bold) in [("1:23", 1), ("-0:36", 0), ("1:24", 1), ("-0:35", 0)] {
+            assert!(
+                crate::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
+                "{text:?} (bold={bold}) was left for the draw to rasterise after the back-buffer wait"
+            );
+        }
+
+        // The draw empties the queue every frame, so the offer is repeated every prepared frame —
+        // and an undrained offer must come back rather than be remembered as done.
+        crate::text::reset_prewarm_for_test();
+        warm.queue(pos + 16_000_000, dur);
+        assert!(crate::text::prewarm_pending(), "the same second was not offered again");
+
+        // The end of the item: nothing below zero, and no string the clock cannot show.
+        crate::text::reset_prewarm_for_test();
+        warm.queue(dur + 5_000_000_000, dur);
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        assert!(crate::text::prewarm_resident_for_test(b"-0:00", sz, 0));
+        assert!(crate::text::prewarm_resident_for_test(b"2:05", sz, 1));
+        crate::text::reset_prewarm_for_test();
+    }
+
     use crate::metadata::{Marker, MarkerKind};
     use crate::route::NextEpisodeMode;
     use crate::screens::player::skip_pill::SkipAction;

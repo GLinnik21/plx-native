@@ -51,7 +51,7 @@ STATE_DIR = os.environ.get("PLX_TV_LOCK_STATE") or os.path.expanduser("~/.plxnat
 # `git commit -m "make deploy now locks the TV"` is a git command, not a deploy).
 TV_MAKE_GOALS = {"deploy", "verify-deploy", "run", "run-stream", "kill", "test", "install", "uninstall"}
 TV_SCRIPTS = {"tv-session.sh", "capture-screen.sh", "stream-screen.py", "remote-dpad.py", "run.py",
-              "tv-ssh"}
+              "tv-ssh", "tv-sched-trace.sh"}
 ALWAYS_OK = {"tv-lock.sh", "wake-tv.sh", "crash-report.sh"}
 # `luna-send` only exists on the set, so seeing it here means an ssh payload.
 RAW_SSH = re.compile(r"\b(sshpass|ssh|scp|rsync)\b")

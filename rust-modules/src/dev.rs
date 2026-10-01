@@ -58,7 +58,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 32] = [
+const DIAG: [&str; 35] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -114,6 +114,14 @@ const DIAG: [&str; 32] = [
     // `stall_ceiling_ms` gates arm it under every fps scene, and a scene whose gate moved the boot
     // away from the screen it grades would fail as "never entered this screen".
     "plxnative-framedrop",
+    // The compositor frame-callback probe (`system.rs`): extra fields on that same line, from one
+    // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
+    "plxnative-framecb",
+    // The detector's context ring: which of the same lines are written, never which screen they
+    // are written about.
+    "plxnative-framering",
+    // libwayland's own protocol log ([`arm_wayland_debug`]): an observer of the present path.
+    "plxnative-wldebug",
     // The poster pipeline's observers: the cache counters and the per-image timeline
     // (`app/adapters/poster/trace.rs`). Both only READ the store and write log lines, and the boot
     // they exist to trace is the owner's everyday one — who's-watching picker, then Home. A
@@ -258,6 +266,41 @@ pub(crate) fn arm_gst_logging() {
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_gst_logging() {}
+
+/// **Turn on libwayland-client's protocol log** — `/tmp/plxnative-wldebug`.
+///
+/// `WAYLAND_DEBUG` makes the client library print every request it sends and every event it
+/// dispatches, each with a microsecond wall-clock stamp, to stderr (`plxnative-stderr.log`). It is
+/// the one place the compositor's side of a present is visible from inside the app: when
+/// `wl_buffer.release` and `wl_callback.done` actually arrive, against when the driver's
+/// `attach`/`commit` went out. libwayland reads the variable in `wl_display_connect`, so this has
+/// to run before SDL opens its video device. The stamps are `CLOCK_REALTIME`; the line logged
+/// here carries the offset to `CLOCK_MONOTONIC`, which is what `FRAMEDROP`'s `mono=` is.
+///
+/// **Not free**: a dozen formatted lines a frame. Arm it for the leg that needs it, and read
+/// pacing from another.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn arm_wayland_debug() {
+    if !flag("wldebug") {
+        return;
+    }
+    // SAFETY (of the environment write): the caller (`app::pre_boot_diagnostics`) runs this before
+    // `telemetry::boot`, whose `sentry_init` is the first step that starts threads (sentry-native's
+    // "sentry-tele" pool; `lab::boot` starts none, its poll thread comes later from
+    // `lab::start_control`). Checked against vendor/sentry-native-src/src/sentry_telemetry.c.
+    // `arm_gst_logging`'s own write runs after it and is not changed here.
+    std::env::set_var("WAYLAND_DEBUG", "client");
+    let stamp = |clock| {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a plain clock read into a local.
+        unsafe { libc::clock_gettime(clock, &mut ts) };
+        ts.tv_sec as i64 * 1_000_000 + ts.tv_nsec as i64 / 1000
+    };
+    let (real, mono) = (stamp(libc::CLOCK_REALTIME), stamp(libc::CLOCK_MONOTONIC));
+    crate::log(&format!("wldebug: WAYLAND_DEBUG=client realtime_us={real} mono_us={mono} offset_us={}", real - mono));
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn arm_wayland_debug() {}
 
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an

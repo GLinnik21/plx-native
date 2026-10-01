@@ -187,6 +187,56 @@ pub(crate) struct Instruments {
     /// None after startup or a skipped present, so intentional idle gaps are not samples.
     previous_present: Option<u64>,
     pacing: FramePacing,
+    /// `plxnative-framering`: write slow frames with their context instead of every frame.
+    ring: Option<FrameRing>,
+}
+
+/// **The frame-drop detector's context ring** (`/tmp/plxnative-framering[=<ms>]`).
+///
+/// Reading a slow frame needs the frames around it — the one before it committed late or did not,
+/// the one after it is short or is not, and a compositor callback for frame N arrives during
+/// frame N+1 — so a pacing investigation used to arm `framedrop=0.01` and log every frame. That is
+/// ~60 scrub + open + append + close round trips a second ON THE FRAME THREAD, in the phase being
+/// measured. With the ring armed every frame's line is still formatted, but it is only HELD: the
+/// last [`Self::BEFORE`] lines stay in memory, and they reach the log when a frame crosses `slow_ms`,
+/// together with that frame and the [`Self::AFTER`] frames that follow it.
+pub(crate) struct FrameRing {
+    slow_ms: f64,
+    held: std::collections::VecDeque<String>,
+    /// Frames still owed to the log after the last slow one.
+    after: usize,
+}
+
+impl FrameRing {
+    /// Frames of context written before a slow frame.
+    pub(crate) const BEFORE: usize = 4;
+    /// Frames of context written after it.
+    pub(crate) const AFTER: usize = 3;
+
+    pub(crate) fn new(slow_ms: f64) -> Self {
+        Self { slow_ms, held: std::collections::VecDeque::with_capacity(Self::BEFORE + 1), after: 0 }
+    }
+
+    /// Offer one presented frame's line. Returns the lines to write NOW, oldest first: nothing for
+    /// an ordinary frame, the held context plus the frame for a slow one, the frame alone while
+    /// the context after a slow one is still owed.
+    pub(crate) fn offer(&mut self, total_ms: f64, line: String) -> Vec<String> {
+        if total_ms >= self.slow_ms {
+            self.after = Self::AFTER;
+            let mut out: Vec<String> = self.held.drain(..).collect();
+            out.push(line);
+            return out;
+        }
+        if self.after > 0 {
+            self.after -= 1;
+            return vec![line];
+        }
+        if self.held.len() == Self::BEFORE {
+            self.held.pop_front();
+        }
+        self.held.push_back(line);
+        Vec::new()
+    }
 }
 
 impl Instruments {
@@ -204,6 +254,16 @@ impl Instruments {
             counters: FrameCounters::default(),
             previous_present: None,
             pacing: FramePacing::default(),
+            ring: None,
+        }
+    }
+
+    /// Arm the context ring ([`FrameRing`]): every presented frame formats its line, so the
+    /// threshold drops to zero, and `slow_ms` decides which of them reach the log.
+    pub(crate) fn arm_ring(&mut self, slow_ms: f64) {
+        if self.armed {
+            self.thresh_ms = 0.0;
+            self.ring = Some(FrameRing::new(slow_ms));
         }
     }
 
@@ -332,6 +392,19 @@ impl Instruments {
             c.cards_off,
             extra(),
         ))
+    }
+
+    /// [`Self::frame_drop_line`] through the context ring when one is armed: the lines to write
+    /// for this presented frame, oldest first. Without a ring, that method's line or nothing.
+    pub(crate) fn frame_drop_lines(&mut self, extra: &dyn Fn() -> String) -> Vec<String> {
+        let total = self.last_frame_ms();
+        let Some(line) = self.frame_drop_line(extra) else {
+            return Vec::new();
+        };
+        match self.ring.as_mut() {
+            Some(ring) => ring.offer(total, line),
+            None => vec![line],
+        }
     }
 
     /// The heartbeat's trailing fields, and the per-second reset. The WIRE ORDER is a contract:
@@ -513,6 +586,49 @@ mod tests {
             i.heartbeat_tail(HeartbeatFields::default(), None),
             " carried=0 dropped=0 budget=0/0 evicted_hot=0"
         );
+    }
+
+    /// **The ring writes a slow frame with the frames around it, and nothing else.** Logging
+    /// every frame put ~60 file appends a second on the frame thread, inside the measurement.
+    #[test]
+    fn the_context_ring_writes_only_slow_frames_and_their_neighbours() {
+        let mut ring = FrameRing::new(17.0);
+        let mut written = Vec::new();
+        // ten ordinary frames, a slow one, five ordinary, then quiet
+        for n in 0..10 {
+            written.extend(ring.offer(16.2, format!("f{n}")));
+        }
+        assert!(written.is_empty(), "ordinary frames reached the log: {written:?}");
+        written.extend(ring.offer(22.4, "slow".into()));
+        assert_eq!(written, ["f6", "f7", "f8", "f9", "slow"], "the slow frame with BEFORE frames of context");
+        written.clear();
+        for n in 10..16 {
+            written.extend(ring.offer(16.2, format!("f{n}")));
+        }
+        assert_eq!(written, ["f10", "f11", "f12"], "AFTER frames follow it, then the ring holds again");
+        // a second slow frame does not repeat what was already written
+        written.clear();
+        written.extend(ring.offer(30.0, "slow2".into()));
+        assert_eq!(written, ["f13", "f14", "f15", "slow2"]);
+
+        // Through the instrument: an armed ring makes every frame a candidate, an unarmed
+        // instrument stays silent, and without a ring the threshold decides as before.
+        let mut i = Instruments::new(true, 22.0);
+        i.arm_ring(17.0);
+        i.perf_freq = 1000.0;
+        i.stamps = [0, 1, 2, 3, 4, 5, 6, 7, 16];
+        assert!(i.frame_drop_lines(&String::new).is_empty(), "a 16 ms frame is held, not written");
+        i.stamps = [0, 1, 2, 3, 4, 5, 6, 7, 21];
+        let lines = i.frame_drop_lines(&String::new);
+        assert_eq!(lines.len(), 2, "the held frame and the slow one: {lines:?}");
+        assert!(lines[0].starts_with("FRAMEDROP total=16.0") && lines[1].starts_with("FRAMEDROP total=21.0"));
+        let mut unarmed = Instruments::new(false, 22.0);
+        unarmed.arm_ring(17.0);
+        assert!(unarmed.frame_drop_lines(&String::new).is_empty());
+        let mut plain = Instruments::new(true, 22.0);
+        plain.perf_freq = 1000.0;
+        plain.stamps = [0, 1, 2, 3, 4, 5, 6, 7, 21];
+        assert!(plain.frame_drop_lines(&String::new).is_empty(), "21 ms is under the 22 ms threshold");
     }
 
     #[test]

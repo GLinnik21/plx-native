@@ -537,6 +537,9 @@ unsafe fn present_and_swap(
             let _present_scope = crate::task::watchdog::present_scope();
             #[cfg(feature = "hostsim")]
             crate::surface::present_supersampled();
+            // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
+            // the swap that commits it. One latched bool unarmed.
+            crate::system::frame_probe_request();
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
@@ -2274,7 +2277,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         glClearColor(0.0, 0.0, 0.0, 0.0);
                         // The frame's first framebuffer-0 command, where this driver parks the
                         // wait for a free back buffer: spanned like every other route's `clear`.
+                        // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
+                        // and, from the acquired buffer to the swap, over the commit phase.
+                        crate::system::frame_probe_waiting();
                         crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
+                        crate::system::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -2635,13 +2642,14 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             // Taken on every presented frame for the counters' reason above: a span belongs to
             // the frame it ran in, never to the next slow one.
             let spans = crate::diag::spans::take();
-            if let Some(line) = app.instr.frame_drop_line(&|| {
+            for line in app.instr.frame_drop_lines(&|| {
                 format!(
-                    "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}",
+                    "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}{}",
                     app.pages.dip_word(),
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages),
-                    app.bridge.home_snap_pos(&app.pages)
+                    app.bridge.home_snap_pos(&app.pages),
+                    crate::system::frame_probe_fields()
                 )
             }) {
                 log(&line);
