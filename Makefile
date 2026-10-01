@@ -1339,11 +1339,14 @@ check-unlocked: lint check-localization
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(PRIVATE_LOG_TEST_BIN) ci/private-log-test.c && $(PRIVATE_LOG_TEST_BIN)
 	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
-	@# EXPENSIVE STEP IN `check` BY FAR — 386 s of a 616 s run, measured 2026-09-17, and nearly
-	@# all of it is the `DepGates` class running the whole of `ci/check-deps.sh` about thirty
-	@# times over to prove each structure gate still catches a planted violation. (It was 980 s of
-	@# 1217 s before `check-deps.sh` stopped forking a process per candidate line.) Measure before
-	@# budgeting, and if this number needs to come down further, that is the place. run.py
+	@# EXPENSIVE STEP IN `check` BY FAR — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane
+	@# at load ~5, and 630 s of that is the `DepGates` class running the whole of
+	@# `ci/check-deps.sh` (11 s a run) once or more per test to prove each structure gate still
+	@# catches a planted violation. Those self-tests now edit a private copy of the gate's inputs
+	@# and run on a thread pool (`PLX_TEST_JOBS`, default min(8, cpus)): the module takes 175 s
+	@# instead of 661 s. (It was 980 s of 1217 s before `check-deps.sh` stopped forking a process
+	@# per candidate line.) Measure before budgeting, and if this number needs to come down
+	@# further, `check-deps.sh` itself is the place. run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
 	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
