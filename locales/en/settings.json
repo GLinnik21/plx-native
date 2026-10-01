@@ -668,6 +668,22 @@
     "value": "High",
     "description": "Subtitle position picker option: the caption sits near the top of the safe area."
   },
+  "settings.playback.next_episode": {
+    "value": "Next episode",
+    "description": "Settings, consent or sign-in UI: what the player does at an episode's credits when another episode is queued."
+  },
+  "settings.playback.next_episode.countdown": {
+    "value": "Up Next countdown",
+    "description": "Next episode picker option (the default): the Up Next card appears over the credits and counts down to the next episode."
+  },
+  "settings.playback.next_episode.after_credits": {
+    "value": "After credits",
+    "description": "Next episode picker option: nothing is shown during the credits; the next episode starts when this one ends."
+  },
+  "settings.playback.next_episode.off": {
+    "value": "Off",
+    "description": "Next episode picker option: nothing is shown during the credits and the next episode does not start by itself."
+  },
   "settings.audio.language": {
     "value": "Preferred audio language",
     "description": "Settings, consent or sign-in UI: settings.audio.language"

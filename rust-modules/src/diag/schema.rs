@@ -171,6 +171,10 @@ pub(crate) enum Feature {
     /// showed the toggle to). Fires from the Audio tab's `on_ok`, one bit at a time, never which
     /// way it went or which track — see [`DiagEvent::EnhancementRefused`] for the server's answer.
     AudioEnhancement,
+    /// **A viewer set the Next episode preference** (Settings → Video & playback) to one of its
+    /// three modes. The mode is the whole payload: a closed set of three codes, fired once per
+    /// change, never per playback and never with anything about what was playing.
+    NextEpisode(crate::plex::session::NextEpisodeMode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +207,11 @@ impl Feature {
             Self::SkipCredits => "skip_credits",
             Self::LibrarySwitch => "library_switch",
             Self::AudioEnhancement => "audio_enhancement",
+            Self::NextEpisode(mode) => match mode {
+                crate::plex::session::NextEpisodeMode::Countdown => "next_episode_countdown",
+                crate::plex::session::NextEpisodeMode::AfterCredits => "next_episode_after_credits",
+                crate::plex::session::NextEpisodeMode::Off => "next_episode_off",
+            },
         }
     }
 }
@@ -869,6 +878,26 @@ mod tests {
             }
         }
         all
+    }
+
+    /// The Next episode preference is reported as `feature.used` carrying exactly one of three
+    /// fixed codes — the mode and nothing else, with no free-text field to put anything in.
+    #[test]
+    fn the_next_episode_setting_reports_only_its_mode() {
+        use crate::plex::session::NextEpisodeMode;
+        let sent: Vec<_> = NextEpisodeMode::LADDER
+            .iter()
+            .map(|&mode| serialize(DiagEvent::FeatureUsed { feature: Feature::NextEpisode(mode) }))
+            .collect();
+        let want = |code| ("feature.used", vec![("feature", Value::Str(code))]);
+        assert_eq!(
+            sent,
+            [
+                want("next_episode_countdown"),
+                want("next_episode_after_credits"),
+                want("next_episode_off"),
+            ]
+        );
     }
 
     /// **What is SENT is exactly what is DECLARED — name and every field key, in order.**

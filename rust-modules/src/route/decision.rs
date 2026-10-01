@@ -5295,6 +5295,37 @@ pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
     saved
 }
 
+/// What the player does at an episode's credits when a successor is queued — install-wide, like
+/// [`DIRECT_PLAY_MODE`]. Read by `ui::player_hud::slot` every frame and by `finish_playback` at
+/// the end of the stream.
+static NEXT_EPISODE_MODE: AtomicU8 = AtomicU8::new(0); // NextEpisodeMode::Countdown's index
+
+pub(crate) fn next_episode_mode() -> NextEpisodeMode {
+    NextEpisodeMode::from_index(NEXT_EPISODE_MODE.load(Ordering::Relaxed))
+}
+
+pub(crate) fn restore_next_episode_mode(mode: NextEpisodeMode) {
+    #[cfg(test)]
+    crate::testlock::assert_held("next episode preference");
+    NEXT_EPISODE_MODE.store(mode.index(), Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
+/// only once the write is durable, so a failed save claims nothing.
+pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_next_episode_mode(mode)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved {
+        restore_next_episode_mode(mode);
+        crate::ui::idle::invalidate();
+        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+            feature: crate::diag::schema::Feature::NextEpisode(mode),
+        });
+    }
+    saved
+}
+
 pub(crate) fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
@@ -8775,6 +8806,10 @@ pub(crate) fn report_timeline(
 #[cfg(test)]
 #[path = "decision_test_support.rs"]
 mod test_support;
+
+#[cfg(test)]
+#[path = "decision_next_episode_tests.rs"]
+mod next_episode_tests;
 
 #[cfg(test)]
 #[path = "decision_resolve_route_tests.rs"]

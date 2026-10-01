@@ -4098,4 +4098,84 @@ mod lifecycle_regression_tests {
         assert!(matches!(rig.app.route(), AppArg::Home));
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
+
+    /// Puts the Next episode preference back whatever the test did.
+    struct NextEpisodeGuard(crate::route::NextEpisodeMode);
+    impl NextEpisodeGuard {
+        fn set(mode: crate::route::NextEpisodeMode) -> Self {
+            let prior = crate::route::next_episode_mode();
+            crate::route::restore_next_episode_mode(mode);
+            Self(prior)
+        }
+    }
+    impl Drop for NextEpisodeGuard {
+        fn drop(&mut self) {
+            crate::route::restore_next_episode_mode(self.0);
+        }
+    }
+
+    /// **Next episode: After credits.** The credits of an episode with a successor queued arm no
+    /// Up Next countdown, so nothing is requested however long they run; the end of the stream
+    /// then plays the successor exactly as it always has.
+    #[test]
+    fn after_credits_requests_no_successor_until_the_stream_ends() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED after_credits_requests_no_successor_until_the_stream_ends: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::AfterCredits);
+        rig.request();
+        rig.resolve();
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Player);
+        frame(&mut rig.app, 16);
+        let credits = crate::metadata::Marker {
+            kind: crate::metadata::MarkerKind::Credits,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: true,
+        };
+        let slot = crate::ui::player_hud::slot_for(Some(credits), true, crate::route::next_episode_mode());
+        let player = super::super::bridge::player_mut(&mut rig.app.pages).unwrap();
+        player.up_next.tick(slot, 20);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
+        assert!(!player.up_next.expired(fr.now), "no countdown was armed for the credits");
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(!crate::route::play_pending(), "the credits alone must not request the successor");
+        assert_eq!(crate::route::up_next(&rig.app.player.session).unwrap().rk, "2");
+
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(crate::route::play_pending(), "the end of the stream still plays the next episode");
+    }
+
+    /// **Next episode: Off.** The end of an episode that HAS a successor leaves the player like a
+    /// film does: back to the page the session was launched from, nothing requested.
+    #[test]
+    fn off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(true) else {
+            eprintln!("SKIPPED off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::Off);
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        assert!(crate::route::up_next(&rig.app.player.session).is_some(), "premise: a successor is queued");
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert!(!crate::route::play_pending(), "Off must not request the successor");
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "end of stream landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
 }

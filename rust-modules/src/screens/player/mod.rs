@@ -1794,8 +1794,8 @@ mod step_ladder_tests {
         use crate::ui::screen::{At, DrawFrame};
         let _g = crate::testlock::serial();
         let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
-        let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false);
-        let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true);
+        let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false, crate::route::NextEpisodeMode::Countdown);
+        let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true, crate::route::NextEpisodeMode::Countdown);
         assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
         let failed = Busy::Readout(crate::ui::widgets::StatusKind::Failed, c"Playback failed");
         let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();

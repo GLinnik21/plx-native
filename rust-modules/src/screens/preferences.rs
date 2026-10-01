@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
-use crate::route::{DirectPlayMode, Quality, SubtitlePosition, SubtitleSize};
+use crate::route::{DirectPlayMode, NextEpisodeMode, Quality, SubtitlePosition, SubtitleSize};
 use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -44,12 +44,13 @@ impl PickerKind {
     fn title(self) -> &'static str { match self {
         Self::Quality => crate::i18n::msg::settings_playback_quality(), Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play(),
         Self::SubtitleSize => crate::i18n::msg::settings_playback_subtitle_size(), Self::SubtitlePosition => crate::i18n::msg::settings_playback_subtitle_position(),
+        Self::NextEpisode => crate::i18n::msg::settings_playback_next_episode(),
         Self::AudioLanguage => crate::i18n::msg::settings_audio_language(), Self::SubtitleMode => crate::i18n::msg::settings_audio_subtitles(),
         Self::SubtitleLanguage => crate::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => crate::i18n::msg::settings_audio_forced_subtitles(),
     }}
     /// The field-list page this field belongs to.
     fn kind(self) -> Kind {
-        match self { Self::Quality | Self::DirectPlay => Kind::Playback, _ => Kind::AudioSubtitles }
+        match self { Self::Quality | Self::DirectPlay | Self::NextEpisode => Kind::Playback, _ => Kind::AudioSubtitles }
     }
 }
 impl Kind {
@@ -63,7 +64,7 @@ impl Kind {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Value { Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), Language(String), Mode(i64), Forced(i64) }
+enum Value { Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), NextEpisode(NextEpisodeMode), Language(String), Mode(i64), Forced(i64) }
 
 /// The hashed half of a transaction: what the page shows while a load or save is in flight.
 struct Io { busy: bool, status: String }
@@ -174,6 +175,7 @@ impl Txn {
             Value::DirectPlay(mode) => PreferenceCmd::DirectPlay { mode, reply },
             Value::SubtitleSize(size) => PreferenceCmd::SubtitleSize { size, reply },
             Value::SubtitlePosition(position) => PreferenceCmd::SubtitlePosition { position, reply },
+            Value::NextEpisode(mode) => PreferenceCmd::NextEpisode { mode, reply },
             _ => return,
         };
         self.pending = Some(Pending::Local(rx)); io.busy = true; self.saving = true;
@@ -244,6 +246,7 @@ impl FormId for RowId {
             Self::Field(PickerKind::DirectPlay | PickerKind::SubtitleMode) => 1,
             Self::Field(PickerKind::SubtitleSize | PickerKind::SubtitleLanguage) => 2,
             Self::Field(PickerKind::SubtitlePosition | PickerKind::ForcedSubtitles) => 3,
+            Self::Field(PickerKind::NextEpisode) => 4,
             Self::Retry => 6,
         })
     }
@@ -276,6 +279,8 @@ pub(crate) struct PreferencesPage {
     /// notices a pick made elsewhere (the player's Style pages, or this page's picker, which
     /// publish the live value before their write lands) so the cached read-outs are rebuilt.
     look: (SubtitleSize, SubtitlePosition),
+    /// The next-episode mode the rows were last built from (not canonical state, like `look`).
+    next_episode: NextEpisodeMode,
 }
 impl PreferencesPage {
     pub(crate) fn new(entry: EntryId, kind: Kind) -> Self {
@@ -283,7 +288,8 @@ impl PreferencesPage {
             state: State { kind, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(), values: Vec::new() },
             copy: String::new(), txn: Txn::new(false),
-            look: (crate::route::subtitle_size(), crate::route::subtitle_position()) };
+            look: (crate::route::subtitle_size(), crate::route::subtitle_position()),
+            next_episode: crate::route::next_episode_mode() };
         s.rebuild(None);
         s
     }
@@ -308,6 +314,7 @@ impl PreferencesPage {
         self.state.quality = crate::route::quality();
         self.state.direct_play = crate::route::direct_play_mode();
         self.look = (crate::route::subtitle_size(), crate::route::subtitle_position());
+        self.next_episode = crate::route::next_episode_mode();
         self.copy = copy_text(self.state.kind, &self.state.io.status, self.state.direct_play).into_owned();
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
@@ -340,7 +347,7 @@ impl PreferencesPage {
 /// Which fields `kind`'s list shows: Audio & Subtitles has none until a snapshot has loaded.
 fn fields_of(inputs: &FieldListInputs<'_>) -> &'static [PickerKind] {
     match inputs.kind {
-        Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition],
+        Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode],
         Kind::AudioSubtitles if inputs.prefs.is_some() => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
         _ => &[],
     }
@@ -353,6 +360,7 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::DirectPlay => Value::DirectPlay(direct_play),
         PickerKind::SubtitleSize => Value::SubtitleSize(crate::route::subtitle_size()),
         PickerKind::SubtitlePosition => Value::SubtitlePosition(crate::route::subtitle_position()),
+        PickerKind::NextEpisode => Value::NextEpisode(crate::route::next_episode_mode()),
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
         PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
         PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(crate::plex::languages::canonical).unwrap_or_default().to_string()),
@@ -371,6 +379,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .map(|s| (subtitle_size_label(s).into(), Value::SubtitleSize(s))).collect(),
         PickerKind::SubtitlePosition => SubtitlePosition::LADDER.into_iter()
             .map(|p| (subtitle_position_label(p).into(), Value::SubtitlePosition(p))).collect(),
+        PickerKind::NextEpisode => NextEpisodeMode::LADDER.into_iter()
+            .map(|m| (next_episode_label(m).into(), Value::NextEpisode(m))).collect(),
         PickerKind::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
             .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
         PickerKind::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
@@ -443,6 +453,13 @@ fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
 }
 use crate::ui::track_menu::{subtitle_position_label, subtitle_size_label};
+fn next_episode_label(mode: NextEpisodeMode) -> &'static str {
+    match mode {
+        NextEpisodeMode::Countdown => crate::i18n::msg::settings_playback_next_episode_countdown(),
+        NextEpisodeMode::AfterCredits => crate::i18n::msg::settings_playback_next_episode_after_credits(),
+        NextEpisodeMode::Off => crate::i18n::msg::settings_playback_next_episode_off(),
+    }
+}
 /// The Direct Play row's trailing read-out. `mode_label`'s Forced string is long enough to squeeze
 /// the row's label, so Forced alone takes the short form; the picker lists the full strings.
 fn direct_play_readout(mode: DirectPlayMode) -> &'static str {
@@ -483,7 +500,8 @@ impl Machine<InnerHost> for PreferencesPage {
                 let landed = self.txn.poll(&mut self.state.io, fx) != Landed::Nothing;
                 if landed || stale || started || adopted || self.state.quality != crate::route::quality()
                     || self.state.direct_play != crate::route::direct_play_mode()
-                    || self.look != (crate::route::subtitle_size(), crate::route::subtitle_position()) {
+                    || self.look != (crate::route::subtitle_size(), crate::route::subtitle_position())
+                    || self.next_episode != crate::route::next_episode_mode() {
                     self.rebuild_keeping();
                     // An empty loading table had no engine seat. Give its first landing (or
                     // Retry row) one so OK works immediately, without moving an existing

@@ -373,7 +373,7 @@ pub(super) fn transcode_spec<'a>(
 }
 
 
-pub(crate) use crate::plex::session::{PlaybackQuality as Quality, DirectPlayMode, SubtitleSize, SubtitlePosition};
+pub(crate) use crate::plex::session::{PlaybackQuality as Quality, DirectPlayMode, NextEpisodeMode, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
