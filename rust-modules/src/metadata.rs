@@ -1123,7 +1123,8 @@ pub(crate) struct Marker {
     pub(crate) kind: MarkerKind,
     pub(crate) start_ms: i64,
     pub(crate) end_ms: i64,
-    /// this credits segment runs to the end of the item (PMS `final: true`)
+    /// this credits segment runs to the end of the item (PMS `final: true`, or ending within
+    /// [`FINAL_SLACK_MS`] of the duration)
     pub(crate) final_seg: bool,
 }
 
@@ -1182,7 +1183,8 @@ fn mark_skipped(state: &mut MetadataState, m: Marker) {
 /// never appear, and binge-watching ended every episode by dropping the user back to the detail
 /// page (found by the Plex Pass dependency audit after issue #22). Synthesizing the segment
 /// reuses the entire existing chain — tile, countdown, cancel latch, HUD hold — instead of
-/// growing a parallel EOS path.
+/// growing a parallel EOS path. It exists only to feed that tile, so `player_hud::slot` asks for
+/// it only under the Up Next countdown preference; the segment counts as `final`.
 ///
 /// Deliberately narrow: only when a successor EXISTS (a movie's tail must not grow a Skip
 /// Credits pill pointing nowhere), only when the item carries no credits marker AT ALL (a server

@@ -601,13 +601,13 @@ Seeking is a **preview-then-commit** gesture, not one immediate jump per press.
   viewer glancing at the clock loses their place. **A hold is not affected** — holding LEFT raises
   the HUD and then runs the ordinary continuous scrub as the auto-repeats arrive, by which point the
   band being dragged is on screen.
-- **With the HUD up and the scrubber focused, one press moves the preview 10 s.** The picture does
+- **With the HUD up and the scrubber focused, one press moves the preview by the Skip interval — 10 s unless Settings > Playback says otherwise.** The picture does
   not move yet; the scrubber shows the target, and the state mark shows the direction.
 - **Holding engages a continuous scrub that accelerates** — from 10× up to 140× playback speed — and
   the key release commits it. A lost key-up is caught by a 400 ms watchdog, so a dropped release
   cannot leave the scrub running.
 - **Quick repeated taps accumulate into one seek.** The commit waits ~450 ms after the last tap, so
-  "back thirty seconds" is three presses and a single seek rather than three. That matters beyond
+  "back thirty seconds" is three presses at the default 10 s step and a single seek rather than three. That matters beyond
   feel: back-to-back in-flight seeks are what stress the demux pipeline.
 - The seek target is clamped to the item, stopping 3 s short of the end.
 
@@ -653,16 +653,23 @@ other state cancels it, and **once cancelled it stays cancelled** for that segme
 cancels it explicitly and leaves the tile as a plain OK-to-play target. While the clock runs the HUD
 is held up, so the countdown is never invisible.
 
+Only a credits marker that runs to the end of the item qualifies (a mid-item credits marker keeps
+the Skip Credits pill), and only under the default *Next episode* setting, *Up Next countdown*:
+under *After credits* and *Off* the discs stay through the credits, with no tile, countdown or HUD
+raise.
+
 Up Next deliberately outranks Skip Credits: with somewhere to go, "next episode" is the better
 offer.
 
 **Credits detection is a Plex Pass server feature, and where the server has none the app synthesizes
-a 30 s tail — but only when there is a next episode to offer.** So the synthesized tail always
+a 30 s tail — but only when there is a next episode to offer, and only in the default Up Next
+countdown mode.** So the synthesized tail always
 raises Up Next and can never raise a Skip pill: a movie's tail must not grow a *Skip Credits* button
 pointing nowhere. The practical consequence for a bench test is that on a Pass-less server **Skip
 Credits is unreachable**, and only *Skip Intro* and *Up Next* can be exercised.
 
-At the end of an item with nothing queued, the player simply exits to the page it came from. **There
+At the end of an item with nothing queued — or with *Next episode* set to *Off* — the player simply
+exits to the page it came from. **There
 is no full-screen post-play interstitial** — one was built and is deliberately not shipped.
 
 ### 6.8 Info and Chapters

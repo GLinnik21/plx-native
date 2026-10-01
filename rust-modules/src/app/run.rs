@@ -1457,8 +1457,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // so the steady-state cost is one atomic load.
         crate::player::report::tick(&mut app.player.session);
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
-        // show has another episode queued, else leave the player (back to the detail page or
-        // home, whichever is behind), instead of freezing on the last frame.
+        // show has another episode queued and the Next episode preference is not Off, else leave
+        // the player (back to the detail page or home, whichever is behind), instead of freezing
+        // on the last frame.
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && crate::player::ended() {
             let handed_off_to_up_next = finish_playback(&mut app.player.session,
                 &mut app.adapters.player,
