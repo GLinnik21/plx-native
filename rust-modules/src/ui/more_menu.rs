@@ -38,9 +38,11 @@
 //!
 //! A flat popover with a header per section, deliberately, rather than a Quality row that drills
 //! into a second page: `docs/parity-gaps.md`'s standing decision is that this app has **no
-//! full-screen menu sheets** — the reference clients put playback quality in one and we do not —
-//! and a drill-in inside a popover would need a BACK that means "up one page" where every other
-//! panel's BACK means "dismiss". Six rungs and a switch fit; when they stop fitting, the
+//! full-screen menu sheets** — the reference clients put playback quality in one and we do not.
+//! Drilling in INSIDE a popover is a separate matter and the Subtitles tab of
+//! [`crate::ui::track_menu`] now does it (its Style pages, where BACK means "up one page" and only
+//! BACK on the root dismisses); this menu stays flat until Quality moves onto the same page stack
+//! (`docs/player-submenus.md`, PR 5). Six rungs and a switch fit; when they stop fitting, the
 //! [`TableView`] scrolls, which is what it is for.
 //!
 //! The menu closes on commit either way, so the read-out is never what confirms the press: the
@@ -146,6 +148,7 @@ impl MoreMenuState {
         let rows = rows_for(forced);
         let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
+        form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         // A quality entry focuses the active rung; under Force Direct Play there is no ladder to
         // focus, so the rung has vanished and the menu opens on its first row like an ordinary open.
         let keep = quality.map(Action::SetQuality);

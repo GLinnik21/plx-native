@@ -1155,8 +1155,9 @@ impl SubtitleSize {
 
 /// The persisted subtitle vertical placements, lowest first — install-wide like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
-/// (`ui::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text/image caption
-/// draws move with this; native ASS/SSA keeps its authored placement (`docs/ass-subtitles.md`).
+/// (`ui::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
+/// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
+/// (`docs/ass-subtitles.md`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubtitlePosition {
     #[default]

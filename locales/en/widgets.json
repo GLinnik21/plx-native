@@ -654,7 +654,27 @@
   },
   "widgets.tracks.style_locked_note": {
     "value": "Can't be changed while Boost dialog or Normalize loudness is on.",
-    "description": "Issue #266/M7 follow-up. One-line note under the DIMMED Timing and Color rows on the Subtitles tab while the live route is actually burning the subtitle into the picture (an embedded subtitle plus the audio enhancement): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+    "description": "Issue #266/M7 follow-up. One-line note under the DIMMED Timing and Style rows on the Subtitles tab while the live route is actually burning the subtitle into the picture (an embedded subtitle plus the audio enhancement): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  },
+  "widgets.tracks.style": {
+    "value": "Style",
+    "description": "Subtitles tab of the player's track selector. The drill-in row that opens the caption style pages (Size, Position, Color), and the title of that page."
+  },
+  "widgets.tracks.style_size": {
+    "value": "Size",
+    "description": "Style page of the player's subtitle menu. Row label and page title for the caption size; its value reads out the chosen size (Small, Medium, Large, Extra Large)."
+  },
+  "widgets.tracks.style_position": {
+    "value": "Position",
+    "description": "Style page of the player's subtitle menu. Row label and page title for where the caption sits on screen; its value reads out the chosen height (Low, Middle, High)."
+  },
+  "widgets.tracks.style_image_note": {
+    "value": "Image subtitles keep their own size and position.",
+    "description": "Note under the Style rows when the subtitle on screen is a picture (PGS, VobSub): the Size and Position rows are dimmed because the picture carries its own geometry. No jargon."
+  },
+  "widgets.tracks.style_styled_note": {
+    "value": "Styled subtitles keep their own size and position.",
+    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions and sizes its own text: the Size and Position rows are dimmed. No jargon."
   },
   "widgets.tracks.timing": {
     "value": "Timing",

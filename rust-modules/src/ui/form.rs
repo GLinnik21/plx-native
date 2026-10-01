@@ -396,9 +396,23 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// back through the old order as [`Self::set`] does) and the pill SLIDES to it, so a row
     /// appearing above the viewer moves the highlight rather than teleporting it.
     pub fn refresh(&mut self, form: Form<Id, A, Dest>) {
+        self.refresh_with(form, None, None);
+    }
+
+    /// [`Self::refresh`] with two explicit ids, for a page whose focus is not always where the
+    /// viewer left it. Landing order: `prefer` (an id the page banked while its row was away and
+    /// wants back the moment it returns), the id the table was on, `fallback` (the page's own
+    /// "sensible row" when the viewer's row is gone, e.g. the checked track), then the old-order
+    /// neighbour as in [`Self::set`]. Each step applies only when the new form still has that id.
+    pub fn refresh_with(&mut self, form: Form<Id, A, Dest>, prefer: Option<&Id>, fallback: Option<&Id>) {
         let (sections, bindings) = self.check(form);
+        let find = |id: &Id| Self::position_of(&bindings, id);
         let keep = self.selected_id().cloned();
-        let landing = keep.and_then(|k| self.landing_for(&k, &bindings, true));
+        let landing = prefer
+            .and_then(find)
+            .or_else(|| keep.as_ref().and_then(find))
+            .or_else(|| fallback.and_then(find))
+            .or_else(|| keep.as_ref().and_then(|k| self.landing_for(k, &bindings, true)));
         self.bindings = bindings;
         self.table.set_sections_or_open(sections, landing.map(|i| i as i32), true);
         self.reseat_after_install();

@@ -510,6 +510,9 @@ pub(crate) fn commit_track(
             }
         }
         TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
+        // live first, persisted after, nothing republished on completion (`route::select_subtitle_size`)
+        TrackCommit::SubtitleSize(size) => crate::route::select_subtitle_size(size, None),
+        TrackCommit::SubtitlePosition(position) => crate::route::select_subtitle_position(position, None),
         TrackCommit::SubtitleOffset(offset) => {
             crate::player::set_subtitle_offset(offset);
             crate::route::persist_subtitle_offset(ps, offset);

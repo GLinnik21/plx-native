@@ -5298,18 +5298,33 @@ pub(crate) fn restore_subtitle_size(size: SubtitleSize) {
     SUBTITLE_SIZE.store(size.index(), Ordering::Relaxed);
 }
 
-/// Blocking persistence seam; Settings dispatches it on the storage worker.
-pub(crate) fn set_subtitle_size(size: SubtitleSize) -> bool {
-    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
-        .is_some_and(|write| matches!(write.classify(),
-            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_subtitle_size(size); crate::ui::idle::invalidate(); }
-    saved
+/// **Pick a caption size: one optimistic operation, on the main thread.** The live atomic is
+/// stored and the frame invalidated FIRST, so the caption changes on the next frame; then a
+/// persist-only closure is retained for the shared storage worker. The closure writes the session
+/// store and NEVER touches the atomic (the pattern of `player::set_subtitle_tone`), so no
+/// completion can overwrite a newer live pick: live = the latest pick, durable writes are FIFO on
+/// the worker, last submitted wins. `reply` (Settings) learns whether the write was durable; a
+/// failure claims nothing about the next boot and republishes nothing.
+pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::mpsc::Sender<bool>>) {
+    restore_subtitle_size(size);
+    crate::ui::idle::invalidate();
+    let _ = crate::storage_worker::submit_retained(move || {
+        let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
+            .is_some_and(|write| matches!(write.classify(),
+                crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+        if !saved {
+            crate::log("subtitle size: durable write failed (live value kept for this session)");
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(saved);
+        }
+        crate::ui::idle::invalidate();
+    });
 }
 
 /// The client-rendered subtitle caption's vertical placement — install-wide, like
-/// [`DIRECT_PLAY_MODE`]. Only the plain-text/image caption draws move with this; native ASS/SSA
-/// keeps its authored placement.
+/// [`DIRECT_PLAY_MODE`]. Only the plain-text caption draw moves with this; image (PGS/VobSub)
+/// captions and native ASS/SSA keep their own placement.
 static SUBTITLE_POSITION: AtomicU8 = AtomicU8::new(0); // SubtitlePosition::Low's index
 
 pub(crate) fn subtitle_position() -> SubtitlePosition {
@@ -5322,13 +5337,22 @@ pub(crate) fn restore_subtitle_position(position: SubtitlePosition) {
     SUBTITLE_POSITION.store(position.index(), Ordering::Relaxed);
 }
 
-/// Blocking persistence seam; Settings dispatches it on the storage worker.
-pub(crate) fn set_subtitle_position(position: SubtitlePosition) -> bool {
-    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
-        .is_some_and(|write| matches!(write.classify(),
-            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_subtitle_position(position); crate::ui::idle::invalidate(); }
-    saved
+/// [`select_subtitle_size`] for the caption's vertical placement.
+pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option<std::sync::mpsc::Sender<bool>>) {
+    restore_subtitle_position(position);
+    crate::ui::idle::invalidate();
+    let _ = crate::storage_worker::submit_retained(move || {
+        let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
+            .is_some_and(|write| matches!(write.classify(),
+                crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+        if !saved {
+            crate::log("subtitle position: durable write failed (live value kept for this session)");
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(saved);
+        }
+        crate::ui::idle::invalidate();
+    });
 }
 
 pub(crate) fn forced_direct_play(ps: &PlaybackSession) -> bool {
@@ -8752,6 +8776,10 @@ mod timeline_tests;
 #[cfg(test)]
 #[path = "decision_direct_play_mode_tests.rs"]
 mod direct_play_mode_tests;
+
+#[cfg(test)]
+#[path = "decision_subtitle_style_tests.rs"]
+mod subtitle_style_tests;
 
 #[cfg(test)]
 #[path = "carried_audio_tests.rs"]

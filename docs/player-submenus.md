@@ -4,7 +4,12 @@ Design record for the multi-page Subtitles / Audio popover (Other languages, per
 Style pickers) and the table, form and clip primitives it stands on. Planned with an independent
 model reviewer over several rounds; this file keeps the decisions and their reasons.
 
-**Status:** PR 1 (table groundwork) is what this repository has; PRs 2-5 are open.
+**Status:** PR 1 (table groundwork), the track menu on keyed forms (Settings form migration 5/5,
+#339: `ui::track_menu::TrackRow`) and PR 2 (the page stack in the Subtitles tab on that form: Style,
+the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay
+state) are what this repository has; PRs 3-5 (languages and badges, animation, More -> Quality) are
+open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
+purpose.
 
 ## Behaviour
 
@@ -47,14 +52,19 @@ state, not panel state).
 
 ## Focus identity
 
-Each page declares rows with semantic ids (`Off`, `Track(sub_index)`, `OpenOther`, `OpenLang(group)`,
-`Timing`, `Style`, `OpenField`, `Choice`, ...). Selection and saved openers are stored by id;
-`RowKey` is a page base plus a STABLE ordinal (the track's index in the item's list, never a list
-position). `OpenLang` carries `sub_layout`'s existing group identity and its first-track index comes
-from the full item group, not the currently offered members. Initial focus per page is an explicit
-id (root: active track or Off; language page: active variant else first; Other languages: the
-checked row else first; picker: the checked choice; Style: Size); `opening_row` is only the
-fallback. LEFT/RIGHT stay on `EdgeRule::Screen` -> edge key; there is no second ladder.
+Each page declares rows with semantic ids, one alphabet for every page: `ui::track_menu::TrackRow`
+(`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
+`Choice(field, rung)`; PR 3 adds `OpenOther` and `OpenLang(group)`). Selection and saved openers
+are stored by id. `RowKey` is a hand-assigned family base plus a STABLE ordinal (the track's index
+in the item's list, never a list position): `0x0001_0000` Audio, `0x0002_0000` the DSP pair,
+`0x0003_0000` Off, `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
+page's drill-ins, `0x0007_0000` picker rungs (one 256-wide block per field); PR 3 takes
+`0x0008_0000` onward. `OpenLang` carries `sub_layout`'s existing group identity and its
+first-track index comes from the full item group, not the currently offered members. Initial focus
+per page is an explicit id (root: active track or Off; language page: active variant else first;
+Other languages: the checked row else first; picker: the checked choice; Style: Size);
+`opening_row` is only the fallback. LEFT/RIGHT stay on `EdgeRule::Screen` -> edge key; there is no
+second ladder.
 
 ## Replay state
 
@@ -64,11 +74,16 @@ re-recorded.
 
 ## Code structure
 
-- **Three table operations** (`ui/form.rs` `FormTable`, over `TableView`): `open` (snap, scroll 0,
+- **Table operations** (`ui/form.rs` `FormTable`, over `TableView`): `open` (snap, scroll 0,
   explicit initial id), `refresh` (same page, data changed: keep scroll and pill, restore by id, the
-  pill slides) and `restore` (a pop: reinstate saved scroll and selection). `set` stays Settings'
+  pill slides), `refresh_with` (the same with a banked `prefer` id and a `fallback` id: prefer, then
+  the id the table was on, then fallback, then the old-order neighbour) and `restore` (a pop: reinstate saved scroll and selection). `set` stays Settings'
   snap-and-reset. They differ because "the page changed", "its data changed" and "a page came
   back" want different scroll and pill behaviour.
+- **Page stack** (`TrackMenuState::pages`, `TrackPage`): one `FormTable` serves the active page;
+  a push saves the opener's `TrackRow` and the scroll, a pop restores both. To add a page: a
+  `TrackPage` variant (with a `title` and a stable `code`), its form in `page_form`, its explicit
+  `page_initial`, a Nav row whose `Dest` is the variant, and the `TrackRow`s it needs.
 - **Form extensions**, reusable by Settings PRs 3-5 (`docs/settings-form.md`): a Nav row gets the
   chevron from its kind; Choice rows derive `checked` from a current-value predicate; an item can be
   disabled (dim, focusable, inert).
@@ -95,8 +110,8 @@ re-recorded.
 
 A live poll rebuilds the current page when any of these change: the subs fingerprint (count, stream
 ids, offered sidecars), the active index, the renderer kind (text / image / ASS), transcoding, or the
-own-burn / enhancement route and subtitle effect (what `lock_style_rows` and Timing's omission read).
-A page whose availability or `OpenLang` target no longer holds pops to the root by id.
+own-burn / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
+On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the own burn, or a server burn that omits it). An `OpenLang` target that no longer exists pops likewise (PR 3).
 
 ## PR sequence
 
@@ -110,6 +125,7 @@ A page whose availability or `OpenLang` target no longer holds pops to the root 
 
 ## Decisions
 
+- **Minimum width (owner):** the in-player popovers (Tracks, More) have a floor, `theme::layout::PLAYER_MENU_MIN_W` (440 px at 1080p), set on their `TableView` (`min_panel_w`), so a small page does not shrink to its labels. A floor only: wider content still grows the panel to `MENU_MAX_W`. At 440 the locked-renderer note takes two lines in English and Belarusian and three in Spanish (two needs ~520).
 - **Geometry while the Position picker is open (owner): accept the overlap.** Panel bottom is fixed;
   at High the caption may pass behind the panel. No preview shift, no page-dependent HUD policy.
 - **Evidence for the animation PR:** host tests for running vs resting (a transition reports

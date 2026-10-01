@@ -22,6 +22,8 @@ use crate::screens::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
 use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY,
     WCODE_PLAYPAUSE, WCODE_STOP};
 use crate::ui::fixture::FixtureMeasure;
+use crate::ui::form::FormId;
+use crate::ui::track_menu::{StyleField, TrackPage, TrackRow, TITLE_KEY};
 use crate::ui::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
@@ -409,26 +411,46 @@ fn resolve_menupick_row_parses_a_number_or_an_audio_tab_name() {
     assert_eq!(sub_page.resolve_menupick_row("boost"), None, "names are an Audio-tab-only contract");
 }
 
-/// **A Color press commits and leaves the Subtitles panel UP.** The tone is found by cycling and
-/// watching the caption change; every other Tracks row (including Off) still commits and closes.
-/// Timing itself no longer steps in this panel at all — OK on it hands off to the Timing capsule
-/// overlay (`TrackOk::OpenTiming`, plan §4); see `open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud`
-/// below for that hand-off.
+/// Focus `id` on the Subtitles panel the way the engine would (a `FocusMoved`), then press OK on it
+/// the way a click does (`Activate`, the row's key).
+fn open_row(page: &mut PlayerOverlayScreen, id: TrackRow) -> (Handled, Vec<PlayerReq>, bool) {
+    let key = id.key().0;
+    deliver(page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: key }, by: By::Dir });
+    activate(page, key)
+}
+
+fn tracks_path(page: &PlayerOverlayScreen) -> Vec<TrackPage> {
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    menu.page_path()
+}
+
+fn tracks_selected(page: &PlayerOverlayScreen) -> Option<TrackRow> {
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    menu.selected_id()
+}
+
+/// **A Style pick commits and leaves the Subtitles panel UP; Style and its fields are drill-ins.**
+/// The tone is found by picking and watching the caption change; every track row (including Off)
+/// still commits and closes. OK on a Nav row pushes a page and asks for nothing.
 #[test]
-fn a_color_press_commits_without_dismissing_the_tracks_panel() {
+fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     let _g = crate::testlock::serial(); // the panel seeds its tone from the player's global
     crate::player::restore_subtitle_tone(crate::plex::session::SubtitleTone::White);
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    // no playing item: Off, then the headerless Timing + Color section
-    let color = {
-        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        menu.key_of(crate::ui::track_menu::TrackRow::Color).expect("the Color row is on the Subtitles tab")
-    };
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: color }, by: By::Dir });
-    let (_, reqs, dismissed) = activate(&mut page, color);
-    assert!(!dismissed, "a Color press keeps the panel open");
+    // no playing item: Off, then the headerless Timing + Style section; the element is the row's KEY
+    let (_, reqs, dismissed) = open_row(&mut page, TrackRow::Style);
+    assert!(!dismissed, "a Nav row keeps the panel open");
+    assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(_))), "and commits nothing: {reqs:?}");
+    assert_eq!(tracks_path(&page), [TrackPage::Style]);
+    let (_, _, dismissed) = open_row(&mut page, TrackRow::OpenField(StyleField::Color));
+    assert!(!dismissed);
+    assert_eq!(tracks_path(&page), [TrackPage::Style, TrackPage::Picker(StyleField::Color)]);
+    assert_eq!(tracks_selected(&page), Some(TrackRow::Choice(StyleField::Color, 0)), "opens on the checked tone");
+
+    let (_, reqs, dismissed) = open_row(&mut page, TrackRow::Choice(StyleField::Color, 1));
+    assert!(!dismissed, "a Style pick keeps the panel open");
     assert!(reqs.iter().any(|r| matches!(
         r,
         PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleTone(
@@ -436,14 +458,125 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
         ))
     )));
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
+    assert_eq!(tracks_path(&page).len(), 2, "and stays on the picker page");
 
-    let off = {
-        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        menu.key_of(crate::ui::track_menu::TrackRow::SubOff).expect("the Off row")
-    };
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: off }, by: By::Dir });
-    let (_, _, dismissed) = activate(&mut page, off);
+    // BACK twice returns to the root, where Off still commits and closes
+    press(&mut page, 0, WCODE_BACK, Edge::Down);
+    press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(tracks_path(&page).is_empty());
+    let (_, _, dismissed) = open_row(&mut page, TrackRow::SubOff);
     assert!(dismissed, "Off still commits and closes");
+}
+
+/// **Nav keys through the surface**: BACK and LEFT pop a sub-page (focus returns to the opener by
+/// id), BACK on the root dismisses, LEFT on the root is still the tab switch, and RIGHT on a Nav row
+/// enters it (and on anything else is the tab switch, as before).
+#[test]
+fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
+    use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+
+    // RIGHT on the Style row enters the page (an edge re-delivery, as the engine does)
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::Style.key().0 }, by: By::Dir });
+    let (handled, _, dismissed) = press_at_edge(&mut page, SDLK_RIGHT);
+    assert_eq!(handled, Handled::Yes);
+    assert!(!dismissed);
+    assert_eq!(tracks_path(&page), [TrackPage::Style]);
+
+    // LEFT pops and lands back on the opener
+    let (_, _, dismissed) = press_at_edge(&mut page, SDLK_LEFT);
+    assert!(!dismissed, "LEFT on a sub-page is back, not a tab switch or a dismissal");
+    assert!(tracks_path(&page).is_empty());
+    assert_eq!(tracks_selected(&page), Some(TrackRow::Style), "focus returned to the opener by id");
+
+    // BACK pops a sub-page but dismisses the root
+    open_row(&mut page, TrackRow::Style);
+    let (_, _, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(!dismissed, "BACK on a sub-page pops");
+    assert!(tracks_path(&page).is_empty());
+    let (_, _, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(dismissed, "BACK on the root dismisses, as before");
+
+    // root LEFT is still the tab switch: Subtitles -> Audio
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    press_at_edge(&mut page, SDLK_LEFT);
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    assert_eq!(menu.ids(), vec![], "the Audio tab of an empty item has no rows: LEFT switched tabs");
+}
+
+/// **Clicking the "< TITLE" band pops**, acts on no row, and the band is a pointer-only stop: it is
+/// registered with the hit map and placeable for replay, but it is not in the D-pad column.
+#[test]
+fn clicking_the_title_band_pops_one_page() {
+    use crate::ui::screen::DrawFrame;
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+
+    let stops_of = |page: &PlayerOverlayScreen| {
+        let cx = cx();
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f);
+        f.into_stops()
+    };
+    assert!(stops_of(&page).iter().all(|s| s.key.elem != TITLE_KEY), "the root has no title band");
+
+    open_row(&mut page, TrackRow::Style);
+    let stops = stops_of(&page);
+    let title = stops.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
+    assert_eq!(title.hover, crate::ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    let cx = cx();
+    let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
+    assert_eq!((placed.rect.x, placed.rect.y), (title.rect.x, title.rect.y), "place and stop agree");
+    let mut groups = Vec::new();
+    Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+    assert_eq!(Focusable::<TestHost>::group_of(&page, &TITLE_KEY, &cx), None, "never in the D-pad column");
+
+    let (_, reqs, dismissed) = activate(&mut page, TITLE_KEY);
+    assert!(!dismissed);
+    assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(_))), "a title click commits nothing");
+    assert!(tracks_path(&page).is_empty(), "the click went back one page");
+    assert_eq!(tracks_selected(&page), Some(TrackRow::Style));
+}
+
+/// **The replay canon tells pages and return stacks apart**: the tab, the page path, each opener
+/// and the selected KEY all move the hash; the same state hashes the same.
+#[test]
+fn the_replay_canon_includes_the_page_path_and_return_ids() {
+    use crate::ui::machine::{Canon, LogicalState};
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let fp = |page: &PlayerOverlayScreen| {
+        let mut c = Canon::new();
+        page.write(&mut c);
+        c.finish()
+    };
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let root = fp(&page);
+    assert_eq!(root, fp(&PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 })));
+    open_row(&mut page, TrackRow::Style);
+    let style = fp(&page);
+    assert_ne!(style, root, "a pushed page is not the root");
+    open_row(&mut page, TrackRow::OpenField(StyleField::Size));
+    let size = fp(&page);
+    open_row(&mut page, TrackRow::Choice(StyleField::Size, 0)); // inert re-pick keeps the page
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::Choice(StyleField::Size, 2).key().0 }, by: By::Dir });
+    let moved = fp(&page);
+    assert_ne!(moved, size, "the selected key is in the canon");
+    press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert_eq!(fp(&page), style, "popping returns to the Style page's own state");
+
+    // the same page reached from a different opener is a different state
+    let mut other = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    open_row(&mut other, TrackRow::Style);
+    open_row(&mut other, TrackRow::OpenField(StyleField::Color));
+    open_row(&mut page, TrackRow::OpenField(StyleField::Size));
+    assert_ne!(fp(&other), fp(&page));
 }
 
 /// **OK on the dim Timing row while subtitles are Off is inert — it neither opens the capsule
@@ -458,12 +591,12 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then Timing, then Color — and Off is the checked row
-    use crate::ui::track_menu::TrackRow;
-    let timing = {
-        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        menu.key_of(TrackRow::Timing).expect("the Timing row is on the Subtitles tab")
-    };
+    let timing = TrackRow::Timing.key().0;
     deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
+    {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        assert_eq!(menu.selected_id(), Some(TrackRow::Timing), "the key names the Timing row");
+    }
     let (_, reqs, dismissed) = activate(&mut page, timing);
     assert!(!dismissed, "an inert row keeps the panel up");
     assert!(
@@ -497,14 +630,7 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
         }]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    use crate::ui::track_menu::TrackRow;
-    let (sub_row, timing_row) = {
-        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        (
-            menu.key_of(TrackRow::Sub(0)).expect("a subtitle track row"),
-            menu.key_of(TrackRow::Timing).expect("Timing row"),
-        )
-    };
+    let (sub_row, timing_row) = (TrackRow::Sub(0).key().0, TrackRow::Timing.key().0);
     // Select the subtitle track first — Timing is inert while subtitles are Off.
     deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row }, by: By::Dir });
     activate(&mut page, sub_row);
@@ -725,6 +851,65 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
     }
     let bare = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the flat ink");
+}
+
+/// **A pointer click on a row activates THAT row** — the keys the panel registers as hit stops, the
+/// keys its `Focusable` places, and what `Activate(key)` spends all agree. The cursor is left on
+/// Off (never moved by a `FocusMoved`), so a click that still read the cursor would commit the
+/// wrong row; each stop is resolved at its own centre through the hit map the way the dispatcher
+/// does, then activated by the key the map returned.
+#[test]
+fn a_pointer_click_activates_the_row_it_hit_by_key() {
+    use crate::ui::hit::HitMap;
+    use crate::ui::screen::DrawFrame;
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut store = crate::stores::metadata::MetadataStore::default();
+    let sub = |id: i64, index: i64, lang: &str, code: &str| crate::metadata::Stream {
+        id,
+        index,
+        lang: lang.into(),
+        lang_code: code.into(),
+        codec: "srt".into(),
+        ..Default::default()
+    };
+    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+        crate::metadata::PlayingItem::with_subs(vec![sub(11, 0, "English", "eng"), sub(22, 1, "French", "fra")]),
+    ))));
+    let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let cx = cx();
+    let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut f);
+    let stops = f.into_stops();
+    let mut map = HitMap::new();
+    map.fill(stops.clone());
+    map.swap();
+
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    let mut keys = menu.keys();
+    assert!(keys.contains(&TrackRow::Sub(1).key().0), "premise: both tracks are rows");
+    let mut stop_keys: Vec<u32> = stops.iter().map(|s| s.key.elem).collect();
+    keys.sort_unstable();
+    stop_keys.sort_unstable();
+    assert_eq!(stop_keys, keys, "every focusable row registers exactly one stop, under its key");
+    for stop in &stops {
+        let (x, y) = (stop.rect.x + stop.rect.w / 2.0, stop.rect.y + stop.rect.h / 2.0);
+        assert_eq!(map.top_at(x, y).map(|s| s.key.elem), Some(stop.key.elem), "the hit map resolves the row's centre");
+        let placed = Focusable::<TestHost>::place(&page, &stop.key.elem, &cx, At::Drawn).expect("placed");
+        assert_eq!((placed.rect.x, placed.rect.y), (stop.rect.x, stop.rect.y), "place and stop agree");
+    }
+
+    // click French (subs index 1) while the cursor still sits on Off
+    let french = TrackRow::Sub(1).key().0;
+    let (_, reqs, dismissed) = activate(&mut page, french);
+    assert!(dismissed, "a track pick closes the panel");
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::Subtitle { .. }))));
+    // (the harness host's metadata view is empty, so the commit carries no stream id; the id the
+    // panel resolved the key to is what it records as the checked track)
+    let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+    assert_eq!(menu.active_sub(), 1, "the click picked French (subs index 1), not the row under the cursor");
+    assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
 }
 
 /// **Issue #162's census, for the four panels over the player**: every row a panel's `Focusable`

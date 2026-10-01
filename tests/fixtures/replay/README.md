@@ -270,3 +270,13 @@ modes), then all three were re-recorded with `tools/plxnative-rec rerecord` agai
 `12-filmography-detail-return` recording diverged on two frames in Targets mode on one of three
 consecutive replays (the timing-sensitive held-surface frames noted above), so a second recording
 was taken and committed; it replayed SAME in both modes on four consecutive runs.
+
+The player sub-menus' second step (PR 2, rebuilt on #339's `TrackRow` forms: the Subtitles tab's page
+stack) moved the screen census (`SCREEN_SHAPES_PIN`) on purpose: the player overlay's state shape now
+carries the track menu's page path and each stacked page's return id. The anchors recorded against
+`299197959872315368` were observed being refused (`replay: REFUSED — invalid or incompatible
+recording`, all three), then all three were re-recorded with `tools/plxnative-rec rerecord` against
+shape `13647275923436478101` (`0xbd64dd25602c1e95`) and replayed SAME in both modes
+(`tests/replay_fixtures.py`, three consecutive runs, and `tests/focusfp.sh --replay`/`--targets`/
+`--resolve`) with zero difference counters. None of the three drives the player, so the recorded
+frames differ only in the shape they carry.

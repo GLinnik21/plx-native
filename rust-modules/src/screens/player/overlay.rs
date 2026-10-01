@@ -64,7 +64,12 @@ use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 /// The fields [`PlayerOverlayScreen::write`] canonicalises, for the recorder's shape pin (§5.4).
 /// The selected ROW is in it deliberately: these panels' UP/DOWN changes nothing else in the app,
 /// so without it a replay grades a panel opening and closing and nothing between.
-pub(crate) const SHAPE: &str = "PlayerOverlayScreen{kind:str,sel:u32}";
+///
+/// `sel` is the highlighted row's index for every panel but the track menu, whose own canon
+/// ([`crate::ui::track_menu::TrackMenuState::canon`]) replaces it: `tab`, the page-path depth, each
+/// pushed page's `{page,return_key}` and the selected row's KEY.
+pub(crate) const SHAPE: &str =
+    "PlayerOverlayScreen{kind:str,sel:u32|Tracks:{tab:u32,depth:u32,pages:[{page:u32,return_key:u32}],key:u32}}";
 
 /// Which panel a [`PlayerOverlayArg`] names, and — since the argument is what the container holds
 /// for the whole life of the entry — the identity `ScreenArg::same_instance` compares.
@@ -380,7 +385,7 @@ impl PlayerOverlayScreen {
             p.focus_row(row);
             return match p.on_ok(meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert => None,
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated => None,
             };
         }
         None
@@ -435,8 +440,8 @@ impl PlayerOverlayScreen {
                 TrackOk::Commit { commit, keep_open } => {
                     fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
                     if keep_open {
-                        // a Color cycle: the viewer is watching the tone change, so the transport
-                        // keeps a menu's read time rather than starting to close
+                        // a Style pick (or an audio toggle): the viewer is watching the change, so
+                        // the transport keeps a menu's read time rather than starting to close
                         self.moved(fx);
                     } else {
                         self.dismiss(fx);
@@ -447,8 +452,9 @@ impl PlayerOverlayScreen {
                     self.dismiss(fx);
                     self.closing(fx);
                 }
-                // the dim Timing row while subtitles are Off: nothing happens and the panel stays
-                TrackOk::Inert => self.moved(fx),
+                // a dim row (Timing while subtitles are Off, a locked Style row): nothing happens and
+                // the panel stays. A Nav row opened a page: the panel stays with its rows replaced.
+                TrackOk::Inert | TrackOk::Navigated => self.moved(fx),
                 TrackOk::OpenTiming => {
                     // The Tracks→Timing hand-off (plan §4): dismiss THIS entry and ask for a fresh
                     // `Timing` overlay. `open_player_overlay` sees a different slot
@@ -494,7 +500,8 @@ impl PlayerOverlayScreen {
     /// **The engine reached this panel's group EDGE and re-delivered the direction**
     /// (`EdgeRule::Screen`, §7.3 step 3) — the one thing left that a panel decides outside its own
     /// scope, because it moves focus OFF this screen (Chapters'/Info's DOWN) or re-addresses the
-    /// panel entirely (Tracks' LEFT/RIGHT tab switch, `TrackMenuState::focus_tab`). More declares
+    /// panel entirely (Tracks' LEFT/RIGHT: LEFT pops a sub-page, else switches tab
+    /// (`TrackMenuState::focus_tab`); RIGHT enters a Nav row, else switches tab). More declares
     /// no `Screen` edge at all (its four sides are `Stop`), so it never reaches here.
     fn edge_key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
@@ -505,8 +512,14 @@ impl PlayerOverlayScreen {
     ) -> Handled {
         use consts::Key;
         match (&mut self.panel, key) {
-            (Panel::Tracks(p), Key::Left { .. } | Key::Right { .. }) => {
-                p.focus_tab(ps, H::metadata(cx), if matches!(key, Key::Left { .. }) { 0 } else { 1 });
+            // LEFT pops a sub-page, else switches tab as before; RIGHT on a Nav row enters it (inert
+            // when that row is disabled), else switches tab as before
+            (Panel::Tracks(p), Key::Left { .. }) => {
+                p.on_left(ps, H::metadata(cx));
+                self.moved(fx);
+            }
+            (Panel::Tracks(p), Key::Right { .. }) => {
+                p.on_right(ps, H::metadata(cx));
                 self.moved(fx);
             }
             (Panel::Chapters(_), Key::Down) | (Panel::Info(_), Key::Down) => {
@@ -525,8 +538,9 @@ impl PlayerOverlayScreen {
     /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
     /// reached this panel's group edge and re-delivered it (`edge_key`, above). OK is likewise
     /// left to the engine's own `Activate`/press machinery (§7.4; see [`Self::activate`]). BACK
-    /// dismisses — Tracks and More close silently, exactly as the old ladder did; Info and
-    /// Chapters also hand the transport the ordinary linger.
+    /// dismisses — except on a Tracks sub-page, where it pops one page first (the root, and the
+    /// other panels, dismiss). Tracks and More close silently, exactly as the old ladder did; Info
+    /// and Chapters also hand the transport the ordinary linger.
     fn key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
@@ -608,6 +622,13 @@ impl PlayerOverlayScreen {
         }
         match key {
             Key::Back => {
+                // BACK on a Subtitles sub-page goes up one page; on a root it dismisses
+                if let Panel::Tracks(p) = &mut self.panel {
+                    if p.pop(ps, H::metadata(cx)) {
+                        self.moved(fx);
+                        return Handled::Yes;
+                    }
+                }
                 self.dismiss(fx);
                 if matches!(self.panel, Panel::Info(_) | Panel::Chapters(_)) {
                     self.closing(fx);
@@ -665,6 +686,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // §7.3 step 5: the owner's `step` is the only place that mutates in response to a
                 // move the engine made — write the new cursor back into whichever panel is open,
                 // and extend the transport's read time exactly as a hand-moved cursor used to.
+                // Tracks' element is a row KEY (`ui::track_menu::TrackRow`), the rest's an index.
                 let i = to.elem as i32;
                 match &mut self.panel {
                     Panel::Tracks(p) => p.focus_key(to.elem),
@@ -684,7 +706,19 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             // (`Info`/`Chapters`) arms an engine press first and only reaches here as
             // `PressCommit`, on release — except `Info`, whose `PressCommit` defers instead to
             // the loop's own tvOS dip (`Self::activate`'s doc explains the split).
-            ScreenEvent::Activate(_) => {
+            ScreenEvent::Activate(elem) => {
+                // the event names the row that was hit (its key for Tracks): seat the panel on
+                // THAT row before `activate` reads the panel's own cursor, so a click never acts
+                // on a neighbour the cursor happened to still hold
+                if let Panel::Tracks(p) = &mut self.panel {
+                    if crate::ui::track_menu::TrackMenuState::is_title_key(*elem) {
+                        // the "< TITLE" band: a click goes back one page, and acts on no row
+                        p.pop(ps, H::metadata(cx));
+                        self.moved(fx);
+                        return Handled::No;
+                    }
+                    p.focus_key(*elem);
+                }
                 self.activate(cx, fx);
                 Handled::No
             }
@@ -813,7 +847,13 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
 impl LogicalState for PlayerOverlayScreen {
     fn write(&self, c: &mut Canon) {
         c.str(self.kind.word());
-        c.u32(self.sel() as u32);
+        match &self.panel {
+            // the tab, the page path with each opener, and the selected row's KEY
+            Panel::Tracks(p) => p.canon(c),
+            _ => {
+                c.u32(self.sel() as u32);
+            }
+        }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(self.kind.word());
