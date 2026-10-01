@@ -275,6 +275,7 @@ The player sub-menus' second step (PR 2b: the Subtitles tab's page stack) moved 
 (`SCREEN_SHAPES_PIN`) on purpose: the player overlay's state shape now carries the track menu's page
 path and each stacked page's return id. The anchors recorded against `9770156787996859790` were
 observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three), then all
-three were re-recorded with `tools/plxnative-rec rerecord` against shape `14339719514509087819` and
-replayed SAME in both modes (`tests/focusfp.sh --replay`, twice) with zero difference counters. None
+three were re-recorded with `tools/plxnative-rec rerecord` against shape `13647275923436478101`
+(`0xbd64dd25602c1e95`, on the recorder that carries #340's text readiness) and replayed SAME in both
+modes (`tests/replay_fixtures.py`, `tests/focusfp.sh --replay`) with zero difference counters. None
 of the three drives the player, so the recorded frames differ only in the shape they carry.
