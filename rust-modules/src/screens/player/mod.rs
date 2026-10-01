@@ -1793,7 +1793,7 @@ mod step_ladder_tests {
         use crate::ui::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         use crate::ui::screen::{At, DrawFrame};
         let _g = crate::testlock::serial();
-        let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: false };
+        let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
         let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false);
         let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true);
         assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));

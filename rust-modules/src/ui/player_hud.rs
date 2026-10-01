@@ -652,11 +652,13 @@ impl ControlSlot {
 ///
 /// Up Next outranks Skip Credits deliberately: with somewhere to go, "next episode" is the better
 /// offer, and Skip Credits stays for the last episode of a show, where there is nowhere to go.
+/// Only a `final` credits marker (one that runs to the end of the item) qualifies: a mid-item
+/// credits segment is followed by more of the episode, so it keeps the Skip Credits pill.
 pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) -> ControlSlot {
     match marker {
         Some(m) => {
             let pr = crate::screens::player::skip_pill::prompt_for(m);
-            if has_next && m.kind == crate::metadata::MarkerKind::Credits {
+            if has_next && m.kind == crate::metadata::MarkerKind::Credits && m.final_seg {
                 ControlSlot::UpNext(m)
             } else {
                 ControlSlot::Skip(pr)
@@ -2002,6 +2004,20 @@ mod tests {
             slot_for(Some(marker(MarkerKind::Credits, true)), false),
             ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
         ));
+    }
+
+    /// Up Next is only offered for a credits marker that runs to the end of the item (`final`).
+    /// A mid-item credits segment with a successor queued (a post-credits scene follows) is a
+    /// plain Skip Credits pill that seeks past it, not a countdown into the next episode.
+    #[test]
+    fn up_next_needs_a_final_credits_marker() {
+        let mid = slot_for(Some(marker(MarkerKind::Credits, false)), true);
+        assert!(
+            matches!(mid, ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
+                && p.action == SkipAction::Seek(2_000 * 1_000_000)),
+            "a non-final credits marker offers Skip Credits even with a successor queued"
+        );
+        assert!(matches!(slot_for(Some(marker(MarkerKind::Credits, true)), true), ControlSlot::UpNext(_)));
     }
 
     /// A `final` credits segment runs to the end of the item, so skipping it FINISHES rather than
