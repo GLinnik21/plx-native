@@ -9,8 +9,9 @@
 //! -sha256 -binary | base64`. What is hashed is the COMPLETE DER `SubjectPublicKeyInfo` (tag,
 //! length and contents), not the bare key bits.
 //!
-//! Nothing here is wired to a caller yet; the bytes come off the network, so the DER reader is
-//! bounds-checked end to end and answers `None` rather than panicking.
+//! The one caller is `net::peer_leaf_pin` (the identity probe's `CURLINFO_CERTINFO` read), which
+//! hands this module text straight off the network, so the DER reader is bounds-checked end to
+//! end and answers `None` rather than panicking.
 
 use crate::keymanager::b64;
 use crate::sha256::sha256;

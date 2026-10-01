@@ -92,6 +92,22 @@ detour into an ordinary pinned LAN HTTPS winner; the plaintext twin's own probe 
 pin belongs to a TLS name, never to a literal — and a candidate whose dashed label does not encode
 its `address` simply gets no pin and resolves through DNS exactly as before.
 
+**The probe also learns each server's leaf public key (issue #380); nothing reads it yet.** While
+online, over a connection libcurl verified in full (`Tls::Ca`, never the lab's pinned mode), an
+`/identity` answer that `auth::classify` accepts for the machine asked for makes
+`ProbeReply::grade_learning` record that machine's pin — `sha256//<base64>`, the exact
+`CURLOPT_PINNEDPUBLICKEY` string `spki::pin_from_pem` makes of the chain's index-0 certificate, read
+through `CURLINFO_CERTINFO` (`net::peer_leaf_pin`) only when the request opts in
+(`http::request_probe_learning_key`; the option makes libcurl decode the whole chain, so no ordinary
+request pays). Plaintext, a failed verification, a mismatched `machineIdentifier` and a relay route
+(which ends at Plex's relay, not at the server) learn nothing. It lives in `Session::server_key_pins`, one entry per
+`machineIdentifier`, session-level like `plaintext_consent` (NOT in `ServerRef`/`SourceRef`/
+`ProfileCreds`, which are cloned per profile), soft-parsed, skipped while empty and gone with the
+credentials at sign-out; `session::learn_server_key` queues the write only when the pin changed.
+`Session::server_key_pin(machine_id)` is the accessor, and **issue #378 (accept the remembered key when
+the only failure is the date) is its reader — that fallback does not exist yet**, so what is accepted
+on the wire is unchanged.
+
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past
 the pinned origin and then could seat nobody: every pick is a `POST /api/v2/home/users/{uuid}/switch`,

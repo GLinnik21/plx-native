@@ -2044,7 +2044,7 @@ fn get_identity(
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
 ) -> ProbeReply {
-    match crate::http::request_probe(
+    match crate::http::request_probe_learning_key(
         origin,
         IDENTITY,
         crate::http::Method::Get,
@@ -2057,7 +2057,7 @@ fn get_identity(
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
         // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
         // that might happen to contain a plausible machine id.
-        Ok(r) => ProbeReply::Answered { status: r.status, body: r.body },
+        Ok(r) => ProbeReply::Answered { status: r.status, body: r.body, peer_pin: r.peer_pin },
         Err(failure) => ProbeReply::Failed(failure),
     }
 }
@@ -2067,7 +2067,9 @@ fn get_identity(
 /// what an insecure-only verdict names per route.
 #[derive(Debug)]
 enum ProbeReply {
-    Answered { status: i32, body: Vec<u8> },
+    /// `peer_pin` is the pin of the leaf certificate a strictly verified TLS connection presented
+    /// (`crate::http::Reply::peer_pin`); `None` over plaintext and on every test seam.
+    Answered { status: i32, body: Vec<u8>, peer_pin: Option<String> },
     Failed(Option<crate::net::RequestFailure>),
 }
 
@@ -2075,12 +2077,28 @@ impl ProbeReply {
     /// The acceptance verdict ([`classify`]) and the route evidence for this reply.
     fn grade(&self, want_machine_id: &str) -> (Outcome, RouteOutcome) {
         match self {
-            Self::Answered { status, body } => {
+            Self::Answered { status, body, .. } => {
                 let outcome = classify(*status, body, want_machine_id);
                 (outcome, RouteOutcome::of_answer(*status, outcome))
             }
             Self::Failed(failure) => (Outcome::Unreachable, RouteOutcome::of_failure(*failure)),
         }
+    }
+
+    /// [`Self::grade`], and when the answer is accepted for `want_machine_id` over a verified
+    /// connection, remember that machine's public key (issue #380, for the offline fallback of
+    /// #378). Acceptance is [`classify`]'s: a 2xx whose `machineIdentifier` is the one asked for,
+    /// so a stranger answering at the address never teaches a key. A relay connection ends at
+    /// Plex's relay, not at the server, so whatever certificate it presents is not the server's
+    /// key and is never learned.
+    fn grade_learning(&self, want_machine_id: &str, location: probe::Location) -> (Outcome, RouteOutcome) {
+        let graded = self.grade(want_machine_id);
+        if let (Outcome::Reachable, Self::Answered { peer_pin: Some(pin), .. }) = (graded.0, self) {
+            if location != probe::Location::Relay {
+                crate::plex::session::learn_server_key(want_machine_id, pin);
+            }
+        }
+        graded
     }
 }
 
@@ -2088,7 +2106,7 @@ impl ProbeReply {
 /// answered", with no evidence.
 impl From<(i32, Vec<u8>)> for ProbeReply {
     fn from((status, body): (i32, Vec<u8>)) -> Self {
-        if status == 0 { Self::Failed(None) } else { Self::Answered { status, body } }
+        if status == 0 { Self::Failed(None) } else { Self::Answered { status, body, peer_pin: None } }
     }
 }
 
@@ -2344,8 +2362,10 @@ fn race_batch(
         // belongs to a TLS name only) or an unmatched/undecodable label; the request then resolves
         // through DNS exactly as before.
         let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
+        let location = c.location;
         let job = Box::new(move || {
-            let (outcome, route) = dial(&origin, pin.as_ref(), budget).grade(&machine_id);
+            let (outcome, route) =
+                dial(&origin, pin.as_ref(), budget).grade_learning(&machine_id, location);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
             // this result is inert. If this claim wins and the worker is descheduled before send,
@@ -4076,7 +4096,8 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         } else {
             PROBE_DEADLINES.remote
         };
-        let (outcome, _) = get_identity(&origin, pin.as_ref(), budget).grade(&plan.machine_id);
+        let (outcome, _) = get_identity(&origin, pin.as_ref(), budget)
+            .grade_learning(&plan.machine_id, cached.tier.unwrap_or(probe::Location::Relay));
         let source = (outcome == Outcome::Reachable).then(|| {
             let mut fresh = cached.clone();
             fresh.token = resource.access_token.clone();
