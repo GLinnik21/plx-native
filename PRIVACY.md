@@ -148,10 +148,10 @@ and may include the app version, webOS version, television model and SoC, and wh
 server is local, remote or relayed. Turning product analytics off, or signing out, deletes the
 local identifier; enabling it later creates a new one.
 
-Signing in happens before this choice is asked. The sign-in events of that attempt (started,
-completed, failed or cancelled) are held in memory only, never written to the television, until
-you answer. Choosing to share sends them, dated when they happened; declining discards them, and so
-does signing out or closing the app before you answer.
+Signing in happens before this choice is asked. The sign-in events from before your answer
+(started, completed, failed or cancelled, for each attempt; at most the eight most recent) are held
+in memory only, never written to the television. Choosing to share sends them, dated when they
+happened; declining discards them, and so does signing out or closing the app before you answer.
 
 The Settings screen shows field-by-field example payloads produced through the same serializers
 used for real reports.
