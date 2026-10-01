@@ -151,6 +151,7 @@ for a in "$@"; do
     --orphans)     MODE=orphans ;;
     --worktrees)   MODE=worktrees ;;
     --cache)       MODE=cache ;;
+    --seed)        MODE=seed ;;
     --all)         MODE=all ;;
     --auto)        MODE=auto ;;
     -n|--dry-run)  DRY=1 ;;
@@ -213,7 +214,17 @@ usage: tools/build-gc.sh [MODE] [-n]
                   $PLX_CACHE_MAX_DAYS days (default 30). They are keyed by configure flags AND
                   toolchain, so a version bump or an NDK upgrade strands the old entry silently —
                   a cache nothing prunes is the same unbounded growth this script exists for.
-                  The tarball is kept; it is 11 MB and every checkout copies from it.
+                  The tarball is kept; it is 11 MB and every checkout copies from it. The same
+                  threshold prunes the cargo seed (`tools/cargo-seed.py`) that fresh lanes are
+                  cloned from, by the last time a lane restored from or refreshed it; a lane
+                  built from it is unaffected (a clone owns its blocks), and the next lane to
+                  finish a build makes a new one.
+  --seed          delete the cargo seed (`tools/cargo-seed.py`) that fresh lanes are cloned from
+                  when no lane has restored from or refreshed it for $PLX_SEED_MAX_DAYS days
+                  (default 7). Once the lanes it was cloned from are gone its ~1.3 GB belongs
+                  to it alone, and this is the stage `--auto` runs for it under disk pressure
+                  (`--cache` waits for 30 days and never runs from `--auto`). The next lane to
+                  finish a build makes a new one; lanes already seeded are unaffected.
   --all           --incremental everywhere plus --lanes, --stale, --orphans and --cache, and the
                   main checkout's vendor build trees. Leaves the main checkout's target dirs
                   themselves in place — `--stale` only removes the superseded hashes inside them.
@@ -224,11 +235,12 @@ usage: tools/build-gc.sh [MODE] [-n]
                   lanes idle for at least $PLX_GC_IDLE_MIN minutes (default 60, judged by the
                   newest mtime anywhere under the worktree, target dirs included) — a lane an
                   agent might resume in the next few minutes is not the same as one nobody is
-                  touching, and a needless rebuild costs real money — then --stale last, which is
+                  touching, and a needless rebuild costs real money — then --stale, which is
                   the one stage allowed to touch the MAIN checkout (age-gated only there, per
                   --stale's own conservative rule; never the newest hash per crate). Never
                   --cache, never a tracked file, never any main-checkout file --stale itself
-                  would not also remove standalone. Single-instance: a mkdir lock
+                  would not also remove standalone; finally --seed (the cargo seed, once no lane has
+                  used it for a week; under pressure only). Single-instance: a mkdir lock
                   (stale-safe, $PLX_GC_LOCK_DIR) means a second --auto exits 0 quietly rather than
                   racing the first. Logs one line per stage to $PLX_GC_LOG (default
                   ~/Library/Logs/plxnative-build-gc.log on macOS,
@@ -237,8 +249,10 @@ usage: tools/build-gc.sh [MODE] [-n]
                   space would trigger, deletes nothing, and still takes the lock.
   -n, --dry-run   print what would go, delete nothing.
 
-Nothing here touches a tracked file, the shared FFmpeg cache under $PLX_BUILD_CACHE, or the
-television. Everything it removes is rebuilt by `make`.
+Nothing here touches a tracked file or the television. The only thing it removes from the shared
+cache under $PLX_BUILD_CACHE is what `--cache` finds unused for $PLX_CACHE_MAX_DAYS days (FFmpeg
+trees and the cargo seed); `--auto` never runs `--cache`, only `--seed` (the seed, after
+$PLX_SEED_MAX_DAYS days). Everything it removes is rebuilt by `make`.
 USAGE
       exit 0 ;;
     *) echo "build-gc: unknown argument $a (try --help)" >&2; exit 2 ;;
@@ -427,6 +441,10 @@ run_auto_mode() {
   fi
   if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
     run_auto_stage stale --stale
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
+  fi
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    run_auto_stage seed --seed
     [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
   fi
 
@@ -1124,12 +1142,19 @@ report)
   cache=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
   echo
   if [ -n "$cache" ] && [ -d "$cache" ]; then
-    printf 'shared build cache  %8s  %s (one copy per configuration, for every checkout)\n' \
+    printf 'shared build cache  %8s  %s (FFmpeg: one copy per configuration, for every checkout)\n' \
            "$(fmt_kb "$(du -sk "$cache" 2>/dev/null | awk '{print $1}')")" "$cache"
+  fi
+  if [ -n "$cache" ] && [ -d "$cache/cargo-seed" ]; then
+    # `du` counts a clone's blocks in full, in the seed AND in every lane that was seeded from it,
+    # so the lane totals above and this line overstate what is on the disk: the volume line below
+    # (`df`) is the truth, and it is what `--auto` acts on.
+    printf '  of which cargo seed %7s  %s (APFS clones of third-party output; du counts shared bytes in full, df is the truth)\n' \
+           "$(fmt_kb "$(du -sk "$cache/cargo-seed" 2>/dev/null | awk '{print $1}')")" "$cache/cargo-seed"
   fi
   df -h "$ROOT" | tail -1 | awk '{print "volume              " $4 " free of " $2}'
   echo
-  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --lanes | --worktrees | --all   (add -n to preview)"
+  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --seed | --lanes | --worktrees | --all   (add -n to preview)"
   ;;
 esac
 
@@ -1258,6 +1283,22 @@ cache|all)
       echo "  in use, skipped  $d"
     fi
   done
+  # The cargo seed (`tools/cargo-seed.py`) lives beside the FFmpeg trees but follows its own
+  # protocol: the script takes the seed's flock, so a restore or harvest in flight keeps its seed.
+  # Absent in the synthetic repositories ci/test_build_gc.py builds, hence the existence test.
+  if [ -f "$ROOT/tools/cargo-seed.py" ]; then
+    python3 "$ROOT/tools/cargo-seed.py" prune --days "$CACHE_MAX_DAYS" ${DRY:+--dry-run}
+  fi
+  ;;
+esac
+
+SEED_MAX_DAYS=${PLX_SEED_MAX_DAYS-7}
+case "$MODE" in
+seed)
+  echo "== the cargo seed, unused for over $SEED_MAX_DAYS days =="
+  if [ -f "$ROOT/tools/cargo-seed.py" ]; then
+    python3 "$ROOT/tools/cargo-seed.py" prune --days "$SEED_MAX_DAYS" ${DRY:+--dry-run}
+  fi
   ;;
 esac
 

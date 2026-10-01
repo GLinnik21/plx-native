@@ -126,6 +126,62 @@ class BuildGcTests(unittest.TestCase):
                 self.assertFalse(fixture[3].exists(), "stale lock stranded")
                 self.assertNotIn("not found", result.stderr)
 
+    def test_cache_prunes_an_aged_cargo_seed_and_keeps_a_used_one(self):
+        fixture = self.fixture(None, None)
+        repo, env = fixture[0], fixture[1]
+        shutil.copy(ROOT / "tools/cargo-seed.py", repo / "tools/cargo-seed.py")
+        seeds = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed"
+        old = time.time() - 40 * 86400
+        for name, mtime in (("target", old), ("target-release", time.time())):
+            (seeds / name).mkdir(parents=True)
+            (seeds / name / "payload").write_text("third-party output\n")
+            stamp = seeds / name / ".last-used"
+            stamp.touch()
+            os.utime(stamp, (mtime, mtime))
+        dry = self.run_gc(fixture, "--cache", "-n")
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertIn("would remove", dry.stdout)
+        self.assertTrue((seeds / "target/payload").exists(), "a dry run deleted the seed")
+        real = self.run_gc(fixture, "--cache")
+        self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+        self.assertFalse((seeds / "target").exists(), "an aged seed survived --cache")
+        self.assertTrue((seeds / "target-release/payload").exists(), "a seed in use was pruned")
+
+    def test_seed_prunes_a_week_old_cargo_seed_that_cache_would_keep(self):
+        fixture = self.fixture(None, None)
+        repo, env = fixture[0], fixture[1]
+        shutil.copy(ROOT / "tools/cargo-seed.py", repo / "tools/cargo-seed.py")
+        seeds = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed"
+        (seeds / "target").mkdir(parents=True)
+        (seeds / "target" / "payload").write_text("third-party output\n")
+        stamp = seeds / "target" / ".last-used"
+        stamp.touch()
+        ten_days = time.time() - 10 * 86400
+        os.utime(stamp, (ten_days, ten_days))
+        kept = self.run_gc(fixture, "--cache")
+        self.assertEqual(kept.returncode, 0, kept.stdout + kept.stderr)
+        self.assertTrue((seeds / "target/payload").exists(), "--cache pruned a 10-day-old seed")
+        real = self.run_gc(fixture, "--seed")
+        self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+        self.assertFalse((seeds / "target").exists(), "--seed left a seed unused for 10 days")
+
+    def test_auto_below_threshold_prunes_the_seed_last(self):
+        fixture = self.fixture(0, 0)
+        repo, env = fixture[0], fixture[1]
+        shutil.copy(ROOT / "tools/cargo-seed.py", repo / "tools/cargo-seed.py")
+        seeds = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed"
+        (seeds / "target").mkdir(parents=True)
+        stamp = seeds / "target" / ".last-used"
+        stamp.touch()
+        ten_days = time.time() - 10 * 86400
+        os.utime(stamp, (ten_days, ten_days))
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999", "PLX_GC_IDLE_MIN": "0"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((seeds / "target").exists(), "--auto under pressure kept an idle seed")
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertLess(log.index("stale:"), log.index("seed:"), "seed stage out of order:\n" + log)
+
     def test_dry_runs_never_mutate_trees_or_locks(self):
         for owner in (os.getpid(), 0):
             for mode in MODES:
