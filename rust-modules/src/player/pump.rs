@@ -1547,9 +1547,9 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in
             // `feed_both_lanes`, so this call site cannot drift from them.
-            feed_both_lanes(mt, eng);
+            crate::diag::spans::span("feed", || feed_both_lanes(mt, eng));
         } else {
-            feed_sample(mt, eng);
+            crate::diag::spans::span("feed", || feed_sample(mt, eng));
         }
     }
 

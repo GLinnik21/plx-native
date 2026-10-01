@@ -157,17 +157,21 @@ pub(crate) unsafe fn run(app: &mut App) {
         // and the offline-pick harness case found no cache record (device, 2026-09-06).
         // Waiting for the handoff costs a headless run the seconds the seating takes.
         app.rec.content_begin();
-        let scenarios_ok = if app.boot_initial.is_some() {
-            crate::dev::scenarios::controlled_each_frame(app, fr)
-        } else {
-            crate::dev::scenarios::each_frame(app, fr)
-        };
+        // The `results` phase's three halves carry their own FRAMEDROP spans (`scen`, `pump`,
+        // `land`), so a slow `results=` names which of them held the frame.
+        let scenarios_ok = crate::diag::spans::span("scen", || {
+            if app.boot_initial.is_some() {
+                crate::dev::scenarios::controlled_each_frame(app, fr)
+            } else {
+                unsafe { crate::dev::scenarios::each_frame(app, fr) }
+            }
+        });
         if !scenarios_ok {
             continue;
         }
-        playback_tick(app, fr);
+        crate::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
         clock_and_press(app, fr);
-        land_results(app, fr);
+        crate::diag::spans::span("land", || unsafe { land_results(app, fr) });
         app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
         // **Was the player the page on top going INTO this frame?** The container's own commit
         // may take it off during `bridge::frame_with_tap` below, and the detail page it uncovers
@@ -2257,7 +2261,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // rather than on this route test. Calling it in both places would send the
                         // same wayland request twice per frame for the whole of a playback.
                         glClearColor(0.0, 0.0, 0.0, 0.0);
-                        glClear(GL_COLOR_BUFFER_BIT);
+                        // The frame's first framebuffer-0 command, where this driver parks the
+                        // wait for a free back buffer: spanned like every other route's `clear`.
+                        crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same

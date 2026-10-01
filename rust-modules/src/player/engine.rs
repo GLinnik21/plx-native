@@ -187,6 +187,9 @@ pub(crate) struct Engine {
     pub presentation_rearm_pending: bool,
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
+    /// The feed-ahead throttle's reference position, run on between the pipeline's 5 Hz
+    /// position reports (see [`FeedPace`]).
+    pub feed_pace: FeedPace,
     pub seek_base_pts: i64,     // fed pts of the first post-seek keyframe (prime measures buffer
     // depth as max_fed_video_pts - seek_base_pts, since the in-place seek feeds REAL pts, not 0-based)
     // prime-then-play: after a seek/resume the pipeline is PAUSED and data is buffered before
@@ -1377,6 +1380,7 @@ fn start_bufferfeed_inner(
         presentation_rearm_pending: false,
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
+        feed_pace: FeedPace::default(),
         seek_base_pts: 0,
         prime_play: false,
         aq_video: aqv_box,
@@ -1952,6 +1956,49 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.
 pub(crate) const PRES_NONE: i64 = i64::MIN;
 
+/// The longest the throttle's reference runs on past the last position report, in ms. The
+/// pipeline reports every ~201 ms, so this covers one late report; a paused or stalled clock stops
+/// changing `pres_fed`, and the reference then stops this far ahead of it instead of opening the
+/// lane without bound.
+const FEED_PACE_CAP_MS: u32 = 250;
+
+/// **The feed-ahead throttle's reference: the presented position, run on at 1x between reports.**
+///
+/// `SHARED.pres_fed` moves in ~200 ms steps (the pipeline's 5 Hz position callback). Measured
+/// against that step function, the throttle stayed shut for eleven frames and then opened by
+/// 200 ms of media at once, so every fifth of a second one frame fed ~5 video and ~7 audio AUs to
+/// Starfish, and `Feed()` blocks: on the TV with the track menu open, `FRAMEDROP … results=14.6`
+/// with `feed:14.4` inside it, 4–15 ms on every 12th frame. Run on from the last report at the
+/// playback rate, the same budget opens a frame's worth of media per frame, so the same AUs reach
+/// Starfish one or two per frame. The buffer depth is unchanged: the bound is still
+/// `MAX_FEED_AHEAD_NS` past the (estimated) presented position, and [`FEED_PACE_CAP_MS`] stops
+/// the estimate when the reports stop changing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FeedPace {
+    /// The last distinct `pres_fed` seen, and when it was first seen (player clock, ms).
+    last: Option<(i64, u32)>,
+}
+
+impl FeedPace {
+    /// The position to throttle against at `now_ms`, given the current raw `pres_fed`.
+    /// [`PRES_NONE`] passes through untouched (feed freely) and forgets the last report.
+    pub(crate) fn reference(&mut self, pres: i64, now_ms: u32) -> i64 {
+        if pres == PRES_NONE {
+            self.last = None;
+            return pres;
+        }
+        let at = match self.last {
+            Some((p, at)) if p == pres => at,
+            _ => {
+                self.last = Some((pres, now_ms));
+                now_ms
+            }
+        };
+        let run_on = now_ms.wrapping_sub(at).min(FEED_PACE_CAP_MS) as i64;
+        pres.saturating_add(run_on * 1_000_000)
+    }
+}
+
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
@@ -2248,6 +2295,7 @@ pub(crate) fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
 }
 
 fn feed_stream(mt: &MainThread, eng: &mut Engine) {
+    let now_ms = super::vclock_ms();
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
@@ -2375,7 +2423,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // Skipped while priming (feed freely to reach PRIME_NS before Play). Each lane's queue is
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         if !eng.prime_play {
-            let pres = SHARED.pres_fed.load(Ordering::Relaxed);
+            let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), now_ms);
             let budget = if es == 1 {
                 MAX_FEED_AHEAD_NS
             } else {
@@ -2395,7 +2443,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         } else {
             false
         };
-        let r = unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) };
+        let r = crate::diag::spans::span("sfv", || unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) });
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
@@ -2477,7 +2525,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     // arm writes it, on this same thread), and one pres_fed sample per tick is plenty against the
     // multi-second audio budget.
     let shift = SHARED.pts_shift.load(Ordering::Relaxed);
-    let pres = SHARED.pres_fed.load(Ordering::Relaxed);
+    let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), super::vclock_ms());
     let mut fed = 0;
     while fed < 120 {
         if eng.pending_audio.is_none() {
@@ -2507,7 +2555,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         if !eng.prime_play && pres != PRES_NONE && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
             break;
         }
-        let r = unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) };
+        let r = crate::diag::spans::span("sfa", || unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) });
         // Accepted only — see the video lane's note.
         if (r as u8) == b'O' && fp > eng.max_fed_audio_pts {
             eng.max_fed_audio_pts = fp;
@@ -2557,6 +2605,60 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
         }
         s.next += 1;
         fed += 1;
+    }
+}
+
+#[cfg(test)]
+mod feed_pace_tests {
+    use super::{FeedPace, FEED_PACE_CAP_MS, MAX_FEED_AHEAD_NS, PRES_NONE};
+
+    const MS: i64 = 1_000_000;
+
+    /// Video AUs (24 fps, 41.7 ms apart) the throttle admits at each 60 Hz frame of a 1x clock
+    /// whose position reports arrive every 200 ms — with `reference` as the throttle's position.
+    fn admitted_per_frame(reference: impl Fn(&mut FeedPace, i64, u32) -> i64) -> Vec<u32> {
+        let mut pace = FeedPace::default();
+        let au_ns = 41_708_333i64;
+        let mut next_pts = MAX_FEED_AHEAD_NS; // the lane starts full
+        let mut out = Vec::new();
+        for frame in 0..120u32 {
+            let now = 1_000 + frame * 1000 / 60;
+            let true_pos = (now as i64 - 1_000) * MS;
+            let pres = true_pos - true_pos % (200 * MS); // the 5 Hz step function
+            let refpos = reference(&mut pace, pres, now);
+            let mut n = 0;
+            while next_pts - refpos <= MAX_FEED_AHEAD_NS {
+                next_pts += au_ns;
+                n += 1;
+            }
+            out.push(n);
+        }
+        out
+    }
+
+    /// **Regression: the 5 Hz feed burst.** Against the raw report the lane opens 200 ms at a
+    /// time: ~5 AUs land on one frame and none on the eleven around it. Run on at 1x it never
+    /// admits more than one video AU a frame, and admits the same media over the same time.
+    #[test]
+    fn the_reference_spreads_the_five_hertz_burst_across_frames() {
+        let raw = admitted_per_frame(|_, pres, _| pres);
+        let paced = admitted_per_frame(|p, pres, now| p.reference(pres, now));
+        assert!(raw.iter().max().copied().unwrap_or(0) >= 4, "the raw step feeds in bursts: {raw:?}");
+        assert!(paced.iter().all(|&n| n <= 1), "paced: at most one AU a frame: {paced:?}");
+        let (r, p): (u32, u32) = (raw.iter().sum(), paced.iter().sum());
+        assert!(p.abs_diff(r) <= 6, "same media over the same two seconds: raw {r}, paced {p}");
+    }
+
+    /// A clock that stops reporting new positions (paused, stalled) opens the lane by at most
+    /// the cap, never without bound; `PRES_NONE` passes through and forgets the last report.
+    #[test]
+    fn a_frozen_report_runs_on_at_most_the_cap_and_none_passes_through() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference(5_000 * MS, 100), 5_000 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 150), 5_050 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 100_000), 5_000 * MS + FEED_PACE_CAP_MS as i64 * MS);
+        assert_eq!(pace.reference(PRES_NONE, 100_001), PRES_NONE);
+        assert_eq!(pace.reference(5_000 * MS, 100_002), 5_000 * MS, "a fresh report restarts the run-on");
     }
 }
 
@@ -3096,6 +3198,7 @@ mod prime_livelock_tests {
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,
+            feed_pace: FeedPace::default(),
             seek_base_pts: 0,
             prime_play: true,
             aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
