@@ -89,6 +89,8 @@ jobs:
   build:
     name: build + verify
     runs-on: ubuntu-24.04-arm
+    # Measured max 15.4 (nightly; release 11.6) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 35
     outputs:
       ipk: ${{ steps.name.outputs.ipk }}
     steps:
@@ -333,6 +335,9 @@ jobs:
           } >> pkg/gates.md
 
       - name: webosbrew tooling
+        # Step-level bound: the curl downloads and the apt install of the local .debs (which pulls
+        # their dependencies from the network) are the only network phases of this step.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           TAG=v20260731-e1bb0c0
@@ -343,7 +348,7 @@ jobs:
           )
           for p in fw-symbols ipk-verify gen-manifest; do
             file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
-            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
+            curl -fsSL --connect-timeout 20 --max-time 120 --retry 3 --retry-delay 5 -o "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
             echo "${SHA256[$p]}  $file" | sha256sum -c -
           done
           sudo apt-get install -y ./webosbrew-toolbox-*.deb

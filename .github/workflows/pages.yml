@@ -37,6 +37,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Measured max 0.5 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -235,6 +237,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Measured max 0.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

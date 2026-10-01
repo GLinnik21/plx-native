@@ -1553,6 +1553,8 @@ check-python: check-localization
 	python3 ci/test_build_gc.py
 	@# CI runs the cargo half as three parallel jobs: this pins that no gate fell between them.
 	python3 ci/test_ci_split.py
+	@# No CI job may lack timeout-minutes, no `apt-get update` / `curl` may be unbounded (run 36904995113 hung 4 h 36 min).
+	python3 ci/test_ci_timeouts.py
 	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 	python3 ci/test_test_fast.py
 	python3 ci/test_source_bundle.py

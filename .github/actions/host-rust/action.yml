@@ -17,59 +17,20 @@ inputs:
       LINKS a test binary needs them: build.rs links SDL2/SDL2_ttf/GL for every host test binary
       (the default `cargo test --lib` as well as the `hostsim` one), whereas clippy and
       `cargo check` never link, and the apt step has taken 132-1174 s on a noisy runner
-      (the .deb download is the variance; the cache step below keeps it off the network).
+      (the .deb download is the variance; ./apt-install's cache keeps it off the network).
     required: false
     default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Restore the apt packages the SDL/GL install downloads
-      # Measured over the host-unit jobs of CI runs 36894250926..36901262288: `apt-get update` is a
-      # steady ~1 s and the toolchain + rust-cache steps a steady ~15 s, while `apt-get install`
-      # spent 3 s - 10 min 17 s FETCHING the same 26.3 MB (95 .deb files) from
-      # azure.archive.ubuntu.com (9 MB/s at best, 42 kB/s at worst). The download is the whole
-      # variance, so it is the one thing kept off the network: the .debs ride the actions cache,
-      # keyed on the OS, the architecture and this file (which names the packages). The key does
-      # NOT name the runner image: `env.ImageVersion` is not visible to a composite action's
-      # expressions (it keyed as empty), and it is not needed for correctness, because apt
-      # re-validates the cached .debs against its package lists and re-downloads any that no
-      # longer match. A changed action file starts cold, and only the first run per key saves.
-      if: inputs.sdl == 'true'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ~/apt-debs
-        key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/host-rust/action.yml') }}
-
     - name: Install the desktop SDL/GL libraries the unit suites LINK against
+      # The apt logic (actions-cache of the .debs, bounded fetch/update, https timeout) lives in
+      # ./apt-install, shared with simulators.yml; its measured comments live there too.
       if: inputs.sdl == 'true'
-      shell: bash
-      run: |
-        pkgs=(libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev)
-        opts=(-y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
-        debs="$HOME/apt-debs"
-        archives=/var/cache/apt/archives
-        mkdir -p "$debs"
-        sudo find "$debs" -maxdepth 1 -name '*.deb' -exec cp -n -t "$archives" {} +
-
-        # Fetch first, install second. The fetch is the only network-bound phase, so it is the
-        # only one a timeout may interrupt: apt resumes a partial .deb, a retry opens a fresh
-        # connection (a throttled one is what made a run take 10 minutes), and nothing is ever
-        # killed halfway through dpkg. The runner image already carries package lists, so try
-        # WITHOUT `apt-get update` first (a cache hit is then entirely local) and refresh the
-        # lists only when that fails, e.g. a mirror that has dropped the version the old lists name.
-        fetch() { sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}"; }
-        if ! timeout 120 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}"; then
-          echo "::warning::apt fetch without a list refresh failed or stalled; refreshing and retrying"
-          sudo apt-get update
-          timeout 120 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}" \
-            || timeout 120 sudo apt-get install --download-only "${opts[@]}" "${pkgs[@]}" \
-            || fetch  # last resort, no timeout: a slow mirror then costs time, never a red run
-        fi
-
-        sudo apt-get install "${opts[@]}" "${pkgs[@]}"
-        # Hand the downloaded .debs to the cache step's post-job save (a no-op on an exact hit).
-        find "$archives" -maxdepth 1 -name '*.deb' -exec cp -n -t "$debs" {} +
+      uses: ./.github/actions/apt-install
+      with:
+        packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev
 
     - name: Install nightly Rust
       # Both components are load-bearing for ci.yml's jobs as a set and neither is in rustup's
