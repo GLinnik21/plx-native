@@ -82,6 +82,13 @@ impl PickerPage {
     fn current(&self) -> Value {
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }
+    /// Position of the checked option right now. Size and Position publish their live value the
+    /// moment a pick is made (before the write lands), so this can move without a receipt.
+    fn checked_position(&self) -> u32 {
+        let current = self.current();
+        field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+            .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
+    }
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.kind().title()),
             self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
@@ -226,6 +233,11 @@ impl Machine<InnerHost> for PickerPage {
                             self.state.selected = RETRY_KEY;
                             self.focus(fx, GroupId(0));
                         } else if !had_rows && cx.focus.current.is_none() { self.focus(fx, GroupId(0)); }
+                        fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                    }
+                    // an optimistic Size/Position pick published its value: move the checkmark now
+                    Landed::Nothing if !started && self.checked_position() != self.state.checked => {
+                        self.rebuild(false);
                         fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
                     }
                     Landed::Nothing if started => { self.rebuild(true); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }

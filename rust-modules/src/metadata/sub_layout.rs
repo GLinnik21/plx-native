@@ -5,12 +5,12 @@
 //! host-tested without a `PlaybackSession`, a store or a `TableView`.
 //!
 //! `ui::track_menu` turns a [`sub_sections`] answer into a keyed form (labels, badges, the
-//! checkmark, the Timing/Color read-outs); a row's identity there is its `TrackRowId`. The model deliberately carries no checked track, offset or tone: those are
+//! checkmark, the Timing read-out); a row's identity there is its `TrackRowId`. The model deliberately carries no checked track, offset or tone: those are
 //! read-outs, so changing one never re-groups the list.
 //!
 //! The shape: Off and every single-track "yours" language sit under one "Subtitles" header; a
 //! "yours" language with several tracks gets its own section, ranked full < SDH < forced <
-//! commentary; a headerless section holds Timing and Color; and everything else falls under
+//! commentary; a headerless section holds Timing and Style (both omitted under transcode); and everything else falls under
 //! "Other languages", sorted by name. "Yours" is the pref language (if the play resolved under
 //! one), the playing audio's language, and the current subtitle's own language, in that order
 //! (`route::cur_sub_pref_lang`, gathered by `screens::player::overlay`).
@@ -72,7 +72,7 @@ pub(crate) enum SubHeader {
     Subtitles,
     /// A multi-track "yours" language: its name and track count.
     Language { name: String, tracks: usize },
-    /// No header: a single-track "yours" language after a multi-track section, or Timing + Color.
+    /// No header: a single-track "yours" language after a multi-track section, or Timing + Style.
     Bare,
     /// "Other languages", with the number of DISTINCT languages under it.
     OtherLanguages { languages: usize },
@@ -88,7 +88,8 @@ pub(crate) enum SubRow {
     /// A row inside a multi-track "yours" language's own section (label = its source or kind).
     InLanguage(SubTrack),
     Timing,
-    Color,
+    /// The drill-in to the caption Style pages (Size, Position, Color).
+    Style,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,7 +177,7 @@ fn sub_tracks(
 /// `subs` is the playing item's FULL subtitle list; `offered` is the subset this route offers
 /// (sidecars only where they can be drawn or burned); `names` is the demuxer's own tag list;
 /// `yours` is "your languages" in PREFERENCE order; `show_timing` is `!is_transcoding` (a
-/// transcode burns captions server-side, so no client offset can reach them).
+/// transcode burns captions server-side, so no client offset or style can reach them: Timing and Style are both omitted).
 pub(crate) fn sub_sections(
     subs: &[Stream],
     offered: &[usize],
@@ -238,14 +239,12 @@ pub(crate) fn sub_sections(
         }
     }
 
-    // 3. A headerless section: Timing (omitted under transcode), then Color — always a NEW
-    // section, never folded into whatever came before.
-    let mut settings = Vec::with_capacity(2);
+    // 3. A headerless section: Timing then Style — always a NEW section, never folded into
+    // whatever came before. Both follow the same availability: a transcode burns captions in
+    // server-side, so there is no client caption to offset or to style.
     if show_timing {
-        settings.push(SubRow::Timing);
+        sections.push(SubSection { header: SubHeader::Bare, rows: vec![SubRow::Timing, SubRow::Style] });
     }
-    settings.push(SubRow::Color);
-    sections.push(SubSection { header: SubHeader::Bare, rows: settings });
 
     // 4. "Other languages": flat rows, sorted by language name then rank, with the count of
     // DISTINCT languages (by the same grouping the buckets use — "fre" and "fra" are one).
@@ -327,7 +326,7 @@ mod tests {
             [SubHeader::Subtitles, russian, SubHeader::Bare, SubHeader::Bare, other]
         );
         assert_eq!(flat_langs(&sections[2].rows), ["English"], "its own bare section, not Subtitles");
-        assert_eq!(sections[3].rows, [SubRow::Timing, SubRow::Color], "the headerless Timing + Color section");
+        assert_eq!(sections[3].rows, [SubRow::Timing, SubRow::Style], "the headerless Timing + Style section");
     }
 
     #[test]

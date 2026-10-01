@@ -4,7 +4,7 @@ Design record for the multi-page Subtitles / Audio popover (Other languages, per
 Style pickers) and the table, form and clip primitives it stands on. Planned with an independent
 model reviewer over several rounds; this file keeps the decisions and their reasons.
 
-**Status:** PR 1 (table groundwork) and PR 2a (the track menu on keyed forms, no visible change) are what this repository has; 2b (pages, Style pickers, nav keys) and PRs 3-5 are open.
+**Status:** PR 1 (table groundwork), PR 2a (the track menu on keyed forms) and PR 2b (the page stack in the Subtitles tab: Style, the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay state) are what this repository has; PRs 3-5 (languages and badges, animation, More -> Quality) are open. The replay anchors were re-recorded for 2b because the overlay's state shape changed on purpose.
 
 ## Behaviour
 

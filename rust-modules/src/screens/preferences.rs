@@ -272,13 +272,18 @@ pub(crate) struct PreferencesPage {
     state: State,
     copy: String,
     txn: Txn,
+    /// The caption Size/Position the rows were last built from. Not canonical state: it only
+    /// notices a pick made elsewhere (the player's Style pages, or this page's picker, which
+    /// publish the live value before their write lands) so the cached read-outs are rebuilt.
+    look: (SubtitleSize, SubtitlePosition),
 }
 impl PreferencesPage {
     pub(crate) fn new(entry: EntryId, kind: Kind) -> Self {
         let mut s = Self { entry, form: FormTable::new(BAND),
             state: State { kind, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(), values: Vec::new() },
-            copy: String::new(), txn: Txn::new(false) };
+            copy: String::new(), txn: Txn::new(false),
+            look: (crate::route::subtitle_size(), crate::route::subtitle_position()) };
         s.rebuild(None);
         s
     }
@@ -302,6 +307,7 @@ impl PreferencesPage {
     fn rebuild(&mut self, keep: Option<RowId>) {
         self.state.quality = crate::route::quality();
         self.state.direct_play = crate::route::direct_play_mode();
+        self.look = (crate::route::subtitle_size(), crate::route::subtitle_position());
         self.copy = copy_text(self.state.kind, &self.state.io.status, self.state.direct_play).into_owned();
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
@@ -436,21 +442,7 @@ fn field_form(inputs: &FieldListInputs<'_>) -> Form<RowId, Action, SettingsPage>
 fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
 }
-fn subtitle_size_label(size: SubtitleSize) -> &'static str {
-    match size {
-        SubtitleSize::Small => crate::i18n::msg::settings_playback_subtitle_size_small(),
-        SubtitleSize::Medium => crate::i18n::msg::settings_playback_subtitle_size_medium(),
-        SubtitleSize::Large => crate::i18n::msg::settings_playback_subtitle_size_large(),
-        SubtitleSize::ExtraLarge => crate::i18n::msg::settings_playback_subtitle_size_extra_large(),
-    }
-}
-fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
-    match position {
-        SubtitlePosition::Low => crate::i18n::msg::settings_playback_subtitle_position_low(),
-        SubtitlePosition::Middle => crate::i18n::msg::settings_playback_subtitle_position_middle(),
-        SubtitlePosition::High => crate::i18n::msg::settings_playback_subtitle_position_high(),
-    }
-}
+use crate::ui::track_menu::{subtitle_position_label, subtitle_size_label};
 /// The Direct Play row's trailing read-out. `mode_label`'s Forced string is long enough to squeeze
 /// the row's label, so Forced alone takes the short form; the picker lists the full strings.
 fn direct_play_readout(mode: DirectPlayMode) -> &'static str {
@@ -490,7 +482,8 @@ impl Machine<InnerHost> for PreferencesPage {
                 let had_rows = self.form.table.n_rows() > 0;
                 let landed = self.txn.poll(&mut self.state.io, fx) != Landed::Nothing;
                 if landed || stale || started || adopted || self.state.quality != crate::route::quality()
-                    || self.state.direct_play != crate::route::direct_play_mode() {
+                    || self.state.direct_play != crate::route::direct_play_mode()
+                    || self.look != (crate::route::subtitle_size(), crate::route::subtitle_position()) {
                     self.rebuild_keeping();
                     // An empty loading table had no engine seat. Give its first landing (or
                     // Retry row) one so OK works immediately, without moving an existing

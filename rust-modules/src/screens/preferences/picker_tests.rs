@@ -217,3 +217,20 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     crate::route::restore_subtitle_size(size);
     crate::route::restore_subtitle_position(position);
 }
+
+/// The optimistic path publishes the live value before the receipt: the open picker moves its
+/// checkmark on the next tick instead of waiting for the write.
+#[test]
+fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
+    let _serial = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("picker-optimistic-check");
+    let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
+    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
+    let before = page.state.checked;
+    crate::route::restore_subtitle_size(crate::route::SubtitleSize::Large);
+    drive(&mut page, tick(), before);
+    assert_ne!(page.state.checked, before, "the checked option follows the published value");
+    crate::route::restore_subtitle_size(size);
+    crate::route::restore_subtitle_position(position);
+}
