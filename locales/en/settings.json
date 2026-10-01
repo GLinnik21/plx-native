@@ -460,7 +460,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics"
   },
   "settings.legal.privacy.analytics_body": {
-    "value": "If enabled, screen and feature events and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on.",
+    "value": "If enabled, screen and feature events and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on. Sign-in events from before you answered are held in memory and sent only if you choose to share.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics_body"
   },
   "settings.legal.privacy.excluded": {
