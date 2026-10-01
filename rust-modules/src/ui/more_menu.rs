@@ -289,6 +289,7 @@ impl MoreMenuState {
         let natural = self.panel_rect(measure);
         self.form.table.update(dt, natural.h);
         self.motion.step(dt, natural);
+        self.motion.prewarm_text(natural, &self.form.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {

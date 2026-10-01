@@ -1573,6 +1573,7 @@ impl TrackMenuState {
         let natural = self.panel_rect(measure);
         self.form.table.update(dt, natural.h);
         self.motion.step(dt, natural);
+        self.motion.prewarm_text(natural, &self.form.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -3005,6 +3006,41 @@ mod enhancement_menu_tests {
         assert!(menu.form.table.sections[1].rows[1].dim);
 
         teardown(&ps_ok);
+    }
+
+    /// **A rebuilt page's strings are rasterised in `update`, ahead of the draw.** On the player
+    /// route the draw's first framebuffer command waits ~15 ms for a free back buffer, so text a
+    /// new page met cold in its draw stacked on top of that wait: a 26.7 ms frame on the TV
+    /// (`clear:12.8 … textx8:7.4`) on the first visit to each Tracks sub-page. `PanelMotion::
+    /// prewarm_text` walks the live table through the recorder in `update` and drains the queue
+    /// there, once per table layout.
+    #[test]
+    fn update_rasterises_the_live_pages_text_before_the_draw() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
+        let store = one_track_store();
+        crate::text::reset_prewarm_for_test();
+        menu.update(0.0, &M, &ps, store.view());
+        let labels: Vec<String> =
+            menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).map(|r| r.label.clone()).collect();
+        assert!(!labels.is_empty(), "premise: the Audio tab has rows");
+        for label in &labels {
+            assert!(
+                crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
+                "{label:?} was not rasterised by update"
+            );
+        }
+        assert!(!crate::text::prewarm_pending(), "the budget drained the page's queue in update");
+
+        // The same layout is walked once, not every frame.
+        crate::text::reset_prewarm_for_test();
+        menu.update(0.016, &M, &ps, store.view());
+        assert!(
+            !crate::text::prewarm_resident_any_size_for_test(labels[0].as_bytes()),
+            "an unchanged layout was walked again"
+        );
+        teardown(&ps);
     }
 
     /// **A note that appears in a rebuild is sized on that same `update`.** A note's line count

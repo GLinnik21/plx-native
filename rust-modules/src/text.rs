@@ -476,6 +476,11 @@ pub(crate) fn reset_prewarm_for_test() {
 }
 
 #[cfg(test)]
+pub(crate) fn prewarm_resident_any_size_for_test(bytes: &[u8]) -> bool {
+    PREWARMED_FOR_TEST.with(|w| w.borrow().iter().any(|k| k.bytes == bytes))
+}
+
+#[cfg(test)]
 pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) -> bool {
     PREWARMED_FOR_TEST.with(|w| {
         w.borrow().iter().any(|k| k.bytes == bytes && k.sz == sz && k.bold == bold)

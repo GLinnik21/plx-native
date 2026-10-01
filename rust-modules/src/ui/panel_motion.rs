@@ -52,6 +52,12 @@ pub(crate) const GATE: f32 = 0.1;
 /// page nobody can see).
 const VISIBLE: f32 = 0.01;
 
+/// How many strings [`PanelMotion::prewarm_text`] rasterises in one update phase. Counted, not
+/// timed: the UI reads no wall clock (`ci/allow/wall.txt`), and on the TV one string is ~1 ms
+/// (`textx8:7.4`), so eight sit inside the frame's ~15 ms back-buffer wait. The rest, if any, are
+/// rasterised by the draw exactly as before.
+const PREWARM_STRINGS: u64 = 8;
+
 /// Stiffness of the card's top/left edges and of the pages' sideways travel (`gfx::spring`'s `k`;
 /// the table's own scroll uses 300). Critically damped, so nothing overshoots.
 const RECT_K: f32 = 300.0;
@@ -100,6 +106,8 @@ pub(crate) struct PanelMotion {
     /// The last natural rect handed out — what the page that is about to leave was laid out at.
     last_natural: Cell<Rect>,
     slide: Option<Slide>,
+    /// The [`TableView::layout_rev`] whose strings [`Self::prewarm_text`] last rasterised.
+    warmed: Cell<Option<u32>>,
 }
 
 impl PanelMotion {
@@ -113,7 +121,41 @@ impl PanelMotion {
             cache: Cell::new(None),
             last_natural: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             slide: None,
+            warmed: Cell::new(None),
         }
+    }
+
+    /// **Rasterise a freshly built page's strings in the UPDATE phase, not in its first draw.**
+    ///
+    /// On the player route the frame's first framebuffer command (`glClear`) is where this driver
+    /// waits for a free back buffer, ~15 ms of every frame. A drill-in's new page used to meet its
+    /// strings cold in the draw AFTER that wait: `FRAMEDROP … clear:12.8 … textx8:7.4,surf:10.9`,
+    /// a 26.7 ms frame on the TV on the first visit to each Tracks sub-page. Recorded and drained
+    /// here, before the draw, the same work overlaps the wait instead of adding to it. Runs once
+    /// per table layout ([`TableView::layout_rev`]); a string the budget does not reach is
+    /// rasterised by the draw exactly as before.
+    pub(crate) fn prewarm_text(&self, natural: Rect, live: &TableView, measure: &dyn Measure) {
+        let rev = live.layout_rev();
+        if self.warmed.get() == Some(rev) {
+            return;
+        }
+        self.warmed.set(Some(rev));
+        // The same walk `ui::dispatch` runs for a page's warm pass: speculative to the recorder,
+        // and no raw clear may reach the framebuffer from it.
+        crate::gfx::without_frame_clear(|| {
+            crate::ui::rec::speculative(|| {
+                crate::ui::record_walk(|| live.draw(Painter::recording(), natural, measure))
+            })
+        });
+        // `drain_prewarm` reads its clock before each next string: a clock that advances one unit
+        // per read admits exactly `PREWARM_STRINGS` of them.
+        let mut reads = 0u64;
+        crate::diag::spans::span("warmdrain", || {
+            crate::text::drain_prewarm(PREWARM_STRINGS, || {
+                reads += 1;
+                reads
+            })
+        });
     }
 
     /// **The table's natural rect**, `compute`d only when `rev` (the table's
