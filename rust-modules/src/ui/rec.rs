@@ -501,8 +501,8 @@ impl Writer {
         self.line(json!({"f": f, "t": "tick", "ms": t.ms, "dt_us": t.dt_us}));
     }
 
-    pub fn capture_readiness(&mut self, f: u64, pending: bool) {
-        self.line(json!({"f": f, "t": "capture", "pending": pending}));
+    pub fn capture_readiness(&mut self, f: u64, seen: Readiness) {
+        self.line(json!({"f": f, "t": "capture", "pending": seen.snapshot, "text": seen.text}));
     }
 
     pub fn present(&mut self, f: u64, bit: bool, why: Option<&str>) {
@@ -647,13 +647,24 @@ impl Writer {
 }
 
 /// One recorded frame, assembled from its lines.
+/// The environment's readiness, sampled once per iteration before input/tick dispatch
+/// (`CaptureReadinessV2`). Both halves decide motion and presentation, and both vary with the
+/// machine rather than with the inputs: `snapshot` is whether the page capture is still on the
+/// GPU, `text` whether recorded text is still warming under the wall-clock prewarm budget
+/// (`text::surface_text_pending`, which holds a presented surface shut).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Readiness {
+    pub snapshot: bool,
+    pub text: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
     pub f: u64,
     pub tick: Option<Tick>,
-    /// Page-capture readiness sampled before input/tick dispatch. Product replay consumes
-    /// this once; it is an input to motion/presentation, not the recorded present verdict.
-    pub snapshot_pending: Option<bool>,
+    /// Readiness sampled before input/tick dispatch. Product replay consumes this once; it is
+    /// an input to motion/presentation, not the recorded present verdict.
+    pub readiness: Option<Readiness>,
     pub present: Option<bool>,
     pub present_why: Option<String>,
     pub inputs: Vec<Value>,
@@ -735,17 +746,21 @@ impl Recording {
                         })
                     }
                     "capture" => {
-                        if fr.snapshot_pending.is_some() { return Err(malformed(n,"duplicate capture readiness")); }
+                        if fr.readiness.is_some() { return Err(malformed(n,"duplicate capture readiness")); }
                         // Native/direct ingress can precede the clock row. The capture sample
                         // itself is immediately after that row, before logical tick dispatch.
                         if !after_tick || fr.tick.is_none() {
                             return Err(malformed(n,"capture readiness is not immediately after tick"));
                         }
-                        if v.as_object().is_none_or(|o| o.len() != 3) {
+                        if v.as_object().is_none_or(|o| o.len() != 4) {
                             return Err(malformed(n,"capture readiness envelope"));
                         }
-                        fr.snapshot_pending = Some(v["pending"].as_bool()
-                            .ok_or_else(|| malformed(n,"capture readiness bit"))?);
+                        fr.readiness = Some(Readiness {
+                            snapshot: v["pending"].as_bool()
+                                .ok_or_else(|| malformed(n,"capture readiness bit"))?,
+                            text: v["text"].as_bool()
+                                .ok_or_else(|| malformed(n,"text readiness bit"))?,
+                        });
                     }
                     "present" => {
                         if fr.present.is_some() { return Err(malformed(n,"duplicate present")); }
@@ -1139,23 +1154,27 @@ pub fn state_fp(shapes: &[&str]) -> u64 {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn capture_readiness_is_one_boolean_before_dispatch() {
+    fn capture_readiness_is_two_booleans_before_dispatch() {
         use super::*;
         let manifest = json!({"schema":SCHEMA,"state_fp":1}).to_string();
         let tick = json!({"f":0,"t":"tick","ms":0,"dt_us":0}).to_string() + "\n";
-        let capture = json!({"f":0,"t":"capture","pending":true}).to_string() + "\n";
+        let capture = json!({"f":0,"t":"capture","pending":true,"text":false}).to_string() + "\n";
         let good = Recording::parse(&manifest, &[format!("{tick}{capture}").as_bytes()], 1).unwrap();
-        assert_eq!(good.frames[0].snapshot_pending, Some(true));
+        assert_eq!(good.frames[0].readiness, Some(Readiness { snapshot: true, text: false }));
         let ingress = json!({"f":0,"t":"in","kind":"lifecycle","code":262}).to_string();
         assert!(Recording::parse(&manifest, &[format!("{ingress}\n{tick}{capture}").as_bytes()], 1).is_ok(),
             "native ingress is recorded before clock_and_press samples the GPU");
         for bad in [
             format!("{capture}{tick}"), format!("{tick}{capture}{capture}"),
-            format!("{tick}{}\n{}\n", json!({"f":1,"t":"capture","pending":true}),
+            format!("{tick}{}\n{}\n", json!({"f":1,"t":"capture","pending":true,"text":false}),
                 json!({"f":1,"t":"tick","ms":16,"dt_us":16000})),
-            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":0})),
-            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":null})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":0,"text":false})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":null,"text":false})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true,"text":0})),
+            // A recording that predates the text half is refused, not read as "text ready".
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true})),
             format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true,"extra":0})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true,"text":false,"extra":0})),
             format!("{tick}{}\n{capture}", json!({"f":0,"t":"in"})),
             format!("{tick}{}\n{capture}", json!({"f":0,"t":"present","bit":true})),
         ] {

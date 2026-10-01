@@ -325,6 +325,10 @@ thread_local! {
     /// Main-render-thread only, like the glyph cache itself. A queue instead of eager work is the
     /// boundary that lets `PageDip` spend a fixed slice of each outgoing frame.
     static PREWARM: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
+    /// This iteration's answer to "is recorded text still warming?", latched once before dispatch
+    /// by [`latch_surface_text_pending`]. `None` outside the product loop (host tests that drive a
+    /// dispatcher directly), where [`surface_text_pending`] reads the queue itself.
+    static SURFACE_TEXT_PENDING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     #[cfg(test)]
     static PREWARMED_FOR_TEST: RefCell<Vec<WarmKey>> = const { RefCell::new(Vec::new()) };
     #[cfg(test)]
@@ -439,6 +443,26 @@ pub(crate) fn prewarm_pending() -> bool {
     PREWARM.with(|q| !q.borrow().is_empty())
 }
 
+/// Latch this iteration's text readiness for held surfaces (`PopoverMotion::tick`).
+///
+/// How many frames the queue takes to drain is wall-clock work: [`drain_prewarm`] spends a
+/// microsecond budget, so a slower CPU rasterises fewer strings per frame and holds a surface
+/// shut for more frames. That hold decides the frame a modal turns `Open`, which is logical state,
+/// so the answer is an environmental observation like the page capture's GPU readiness: the
+/// product loop samples the queue once before dispatch, lets the recorder record it or supply
+/// the recorded one (`app::recorder::Recplay::capture_readiness`), and latches the result here.
+/// The queue only changes while a frame draws, so on a live frame the latch equals the queue at
+/// the moment the springs step.
+pub(crate) fn latch_surface_text_pending(pending: bool) {
+    SURFACE_TEXT_PENDING.with(|latch| latch.set(Some(pending)));
+}
+
+/// The text readiness a held surface waits on: this iteration's latched observation, or the live
+/// queue when no product loop latched one.
+pub(crate) fn surface_text_pending() -> bool {
+    SURFACE_TEXT_PENDING.with(|latch| latch.get()).unwrap_or_else(prewarm_pending)
+}
+
 /// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
 pub(crate) fn clear_prewarm() {
     PREWARM.with(|q| q.borrow_mut().clear());
@@ -447,6 +471,7 @@ pub(crate) fn clear_prewarm() {
 #[cfg(test)]
 pub(crate) fn reset_prewarm_for_test() {
     clear_prewarm();
+    SURFACE_TEXT_PENDING.with(|latch| latch.set(None));
     PREWARMED_FOR_TEST.with(|w| w.borrow_mut().clear());
 }
 
