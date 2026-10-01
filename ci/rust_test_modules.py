@@ -11,45 +11,56 @@ import itertools
 import re
 
 
-RAW = re.compile(r'(?:b|c)?r(#{0,255})"')
-STRING = re.compile(r'(?:b|c)?"')
-CHAR = re.compile(r"(?:b)?'(?:\\(?:u\{[^}]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'")
-WORD = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+# One alternation, tried in the order the rules are written (the first that matches wins), so a
+# token costs one regex call instead of five separate probes at every position. The order is the
+# precedence: whitespace, comments, raw string, string, character literal, word, anything else.
+TOKEN = re.compile(
+    r'(?P<space>\s+)'
+    r'|(?P<line>//[^\n]*)'
+    r'|(?P<block>/\*)'
+    r'|(?P<raw>(?:b|c)?r(?P<hashes>#{0,255})")'
+    r'|(?P<string>(?:b|c)?")'
+    r"|(?P<char>(?:b)?'(?:\\(?:u\{[^}]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])')"
+    r'|(?P<word>[A-Za-z_][A-Za-z_0-9]*)'
+    r'|(?P<other>[\s\S])')
+BLOCK_EDGE = re.compile(r'/\*|\*/')
+STRING_RUN = re.compile(r'[^"\\]*')
 
 
 def lex(source):
-    tokens, i = [], 0
-    while i < len(source):
-        if source[i].isspace(): i += 1; continue
-        if source.startswith('//', i):
-            end = source.find('\n', i); i = len(source) if end < 0 else end; continue
-        if source.startswith('/*', i):
-            depth, i = 1, i + 2
-            while i < len(source) and depth:
-                if source.startswith('/*', i): depth, i = depth + 1, i + 2
-                elif source.startswith('*/', i): depth, i = depth - 1, i + 2
-                else: i += 1
-            continue
-        raw = RAW.match(source, i)
-        string = STRING.match(source, i)
-        char = CHAR.match(source, i)
-        if raw:
-            start = raw.end(); suffix = '"' + raw[1]
+    tokens, i, n = [], 0, len(source)
+    match = TOKEN.match
+    while i < n:
+        m = match(source, i)
+        kind = m.lastgroup
+        if kind == 'space' or kind == 'line':
+            i = m.end()
+        elif kind == 'word' or kind == 'other':
+            value = m[0]
+            tokens.append(('code', value)); i = m.end()
+        elif kind == 'block':
+            depth, i = 1, m.end()
+            while depth:
+                edge = BLOCK_EDGE.search(source, i)
+                if edge is None: i = n; break
+                depth += 1 if edge[0] == '/*' else -1
+                i = edge.end()
+        elif kind == 'raw':
+            start = m.end(); suffix = '"' + m['hashes']
             end = source.find(suffix, start)
             if end < 0: raise ValueError('unterminated Rust raw string')
             tokens.append(('string', source[start:end])); i = end + len(suffix)
-        elif string:
-            start = string.end(); i = start
-            while i < len(source) and source[i] != '"': i += 2 if source[i] == '\\' else 1
+        elif kind == 'string':
+            start = i = m.end()
+            while True:
+                i = STRING_RUN.match(source, i).end()
+                if i >= n or source[i] == '"': break
+                i += 2  # a backslash and the character it escapes
             value = source[start:i]
             value = re.sub(r'\\([\\"])', r'\1', value)
             tokens.append(('string', value)); i += 1
-        elif char:
-            i = char.end()
-        else:
-            word = WORD.match(source, i)
-            value = word[0] if word else source[i]
-            tokens.append(('code', value)); i += len(value)
+        else:  # a character literal: it cannot name a module, so it yields no token
+            i = m.end()
     return tokens
 
 
@@ -88,11 +99,33 @@ def cfg_without_tests(tokens):
     return expr(0)[0]
 
 
+def group_ends(tokens):
+    """Index of the closer of every bracket group that is balanced, in ONE pass. `close` re-scans a
+    group from its opener, so walking nested groups was quadratic in nesting depth. A group that
+    is not in the result is unbalanced or unterminated, and `close` on it raises as before."""
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    closers = set(pairs.values())
+    ends, stack = {}, []
+    for i, (kind, text) in enumerate(tokens):
+        if kind != 'code': continue
+        if text in pairs: stack.append((pairs[text], i))
+        elif text in closers and stack:
+            want, opened = stack.pop()
+            if text == want: ends[opened] = i
+            else: stack.clear()  # every group still open here is unbalanced
+    return ends
+
+
 def file_edges(path):
     source = path.read_text()
     if not re.search(r'\bmod\s+\w+\s*[;{]|\binclude\s*!\s*\(', source):
         return []
     tokens = lex(source)
+    ends = group_ends(tokens)
+
+    def group_end(start):
+        end = ends.get(start)
+        return close(tokens, start) if end is None else end  # re-scan only to raise the same error
     edges = []
     module_dir = path.parent if path.name in ('mod.rs', 'lib.rs', 'main.rs') else path.with_suffix('')
 
@@ -102,7 +135,7 @@ def file_edges(path):
             kind, text = tokens[i]
             if kind != 'code': i += 1; continue
             if text == '#' and i + 1 < end and tokens[i + 1][1] == '[':
-                stop = close(tokens, i + 1); attr = tokens[i + 2:stop]
+                stop = group_end(i + 1); attr = tokens[i + 2:stop]
                 if attr and attr[0][1] == 'cfg' and len(attr) > 3:
                     test_only |= cfg_without_tests(attr[2:-1]) == {False}
                 elif len(attr) == 3 and attr[0][1] == 'path' and attr[1][1] == '=' and attr[2][0] == 'string':
@@ -117,22 +150,22 @@ def file_edges(path):
                     test_only, explicit_path, i = inherited_test, None, i + 3
                     continue
                 if next_token == '{':
-                    stop = close(tokens, i + 2)
+                    stop = group_end(i + 2)
                     nested = attribute_base / explicit_path if explicit_path else directory / name
                     walk(i + 3, stop, nested, nested, test_only)
                     test_only, explicit_path, i = inherited_test, None, stop + 1
                     continue
             if text == 'include' and i + 3 < end and tokens[i + 1][1] == '!' and tokens[i + 2][1] == '(':
-                stop = close(tokens, i + 2)
+                stop = group_end(i + 2)
                 if stop == i + 4 and tokens[i + 3][0] == 'string':
                     target = path.parent / tokens[i + 3][1]
                     if target.is_file(): edges.append((target.resolve(), test_only))
                 i = stop + 1; continue
             if text == '{':
-                stop = close(tokens, i)
+                stop = group_end(i)
                 walk(i + 1, stop, directory, attribute_base, test_only)
                 i = stop + 1; test_only, explicit_path = inherited_test, None
-            elif text in ('(', '['): i = close(tokens, i) + 1
+            elif text in ('(', '['): i = group_end(i) + 1
             else:
                 if text in (';', ','): test_only, explicit_path = inherited_test, None
                 i += 1
