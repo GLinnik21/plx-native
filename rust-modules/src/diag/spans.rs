@@ -1,4 +1,4 @@
-//! **Named sub-spans of ONE frame's draw**, printed on that frame's `FRAMEDROP` line as
+//! **Named sub-spans of ONE frame** (results, update and draw phases), printed on that frame's `FRAMEDROP` line as
 //! `spans=<name>:<ms>,…` — the attribution the eight phase stamps cannot give.
 //!
 //! `FRAMEDROP … draw=61.5` says the draw phase ate the frame and nothing about which part of it:

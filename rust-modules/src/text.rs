@@ -451,8 +451,10 @@ pub(crate) fn prewarm_pending() -> bool {
 /// so the answer is an environmental observation like the page capture's GPU readiness: the
 /// product loop samples the queue once before dispatch, lets the recorder record it or supply
 /// the recorded one (`app::recorder::Recplay::capture_readiness`), and latches the result here.
-/// The queue only changes while a frame draws, so on a live frame the latch equals the queue at
-/// the moment the springs step.
+/// The queue changes only inside an iteration's own phases — a panel's recording walk in
+/// `update`, the counted drain on the presenting side before the draw, the draw's warm pass — and
+/// a frame that does not present drains nothing, so the latch is the queue as that iteration's
+/// springs saw it.
 pub(crate) fn latch_surface_text_pending(pending: bool) {
     SURFACE_TEXT_PENDING.with(|latch| latch.set(Some(pending)));
 }

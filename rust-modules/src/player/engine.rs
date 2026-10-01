@@ -1957,9 +1957,9 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 pub(crate) const PRES_NONE: i64 = i64::MIN;
 
 /// The longest the throttle's reference runs on past the last position report, in ms. The
-/// pipeline reports every ~201 ms, so this covers one late report; a paused or stalled clock stops
-/// changing `pres_fed`, and the reference then stops this far ahead of it instead of opening the
-/// lane without bound.
+/// pipeline reports every ~201 ms, so against this cap the run-on bridges a report up to ~49 ms
+/// late (not a missed one); a paused or stalled clock stops changing `pres_fed`, and the
+/// reference then stops this far ahead of it instead of opening the lane without bound.
 const FEED_PACE_CAP_MS: u32 = 250;
 
 /// **The feed-ahead throttle's reference: the presented position, run on at 1x between reports.**
@@ -1968,11 +1968,12 @@ const FEED_PACE_CAP_MS: u32 = 250;
 /// against that step function, the throttle stayed shut for eleven frames and then opened by
 /// 200 ms of media at once, so every fifth of a second one frame fed ~5 video and ~7 audio AUs to
 /// Starfish, and `Feed()` blocks: on the TV with the track menu open, `FRAMEDROP … results=14.6`
-/// with `feed:14.4` inside it, 4–15 ms on every 12th frame. Run on from the last report at the
-/// playback rate, the same budget opens a frame's worth of media per frame, so the same AUs reach
-/// Starfish one or two per frame. The buffer depth is unchanged: the bound is still
-/// `MAX_FEED_AHEAD_NS` past the (estimated) presented position, and [`FEED_PACE_CAP_MS`] stops
-/// the estimate when the reports stop changing.
+/// with `feed:14.4` inside it, 4–15 ms on every 12th frame. Run on from the last report at 1x,
+/// the same budget opens a frame's worth of media per frame, so the same AUs reach
+/// Starfish one or two per frame. The bound is the same lead,
+/// `MAX_FEED_AHEAD_NS`, past the ESTIMATED playhead; the reserve can therefore exceed the raw
+/// report's by at most [`FEED_PACE_CAP_MS`], and that cap stops the estimate when the reports
+/// stop changing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FeedPace {
     /// The last distinct `pres_fed` seen, and when it was first seen (player clock, ms).
@@ -1994,7 +1995,7 @@ impl FeedPace {
                 now_ms
             }
         };
-        let run_on = now_ms.wrapping_sub(at).min(FEED_PACE_CAP_MS) as i64;
+        let run_on = now_ms.saturating_sub(at).min(FEED_PACE_CAP_MS) as i64;
         pres.saturating_add(run_on * 1_000_000)
     }
 }
@@ -2295,7 +2296,6 @@ pub(crate) fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
 }
 
 fn feed_stream(mt: &MainThread, eng: &mut Engine) {
-    let now_ms = super::vclock_ms();
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
@@ -2423,7 +2423,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // Skipped while priming (feed freely to reach PRIME_NS before Play). Each lane's queue is
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         if !eng.prime_play {
-            let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), now_ms);
+            let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), super::vclock_ms());
             let budget = if es == 1 {
                 MAX_FEED_AHEAD_NS
             } else {
@@ -2647,6 +2647,15 @@ mod feed_pace_tests {
         assert!(paced.iter().all(|&n| n <= 1), "paced: at most one AU a frame: {paced:?}");
         let (r, p): (u32, u32) = (raw.iter().sum(), paced.iter().sum());
         assert!(p.abs_diff(r) <= 6, "same media over the same two seconds: raw {r}, paced {p}");
+    }
+
+    /// A `now` BEFORE the stamp of the last report (the throttle read its clock earlier than the
+    /// report was first seen) is no run-on, not a full-cap one.
+    #[test]
+    fn a_clock_behind_the_report_stamp_does_not_run_on() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference(5_000 * MS, 1_000), 5_000 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 900), 5_000 * MS);
     }
 
     /// A clock that stops reporting new positions (paused, stalled) opens the lane by at most

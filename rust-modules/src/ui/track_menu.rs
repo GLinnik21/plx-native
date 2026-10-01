@@ -3012,8 +3012,9 @@ mod enhancement_menu_tests {
     /// route the draw's first framebuffer command waits ~15 ms for a free back buffer, so text a
     /// new page met cold in its draw stacked on top of that wait: a 26.7 ms frame on the TV
     /// (`clear:12.8 … textx8:7.4`) on the first visit to each Tracks sub-page. `PanelMotion::
-    /// prewarm_text` walks the live table through the recorder in `update` and drains the queue
-    /// there, once per table layout.
+    /// prewarm_text` walks the live table through the recorder in `update`, once per table layout;
+    /// the queue is drained on the presenting side (`app::run::prepare_window`) and NEVER in
+    /// `update`, because a frame that does not present uploads nothing (spec §10).
     #[test]
     fn update_rasterises_the_live_pages_text_before_the_draw() {
         use crate::ui::fixture::FixtureMeasure as M;
@@ -3021,17 +3022,29 @@ mod enhancement_menu_tests {
         let (mut menu, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
         crate::text::reset_prewarm_for_test();
+        // a held modal's leftover must not eat the drain's budget
+        crate::text::queue_prewarm(c"stale held string".as_ptr(), 24, 0);
         menu.update(0.0, &M, &ps, store.view());
         let labels: Vec<String> =
             menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).map(|r| r.label.clone()).collect();
         assert!(!labels.is_empty(), "premise: the Audio tab has rows");
+        // `update` alone is a frame that may not present: it records, it uploads nothing.
+        assert!(crate::text::prewarm_pending(), "update queued the page's strings");
         for label in &labels {
             assert!(
-                crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
-                "{label:?} was not rasterised by update"
+                !crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
+                "{label:?} was uploaded by update, which may run on a frame that does not present"
             );
         }
-        assert!(!crate::text::prewarm_pending(), "the budget drained the page's queue in update");
+        // The presenting side's drain rasterises them, up to its counted budget.
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        let resident =
+            labels.iter().filter(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
+        assert!(resident > 0, "the drain rasterised none of the page's strings");
+        assert!(
+            !crate::text::prewarm_resident_any_size_for_test(b"stale held string"),
+            "the walk's queue must replace, not extend, what a held surface left"
+        );
 
         // The same layout is walked once, not every frame.
         crate::text::reset_prewarm_for_test();

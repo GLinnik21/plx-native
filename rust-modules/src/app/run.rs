@@ -157,8 +157,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // and the offline-pick harness case found no cache record (device, 2026-09-06).
         // Waiting for the handoff costs a headless run the seconds the seating takes.
         app.rec.content_begin();
-        // The `results` phase's three halves carry their own FRAMEDROP spans (`scen`, `pump`,
-        // `land`), so a slow `results=` names which of them held the frame.
+        // The `results` phase is four steps (scenarios, playback pump, clock/press, result
+        // landing); three of them carry their own FRAMEDROP spans (`scen`, `pump`, `land`), so a
+        // slow `results=` names which held the frame.
         let scenarios_ok = crate::diag::spans::span("scen", || {
             if app.boot_initial.is_some() {
                 crate::dev::scenarios::controlled_each_frame(app, fr)
@@ -167,6 +168,8 @@ pub(crate) unsafe fn run(app: &mut App) {
             }
         });
         if !scenarios_ok {
+            // This iteration presents nothing, so its spans belong to no FRAMEDROP line.
+            let _ = crate::diag::spans::take();
             continue;
         }
         crate::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
@@ -431,6 +434,10 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     //   own `frame_clear` overwrites the pixel. After the draw it would be a white pixel over
     //   the finished picture — over FILM, on a player frame.
     if fr.present {
+        // A Tracks/More sub-page's text, recorded in `update` (`PanelMotion::prewarm_text`) and
+        // uploaded here: `fr.present` already carries the window-activity gate, so a frame that
+        // does not present, or one while the window is backgrounded, uploads nothing.
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
         let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,
@@ -2635,6 +2642,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             }) {
                 log(&line);
             }
+        } else {
+            // Spans recorded on a frame that did not present (`scen`/`pump`/`land`, `feed`, the
+            // engine's `sfv`/`sfa`) belong to no FRAMEDROP line: left in place they would print on
+            // the next presented frame's.
+            let _ = crate::diag::spans::take();
         }
 }
 

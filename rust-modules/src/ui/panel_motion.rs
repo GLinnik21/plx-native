@@ -52,7 +52,7 @@ pub(crate) const GATE: f32 = 0.1;
 /// page nobody can see).
 const VISIBLE: f32 = 0.01;
 
-/// How many strings [`PanelMotion::prewarm_text`] rasterises in one update phase. Counted, not
+/// How many strings [`PanelMotion::drain_queued_text`] rasterises in one presented frame. Counted, not
 /// timed: the UI reads no wall clock (`ci/allow/wall.txt`), and on the TV one string is ~1 ms
 /// (`textx8:7.4`), so eight sit inside the frame's ~15 ms back-buffer wait. The rest, if any, are
 /// rasterised by the draw exactly as before.
@@ -125,21 +125,25 @@ impl PanelMotion {
         }
     }
 
-    /// **Rasterise a freshly built page's strings in the UPDATE phase, not in its first draw.**
+    /// **Record a freshly built page's strings in the UPDATE phase; they are rasterised before its
+    /// first draw.**
     ///
     /// On the player route the frame's first framebuffer command (`glClear`) is where this driver
     /// waits for a free back buffer, ~15 ms of every frame. A drill-in's new page used to meet its
     /// strings cold in the draw AFTER that wait: `FRAMEDROP … clear:12.8 … textx8:7.4,surf:10.9`,
-    /// a 26.7 ms frame on the TV on the first visit to each Tracks sub-page. Recorded and drained
-    /// here, before the draw, the same work overlaps the wait instead of adding to it. Runs once
-    /// per table layout ([`TableView::layout_rev`]); a string the budget does not reach is
-    /// rasterised by the draw exactly as before.
+    /// a 26.7 ms frame on the TV on the first visit to each Tracks sub-page. Recorded
+    /// here and drained ahead of the draw ([`Self::drain_queued_text`]), the same work overlaps the
+    /// wait instead of adding to it. Runs once per table layout ([`TableView::layout_rev`]); a
+    /// string the budget does not reach is rasterised by the draw exactly as before.
     pub(crate) fn prewarm_text(&self, natural: Rect, live: &TableView, measure: &dyn Measure) {
         let rev = live.layout_rev();
         if self.warmed.get() == Some(rev) {
             return;
         }
         self.warmed.set(Some(rev));
+        // This walk's strings are the whole queue: a held modal's or a finished transition's
+        // leftovers must not eat the drain's budget (`ui::dispatch` clears the same way).
+        crate::text::clear_prewarm();
         // The same walk `ui::dispatch` runs for a page's warm pass: speculative to the recorder,
         // and no raw clear may reach the framebuffer from it.
         crate::gfx::without_frame_clear(|| {
@@ -147,6 +151,17 @@ impl PanelMotion {
                 crate::ui::record_walk(|| live.draw(Painter::recording(), natural, measure))
             })
         });
+    }
+
+    /// **Rasterise what [`Self::prewarm_text`] queued** — at most [`PREWARM_STRINGS`] of it. Called
+    /// from the PRESENTING side of the present decision (`app::run::prepare_window`, step 9's
+    /// upload seam), never from `update`: this uploads GL textures, and §10 says a frame that does
+    /// not present uploads nothing (nor may it reach EGL while the window is backgrounded). It
+    /// still runs before the draw's first `glClear`, so the work overlaps the back-buffer wait.
+    pub(crate) fn drain_queued_text() -> usize {
+        if !crate::text::prewarm_pending() {
+            return 0;
+        }
         // `drain_prewarm` reads its clock before each next string: a clock that advances one unit
         // per read admits exactly `PREWARM_STRINGS` of them.
         let mut reads = 0u64;
@@ -155,7 +170,7 @@ impl PanelMotion {
                 reads += 1;
                 reads
             })
-        });
+        })
     }
 
     /// **The table's natural rect**, `compute`d only when `rev` (the table's
