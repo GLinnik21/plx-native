@@ -7,8 +7,8 @@ model reviewer over several rounds; this file keeps the decisions and their reas
 **Status:** PR 1 (table groundwork), the track menu on keyed forms (Settings form migration 5/5,
 #339: `ui::track_menu::TrackRow`) and PR 2 (the page stack in the Subtitles tab on that form: Style,
 the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay
-state) are what this repository has; PRs 3-5 (languages and badges, animation, More -> Quality) are
-open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
+state) and PR 3 (Other languages, the language pages, the image-subtitle badge) are what this
+repository has; PRs 4-5 (animation, More -> Quality) are open. The replay anchors were re-recorded for PR 2 because the overlay's state shape changed on
 purpose.
 
 ## Behaviour
@@ -24,11 +24,13 @@ purpose.
   Nav row pushes instead); BACK on the root dismisses; clicking the "< TITLE" band pops. A track
   pick at any depth commits and dismisses; a Style pick commits and stays. The menu reopens at the
   root.
-- **Format badge:** only image subtitles (PGS/VobSub) show one; text subtitles show none.
-- **Why no "active inside" readout on Other languages:** the active subtitle's language is in
-  `yours` when the menu opens, so the active track does not live there. `yours` stays the opening
-  snapshot so groups do not reshuffle under the viewer; if a live change puts the active track
-  under Other languages, that row shows a leading check plus the active variant.
+- **Format badge (owner edit, 2026-10-01):** only image subtitles (PGS/VobSub) show one, a chip with the format's short name ("PGS", "VOBSUB", "DVB" for Plex's `hdmv_pgs_subtitle`, `dvd_subtitle`, `dvb_subtitle`; `sub_layout::image_codec_badge`) that FOLLOWS the row's kind chip (SDH, Forced, External) instead of being outranked by it, so an SDH bitmap track still says what it is; text subtitles show no format, and the design board's "SRT" sub-lines are gone. A kind chip that only repeats the row's own label ("SDH" on the row called SDH) is still dropped; the format never is.
+- **Other languages row:** one Nav row on the root reading the language count (no "N languages" header accessory); when the active track lives behind it (a live change put it there) it reads a check and the track's language instead. On the page, a multi-track language that holds the active track reads a check and that variant ("SDH"), otherwise its track count.
+- **Page identity:** a language page is `TrackPage::Language(stream)`, its opener `TrackRow::OpenLang(LangId)`, where `stream` is the Plex stream id of the language's first track in the item's FULL list (`sub_layout::LangId`), never a list position: a track leaving mid-play shifts every index, and an index-keyed page would silently relabel to another language. `LangId` also carries a slot, the language's ordinal on the Other languages page, which only decides the row's focus key (re-derived on each build, so the key may move when a language arrives above it; equality ignores the slot). The page's data is `TrackMenuState::other`, refreshed from the same `sub_model` the root is built from; a page whose language is no longer listed (its first track's stream is gone) pops to the root.
+- **A language changing shape (one track <-> several):** on the Other languages page a single-track language is a direct pick row and a multi-track one a drill-in, so a language that grows or shrinks while the viewer is on its row gets the focus carried to its new row (`other_row_for`). A language page whose language drops to ONE track stays open and lists that track (a page lists whatever its language still offers; popping is the only shape change), and the pop lands on the language's now-direct row on Other languages.
+- **Harness `track:N`:** the N-th track in page order: the root's track rows, then the tracks behind Other languages A-Z, a multi-track language expanded into its ranked page. It commits by the track's own list index (`commit_sub_track`), not by focusing a row, so it reaches a track whose row is on a page that is not showing.
+- **Title band:** a larger gap under the "< TITLE" caption (`table::TITLE_GAP`) before its hairline.
+- **Why the root row shows the language and the variant is shown on the page:** when the active track lives behind Other languages, the root's row reads a check and that track's LANGUAGE ("French"), not the variant: a stacked variant on a row would read as a description of the row, and the variant ("SDH") is already answered one level down, where the language's drill-in on the page reads the check and the variant and its own page checks the track. An active track is behind that row in two ways. Normally its language is "yours" and it sits on the root, so the row reads the language count. But a CODELESS subtitle (no language code, grouped under "Unknown") and a track whose code names no language `lang_key` recognises are never added to "yours" (`overlay::subtitle_yours_langs` only adds codes `lang_key` accepts), so such a track opens behind Other languages even though it is the active one, and a live change can put any active track there too. In every such case the menu opens, and the live poll falls back, with focus on the Other languages row (the root's landing id is `TrackRow::OpenOther`), never on Off. `yours` stays the opening snapshot so groups do not reshuffle under the viewer.
 
 ## Availability and locks
 
@@ -54,14 +56,16 @@ state, not panel state).
 
 Each page declares rows with semantic ids, one alphabet for every page: `ui::track_menu::TrackRow`
 (`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
-`Choice(field, rung)`; PR 3 adds `OpenOther` and `OpenLang(group)`). Selection and saved openers
+`Choice(field, rung)`, `OpenOther`, `OpenLang(lang)`). Selection and saved openers
 are stored by id. `RowKey` is a hand-assigned family base plus a STABLE ordinal (the track's index
 in the item's list, never a list position): `0x0001_0000` Audio, `0x0002_0000` the DSP pair,
 `0x0003_0000` Off, `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
-page's drill-ins, `0x0007_0000` picker rungs (one 256-wide block per field); PR 3 takes
-`0x0008_0000` onward. `OpenLang` carries `sub_layout`'s existing group identity and its
-first-track index comes from the full item group, not the currently offered members. Initial focus
-per page is an explicit id (root: active track or Off; language page: active variant else first;
+page's drill-ins, `0x0007_0000` picker rungs (one 256-wide block per field), `0x0008_0000` the Other languages
+drill-in and `0x0009_0000 +` a language's drill-in, which uses its slot on the Other page instead of
+a track index. `OpenLang` carries the language's `LangId`, the stream id of its first track in the
+FULL item list, not the currently offered members. Initial focus
+per page is an explicit id (root: active track, the Other languages row when the active track is
+behind it, or Off; language page: active variant else first;
 Other languages: the checked row else first; picker: the checked choice; Style: Size);
 `opening_row` is only the fallback. LEFT/RIGHT stay on `EdgeRule::Screen` -> edge key; there is no
 second ladder.
@@ -111,7 +115,7 @@ re-recorded.
 A live poll rebuilds the current page when any of these change: the subs fingerprint (count, stream
 ids, offered sidecars), the active index, the renderer kind (text / image / ASS), transcoding, or the
 own-burn / enhancement route and subtitle effect (what the Style rows' lock and Timing's omission read).
-On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the own burn, or a server burn that omits it). An `OpenLang` target that no longer exists pops likewise (PR 3).
+On the root the change refreshes in place. On a sub-page the page is refreshed in place too (focus kept by id) and pops to the root by id only when its availability no longer holds: the renderer kind changed, or Style's availability did (the own burn, or a server burn that omits it), or a page's own listing is gone (`TrackMenuState::pages_hold`: an Other languages page with no language left, a language page whose language, by stream id, is no longer in `other`).
 
 ## PR sequence
 

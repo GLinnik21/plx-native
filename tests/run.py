@@ -3969,10 +3969,13 @@ def op_audio_enhancement_burn(lines):
 
 def subtitle_menupick_target(op):
     """The `plxnative-menupick` second field for a `subtitle` op. `"track": N` names the N-th
-    (0-based) TRACK row of the Subtitles panel in display order (`TrackMenuState::
-    row_for_sub_target`), so the case survives the panel gaining or losing rows -- a hand-written
-    `"row"` went stale once (`subtitle_text_srt` picked row 3, which became the Color row and
-    committed nothing). `"row"` remains for a case that really means an absolute row."""
+    (0-based) TRACK of the Subtitles panel in PAGE order (`TrackMenuState::sub_track_for_target`):
+    the root's track rows first, then every track behind Other languages (A-Z by language, a
+    multi-track language expanded into its ranked page). The pick commits by the track's own index,
+    so it works whichever page the track's row sits on, and the case survives the panel gaining or
+    losing rows -- a hand-written `"row"` went stale once (`subtitle_text_srt` picked row 3, which
+    became the Color row and committed nothing). `"row"` remains for a case that really means an
+    absolute row of the root."""
     if "track" in op:
         return f'track:{int(op["track"])}'
     return str(op["row"])

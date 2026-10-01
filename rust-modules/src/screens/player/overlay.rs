@@ -353,17 +353,44 @@ impl PlayerOverlayScreen {
     }
 
     /// Resolve `/tmp/plxnative-menupick`'s second field to an absolute row: a plain row number
-    /// parses as itself (the original contract); otherwise it is tried as a NAMED target: the Audio
-    /// tab's `"boost"`/`"loudness"` through
-    /// [`crate::ui::track_menu::TrackMenuState::row_for_audio_target`], the Subtitles tab's
-    /// `"track:N"` through `row_for_sub_target`. `None` when neither applies — an unparseable
-    /// number, a name on the wrong tab, or an unrecognized name.
+    /// parses as itself (the original contract); the Audio tab's `"boost"`/`"loudness"` are tried
+    /// as NAMED targets through [`crate::ui::track_menu::TrackMenuState::row_for_audio_target`].
+    /// `None` when neither applies — an unparseable number, a name on the wrong tab, or an
+    /// unrecognized name. The Subtitles tab's `"track:N"` is not a row at all (the track may sit
+    /// on a page that is not showing): see [`Self::resolve_menupick_track`].
     pub(crate) fn resolve_menupick_row(&self, target: &str) -> Option<c_int> {
         if let Ok(row) = target.parse::<c_int>() {
             return Some(row);
         }
         match &self.panel {
-            Panel::Tracks(p) => p.row_for_audio_target(target).or_else(|| p.row_for_sub_target(target)),
+            Panel::Tracks(p) => p.row_for_audio_target(target),
+            _ => None,
+        }
+    }
+
+    /// Resolve a `"track:N"` target of `/tmp/plxnative-menupick` to the subtitle's index in the
+    /// item's list ([`crate::ui::track_menu::TrackMenuState::sub_track_for_target`]) — root tracks
+    /// first, then the ones behind Other languages. `None` for any other target.
+    pub(crate) fn resolve_menupick_track(&self, target: &str) -> Option<usize> {
+        match &self.panel {
+            Panel::Tracks(p) => p.sub_track_for_target(target),
+            _ => None,
+        }
+    }
+
+    /// **The headless pick of a named subtitle track**: commit the track at `i` by its own index
+    /// ([`crate::ui::track_menu::TrackMenuState::commit_sub_track`]), whatever page its row is on.
+    /// Like [`Self::pick_track_row`] it leaves the panel on screen.
+    pub(crate) fn pick_sub_track(
+        &mut self,
+        meta: crate::metadata::MetadataView<'_>,
+        i: usize,
+    ) -> Option<crate::ui::track_menu::TrackCommit> {
+        match &mut self.panel {
+            Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
+                TrackOk::Commit { commit, .. } => Some(commit),
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated => None,
+            },
             _ => None,
         }
     }

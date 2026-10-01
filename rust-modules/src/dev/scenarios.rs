@@ -1489,9 +1489,11 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 }
 
 /// `/tmp/plxnative-menupick=<tab>,<target>`: `target` is either an absolute `TableView` row
-/// number (the original contract) or, on the Audio tab, a NAMED target — `"boost"`/`"loudness"` —
+/// number (the original contract), on the Audio tab a NAMED target — `"boost"`/`"loudness"` —
 /// resolved through the panel's own [`crate::ui::track_menu::TrackRow`] identities
-/// (`TrackMenuState::row_for_audio_target`). A name survives a track-count change a hand-written
+/// (`TrackMenuState::row_for_audio_target`), or on the Subtitles tab `"track:N"`, the N-th track in
+/// page order (root tracks, then those behind Other languages), committed by its own index
+/// (`TrackMenuState::sub_track_for_target` / `commit_sub_track`). A name survives a track-count change a hand-written
 /// row number does not: `audio_enhancement_arm` below writes one instead of deriving the row
 /// itself, which is the issue #266 PR4 fix this trigger inherits (see
 /// `TrackMenuState::row_for_audio_target`'s doc for that history). An unrecognized name logs a
@@ -1510,16 +1512,22 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
     if let Some(target) = app.scenarios.menupick_target.take() {
         let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
-            Some(surface) => match surface.resolve_menupick_row(&target) {
-                Some(row) => match surface.pick_track_row(meta, row) {
+            Some(surface) => match surface.resolve_menupick_track(&target) {
+                Some(i) => match surface.pick_sub_track(meta, i) {
                     Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
-                    // The menu's own on_ok treats picking the already-active row as a no-op: no
-                    // commit, no route transition line. Without this, a manifest case whose row
-                    // no longer differs from the start pick (e.g. #210's file-default rule) fails
-                    // downstream as "no route transition" with nothing pointing back at menupick.
-                    None => crate::log(&format!("menupick: row {row} already active — no commit")),
+                    None => crate::log(&format!("menupick: track {i} gave no commit")),
                 },
-                None => crate::log(&format!("menupick: unknown target {target:?} — no commit")),
+                None => match surface.resolve_menupick_row(&target) {
+                    Some(row) => match surface.pick_track_row(meta, row) {
+                        Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                        // The menu's own on_ok treats picking the already-active row as a no-op: no
+                        // commit, no route transition line. Without this, a manifest case whose row
+                        // no longer differs from the start pick (e.g. #210's file-default rule) fails
+                        // downstream as "no route transition" with nothing pointing back at menupick.
+                        None => crate::log(&format!("menupick: row {row} already active — no commit")),
+                    },
+                    None => crate::log(&format!("menupick: unknown target {target:?} — no commit")),
+                },
             },
             None => app.scenarios.menupick_target = Some(target),
         }
