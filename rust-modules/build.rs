@@ -241,9 +241,22 @@ include!("src/release_line.rs");
 fn release_line() -> Option<(u64, u64)> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
     let path = repo.join("RELEASE_LINE");
-    // Watch it whether or not it exists right now — cargo re-runs this on either transition, a
-    // maintenance branch checked out or abandoned.
-    println!("cargo:rerun-if-changed={}", path.display());
+    // Watch the marker ONLY while it exists. A `rerun-if-changed` path that is MISSING is stale on
+    // every invocation (cargo logs "stale: missing .../RELEASE_LINE"), so emitting it on trunk,
+    // where the file is absent by design, re-ran this script and recompiled the whole app crate on
+    // every build however little had changed. The transitions are still covered:
+    //   * present -> edited or removed: the path was watched, so its mtime or disappearance reruns;
+    //   * absent -> present: a `git checkout`/`switch`/`reset`/`pull` onto a line that carries the
+    //     marker moves this worktree's `HEAD` and its reflog, which `emit_build_sha` watches.
+    // The one case left unwatched: creating the marker by hand, uncommitted, in a tree whose `HEAD`
+    // does not move (or in a `.git`-less source tarball); `touch rust-modules/build.rs` forces the
+    // rerun. Releases and nightlies are built from a CI checkout with an empty target dir, so no
+    // shipped artifact can inherit a stale answer; the marker only ever changes the `-dev` /
+    // nightly string, never a stable release's version, and `ci/check-package.py`'s packaged-binary
+    // version check is the backstop if a stale one were ever packaged.
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     let content = std::fs::read_to_string(&path).ok()?;
     parse_release_line(&content)
 }
@@ -341,7 +354,10 @@ fn emit_build_sha() {
     let sha = git_short_sha().unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=PLX_BUILD_SHA={sha}");
     for rel in ["logs/HEAD", "HEAD"] {
-        if let Some(path) = git_path(rel) {
+        // Only a file that exists: a MISSING rerun-if-changed path is stale on every invocation
+        // (see `release_line`), and `logs/HEAD` is absent in a repository with
+        // `core.logAllRefUpdates=false` or a deleted reflog. `HEAD` itself still moves on checkout.
+        if let Some(path) = git_path(rel).filter(|p| p.exists()) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
