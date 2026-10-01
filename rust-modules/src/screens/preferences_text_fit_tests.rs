@@ -78,6 +78,16 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
         crate::route::restore_subtitle_position(crate::route::SubtitlePosition::Low);
+        for mode in crate::route::NextEpisodeMode::LADDER {
+            crate::route::restore_next_episode_mode(mode);
+            check_field_section(&format!("{tag} next_episode={mode:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+        }
+        crate::route::restore_next_episode_mode(crate::route::NextEpisodeMode::Countdown);
+        for interval in crate::route::SkipInterval::LADDER {
+            crate::route::restore_skip_interval(interval);
+            check_field_section(&format!("{tag} skip_interval={interval:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+        }
+        crate::route::restore_skip_interval(crate::route::SkipInterval::Seconds10);
 
         check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 
@@ -118,7 +128,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
             let prefs = AudioPreferences::default();
             let fields: &[PickerKind] = match kind {
-                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition],
+                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::SkipInterval],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
             for &field in fields {
@@ -186,5 +196,96 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
             _ => "Калі гук не на мове субцітраў",
         };
         assert_eq!(readouts[1], want, "{}", language.tag());
+    }
+}
+
+/// The copy as `RouteLayout::draw_narrative` draws it under the title.
+fn copy_view<'a>(copy: &'a str) -> crate::ui::text_view::TextView<'a> {
+    let size = theme::size::LABEL;
+    crate::ui::text_view::TextView::new(copy, size, theme::TEXT_READING)
+        .leading(size as f32 + theme::space::XS).max_lines(12).with_measure(&M)
+}
+
+/// Every explanation a field list or a picker can show under its title fits the left column
+/// COMPLETE in every shipped language: never cut at the line cap, never taller than the room
+/// between the title and the action band, and short enough to read as a note (at most
+/// [`MAX_COPY_LINES`] lines). A picker's own explanation, the Force note that replaces it while
+/// Force Direct Play is on, and a status line with the Force note appended are all covered.
+#[test]
+fn every_explanation_under_a_title_fits_the_column_in_every_language() {
+    const MAX_COPY_LINES: usize = 5;
+    let _serial = crate::testlock::serial();
+    let layout = RouteLayout::screen();
+    let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+        PickerKind::NextEpisode, PickerKind::SkipInterval, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
+        PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let mut subjects = vec![Subject::Page(Kind::Playback), Subject::Page(Kind::AudioSubtitles)];
+        subjects.extend(all_fields.map(Subject::Picker));
+        for subject in subjects {
+            let title = match subject {
+                Subject::Page(kind) => kind.title(),
+                Subject::Picker(field) => field.title(),
+            };
+            for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+                for status in ["", crate::i18n::msg::settings_playback_save_failed()] {
+                    let copy = copy_text(subject, status, direct_play);
+                    let view = copy_view(&copy);
+                    let top = layout.narrative_copy_frame(true, title, layout.action.y, &M).y;
+                    let room = layout.action.y - theme::space::XL - top;
+                    let (lines, h) = (view.line_count(layout.narrative.w), view.measure_h(layout.narrative.w));
+                    let at = format!("{tag} {subject:?} direct_play={direct_play:?} status={status:?}");
+                    if view.truncates(layout.narrative.w) { out.push(format!("{at}: the copy is cut at the line cap")); }
+                    if h > room { out.push(format!("{at}: the copy is {h}px tall, the column has {room}px")); }
+                    // A status line is the failure text, not an explanation: only the explanation is held to the note length.
+                    if status.is_empty() && lines > MAX_COPY_LINES { out.push(format!("{at}: {lines} lines, more than {MAX_COPY_LINES}")); }
+                }
+            }
+        }
+    }
+    assert!(out.is_empty(), "{}", out.join("\n"));
+}
+
+/// Each local picker explains ITS setting: no two of the six read the same, none is the page's
+/// blurb, and only the Default quality picker carries the More-menu sentence (the page blurb
+/// names no single setting). Pinned per language so a translation cannot drift back to the page
+/// text or copy a neighbour.
+#[test]
+fn each_local_picker_has_its_own_explanation_in_every_language() {
+    let _serial = crate::testlock::serial();
+    let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+        PickerKind::NextEpisode, PickerKind::SkipInterval];
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let page = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Auto).into_owned();
+        let copies: Vec<String> = fields.iter().map(|&f| copy_text(Subject::Picker(f), "", DirectPlayMode::Auto).into_owned()).collect();
+        for (i, copy) in copies.iter().enumerate() {
+            assert!(!copy.is_empty(), "{tag} {:?}", fields[i]);
+            assert_ne!(*copy, page, "{tag} {:?} must not repeat the page blurb", fields[i]);
+            assert!(copies.iter().enumerate().all(|(j, other)| i == j || other != copy), "{tag} {:?} reads like a sibling", fields[i]);
+        }
+        assert_eq!(copies[0], crate::i18n::msg::settings_playback_quality_copy(), "{tag}");
+        // Force Direct Play overrides only what it changes: the page list, Quality and Direct Play.
+        let forced = |subject| copy_text(subject, "", DirectPlayMode::Forced).into_owned();
+        for subject in [Subject::Page(Kind::Playback), Subject::Picker(PickerKind::Quality), Subject::Picker(PickerKind::DirectPlay)] {
+            assert_eq!(forced(subject), crate::i18n::msg::settings_playback_force_note(), "{tag} {subject:?}");
+        }
+        for (i, &field) in fields.iter().enumerate().skip(2) {
+            assert_eq!(forced(Subject::Picker(field)), copies[i], "{tag} {field:?} is untouched by Force");
+        }
+        // The account pickers keep the account note under every mode.
+        for field in [PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles] {
+            assert_eq!(copy_text(Subject::Picker(field), "", DirectPlayMode::Forced), crate::i18n::msg::settings_audio_account_note(), "{tag} {field:?}");
+        }
+        // A status wins, with the Force note appended only where Force matters.
+        let status = crate::i18n::msg::settings_playback_save_failed();
+        assert_eq!(copy_text(Subject::Picker(PickerKind::SkipInterval), status, DirectPlayMode::Forced), status, "{tag}");
+        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Forced),
+            format!("{status}\n\n{}", crate::i18n::msg::settings_playback_force_note()), "{tag}");
+        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Auto), status, "{tag}");
     }
 }

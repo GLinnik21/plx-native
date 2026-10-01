@@ -80,6 +80,8 @@ pub(crate) enum PreferenceCmd {
     },
     Quality { quality: crate::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
     DirectPlay { mode: crate::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
+    NextEpisode { mode: crate::plex::session::NextEpisodeMode, reply: std::sync::mpsc::Sender<bool> },
+    SkipInterval { interval: crate::plex::session::SkipInterval, reply: std::sync::mpsc::Sender<bool> },
     SubtitleSize { size: crate::plex::session::SubtitleSize, reply: std::sync::mpsc::Sender<bool> },
     SubtitlePosition { position: crate::plex::session::SubtitlePosition, reply: std::sync::mpsc::Sender<bool> },
     Language { language: crate::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },

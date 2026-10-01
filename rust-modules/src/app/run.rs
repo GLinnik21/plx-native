@@ -1457,8 +1457,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // so the steady-state cost is one atomic load.
         crate::player::report::tick(&mut app.player.session);
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
-        // show has another episode queued, else leave the player (back to the detail page or
-        // home, whichever is behind), instead of freezing on the last frame.
+        // show has another episode queued and the Next episode preference is not Off, else leave
+        // the player (back to the detail page or home, whichever is behind), instead of freezing
+        // on the last frame.
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && crate::player::ended() {
             let handed_off_to_up_next = finish_playback(&mut app.player.session,
                 &mut app.adapters.player,
@@ -4096,6 +4097,131 @@ mod lifecycle_regression_tests {
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
         assert!(matches!(rig.app.route(), AppArg::Home));
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// Puts the Next episode preference back whatever the test did.
+    struct NextEpisodeGuard(crate::route::NextEpisodeMode);
+    impl NextEpisodeGuard {
+        fn set(mode: crate::route::NextEpisodeMode) -> Self {
+            let prior = crate::route::next_episode_mode();
+            crate::route::restore_next_episode_mode(mode);
+            Self(prior)
+        }
+    }
+    impl Drop for NextEpisodeGuard {
+        fn drop(&mut self) {
+            crate::route::restore_next_episode_mode(self.0);
+        }
+    }
+
+    /// A resolved, mounted Player whose playhead sits inside a `final` credits marker, so the REAL
+    /// `player_hud::slot` (via `Frame::begin`) decides the control row instead of a slot the test
+    /// built itself. Returns the frame clock after one settled frame.
+    fn playing_inside_final_credits(rig: &mut Rig) -> u32 {
+        rig.request();
+        rig.resolve();
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Player);
+        frame(&mut rig.app, 16);
+        crate::metadata::set_playing_markers_for_test(
+            rig.app.bridge.metadata_mut().state_mut(),
+            vec![crate::metadata::Marker {
+                kind: crate::metadata::MarkerKind::Credits,
+                start_ms: 0,
+                end_ms: 60_000,
+                final_seg: true,
+            }],
+        );
+        crate::player::restore_state_for_test(crate::player::PlaybackState::Playing as u8);
+        crate::player::SHARED
+            .playpos_ns
+            .store(30_000_000_000, std::sync::atomic::Ordering::Relaxed);
+        let mut t = 16;
+        // The slot reaches the screen in `update`, which runs after the frame that ticks the
+        // countdown — so it takes two frames for the countdown to see it.
+        step(&mut rig.app, &mut t, vec![]);
+        step(&mut rig.app, &mut t, vec![]);
+        t
+    }
+
+    /// **Next episode: After credits.** The credits of an episode with a successor queued arm no
+    /// Up Next countdown, so nothing is requested however long they run; the end of the stream
+    /// then plays the successor exactly as it always has.
+    #[test]
+    fn after_credits_requests_no_successor_until_the_stream_ends() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED after_credits_requests_no_successor_until_the_stream_ends: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::AfterCredits);
+        let mut t = playing_inside_final_credits(&mut rig);
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(fr.ctrl.is_discs(), "inside the credits the row keeps the discs");
+        t += crate::ui::up_next::COUNTDOWN_MS;
+        step(&mut rig.app, &mut t, vec![]);
+        let player = super::super::bridge::player(&rig.app.pages).unwrap();
+        assert!(!player.up_next.expired(t), "no countdown was armed for the credits");
+        assert!(!crate::route::play_pending(), "the credits alone must not request the successor");
+        assert_eq!(crate::route::up_next(&rig.app.player.session).unwrap().rk, "2");
+
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        fr.now = t;
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(crate::route::play_pending(), "the end of the stream still plays the next episode");
+    }
+
+    /// **Next episode: Countdown** on the same rig as the test above, so the two differ only in
+    /// the preference: the credits put the Up Next tile up and its countdown requests the
+    /// successor before the stream ends.
+    #[test]
+    fn countdown_requests_the_successor_from_inside_the_credits() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED countdown_requests_the_successor_from_inside_the_credits: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::Countdown);
+        let mut t = playing_inside_final_credits(&mut rig);
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            matches!(fr.ctrl, crate::ui::player_hud::ControlSlot::UpNext(_)),
+            "inside the credits the tile takes over",
+        );
+        assert!(!crate::route::play_pending(), "the countdown is still running");
+        t += crate::ui::up_next::COUNTDOWN_MS;
+        step(&mut rig.app, &mut t, vec![]);
+        assert!(crate::route::play_pending(), "the countdown requests the successor");
+    }
+
+    /// **Next episode: Off.** The end of an episode that HAS a successor leaves the player like a
+    /// film does: back to the page the session was launched from, nothing requested.
+    #[test]
+    fn off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(true) else {
+            eprintln!("SKIPPED off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(crate::route::NextEpisodeMode::Off);
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        assert!(crate::route::up_next(&rig.app.player.session).is_some(), "premise: a successor is queued");
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert!(!crate::route::play_pending(), "Off must not request the successor");
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "end of stream landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
 }

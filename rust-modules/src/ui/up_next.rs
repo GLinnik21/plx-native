@@ -1,7 +1,8 @@
 //! **Up Next** — the next-episode tile in the transport HUD (`Player Screen.dc.html`, the control
-//! row's third occupant). It appears when the playing episode reaches its CREDITS marker and the
-//! PlayQueue has another episode behind it: the next episode's still, its address and name, and a
-//! countdown that starts it on its own.
+//! row's third occupant). It appears when the playing episode reaches a FINAL credits marker (one
+//! that runs to the end of the item) and the PlayQueue has another episode behind it, under the
+//! default Next episode preference (Up Next countdown): the next episode's still, its address and
+//! name, and a countdown that starts it on its own.
 //!
 //! The data is `route::up_next()` — lifted from the `continuous=1` PlayQueue that every playback
 //! already creates, so nothing here asks the server what plays next.
