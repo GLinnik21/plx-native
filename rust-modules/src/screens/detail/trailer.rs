@@ -587,12 +587,12 @@ mod tests {
         assert_eq!(trailer_key(MKey::Other, 0, 0), None, "an unbound key is not ours");
     }
 
-    /// **Requirement 4's key-ladder half: a fresh LEFT/RIGHT hops the fixed step, and a plain tap
+    /// **Requirement 4's key-ladder half: a fresh LEFT/RIGHT hops the default step, and a plain tap
     /// (key-up with no auto-repeat ever arriving) does not commit at once** — it arms the
     /// [`TAP_COMMIT_MS`](crate::ui::player_hud::TAP_COMMIT_MS) debounce instead, so a rapid burst
     /// of taps coalesces into one seek rather than issuing a reload per press.
     #[test]
-    fn a_fresh_press_hops_the_fixed_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
+    fn a_fresh_press_hops_the_default_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
     {
         let _g = crate::testlock::serial();
         let mut t = Transport::IDLE;
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(
             t.scrub_ns,
             live + 10_000_000_000,
-            "one fixed hop forward from the live position"
+            "one default-step hop (10 s) forward from the live position"
         );
 
         assert_eq!(t.scrub_release(0), None, "a tap does not commit at once");
