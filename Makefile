@@ -1250,7 +1250,8 @@ check-localization:
 # (the harness's DepGates copy the tree they plant violations into), so it cannot hand cargo a
 # changed input or contend for its `target/` lock (checked 2026-10-01 by running the branch alone
 # and listing every file under the checkout, `target/` and the worktree's own metadata that
-# changed: none). Before the split the compiler sat idle for the ~5 minutes these took, and they
+# changed: no source or build input; at most Python bytecode caches under ci/, tools/ and tests/,
+# which build.rs does not watch). Before the split the compiler sat idle for the ~5 minutes these took, and they
 # waited behind the compile-and-test branch for just as long.
 #
 # Each branch's output is held until it ends and printed whole, in this order (cargo, python), so

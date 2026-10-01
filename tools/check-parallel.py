@@ -18,6 +18,9 @@ them. Each NAME=COMMAND is a branch; this runs them concurrently and keeps their
 * `--jobs N` caps how many run at once (default 2). `make check` runs on a Mac whose swap is
   routinely full, and every extra branch is another compiler or interpreter resident.
 
+* SIGINT, SIGTERM, SIGHUP and SIGQUIT stop every branch's whole process group, wait for it, print
+  what each branch had buffered so far under a "partial" banner, and exit with 128 + the signal.
+
 A heartbeat on stderr every two minutes says which branches are still running; nothing else is
 written while they run.
 """
@@ -99,6 +102,35 @@ def banner(branch: Branch, verdict: str) -> str:
     return f"==== check: {branch.name} — {verdict} ({branch.elapsed:.0f}s) ===="
 
 
+class Interrupted(KeyboardInterrupt):
+    """The runner was told to stop by a signal other than SIGINT; `signum` sets the exit status."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def report_interrupted(branches: list[Branch], codes: dict[str, int]) -> None:
+    """Print what each branch had buffered, in command-line order, marked as partial.
+
+    An interrupted run (Ctrl-C, a tool timeout, a closed terminal) would otherwise show nothing at
+    all, after possibly ten minutes of work. The terminal may be gone (SIGHUP), so a failed write is
+    not an error here."""
+    try:
+        for branch in branches:
+            if branch.proc is None and branch.code is None:
+                print(banner(branch, "not started"))
+            elif branch.name in codes:
+                print(banner(branch, "ok" if codes[branch.name] == 0 else f"FAILED, exit {codes[branch.name]}"))
+                sys.stdout.write(branch.text())
+            else:
+                print(banner(branch, "interrupted, output so far is partial"))
+                sys.stdout.write(branch.text())
+        sys.stdout.flush()
+    except OSError:
+        pass
+
+
 def run(branches: list[Branch], jobs: int) -> int:
     pending = list(branches)
     running: list[Branch] = []
@@ -127,11 +159,19 @@ def run(branches: list[Branch], jobs: int) -> int:
                     f"{b.name} ({time.monotonic() - b.started:.0f}s)" for b in running),
                     file=sys.stderr, flush=True)
             time.sleep(0.2)
-    except BaseException:
+    except BaseException as error:
         for branch in running:
             branch.stop()
+        if isinstance(error, KeyboardInterrupt):
+            report_interrupted(branches, codes)
         raise
 
+    if failed:
+        # A sibling that exited between the last poll and stop() was never stopped; it has a verdict.
+        for branch in running:
+            code = branch.poll()
+            if not branch.stopped and code is not None:
+                codes[branch.name] = code
     if not failed:
         for branch in branches:
             print(banner(branch, "ok"))
@@ -165,9 +205,19 @@ def main() -> int:
     return run(parse(args.branch), args.jobs)
 
 
+def raise_interrupted(signum, _frame):
+    raise Interrupted(signum)
+
+
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # Every branch is its own session, so none of these reaches the compiler on its own: SIGHUP (a
+    # closed terminal, ssh, tmux) and SIGQUIT must stop the branches exactly as SIGTERM does, or they
+    # outlive the runner while check-lock releases the machine-wide lock under them.
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, raise_interrupted)
     try:
         sys.exit(main())
+    except Interrupted as error:
+        sys.exit(128 + error.signum)
     except KeyboardInterrupt:
         sys.exit(130)

@@ -107,8 +107,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   instead of waiting forever. `check-unlocked` runs two independent branches at once
   (`tools/check-parallel.py`, never more than two): `check-cargo` (clippy, both unit-test passes,
   the lab-diagnostics type-check and the ci/ self-tests that drive cargo) and `check-python` (every
-  Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and writes nothing
-  under the checkout). Each branch's output is held and printed whole in that order, so the log
+  Python/shell/C gate, including `tests/test_harness.py`; it never invokes cargo and modifies no
+  source or build input; only Python bytecode caches may appear). Each branch's output is held and printed whole in that order, so the log
   never interleaves; a failing branch is printed first and stops the other. `make check-cargo` and
   `make check-python` run one half alone. The cargo half runs `cargo test --lib`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
