@@ -5840,7 +5840,7 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
         return False, "make run timed out"
     lines = filter_log(proc.stdout + "\n" + proc.stderr)
     # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
-    # playback cases when --save-logs is requested; otherwise teardown relaunches the app and the
+    # playback cases when --save-logs is requested; otherwise teardown closes the app and the
     # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
     save_case_log(cfg, f"fps-{name}{log_suffix}", lines)
     if capture is not None:
