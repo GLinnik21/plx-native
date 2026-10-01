@@ -533,6 +533,7 @@ pub(crate) fn opaque_route(_player: bool) {}
 // Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
 // from the process's own scope at first use, so the probe adds no symbol to the link. Unarmed it
 // is one latched bool per presented frame.
+#[cfg(not(feature = "hostsim"))]
 crate::dev::latched_flag!(
     /// `/tmp/plxnative-framecb` — see the section comment above.
     pub(crate) fn frame_probe_armed = "framecb";

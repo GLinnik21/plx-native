@@ -626,6 +626,12 @@ fn parse_bench_n(v: &str) -> u32 {
 pub(crate) fn framedrop_value() -> Option<String> {
     crate::dev::read("framedrop")
 }
+/// `/tmp/plxnative-framering[=<ms>]` — the frame-drop detector's context ring
+/// (`diag::heartbeat::FrameRing`): write only frames of `<ms>` or more (default 17) and their
+/// neighbours, instead of every frame. `None` when unarmed.
+pub(crate) fn framering_ms() -> Option<f64> {
+    crate::dev::read("framering").map(|s| s.parse().ok().filter(|v: &f64| *v > 0.0).unwrap_or(17.0))
+}
 /// `/tmp/plxnative-firstrun`.
 pub(crate) fn firstrun_armed() -> bool {
     crate::dev::flag("firstrun")

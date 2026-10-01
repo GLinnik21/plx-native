@@ -58,7 +58,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 33] = [
+const DIAG: [&str; 34] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -117,6 +117,9 @@ const DIAG: [&str; 33] = [
     // The compositor frame-callback probe (`system.rs`): extra fields on that same line, from one
     // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
     "plxnative-framecb",
+    // The detector's context ring: which of the same lines are written, never which screen they
+    // are written about.
+    "plxnative-framering",
     // The poster pipeline's observers: the cache counters and the per-image timeline
     // (`app/adapters/poster/trace.rs`). Both only READ the store and write log lines, and the boot
     // they exist to trace is the owner's everyday one — who's-watching picker, then Home. A

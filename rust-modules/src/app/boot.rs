@@ -1013,7 +1013,10 @@ pub(crate) unsafe fn construct(
         .and_then(|s| s.parse().ok())
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
-    let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    let mut instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    if let Some(slow_ms) = crate::dev::scenarios::framering_ms().filter(|_| !controlled) {
+        instr.arm_ring(slow_ms);
+    }
     if framedrop_on {
         crate::diag::spans::arm();
     }
