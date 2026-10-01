@@ -316,8 +316,8 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// **The envelope a surface opened over this PAGE would inherit its dim from**, when the page
     /// is the hardware video plane (`Scrim::over_video`'s `corners`). Asked of the top page on a
     /// presenting frame while no surface is up, so the container can latch the field BEFORE the
-    /// first popover opens instead of inside its open frame
-    /// (`ModalUnderlay::want_corners`). `None` for every page that is not a video plane.
+    /// first popover opens instead of inside its open frame (`ModalUnderlay::note_at_rest`, which
+    /// waits for the page to rest). `None` for every page that is not a video plane.
     fn underlay_corners(&self, _cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
         None
     }

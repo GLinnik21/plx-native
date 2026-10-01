@@ -1588,11 +1588,7 @@ impl TrackMenuState {
     /// (`app::run::prepare_window`), so the strings are resident before the draw. Idempotent per
     /// table layout, like `update`'s own walk; queues only, uploads nothing.
     pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
-        if self.motion.is_warm(self.form.table.layout_rev()) {
-            return;
-        }
-        let natural = self.panel_rect(measure);
-        self.motion.prewarm_text(natural, &self.form.table, measure);
+        self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
     /// **Queue the OTHER tab's root strings once the panel is idle**, so a tab switch does not

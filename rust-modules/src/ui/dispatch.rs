@@ -1152,13 +1152,15 @@ where
         // `take_frame_stats` because that drain belongs to the heartbeat, once a second.
         self.cold.note_prepare(self.budget.refused());
         let parts = self.parts(tick);
-        // A note made on an earlier frame never reaches `ModalStack::preload_underlay`.
-        self.nav.modals.underlay.note_at_rest(None);
         // Latching costs a reconstruction and an upload: only for a page at rest.
         let at_rest = self.page_quiescent && !self.nav.tabs.stack.transition.in_flight();
         {
             let Dispatcher { nav, input, budget, .. } = self;
             let Split { views, measure, .. } = rig.split();
+            // What a first surface over this page would dim through, for the presenting side to
+            // latch ahead of the open (`ModalUnderlay::preload`); `None` on every path that does
+            // not reach the page's note.
+            let mut noted = None;
             if host_render == HostRender::Live {
                 if let Some(e) = nav.tabs.stack.top_mut() {
                     let mut page_cx = parts.cx::<H>(views, measure);
@@ -1166,13 +1168,9 @@ where
                     page_cx.focus = input.engine.read(page_cx.owner);
                     if let Some(inst) = e.inst.as_mut() {
                         inst.screen.prepare(budget, &page_cx);
-                        // What a first surface over this page would dim through, noted for the
-                        // presenting side to latch ahead of the open (`ModalUnderlay::preload`).
-                        nav.modals.underlay.want_corners(
-                            (at_rest && nav.modals.surfaces.is_empty())
-                                .then(|| inst.screen.underlay_corners(&page_cx))
-                                .flatten(),
-                        );
+                        noted = (at_rest && nav.modals.surfaces.is_empty())
+                            .then(|| inst.screen.underlay_corners(&page_cx))
+                            .flatten();
                     }
                 }
             }
@@ -1184,6 +1182,7 @@ where
                     inst.screen.prepare(budget, &surface_cx);
                 }
             }
+            nav.modals.underlay.note_at_rest(noted);
         }
         let Dispatcher {
             budget, present, ..

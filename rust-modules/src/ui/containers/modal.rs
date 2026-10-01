@@ -266,8 +266,9 @@ pub(crate) enum Latched {
     Corners([[f32; 3]; 4]),
 }
 
-/// Presenting frames a page must have been at rest, over the same envelope, before
-/// [`ModalUnderlay::note_at_rest`] lets the preload run (~0.5 s at 60 fps).
+/// Prepare passes a page must have been at rest, over the same envelope, before
+/// [`ModalUnderlay::note_at_rest`] lets the preload run. ~0.5 s at 60 fps only while the video
+/// plane is bound; before that a pass runs only on a presenting frame, so the wait is longer.
 pub(crate) const PRELOAD_REST_FRAMES: u16 = 30;
 
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
@@ -430,10 +431,11 @@ pub struct ModalUnderlay {
     /// presented surface either adopts it (the same envelope) or drops it first.
     dormant: bool,
     /// The envelope the page under an EMPTY stack says its first surface will inherit
-    /// ([`want_corners`](Self::want_corners)), until the presenting side latches it
+    /// ([`note_at_rest`](Self::note_at_rest)), until the presenting side latches it
     /// ([`preload`](Self::preload)).
     wanted: Option<[[f32; 3]; 4]>,
-    /// How many presenting frames in a row the page at rest has asked for `rest_for`.
+    /// The envelope the page at rest has been asking for, and for how many prepare passes in a
+    /// row ([`note_at_rest`](Self::note_at_rest)).
     rest_for: Option<[[f32; 3]; 4]>,
     rest: u16,
     /// Envelope latches so far (a reconstruction and a texture upload each).
@@ -457,6 +459,11 @@ impl ModalUnderlay {
     }
 
     #[cfg(test)]
+    pub(crate) fn wanted(&self) -> Option<[[f32; 3]; 4]> {
+        self.wanted
+    }
+
+    #[cfg(test)]
     pub(crate) fn corner_latches(&self) -> u32 {
         self.corner_latches
     }
@@ -475,28 +482,33 @@ impl ModalUnderlay {
         }
     }
 
-    /// **Note what the page under an empty stack would have its first surface inherit**, or that
-    /// it has nothing to say. Records only — no GL — so it may run on any frame whose prepare pass
-    /// ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
+    /// Set or withdraw the note directly, bypassing the rest count: for the frames that never reach
+    /// [`note_at_rest`](Self::note_at_rest) (a surface is up), and for tests that need a note.
     pub(crate) fn want_corners(&mut self, corners: Option<[[f32; 3]; 4]>) {
         self.wanted = corners;
     }
 
-    /// [`want_corners`](Self::want_corners) for a page AT REST, once per presenting frame: the note
-    /// stands only after [`PRELOAD_REST_FRAMES`] of them in a row for the same envelope (`None` is
-    /// a frame that is not at rest or has no envelope, and restarts the count). The latch is a
-    /// ~8 ms reconstruction on a frame nobody has budgeted for, so it waits out the playback-start
-    /// frames, which are the heaviest the player has.
+    /// **Note what the page under an empty stack would have its first surface inherit**, once per
+    /// prepare pass, `None` when the page is not at rest, is not a video
+    /// plane or has not been reached. Records only — no GL — so it may run on any frame whose
+    /// prepare pass ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
+    ///
+    /// The note stands only after [`PRELOAD_REST_FRAMES`] prepare passes in a row for the same
+    /// envelope (`None` or a changed envelope restarts the count and withdraws any note). The latch is a ~8 ms reconstruction on
+    /// a frame nobody has budgeted for, so it waits out the playback-start frames, which are the
+    /// heaviest the player has.
     pub(crate) fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
         match corners {
             Some(c) if self.rest_for == Some(c) => self.rest = self.rest.saturating_add(1),
             Some(c) => {
                 self.rest_for = Some(c);
                 self.rest = 1;
+                self.wanted = None;
             }
             None => {
                 self.rest_for = None;
                 self.rest = 0;
+                self.wanted = None;
             }
         }
         if self.rest >= PRELOAD_REST_FRAMES {
@@ -518,14 +530,17 @@ impl ModalUnderlay {
         if !self.dormant && (self.held != Latched::Nothing || self.pending.is_some()) {
             return;
         }
-        crate::diag::spans::span("upre", || {
-            self.field.reset();
-            self.field
-                .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
-        });
-        self.held = Latched::Corners(c);
-        self.pending = None;
+        crate::diag::spans::span("upre", || self.latch_corners(c));
         self.dormant = true;
+    }
+
+    /// Latch a corner envelope: reconstruct the field and upload it. Nothing is read from a page.
+    fn latch_corners(&mut self, c: [[f32; 3]; 4]) {
+        self.pending = None;
+        self.field.reset();
+        self.field
+            .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
+        self.held = Latched::Corners(c);
         #[cfg(test)]
         {
             self.corner_latches += 1;
@@ -554,7 +569,7 @@ impl ModalUnderlay {
         }
     }
 
-    pub(crate) fn is_dormant(&self) -> bool {
+    fn is_dormant(&self) -> bool {
         self.dormant
     }
 
@@ -612,17 +627,7 @@ impl ModalUnderlay {
                     self.pending = sink.kick().map(|t| (epoch, t));
                 }
             }
-            LatchStep::Corners(c) => {
-                self.pending = None;
-                self.field.reset();
-                self.field
-                    .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
-                self.held = Latched::Corners(c);
-                #[cfg(test)]
-                {
-                    self.corner_latches += 1;
-                }
-            }
+            LatchStep::Corners(c) => self.latch_corners(c),
             LatchStep::Reset => self.reset(),
         }
         sink.in_flight(self.pending.is_some());
@@ -661,7 +666,7 @@ impl<H: Host> ModalStack<H> {
         self.surfaces.is_empty()
     }
 
-    /// Latch the envelope the page noted ([`ModalUnderlay::want_corners`]) — only with no surface
+    /// Latch the envelope the page noted ([`ModalUnderlay::note_at_rest`]) — only with no surface
     /// up, and the note is consumed either way so it cannot outlive the frame it was made on.
     /// Uploads a texture: presenting frames only (`app::run::prepare_window`).
     pub(crate) fn preload_underlay(&mut self) {
