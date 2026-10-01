@@ -1412,6 +1412,13 @@ check-unlocked: lint check-localization
 	@# $(RUST_LIB)); this builds the library directly (`cargo build --lib`), reads cargo's own
 	@# artifact records, and fails if a host build ever writes a ~200 MB archive again.
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
+	@# Right after it on purpose, with the environment inherited unchanged: the same `cargo build
+	@# --lib` unit (same CARGO_INCREMENTAL, hence the same metadata hash), so its first build is a
+	@# reuse of that one rather than a cold compile. Builds the app crate twice and fails if the second run recompiles it
+	@# or re-runs its build script (a `rerun-if-changed` on a MISSING path made every build dirty:
+	@# 30-40 s each, 8 times per `make check`), and keeps the `RELEASE_LINE` marker's appear / edit /
+	@# disappear rebuilds honest in a scratch workspace that uses the real build.rs.
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_build_not_always_dirty.py
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
