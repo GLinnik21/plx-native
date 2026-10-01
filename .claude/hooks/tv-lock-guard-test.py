@@ -51,6 +51,7 @@ CASES = [
     (BLOCK, "tools/tv-ssh ssh tv 'cat /tmp/plxnative-events.log'"),
     (BLOCK, "tools/tv-ssh scp pkg/plxnative tv:/tmp/"),
     (BLOCK, "./tools/tv-ssh ssh tv true"),
+    (BLOCK, "tools/tv-sched-trace.sh --secs 20 --out /tmp/t.gz"),
     (BLOCK, "echo hi && make deploy"),
     (BLOCK, "./tests/run.py --fps | tee out.log"),
     (BLOCK, "for f in stable debug; do ssh root@1.2.3.4 fuser x; done"),

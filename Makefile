@@ -1427,6 +1427,9 @@ check-python: check-localization
 	@# network, so a broken `ci/nightly.py` is caught here rather than at 03:00 UTC in the
 	@# scheduled run nobody is watching.
 	python3 ci/nightly.py --selftest
+	@# The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
+	python3 tools/analyze-sched-trace.py --self-test
+	python3 tools/analyze-hwcnt-wait.py --self-test
 	python3 tools/test_tv_capture_bench.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
