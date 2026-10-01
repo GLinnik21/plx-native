@@ -18,6 +18,7 @@ The address used throughout is from the RFC 5737 documentation range.
 """
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -90,6 +91,10 @@ class TvSshTests(unittest.TestCase):
         self.bin.mkdir()
         write_exe(self.bin / "ssh", FAKE_SSH)
         write_exe(self.bin / "scp", FAKE_SCP)
+        for tool in ("bash", "sh", "env", "dirname", "cat", "grep", "tr", "git"):
+            found = shutil.which(tool)
+            if found:
+                (self.bin / tool).symlink_to(found)
         self.log = self.dir / "calls.log"
         self.log.write_text("")
         self.with_sshpass = True
@@ -100,8 +105,10 @@ class TvSshTests(unittest.TestCase):
         elif (self.bin / "sshpass").exists():
             (self.bin / "sshpass").unlink()
         env = {
-            # Only the fakes plus the system basics: a real sshpass elsewhere must not be reachable.
-            "PATH": f"{self.bin}:/usr/bin:/bin",
+            # ONLY the fake dir (which holds symlinks to the few system tools the wrapper needs):
+            # a real ssh or sshpass anywhere on the machine -- a CI runner has both -- must not be
+            # reachable, or the "sshpass is not installed" scenarios stop being hermetic.
+            "PATH": str(self.bin),
             "HOME": str(self.dir),
             "FAKE_LOG": str(self.log),
             "FAKE_MODE": mode,
@@ -157,7 +164,11 @@ class TvSshTests(unittest.TestCase):
     def test_key_rejected_without_sshpass_says_so_and_names_no_address(self):
         proc = self.run_wrapper("key-denied", "ssh", "tv", "true", with_sshpass=False)
         self.assertNotEqual(proc.returncode, 0)
+        # The line comes from the wrapper itself (the fake ssh's own "Permission denied ..." text,
+        # which carries the address, is swallowed by the probe), and it says "the TV".
+        self.assertTrue(proc.stderr.startswith("tv-ssh: the TV refused"), proc.stderr)
         self.assertIn("sshpass", proc.stderr)
+        self.assertFalse([c for c in self.calls() if c.startswith("sshpass")])
         self.assert_no_leak(proc)
 
     def test_scp_key_rejected_falls_back(self):
