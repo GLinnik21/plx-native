@@ -195,16 +195,25 @@ class ElfGateTests(unittest.TestCase):
 class MakeCheckContractTests(unittest.TestCase):
     def test_host_check_runs_elf_gate_regressions(self):
         # `make check` itself is just `tools/check-lock.py`'s machine-wide queue wrapper
-        # around `check-unlocked`, which is where the actual recipe (and this assertion)
-        # lives; `make check` still runs it, just serialized.
+        # around `check-unlocked`, which fans out to the `check-python` recipe this asserts on;
+        # `make check` still runs it, just serialized.
         lines = (ROOT / "Makefile").read_text().splitlines()
-        start = next(i for i, line in enumerate(lines) if line.startswith("check-unlocked:"))
-        recipe = []
-        for line in lines[start + 1:]:
-            if line and not line.startswith(("\t", "#")):
-                break
-            recipe.append(line)
-        self.assertIn("\tpython3 ci/test_check_elf.py", recipe)
+
+        def recipe_of(target):
+            start = next(i for i, line in enumerate(lines) if line.startswith(target + ":"))
+            recipe = []
+            for line in lines[start + 1:]:
+                if line and not line.startswith(("\t", "#")):
+                    break
+                recipe.append(line)
+            return recipe
+
+        # `check-unlocked` runs the `check-cargo` and `check-python` branches side by side; the
+        # Python-only gates (this one) live in the second.
+        unlocked = "\n".join(recipe_of("check-unlocked"))
+        self.assertIn("check-cargo", unlocked)
+        self.assertIn("check-python", unlocked)
+        self.assertIn("\tpython3 ci/test_check_elf.py", recipe_of("check-python"))
 
 
 if __name__ == "__main__":
