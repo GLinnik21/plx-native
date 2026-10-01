@@ -51,7 +51,10 @@ impl PickerKind {
     }}
     /// The field-list page this field belongs to.
     fn kind(self) -> Kind {
-        match self { Self::Quality | Self::DirectPlay | Self::NextEpisode | Self::SkipInterval => Kind::Playback, _ => Kind::AudioSubtitles }
+        match self {
+            Self::Quality | Self::DirectPlay | Self::SubtitleSize | Self::SubtitlePosition | Self::NextEpisode | Self::SkipInterval => Kind::Playback,
+            Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => Kind::AudioSubtitles,
+        }
     }
 }
 impl Kind {
