@@ -727,8 +727,32 @@
     "description": "Settings, consent or sign-in UI: settings.audio.account_note"
   },
   "settings.playback.copy": {
-    "value": "Playback defaults for this television. Quality is also available in the player's More menu. Changes here apply to the next playback.",
-    "description": "Settings, consent or sign-in UI: settings.playback.copy"
+    "value": "Playback defaults for this television. Changes here apply to the next playback.",
+    "description": "Explanation under the title of the Video & playback page itself. Each picker opened from it has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting."
+  },
+  "settings.playback.quality.copy": {
+    "value": "The highest quality a video plays at. Larger files are converted by your Plex server to fit. Also available in the player's More menu.",
+    "description": "Explanation under the title of the Default quality picker (Settings, Video & playback). Describes the ceiling and says the same control is in the player's More menu (the More menu drops its Quality section only under Forced Direct Play, where this text is replaced by the Force note)."
+  },
+  "settings.playback.direct_play.copy": {
+    "value": "Auto plays the original file when this television can; otherwise your Plex server converts it. Disabled always converts. Force skips every check: for troubleshooting only.",
+    "description": "Explanation under the title of the Direct Play picker. Names its three modes in order: Auto, Disabled and Force (the picker's third option, 'Force Direct Play (advanced)'). While Force is on the Force note replaces it."
+  },
+  "settings.playback.subtitle_size.copy": {
+    "value": "How large subtitle text is. Picture and styled subtitles keep their own size. Also under Style in the player's Subtitles menu.",
+    "description": "Explanation under the title of the Subtitle size picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Size row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.subtitle_position.copy": {
+    "value": "How high subtitles sit on the picture. Picture and styled subtitles keep their own position. Also under Style in the player's Subtitles menu.",
+    "description": "Explanation under the title of the Subtitle position picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Position row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.next_episode.copy": {
+    "value": "Up Next countdown shows a Next episode button when the credits start. After credits lets them play, then starts the next episode. Off closes the player instead.",
+    "description": "Explanation under the title of the Next episode picker. It names the three options by their picker labels (Up Next countdown, After credits, Off); keep those words identical to settings.playback.next_episode.countdown, .after_credits and .off. Only credits that run to the end of the item trigger the button."
+  },
+  "settings.playback.skip_interval.copy": {
+    "value": "How far one press of Left or Right jumps in the player.",
+    "description": "Explanation under the title of the Skip interval picker. One value for both directions; it also sets the hop in the trailer transport."
   },
   "settings.playback.enable_force": {
     "value": "Enable Force",

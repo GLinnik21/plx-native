@@ -49,6 +49,17 @@ impl PickerKind {
         Self::AudioLanguage => crate::i18n::msg::settings_audio_language(), Self::SubtitleMode => crate::i18n::msg::settings_audio_subtitles(),
         Self::SubtitleLanguage => crate::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => crate::i18n::msg::settings_audio_forced_subtitles(),
     }}
+    /// What this field's picker says about it under its title. The four account fields share the
+    /// account note (it is about where those values are saved); each local one has its own.
+    fn copy(self) -> &'static str { match self {
+        Self::Quality => crate::i18n::msg::settings_playback_quality_copy(),
+        Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play_copy(),
+        Self::SubtitleSize => crate::i18n::msg::settings_playback_subtitle_size_copy(),
+        Self::SubtitlePosition => crate::i18n::msg::settings_playback_subtitle_position_copy(),
+        Self::NextEpisode => crate::i18n::msg::settings_playback_next_episode_copy(),
+        Self::SkipInterval => crate::i18n::msg::settings_playback_skip_interval_copy(),
+        Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => crate::i18n::msg::settings_audio_account_note(),
+    }}
     /// The field-list page this field belongs to.
     fn kind(self) -> Kind {
         match self {
@@ -73,19 +84,34 @@ enum Value { Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(Subtitle
 /// The hashed half of a transaction: what the page shows while a load or save is in flight.
 struct Io { busy: bool, status: String }
 
+/// What the copy under a title explains: a field-list page, or one field's picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Subject { Page(Kind), Picker(PickerKind) }
+impl Subject {
+    /// Whether Force Direct Play changes what this page is about: the Playback list itself, and the
+    /// two pickers whose outcome it overrides (Quality is pinned to Original, Direct Play is the
+    /// setting). The other four Playback pickers are untouched by it.
+    fn overridden_by_force(self) -> bool {
+        matches!(self, Self::Page(Kind::Playback) | Self::Picker(PickerKind::Quality | PickerKind::DirectPlay))
+    }
+}
+
 /// The copy under the title: the failure / progress status (with the Force note while Forced is
-/// on), else the page kind's own note. Shared by a field list and every picker of its kind.
-fn copy_text<'a>(kind: Kind, status: &'a str, direct_play: DirectPlayMode) -> Cow<'a, str> {
+/// on and matters here), else the Force note itself, else the subject's own explanation — a
+/// picker explains its own setting, never its page's.
+fn copy_text<'a>(subject: Subject, status: &'a str, direct_play: DirectPlayMode) -> Cow<'a, str> {
+    let forced = direct_play == DirectPlayMode::Forced && subject.overridden_by_force();
     if !status.is_empty() {
-        return if kind == Kind::Playback && direct_play == DirectPlayMode::Forced {
+        return if forced {
             Cow::Owned(format!("{}\n\n{}", status, crate::i18n::msg::settings_playback_force_note()))
         } else { Cow::Borrowed(status) };
     }
-    match kind {
-        Kind::AudioSubtitles => Cow::Borrowed(crate::i18n::msg::settings_audio_account_note()),
-        Kind::Playback if direct_play == DirectPlayMode::Forced => Cow::Borrowed(crate::i18n::msg::settings_playback_force_note()),
-        Kind::Playback => Cow::Borrowed(crate::i18n::msg::settings_playback_copy()),
-    }
+    if forced { return Cow::Borrowed(crate::i18n::msg::settings_playback_force_note()); }
+    Cow::Borrowed(match subject {
+        Subject::Page(Kind::AudioSubtitles) => crate::i18n::msg::settings_audio_account_note(),
+        Subject::Page(Kind::Playback) => crate::i18n::msg::settings_playback_copy(),
+        Subject::Picker(field) => field.copy(),
+    })
 }
 
 enum Pending {
@@ -324,7 +350,7 @@ impl PreferencesPage {
         self.look = (crate::route::subtitle_size(), crate::route::subtitle_position());
         self.next_episode = crate::route::next_episode_mode();
         self.skip_interval = crate::route::skip_interval();
-        self.copy = copy_text(self.state.kind, &self.state.io.status, self.state.direct_play).into_owned();
+        self.copy = copy_text(Subject::Page(self.state.kind), &self.state.io.status, self.state.direct_play).into_owned();
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
             prefs: self.txn.prefs(), busy: self.state.io.busy, show_retry: !self.state.io.status.is_empty(),
