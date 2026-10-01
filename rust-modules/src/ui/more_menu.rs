@@ -490,6 +490,16 @@ impl MoreMenuState {
         self.motion.transitioning()
     }
 
+    /// The root page's strings, queued on the frame the panel mounts — see
+    /// `TrackMenuState::warm_open`, which this mirrors.
+    pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
+        if self.motion.is_warm(self.form.table.layout_rev()) {
+            return;
+        }
+        let natural = self.panel_rect(measure);
+        self.motion.prewarm_text(natural, &self.form.table, measure);
+    }
+
     pub(crate) fn update(&mut self, dt: f32, measure: &dyn crate::ui::machine::Measure, ps: &crate::route::PlaybackSession) {
         self.refresh(ps);
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.

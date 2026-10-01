@@ -153,6 +153,12 @@ impl PanelMotion {
         Self::record_text(natural, live, measure);
     }
 
+    /// Has [`Self::prewarm_text`] already walked the layout `rev`? What lets a screen's `prepare`
+    /// ask every presenting frame for the cost of one `Cell` read.
+    pub(crate) fn is_warm(&self, rev: u32) -> bool {
+        self.warmed.get() == Some(rev)
+    }
+
     /// Queue `table`'s uncached strings: the recording walk `ui::dispatch` runs for a page's warm
     /// pass, speculative to the recorder, with no raw clear reaching the framebuffer.
     fn record_text(natural: Rect, table: &TableView, measure: &dyn Measure) {

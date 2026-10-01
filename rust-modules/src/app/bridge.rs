@@ -1878,9 +1878,9 @@ fn frame_ingest(
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
-    let report = d.frame_with(rig, tick, inputs, results, tap, false);
+    let report = crate::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
     d.prune(&report.unmounted);
-    rig.sync_host(d);
+    crate::diag::spans::span("dsync", || rig.sync_host(d));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
     // loop's gate presents it on its own video-plane term anyway, and the report would keep the
     // settled-capture clock (`ui::idle::last_change_ms`) from ever seeing a paused player at rest

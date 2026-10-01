@@ -972,6 +972,15 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
         self.suppressed = crate::ui::player_hud::transport_hidden(H::session(cx))
             && !self.kind.survives_failure();
+        // The first `update` is a frame behind the mount, so the root page's strings are queued
+        // here for the open frame's drain instead (`TrackMenuState::warm_open`).
+        if !self.suppressed {
+            match &self.panel {
+                Panel::Tracks(p) => p.warm_open(cx.measure),
+                Panel::More(p) => p.warm_open(cx.measure),
+                Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => {}
+            }
+        }
     }
     /// **The panel's dim, through the container like every other surface's.** It used to be
     /// hand-drawn at the top of each panel's `draw`; the container paints it now, at the end of the

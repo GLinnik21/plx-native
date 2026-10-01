@@ -313,6 +313,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn scrim(&self) -> Scrim {
         Scrim::NONE
     }
+    /// **The envelope a surface opened over this PAGE would inherit its dim from**, when the page
+    /// is the hardware video plane (`Scrim::over_video`'s `corners`). Asked of the top page on a
+    /// presenting frame while no surface is up, so the container can latch the field BEFORE the
+    /// first popover opens instead of inside its open frame
+    /// (`ModalUnderlay::want_corners`). `None` for every page that is not a video plane.
+    fn underlay_corners(&self, _cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
+        None
+    }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
     /// every draw; a page never answers.

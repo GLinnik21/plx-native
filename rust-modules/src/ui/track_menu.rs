@@ -1580,6 +1580,21 @@ impl TrackMenuState {
         self.warm_other_tab(ps, meta, measure);
     }
 
+    /// **Queue the ROOT page's strings on the frame the panel mounts**, from the screen's `prepare`.
+    /// A surface mounts at the nav commit, after that frame's Tick fan-out was built, so its first
+    /// `update` (which does this walk) runs a frame LATE and the open frame drew every string cold:
+    /// `textx4:2.1 … textx4:10.8` inside the 26–34 ms open frame on the television (2026-10-01).
+    /// `prepare` runs after the mount on the same frame and before the presenting side's drain
+    /// (`app::run::prepare_window`), so the strings are resident before the draw. Idempotent per
+    /// table layout, like `update`'s own walk; queues only, uploads nothing.
+    pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
+        if self.motion.is_warm(self.form.table.layout_rev()) {
+            return;
+        }
+        let natural = self.panel_rect(measure);
+        self.motion.prewarm_text(natural, &self.form.table, measure);
+    }
+
     /// **Queue the OTHER tab's root strings once the panel is idle**, so a tab switch does not
     /// meet them cold. The live page's prewarm cannot cover a switch: the key rebuilds the table
     /// after this frame's `update`, so its draw rasterised the new tab's strings itself, on the
@@ -3077,6 +3092,49 @@ mod enhancement_menu_tests {
             !crate::text::prewarm_resident_any_size_for_test(labels[0].as_bytes()),
             "an unchanged layout was walked again"
         );
+        teardown(&ps);
+    }
+
+    /// **The root page's strings are resident before the OPEN frame draws, with no `update` yet.**
+    /// A surface mounts after its frame's Tick fan-out was built, so `update` (the walk above)
+    /// first runs a frame late: the open frame met `textx4:2.1 … textx4:10.8` cold on the TV.
+    /// `warm_open` is the screen's `prepare` hook, which runs after the mount on the same frame;
+    /// the presenting side's drain then uploads what it queued.
+    ///
+    /// Observed RED with `warm_open` a no-op: nothing pending, no label resident.
+    #[test]
+    fn warm_open_makes_the_root_strings_resident_without_an_update() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture::default());
+        crate::text::reset_prewarm_for_test();
+        menu.warm_open(&M);
+        assert!(crate::text::prewarm_pending(), "warm_open queued the root page's strings");
+        let labels: Vec<String> = menu
+            .form
+            .table
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .map(|r| r.label.clone())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(!labels.is_empty(), "premise: the Audio tab has rows");
+        for label in &labels {
+            assert!(
+                !crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
+                "{label:?} was uploaded by a walk, which may run on a frame that does not present"
+            );
+        }
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        assert!(
+            labels.iter().any(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())),
+            "the presenting side's drain rasterised none of the root page"
+        );
+        // The same layout is walked once: the first `update` does not queue it again.
+        crate::text::clear_prewarm();
+        menu.warm_open(&M);
+        assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again");
         teardown(&ps);
     }
 

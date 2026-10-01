@@ -438,6 +438,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
         crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
+        // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
+        app.pages.nav.modals.underlay.preload();
         let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,

@@ -1012,20 +1012,20 @@ where
 
         // 6. the pre-commit drain
         let parts = self.parts(tick);
-        report.steps_pre = self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap);
+        report.steps_pre = crate::diag::spans::span("dpre", || self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap));
         report.queue_hwm = report.queue_hwm.max(queued_before);
 
         // 7. NAV COMMIT — one per frame — then the post-commit drain on its own budget
         let owner_before = self.owner();
-        self.commit(rig, &parts, &mut report);
+        crate::diag::spans::span("dcommit", || self.commit(rig, &parts, &mut report));
         let parts = self.parts(tick); // the owner may have changed at commit
         if parts.owner != owner_before {
             // an owner change cancels the press (§7.4)
             self.input.cancel_press();
         }
-        report.steps_post = self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap);
+        report.steps_post = crate::diag::spans::span("dpost", || self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap));
         // §7.3 step 6: after every landing and before draw, the owner's reconcile
-        self.reconcile(rig, &parts, &mut report, tap);
+        crate::diag::spans::span("drecon", || self.reconcile(rig, &parts, &mut report, tap));
         let continuation = tap.focus_continuation(f, self.engine_page(), self.focus_record());
         // Engine continuations were applied per call and checked by the tap. Only Legacy
         // consumes an unchecked final target. Avoid a replay-only layout query here.
@@ -1056,7 +1056,7 @@ where
         tap.focus(f, self.focus_record());
         let timers_fired = report.steps_pre > 0 && event_frame;
         if event_frame || timers_fired {
-            let h = self.state_hash();
+            let h = crate::diag::spans::span("dhash", || self.state_hash());
             tap.state(f, h);
             report.state_hash = Some(h);
         }
@@ -1111,7 +1111,7 @@ where
         // 9. prepare (only if presenting), then opaque_route on EVERY frame. The activity table:
         //    the top page prepares unless its host fold is Cached or Replaced; every surface does.
         if will_present {
-            self.prepare_pass(rig, tick);
+            crate::diag::spans::span("dprep", || self.prepare_pass(rig, tick));
         }
         rig.opaque_route(self.present.video_plane());
         #[cfg(debug_assertions)]
@@ -1160,7 +1160,14 @@ where
                     let mut page_cx = parts.cx::<H>(views, measure);
                     page_cx.owner = InputOwner::Entry(e.id);
                     page_cx.focus = input.engine.read(page_cx.owner);
-                    if let Some(inst) = e.inst.as_mut() { inst.screen.prepare(budget, &page_cx); }
+                    if let Some(inst) = e.inst.as_mut() {
+                        inst.screen.prepare(budget, &page_cx);
+                        // What a first surface over this page would dim through, noted for the
+                        // presenting side to latch ahead of the open (`ModalUnderlay::preload`).
+                        nav.modals.underlay.want_corners(
+                            nav.modals.surfaces.is_empty().then(|| inst.screen.underlay_corners(&page_cx)).flatten(),
+                        );
+                    }
                 }
             }
             for s in &mut nav.modals.surfaces {
@@ -1855,7 +1862,7 @@ where
                 let Split { views, measure, .. } = rig.split();
                 let cx = addressed.cx::<H>(views, measure);
                 let mut fx = Effects::new(out, to, present);
-                let handled = inst.screen.step(&ev, &cx, &mut fx);
+                let handled = crate::diag::spans::span("dstep", || inst.screen.step(&ev, &cx, &mut fx));
                 drop(fx);
                 drop(cx);
                 present.set_scope(super::present::Scope::Page);
@@ -1870,7 +1877,7 @@ where
                     self.pending_back = true;
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
-                self.after_step(rig, &addressed, id, &ev, handled, out, tap);
+                crate::diag::spans::span("dafter", || self.after_step(rig, &addressed, id, &ev, handled, out, tap));
                 // WillLeave and Unmount are queued after structural commit. Keep the engine's
                 // read snapshot available until the retiring body's final step has consumed it.
                 if matches!(ev, ScreenEvent::Unmount) {

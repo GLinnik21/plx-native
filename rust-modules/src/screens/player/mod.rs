@@ -1312,6 +1312,10 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// The playing item's UltraBlur envelope: what every panel over this page dims through.
+    fn underlay_corners(&self, cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
+        H::metadata(cx).playing().and_then(|p| p.blur)
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         // The frame's publication of the playback session (spec §2.3) — see `AppViews::session`.
         let ps = H::session(f.cx);
