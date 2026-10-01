@@ -16,10 +16,14 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
   `fresh`, and the crate's build script did not write its output again (cargo replays a
   `build-script-executed` record even for a fresh script, so the mtime of the script's output file
   is read, wherever this cargo keeps it).
-  It inherits the environment unchanged, exactly like `test_no_host_staticlib.py` (whose
-  `cargo build --lib` it follows in `make check`): `CARGO_INCREMENTAL` is part of the unit's
-  metadata hash, so forcing a value here would make the first run a second cold compile whenever
-  the caller's setting differs, and the Makefile exports it for linked worktrees only.
+  It runs `cargo check --lib --tests --features lab-diagnostics` with `CARGO_INCREMENTAL=0`: the
+  very invocation `make check`'s lab line has just run, so its first run is a reuse of that unit
+  and the whole file costs a few seconds instead of a second cold compile of the crate. (It used
+  to run `cargo build --lib`, full codegen, which only avoided a cold compile because
+  `test_no_host_staticlib.py` had just built the same unit.) `check` has the same build-script
+  fingerprint as `build`, so the always-dirty hazard is identical; it is only cheaper to observe.
+  `CARGO_INCREMENTAL` is part of the unit's fingerprint, hence the explicit value: it must match
+  the lab line's, whatever the caller exports.
 
 * `MakeAndBareCargoShareAFingerprintTests` builds the real crate the way `make` does (the
   environment `make -s print-cargo-env` reports: every `PLX_*` variable a cargo recipe would see)
@@ -55,9 +59,16 @@ PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 
 
+# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests --features
+# lab-diagnostics"); identical arguments and CARGO_INCREMENTAL make the first run here a reuse.
+LIB_ARGS = ["check", "--lib", "--tests", "--features", "lab-diagnostics"]
+
+
 def cargo_env():
-    """The caller's environment, unchanged but for PATH (which no fingerprint depends on)."""
+    """The caller's environment, but for PATH (which no fingerprint depends on) and
+    `CARGO_INCREMENTAL=0`, which the lab line this follows sets and which is part of the unit."""
     env = dict(os.environ)
+    env["CARGO_INCREMENTAL"] = "0"
     env["PATH"] = str(Path.home() / ".cargo/bin") + os.pathsep + env.get("PATH", "")
     return env
 
@@ -187,9 +198,9 @@ class SecondBuildIsFreshTests(unittest.TestCase):
         # cwd matters: cargo finds rust-modules/.cargo/config.toml (the codegen flags) from the
         # working directory, and a different flag set is a different fingerprint.
         env = cargo_env()
-        first, first_records = run_cargo(["build", "--lib"], RUST, env)
+        first, first_records = run_cargo(LIB_ARGS, RUST, env)
         self.assertEqual(first.returncode, 0, first.stderr[-2000:])
-        second, records = run_cargo(["build", "--lib"], RUST, env)
+        second, records = run_cargo(LIB_ARGS, RUST, env)
         self.assertEqual(second.returncode, 0, second.stderr[-2000:])
         self.assertTrue(saw_crate(records), "no compiler-artifact record for the app crate at all")
         self.assertTrue(script_stamp(records), "no build-script-executed record for the app crate")
@@ -230,12 +241,12 @@ class MakeAndBareCargoShareAFingerprintTests(unittest.TestCase):
     def test_make_then_bare_cargo_recompiles_nothing(self):
         make_env = {**hermetic_env(), **make_cargo_env()}
         bare_env = hermetic_env()
-        first, _ = run_cargo(["build", "--lib"], RUST, bare_env)
+        first, _ = run_cargo(LIB_ARGS, RUST, bare_env)
         self.assertEqual(first.returncode, 0, first.stderr[-2000:])
         for label, env, prev_env in (("make", make_env, bare_env), ("bare cargo", bare_env, make_env)):
-            before, _ = run_cargo(["build", "--lib"], RUST, prev_env)
+            before, _ = run_cargo(LIB_ARGS, RUST, prev_env)
             self.assertEqual(before.returncode, 0, before.stderr[-2000:])
-            after, records = run_cargo(["build", "--lib"], RUST, env)
+            after, records = run_cargo(LIB_ARGS, RUST, env)
             self.assertEqual(after.returncode, 0, after.stderr[-2000:])
             self.assertTrue(saw_crate(records), "no compiler-artifact record for the app crate")
             self.assertEqual(rebuilt(records), [],

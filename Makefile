@@ -1377,15 +1377,18 @@ check-cargo: lint
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
-	@# cargo's artifact records for both invocations the repo uses for it and fails if one does.
+	@# cargo's resolved unit graph (`--unit-graph`, nothing is compiled) for both invocations the repo
+	@# uses for it and fails if either contains a unit of the app package.
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_package_isolated.py
 	@# The crate builds as an rlib only (the ARM archive is `cargo rustc --crate-type staticlib`, see
-	@# $(RUST_LIB)); this builds the library directly (`cargo build --lib`), reads cargo's own
-	@# artifact records, and fails if a host build ever writes a ~200 MB archive again.
+	@# $(RUST_LIB), and ci/check-staticlib-artifact.py proves it exists); this reads the app library's
+	@# `crate_types` from `cargo build --lib --unit-graph` and `cargo metadata` (nothing is compiled,
+	@# cargo derives every file it writes from them) and fails if a host build could write a ~200 MB
+	@# archive again. It is proven red against a manifest that adds `staticlib`/`cdylib`.
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_no_host_staticlib.py
-	@# Right after it on purpose, with the environment inherited unchanged: the same `cargo build
-	@# --lib` unit (same CARGO_INCREMENTAL, hence the same metadata hash), so its first build is a
-	@# reuse of that one rather than a cold compile. Builds the app crate twice and fails if the second run recompiles it
+	@# Right after the lab check above on purpose, with the same `cargo check --lib --tests --features
+	@# lab-diagnostics` and CARGO_INCREMENTAL=0: the same unit, so its first run is a reuse of that
+	@# one rather than a cold compile. Checks the app crate twice and fails if the second run recompiles it
 	@# or re-runs its build script (a `rerun-if-changed` on a MISSING path made every build dirty:
 	@# 30-40 s each, 8 times per `make check`), and keeps the `RELEASE_LINE` marker's appear / edit /
 	@# disappear rebuilds honest in a scratch workspace that uses the real build.rs.
