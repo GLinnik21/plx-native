@@ -44,11 +44,12 @@ use super::{consent, posthog, sentry};
 
 /// **An EMPTY environment variable is not a configuration.**
 ///
-/// `option_env!` answers `Some("")` for a variable that is set but blank, and the Makefile exports
-/// both of these unconditionally — reading them out of a JSON file that a checkout may not have, in
-/// which case the value is the empty string. Without this the unconfigured case would report itself
-/// as configured, `route` would build a URL from nothing, and every record would spool and fail
-/// forever against an endpoint that does not exist. `const fn` so the whole thing still collapses
+/// `option_env!` answers `Some("")` for a variable that is set but blank, and a blank one does
+/// arrive: the Makefile reads the dev pair out of a JSON file that a checkout may not have (the
+/// empty string, though it passes cargo only the non-empty ones), and CI hands the release
+/// workflow's variables over blank for a build that is not that kind. Without this the unconfigured
+/// case would report itself as configured, `route` would build a URL from nothing, and every
+/// record would spool and fail forever against an endpoint that does not exist. `const fn` so the whole thing still collapses
 /// at compile time, which is what makes "this build cannot send" a property of the artifact.
 const fn non_empty(v: Option<&'static str>) -> Option<&'static str> {
     match v {

@@ -162,10 +162,11 @@ fn emit_version() {
     // On trunk the patch component is validated and then discarded (see the trunk arm below); on
     // a maintenance line it is exactly what the next dev version is built from.
     let (major, minor, patch) = triplet(&pkg);
-    // Set-but-empty is not "release": the Makefile exports the variable unconditionally and
-    // leaves it blank for a dev build, the same shape `telemetry::sender` reads its credentials
-    // with. `PLX_CHANNEL` follows the identical convention (see the Makefile's `override … :=
-    // $(if …)` beside `PLX_RELEASE`), so "nightly" is checked the same way rather than a second one.
+    // Set-but-empty is not "release": the Makefile exports the variable only for a release build,
+    // but a caller's shell or a CI step may still hand it over blank, and blank must mean what
+    // unset means — the same shape `telemetry::sender` reads its credentials with. `PLX_CHANNEL`
+    // follows the identical convention (see the Makefile's `override … := $(if …)` beside
+    // `PLX_RELEASE`), so "nightly" is checked the same way rather than a second one.
     let release = std::env::var("PLX_RELEASE").is_ok_and(|v| !v.is_empty());
     let channel = std::env::var("PLX_CHANNEL").unwrap_or_default();
     if !channel.is_empty() && channel != "nightly" {

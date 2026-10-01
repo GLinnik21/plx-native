@@ -205,6 +205,7 @@ print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
+print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -516,17 +517,35 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # `0.7.0-dev` with no error from anything, because PLX_RELEASE never left make. `override` has to
 # stay on the assignment, not the export, or a command-line `PLX_RELEASE=1` could outrank this
 # derivation again.
+#
+# EXPORTED ONLY WHEN NON-EMPTY, and `unexport`ed otherwise. Cargo fingerprints an environment
+# variable as an Option: `PLX_RELEASE=` (set, blank) is a different input from PLX_RELEASE unset.
+# `build.rs` watches this variable with `rerun-if-env-changed`, so exporting it blank for every
+# dev build made every bare `cargo` (a CI step, rust-analyzer, an agent's `cargo test --lib foo`)
+# rerun the build script and recompile the whole app crate after a `make`, and the next `make`
+# recompile it back — 35-120 s each way, invisible because both builds succeed. Unset it is the
+# same fingerprint a bare `cargo` has, and `build.rs` already reads blank and unset as the same
+# thing, so the binary is unchanged. `make -s print-cargo-env` shows what a cargo recipe receives
+# and `ci/test_build_not_always_dirty.py` pins the parity.
 override PLX_RELEASE := $(if $(RELEASE),1,)
+ifneq ($(PLX_RELEASE),)
 export PLX_RELEASE
+else
+unexport PLX_RELEASE
+endif
 # `PLX_CHANNEL=nightly` selects `build.rs::emit_version`'s nightly arm — a dated pre-release
 # string (`X.Y.Z-nightly-YYYYMMDD`) instead of the plain `-dev` suffix every other non-release
-# build reports. Derived from FLAVOR by the same `override … := $(if …)` / unconditional `export`
+# build reports. Derived from FLAVOR by the same `override … := $(if …)` / export-only-when-set
 # shape as PLX_RELEASE immediately above, for the same reason: a stray command-line
-# `PLX_CHANNEL=nightly FLAVOR=debug` must not reach cargo, and exporting empty-for-everything-but-
-# nightly is the SAME "set but empty is not the special case" idiom `build.rs` already reads
-# PLX_RELEASE with, rather than a second one.
+# `PLX_CHANNEL=nightly FLAVOR=debug` must not reach cargo, and a blank value must not either (it is
+# a different cargo fingerprint from unset; see PLX_RELEASE). `build.rs` reads blank and unset as
+# the same "not nightly", exactly as it does PLX_RELEASE.
 override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,)
+ifneq ($(PLX_CHANNEL),)
 export PLX_CHANNEL
+else
+unexport PLX_CHANNEL
+endif
 # The date a nightly build reports, `YYYYMMDD`. Only meaningful for FLAVOR=nightly, and exported
 # ONLY then — exporting it unconditionally would make cargo's `rerun-if-env-changed` force a
 # rebuild every single day (the value changes daily) even for a plain `make check` on stable or
@@ -592,6 +611,17 @@ PLX_POSTHOG_KEY_DEV ?= $(call telemetry_val,posthog_key_dev)
 # bug this whole arrangement exists to make impossible.
 PLX_SENTRY_DSN  ?=
 PLX_POSTHOG_KEY ?=
+
+# The telemetry values as `NAME='value'` words for the front of a cargo command line, for the
+# NON-EMPTY ones only. Cargo fingerprints an environment variable as an Option, so `NAME=''` is a
+# different input from NAME unset: a recipe that passed all four blank made every bare `cargo`
+# afterwards (a CI step, rust-analyzer, an agent's `cargo test`) recompile the whole app crate, and
+# the next `make` recompile it back. The crate reads all four through `option_env!` +
+# `non_empty()` (`telemetry/sender.rs`), so blank and unset already mean the same thing in code
+# and the binary is byte-for-byte what it was. A value the CALLER exported blank still reaches
+# cargo (make passes its environment through), which is the same blank a bare `cargo` in that
+# shell sees. `make -s print-cargo-env` prints what a cargo recipe receives.
+TELEMETRY_ENV = $(foreach v,PLX_SENTRY_DSN PLX_POSTHOG_KEY PLX_SENTRY_DSN_DEV PLX_POSTHOG_KEY_DEV,$(if $($(v)),$(v)='$($(v))',))
 
 # In the stamp, and it has to be: switching a build from unconfigured to configured changes what
 # the binary CAN DO and nothing about the sources, so without this the configuration would be
@@ -785,8 +815,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
 	mkdir -p rust-modules/$(RUST_TDIR)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
-	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
-	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
 	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
 	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
@@ -1319,8 +1348,7 @@ check-cargo: lint
 	@# supplied` checks this checkout's actual configuration rather than the empty one.
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
-	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
-	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) test --lib
 	@# The SAME suite again under `hostsim`, which is not a duplicate run: the host feed seam
 	@# (`player/ffi_host.rs`) only exists in that configuration, so every test that drives an AU
@@ -1331,8 +1359,7 @@ check-cargo: lint
 	@# this costs a few seconds warm rather than a rebuild.
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
-	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
-	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
 	@# ...and the THIRD feature set, `lab-diagnostics`, TYPE-CHECKED. It is not in the default set
 	@# at all (that is what makes it unshippable by forgetting a flag), so nothing above compiles a
@@ -1882,8 +1909,7 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 sim: sim-macos
 
 sim-macos: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
-	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
-	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	$(TELEMETRY_ENV) \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Full product replay is a renderer-backed host gate. Keep the fast unit suite usable without
@@ -1933,8 +1959,7 @@ screenshots: screenshots-sim demo-library
 # Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
 # seam's existing "no video path" result.
 sim-linux: $(LIBASS_HOST_STAGED)
-	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
-	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	$(TELEMETRY_ENV) \
 	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
 	  --features hostsim --bin plxnative-sim
 

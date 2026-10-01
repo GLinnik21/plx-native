@@ -21,6 +21,14 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
   metadata hash, so forcing a value here would make the first run a second cold compile whenever
   the caller's setting differs, and the Makefile exports it for linked worktrees only.
 
+* `MakeAndBareCargoShareAFingerprintTests` builds the real crate the way `make` does (the
+  environment `make -s print-cargo-env` reports: every `PLX_*` variable a cargo recipe would see)
+  and the way a bare `cargo` does (none), in both orders, and demands the second recompiles
+  nothing. Cargo fingerprints an environment variable as an Option, so a variable make exports
+  SET-BUT-EMPTY (`PLX_RELEASE=`, `PLX_CHANNEL=`, `PLX_SENTRY_DSN=''`) is a different input from one
+  that is unset, and every bare `cargo` (a CI step, rust-analyzer, an agent's `cargo test`) after a
+  `make`, and vice versa, recompiled the whole app crate.
+
 * `MarkerStillTriggersTests` keeps the behaviour the always-stale watch was (wrongly) credited with:
   the `RELEASE_LINE` marker appearing, changing and disappearing still re-runs the script, so the
   reported `X.Y.Z-dev` follows the line. It builds a scratch workspace that uses the REAL
@@ -190,6 +198,49 @@ class SecondBuildIsFreshTests(unittest.TestCase):
         self.assertEqual(rebuilt(records), [], why)
         self.assertEqual(script_stamp(records), script_stamp(first_records),
                          "the build script ran again: " + why)
+
+
+def hermetic_env():
+    """`cargo_env()` without any `PLX_*`: the baseline a bare `cargo` in a clean shell sees."""
+    return {k: v for k, v in cargo_env().items() if not k.startswith("PLX_")}
+
+
+def make_cargo_env():
+    """The `PLX_*` environment `make` hands a cargo recipe, as `{name: value}`.
+
+    Asked of the Makefile itself (`print-cargo-env`: its exported variables plus the telemetry words
+    the recipes put in front of `cargo`) rather than restated here, so this follows the recipes.
+    Run from a `PLX_*`-free environment, and with the telemetry file pointed at nothing, so what
+    comes back is the Makefile's own construction and not this machine's credentials.
+    """
+    proc = subprocess.run(["make", "-s", "print-cargo-env", "TELEMETRY_JSON=/dev/null"], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          env=hermetic_env())
+    if proc.returncode != 0:
+        raise AssertionError("make -s print-cargo-env failed: " + proc.stderr[-2000:])
+    return dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+
+
+class MakeAndBareCargoShareAFingerprintTests(unittest.TestCase):
+    def test_make_exports_no_plx_variable_set_but_empty(self):
+        empty = sorted(k for k, v in make_cargo_env().items() if v == "")
+        self.assertEqual(empty, [], "make hands cargo these variables set-but-EMPTY, which cargo "
+                         "fingerprints differently from unset; export them only when non-empty")
+
+    def test_make_then_bare_cargo_recompiles_nothing(self):
+        make_env = {**hermetic_env(), **make_cargo_env()}
+        bare_env = hermetic_env()
+        first, _ = run_cargo(["build", "--lib"], RUST, bare_env)
+        self.assertEqual(first.returncode, 0, first.stderr[-2000:])
+        for label, env, prev_env in (("make", make_env, bare_env), ("bare cargo", bare_env, make_env)):
+            before, _ = run_cargo(["build", "--lib"], RUST, prev_env)
+            self.assertEqual(before.returncode, 0, before.stderr[-2000:])
+            after, records = run_cargo(["build", "--lib"], RUST, env)
+            self.assertEqual(after.returncode, 0, after.stderr[-2000:])
+            self.assertTrue(saw_crate(records), "no compiler-artifact record for the app crate")
+            self.assertEqual(rebuilt(records), [],
+                             f"{label} recompiled the crate after the other kind of invocation: "
+                             "make and bare cargo must present the same environment fingerprint")
 
 
 STUB_MANIFEST = """\

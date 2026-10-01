@@ -233,7 +233,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   cheap: the app reads its id from the INSTALL DIRECTORY at runtime (`paths::app_id`, via
   `/proc/self/exe`), so no rebuild, no second `--target-dir`, no FFmpeg rebuild, one
   `pkg/plxnative`. **Nightly is the one exception**: the Makefile derives `PLX_CHANNEL=nightly` from
-  `FLAVOR=nightly` and exports it (empty for the other two), and `rust-modules/build.rs` reads it to
+  `FLAVOR=nightly` and exports it (UNSET for the other two: cargo fingerprints blank differently
+  from unset, so a blank export would make every bare `cargo` recompile the crate after a `make`),
+  and `rust-modules/build.rs` reads it to
   decide what `PLX_VERSION` the binary reports — a REAL codegen input, so switching to or from
   `FLAVOR=nightly` does trigger cargo's `rerun-if-env-changed` and relinks. `PLX_NIGHTLY_DATE`
   (`YYYYMMDD`, defaulted to today's UTC date by the Makefile) rides the same mechanism and is what
