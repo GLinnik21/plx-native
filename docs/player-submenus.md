@@ -199,20 +199,31 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
   `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is
   kept across closes and preloaded once the page has rested ~0.5 s with nothing open (`ModalUnderlay::retire`/`note_at_rest`/`preload`), and
   the overlay's `prepare` queues the root strings on the mount frame (`warm_open`): the open frame
-  measures ~19 ms, the rest being `after_step`'s focus seat.
+  measured 17.8-21.7 ms on the 2026-10-02 capture (below), the rest being `after_step`'s focus seat.
 - **Playback start.** The Play/ACB call and single Starfish `Feed()` calls block for 5–28 ms in
   the first seconds.
 
-**Next TV session: the three legs that would explain the back-buffer waits.** None of this has been
-run on the TV yet; the tools below were written and self-tested on the host only. Run each leg on
-its own launch (inside a `tv-lock` lease, `--guest`, mock server, menu oscillator as above):
+**Back-buffer waits: what the 2026-10-02 capture showed.** Build origin/main 6ee274c2c, `--guest`
+and the mock server, the television's panel off and muted, the player with the track menu open and
+the sub-menu oscillator running. Three legs, each on its own launch inside a `tv-lock` lease. The
+tools below are the how-to; the findings follow.
 
 1. **Kernel scheduler trace.** Boot with `--arm framedrop=17 --arm framering=17 --arm framecb`
    (the ring only exists while `framedrop` is armed). During the leg run
-   `tools/tv-sched-trace.sh --secs 20 --out sched.gz`: it mounts tracefs if needed, records
-   `sched_switch`, `sched_wakeup`, `irq_handler_entry/exit` and any mali/kbase/gpu event category
-   on `trace_clock=mono`, and restores the set afterwards. The kernel is 4.4.84 with event tracing
-   but no function tracer and no SCHEDSTATS. Then
+   `tools/tv-sched-trace.sh --secs 6 --tid <app pid> --out sched.gz`: it mounts tracefs if needed,
+   records `sched_switch`, `sched_wakeup`, `irq_handler_entry/exit` (arch timer filtered out), any
+   mali/kbase/gpu event category and, with `--tid`, that thread's raw syscalls, on
+   `trace_clock=mono`, drains `trace_pipe` (bounded by `--read-timeout`, default 90 s; a stopped
+   read-back leaves a valid partial gzip and exit status 3), and restores the set afterwards. On the
+   television's 4.4.84 kernel (event tracing, no function tracer, no SCHEDSTATS) the string filter
+   `name != "arch_timer"` is rejected and the tool falls back to the arch timer's irq numbers; the
+   `raw_syscalls` filter `common_pid == N` is accepted; the per-CPU `stats` `entries:` line reaches
+   0 when the buffer is drained; and a `trace_pipe` read-back of 433,702 events (9.3 MB gzipped)
+   finished well inside the 90 s bound. The first run read the non-consuming `trace` file, which took
+   minutes for under 4 s of data, and at 20 s the ring overran (1.3 M events written, 0.87 M kept),
+   hence the 8 s default and the 32 MB ring cap. An 8 s run at the cap still overran CPU 0 only, by
+   5,644 of 166,017 events (CPU 0 carries about twice the events of the others); `--secs 6` is the
+   safe choice for a loss-free trace. Then
    `tools/analyze-sched-trace.py APP.log sched.gz --tid <app pid>` (`APP.log` from
    `tools/tv-session.sh log FRAMEDROP`; the frame thread is the main thread, tid == pid). For each
    slow frame it lists where the thread left the CPU (preempted or blocked, in which syscall when
@@ -225,16 +236,65 @@ its own launch (inside a `tv-lock` lease, `--guest`, mock server, menu oscillato
    and `tools/analyze-hwcnt-wait.py FILE`. The latter buckets the phase's serialized wall time and
    prints the GPU's active cycles per bucket: cycles that grow with wall time mean GPU-bound,
    cycles that stay flat mean the GPU sat idle while the frame waited.
-3. **Wayland protocol log.** Boot with `--arm wldebug`: libwayland-client then prints every
-   request and event with a `CLOCK_REALTIME` microsecond stamp to `plxnative-stderr.log`, and the
-   event log gets a `wldebug:` line carrying `offset_us` (realtime minus monotonic) to line them up
-   with `FRAMEDROP`'s `mono=`. There is no analyzer for it; read `wl_buffer.release` and
-   `wl_callback.done` against the `attach`/`commit` that preceded them. It costs a dozen lines a
-   frame, so read pacing from another leg.
+3. **Wayland protocol log.** Boot with `--arm wldebug`: it sets `WAYLAND_DEBUG=client` and the
+   event log gets a `wldebug:` line carrying `offset_us` (realtime minus monotonic). Intended:
+   libwayland-client prints every request and event with a `CLOCK_REALTIME` microsecond stamp to
+   `plxnative-stderr.log`. There is no analyzer for it.
 
-The probe's run-queue field (`w=<wall>/<cpu>/<runq>`, from `/proc/thread-self/schedstat`) is
-expected to read 0 on this kernel, which has no SCHEDSTATS; only the scheduler trace can say
-whether the frame thread waited for a CPU.
+Findings:
+
+1. **The GPU is not the bottleneck** (Mali HWCNT, 3,694 `frame.ui` frames). GPU_ACTIVE is 6.56 M
+   cycles per frame at p50 and 6.85 M at p95, against the ~10.6 M a Home hero frame uses at
+   59-60 fps. In `analyze-hwcnt-wait.py`'s 20-24 ms wall bucket (87 frames) GPU_ACTIVE p50 is
+   6.68 M, the same as the 16-20 ms bucket (6.57 M, 3,197 frames): the GPU sat idle while the frame
+   waited. The 28-32 ms bucket (111 frames, 8.6 M) is the sub-menu transition frames under the
+   `glFinish` serialization, still under budget.
+2. **How the pacing works** (kernel trace, 8 s, 433,702 events, with the frame thread's syscalls).
+   `osd_irq` fires every 8.33 ms (926 of 928 gaps), twice per 60 Hz frame. The frame thread blocks
+   in `poll` inside the first framebuffer command until surface-manager wakes it just after one of
+   those interrupts. A normal frame then commits 3.2-4.0 ms after that interrupt and 4.3-5.1 ms
+   before the next one. When a commit lands after that next interrupt, the following frame's wait
+   is one full 16.7 ms cycle longer (23-24 ms instead of ~12.5 ms). Seen twice: seq 2906 committed
+   0.58 ms after the interrupt (its draw+swap took 16.0 ms because the thread sat runnable on CPU 0
+   for 12.6 ms while `n000002a`, a platform thread, ran 11.1 ms), and seq 2907 then waited 23.0 ms;
+   seq 2947 committed 0.16 ms late (draw+swap 6.6 ms, preempted repeatedly by `tHDMISignal` and
+   others), and seq 2948 waited 24.3 ms. So the app has about 8.3 ms from wake to commit, uses about
+   3.5 ms, and has about 4.5 ms of slack. Work done before the first framebuffer command (ingest,
+   results, nav commit, prepare) is absorbed by the ~12.5 ms wait and is not on that critical path
+   until it exceeds it.
+3. **Most long waits are not caused by the app.** In steady state (after the first 15 s) the two
+   legs with the probe armed had 31 waits of 18 ms or more: 2 followed a late commit of ours (the
+   preemption cases above) and 29 followed an on-time commit. Example: seq 3033 waited 21.5 ms
+   after seq 3032 committed 3.45 ms after its interrupt with 4.88 ms to spare; the frame thread was
+   blocked in `poll` with its CPU idle for 11.5 ms of that. In those frames `w=` shows one voluntary
+   sleep, ~0.3-0.45 ms of CPU and ~0 run-queue wait. That is the compositor releasing the buffer a
+   cycle late; nothing in the app's frame can change it. (Part of that count was taken while the
+   trace was being read back, which loads the set.)
+4. **Frame-thread preemption over the 8 s:** 4,922 preemptions while runnable, 419 ms in total
+   (about 5% of the time), 8 over 1 ms, 2 over 3 ms (12.6 ms on CPU 0, 3.6 ms on CPU 3). Wake-up
+   latency was never over 1.4 ms. The set runs at a load average of about 12 because every system
+   process carries a `tLibSystrim` and a `tFragmentation` thread that wake roughly 100 times a
+   second each (about 6.45 M wake-ups per thread over 18 h of uptime); they account for the most
+   time run in place of the frame thread (49.6 ms and 33.8 ms of the 419 ms) but in slices of tens
+   of microseconds. The frame thread spent 823 ms on CPU 0 and 755 ms on CPU 3 of its 1.9 s on-CPU;
+   CPU 0 also carries the interrupt and audio/HDMI threads and had the only long preemption.
+5. **What is the app's: the text prewarm drain had no per-frame bound.** `warmdrain` took 22.7 ms in
+   one frame 1.8 s after playback start (frame total 34.9 ms), 15.8 and 11.9 ms in the first 0.2 s,
+   and 9.8 ms on the menu-open frame at t0+6 s, where with the 8.3 ms nav commit it made the
+   pre-clear work 19.6 ms and the frame 21.7 ms. A per-frame budget for the drain is tracked
+   separately.
+6. **#372's preload.** The `upre` latch ran once, 1.4 s after the first frame in both legs, and cost
+   9.6 and 11.2 ms in `prepare`; the frame totals were 16.5 and 17.9 ms. That is before the first
+   framebuffer command, inside the wait, so it did not drop a frame, and the menu opened at t0+6 s
+   with the field already held. The menu-open frame measured 17.8 ms in one leg and 21.7 ms in the
+   other (the difference is the prewarm drain above).
+7. **Leg 3 produced nothing.** `--arm wldebug` set `WAYLAND_DEBUG=client` (the `wldebug:` line is in
+   the event log) but libwayland-client printed no protocol lines to `plxnative-stderr.log` on this
+   firmware (webOS 4.10.2). The trigger is unverified as an instrument on this set.
+
+The probe's run-queue field (`w=<wall>/<cpu>/<runq>`, from `/proc/thread-self/schedstat`) does
+report non-zero values on this kernel (for example `w=16.13/0.38/3.96`), and
+`/proc/<pid>/task/<tid>/schedstat` is populated.
 
 Fixed on the way here:
 

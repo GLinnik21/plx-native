@@ -1453,6 +1453,8 @@ check-python: check-localization
 	python3 tools/analyze-sched-trace.py --self-test
 	python3 tools/analyze-hwcnt-wait.py --self-test
 	python3 tools/test_tv_capture_bench.py
+	@# tv-sched-trace.sh's read-back (drain, host-side bound, ^C, restore) against a fake tracefs and tv-ssh.
+	python3 -W ignore tools/test_tv_sched_trace.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
 	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
