@@ -462,21 +462,24 @@ pub(crate) fn park_prewarm_as_background() -> u64 {
     })
 }
 
-/// Rasterise up to `count` background strings, oldest first. A string something else cached in
-/// the meantime is skipped without counting against `count`. Stops once this frame's occupancy
-/// ([`live_this_frame`]) plus the string about to be rasterised would reach the same ceiling a
-/// recording walk is held to (`TCACHE - PREWARM_HEADROOM`): the strings stay queued for a
-/// calmer frame instead of evicting what the frame is standing on.
-pub(crate) fn drain_background_prewarm(count: usize) -> usize {
-    drain_background_prewarm_at(count, || live_this_frame() as usize)
+/// Rasterise background strings, oldest first, until the deadline `budget_us` after the first
+/// read of `now` (the clock is read before each next string, so one string may finish past it, as
+/// in [`drain_prewarm`]; the first string is always taken, so a caller that has budget left makes
+/// progress). A string something else cached in the meantime is skipped without costing time.
+/// Stops once this frame's occupancy ([`live_this_frame`]) plus the string about to be rasterised
+/// would reach the same ceiling a recording walk is held to (`TCACHE - PREWARM_HEADROOM`): the
+/// strings stay queued for a calmer frame instead of evicting what the frame is standing on.
+pub(crate) fn drain_background_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+    drain_background_prewarm_at(budget_us, now, || live_this_frame() as usize)
 }
 
-fn drain_background_prewarm_at(count: usize, live: impl Fn() -> usize) -> usize {
+fn drain_background_prewarm_at(budget_us: u64, mut now: impl FnMut() -> u64, live: impl Fn() -> usize) -> usize {
     BACKGROUND.with(|b| {
         let mut done = 0;
         let ceiling = TCACHE.saturating_sub(PREWARM_HEADROOM);
-        while done < count {
-            if live() + 1 >= ceiling {
+        let start = now();
+        loop {
+            if live() + 1 >= ceiling || (done > 0 && now().saturating_sub(start) >= budget_us) {
                 break;
             }
             let Some(job) = b.borrow_mut().pop_front() else { break };
@@ -523,7 +526,7 @@ pub(crate) fn prewarm_pending() -> bool {
 /// product loop samples the queue once before dispatch, lets the recorder record it or supply
 /// the recorded one (`app::recorder::Recplay::capture_readiness`), and latches the result here.
 /// The queue changes only inside an iteration's own phases — a panel's recording walk in
-/// `update`, the counted drain on the presenting side before the draw, the draw's warm pass — and
+/// `update`, the budgeted drain on the presenting side before the draw, the draw's warm pass — and
 /// a frame that does not present drains nothing, so the latch is the queue as that iteration's
 /// springs saw it.
 pub(crate) fn latch_surface_text_pending(pending: bool) {
@@ -547,6 +550,13 @@ pub(crate) fn reset_prewarm_for_test() {
     clear_background_prewarm();
     SURFACE_TEXT_PENDING.with(|latch| latch.set(None));
     PREWARMED_FOR_TEST.with(|w| w.borrow_mut().clear());
+}
+
+/// How many distinct strings the host's stand-in rasteriser has made resident since the last reset:
+/// the deterministic clock the drain-budget tests run on (one string is one unit of time).
+#[cfg(test)]
+pub(crate) fn rasterised_for_test() -> u64 {
+    PREWARMED_FOR_TEST.with(|w| w.borrow().len() as u64)
 }
 
 #[cfg(test)]
@@ -2478,10 +2488,10 @@ mod cache_policy_tests {
         let key = |n: u8| WarmKey { bytes: vec![b'z', n], sz: 20, bold: 0 };
         BACKGROUND.with(|b| *b.borrow_mut() = (0..3).map(key).collect());
         let ceiling = TCACHE - PREWARM_HEADROOM;
-        assert_eq!(drain_background_prewarm_at(3, || ceiling - 1), 0, "live + 1 >= ceiling: refused");
+        let steady = || 0;
+        assert_eq!(drain_background_prewarm_at(9, steady, || ceiling - 1), 0, "live + 1 >= ceiling: refused");
         assert!(background_prewarm_pending(), "refused strings stay queued");
-        assert_eq!(drain_background_prewarm_at(1, || ceiling - 2), 1, "one below the bound proceeds");
-        assert_eq!(drain_background_prewarm_at(9, || ceiling - 2), 2);
+        assert_eq!(drain_background_prewarm_at(9, steady, || ceiling - 2), 3, "one below the bound proceeds");
         reset_prewarm_for_test();
     }
 

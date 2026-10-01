@@ -1940,7 +1940,10 @@ mod tests {
         // `prepare` may run on a frame the loop then does not present: it records, uploads nothing.
         assert!(crate::text::prewarm_pending(), "prepare queued the clocks");
         assert!(!crate::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
-        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        // Four strings against a three-string frame budget: the second presented frame finishes them.
+        while crate::text::prewarm_pending() {
+            crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+        }
         for (text, bold) in [("1:23", 1), ("-0:36", 0), ("1:24", 1), ("-0:35", 0)] {
             assert!(
                 crate::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
@@ -1957,7 +1960,7 @@ mod tests {
         // The end of the item: nothing below zero, and no string the clock cannot show.
         crate::text::reset_prewarm_for_test();
         warm.queue(dur + 5_000_000_000, dur);
-        crate::ui::panel_motion::PanelMotion::drain_queued_text();
+        crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         assert!(crate::text::prewarm_resident_for_test(b"-0:00", sz, 0));
         assert!(crate::text::prewarm_resident_for_test(b"2:05", sz, 1));
         crate::text::reset_prewarm_for_test();

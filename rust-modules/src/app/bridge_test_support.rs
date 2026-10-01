@@ -109,6 +109,6 @@ impl Drop for DirectoryPolicyCleanup {
 /// A test frame is a presenting frame: the product drains the Tracks/More text prewarm on the
 /// presenting side of the present decision (`app::run::prepare_window`), after the frame's update.
 fn presented<R>(frame: R) -> R {
-    crate::ui::panel_motion::PanelMotion::drain_queued_text();
+    crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     frame
 }
