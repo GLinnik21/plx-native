@@ -1047,11 +1047,9 @@ impl CurlSource {
             {
                 return Err(OpenErr::Deadline);
             }
-            crate::player::log(&format!(
-                "curlio: transport failed rc={} — {}",
-                self.rc,
-                curl_why(self.rc)
-            ));
+            let why = crate::net::tls_failure_reason(self.easy, self.rc)
+                .unwrap_or_else(|| curl_why(self.rc).to_owned());
+            crate::player::log(&format!("curlio: transport failed rc={} — {why}", self.rc));
             return Err(OpenErr::Transport(self.rc));
         }
         if self.xfer.status == 0 {
@@ -1766,7 +1764,8 @@ fn trim_ascii(mut v: &[u8]) -> &[u8] {
 
 /// The `CURLcode`s that mean something different from "the network is down". Same list as
 /// `net.rs`'s, because the same firmware-varying OpenSSL and CA store sit under both, and a
-/// support log that says "rc=60" and nothing else has already cost this project a day.
+/// support log that says "rc=60" and nothing else has already cost this project a day. 60 here is
+/// only the fallback: a peer-verification failure is explained by `net::tls_failure_reason`.
 fn curl_why(rc: c_int) -> &'static str {
     match rc {
         6 => "could not resolve host",
