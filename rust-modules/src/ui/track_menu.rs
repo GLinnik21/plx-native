@@ -450,6 +450,11 @@ pub(crate) struct TrackMenuState {
     motion: PanelMotion,
     /// Whether [`Self::warm_other_tab`] has queued the other tab's root strings for this menu.
     other_tab_warmed: bool,
+    /// The owner token of the background queue this menu parked ([`crate::text::park_prewarm_as_background`]).
+    /// [`Drop`] clears the queue only while it is still this menu's: a dismissed menu lives on
+    /// through its fade-out (`ModalStack`'s `Closing`), and a Tracks menu reopened inside that
+    /// fade has parked its own queue by the time the old one drops.
+    background_owner: Option<u64>,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -520,8 +525,8 @@ impl Drop for TrackMenuState {
     /// A closed menu cannot switch tabs, so its other tab's warm ([`Self::warm_other_tab`]) is
     /// work for nobody.
     fn drop(&mut self) {
-        if self.other_tab_warmed {
-            crate::text::clear_background_prewarm();
+        if let Some(owner) = self.background_owner {
+            crate::text::clear_background_prewarm_owned(owner);
         }
     }
 }
@@ -558,6 +563,7 @@ impl TrackMenuState {
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             other_tab_warmed: false,
+            background_owner: None,
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
@@ -1631,16 +1637,22 @@ impl TrackMenuState {
             return;
         }
         self.other_tab_warmed = true;
-        let form = if self.tab == 0 {
-            self.sub_root_form(ps, meta).0
-        } else {
-            self.audio_form_for(meta, Self::enh_state(ps))
-        };
-        let mut other = TrackTable::new(BAND_BASE);
-        other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
-        other.set(form, None);
-        let natural = table_natural(&other.table, measure);
-        PanelMotion::prewarm_background_text(natural, &other.table, measure);
+        // The whole recording part is speculative to the recorder (spec §5): the form's layout
+        // asks the measure about a page no frame draws, and a replay must answer 0.0 for a key
+        // its recording lacks instead of refusing on it.
+        let owner = crate::ui::rec::speculative(|| {
+            let form = if self.tab == 0 {
+                self.sub_root_form(ps, meta).0
+            } else {
+                self.audio_form_for(meta, Self::enh_state(ps))
+            };
+            let mut other = TrackTable::new(BAND_BASE);
+            other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
+            other.set(form, None);
+            let natural = table_natural(&other.table, measure);
+            PanelMotion::prewarm_background_text(natural, &other.table, measure)
+        });
+        self.background_owner = Some(owner);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -2730,6 +2742,46 @@ mod enhancement_menu_tests {
         crate::plex::reset_servers_for_test();
     }
 
+    /// **The other tab's warm is speculative to the recorder** (spec §5): its form build and
+    /// layout ask the measure about a page no frame draws, so a replay lacking those keys answers
+    /// 0.0 instead of refusing.
+    #[test]
+    fn the_background_warm_is_not_charged_against_a_strict_replay() {
+        use crate::ui::rec::{Measurements, TableMeasure};
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
+        let store = one_track_store();
+        let replay = Measurements::Replay(TableMeasure::new(std::collections::HashMap::new()));
+        menu.warm_other_tab(&ps, store.view(), &replay);
+        assert!(menu.other_tab_warmed, "premise: the warm ran");
+        assert_eq!(replay.drain(), Ok(Vec::new()), "the warm's queries are not strict replay queries");
+        crate::text::reset_prewarm_for_test();
+        teardown(&ps);
+    }
+
+    /// **A closing menu's drop leaves a newer menu's background queue alone**: `ModalStack` keeps
+    /// a dismissed surface alive through its fade-out, so the old menu drops after the reopened
+    /// one has parked its own warm.
+    #[test]
+    fn a_closing_menus_drop_keeps_the_newer_menus_background_queue() {
+        use crate::ui::fixture::FixtureMeasure as M;
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        let (mut old, ps) = audio_tab(EnhTestFixture::default());
+        let store = one_track_store();
+        old.warm_other_tab(&ps, store.view(), &M);
+        assert!(crate::text::background_prewarm_pending(), "premise: the old menu parked a warm");
+        let mut new = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+        new.warm_other_tab(&ps, store.view(), &M);
+        drop(old);
+        assert!(crate::text::background_prewarm_pending(), "the old menu's drop wiped the new menu's queue");
+        drop(new);
+        assert!(!crate::text::background_prewarm_pending(), "the current owner clears on drop");
+        crate::text::reset_prewarm_for_test();
+        teardown(&ps);
+    }
+
     // ---- absent: I1-I7 ---------------------------------------------------------------------
 
     #[test]
@@ -3786,6 +3838,7 @@ mod focus_tests {
             sticky_audio_target: None,
             motion: PanelMotion::new(),
             other_tab_warmed: false,
+            background_owner: None,
         }
     }
 

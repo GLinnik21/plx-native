@@ -331,6 +331,9 @@ thread_local! {
     /// ([`prewarm_pending`]), and a new live walk replaces it. None of that may touch work
     /// nothing waits on, so it waits here and leaves a string at a time.
     static BACKGROUND: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
+    /// Which park the [`BACKGROUND`] queue belongs to: bumped by every
+    /// [`park_prewarm_as_background`], compared by [`clear_background_prewarm_owned`].
+    static BACKGROUND_OWNER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// This iteration's answer to "is recorded text still warming?", latched once before dispatch
     /// by [`latch_surface_text_pending`]. `None` outside the product loop (host tests that drive a
     /// dispatcher directly), where [`surface_text_pending`] reads the queue itself.
@@ -446,18 +449,36 @@ fn rasterise_warm(job: &WarmKey) {
 }
 
 /// Move everything a recording walk just queued into the background queue, replacing what was
-/// there: the caller's walk is the page it now wants warm.
-pub(crate) fn park_prewarm_as_background() {
+/// there: the caller's walk is the page it now wants warm. Returns the queue's owner token; only
+/// [`clear_background_prewarm_owned`] with that token clears it, so a menu that is still fading
+/// out cannot wipe the queue of the one opened over it. A later park takes the queue AND the
+/// ownership: the earlier owner's token goes stale.
+pub(crate) fn park_prewarm_as_background() -> u64 {
     let jobs = PREWARM.with(|q| std::mem::take(&mut *q.borrow_mut()));
     BACKGROUND.with(|b| *b.borrow_mut() = jobs);
+    BACKGROUND_OWNER.with(|o| {
+        o.set(o.get() + 1);
+        o.get()
+    })
 }
 
 /// Rasterise up to `count` background strings, oldest first. A string something else cached in
-/// the meantime is skipped without counting against `count`.
+/// the meantime is skipped without counting against `count`. Stops once this frame's occupancy
+/// ([`live_this_frame`]) plus the string about to be rasterised would reach the same ceiling a
+/// recording walk is held to (`TCACHE - PREWARM_HEADROOM`): the strings stay queued for a
+/// calmer frame instead of evicting what the frame is standing on.
 pub(crate) fn drain_background_prewarm(count: usize) -> usize {
+    drain_background_prewarm_at(count, || live_this_frame() as usize)
+}
+
+fn drain_background_prewarm_at(count: usize, live: impl Fn() -> usize) -> usize {
     BACKGROUND.with(|b| {
         let mut done = 0;
+        let ceiling = TCACHE.saturating_sub(PREWARM_HEADROOM);
         while done < count {
+            if live() + 1 >= ceiling {
+                break;
+            }
             let Some(job) = b.borrow_mut().pop_front() else { break };
             if !cache_has(&job.bytes, job.sz, job.bold) {
                 rasterise_warm(&job);
@@ -476,6 +497,14 @@ pub(crate) fn background_prewarm_pending() -> bool {
 /// Drop the background queue: the page it was warming can no longer be shown.
 pub(crate) fn clear_background_prewarm() {
     BACKGROUND.with(|b| b.borrow_mut().clear());
+}
+
+/// Drop the background queue only if `owner` (a [`park_prewarm_as_background`] token) still owns
+/// it. A stale token — a newer park took the queue over — leaves it alone.
+pub(crate) fn clear_background_prewarm_owned(owner: u64) {
+    if BACKGROUND_OWNER.with(std::cell::Cell::get) == owner {
+        clear_background_prewarm();
+    }
 }
 
 /// Recorded text a prewarm pass has not yet rasterised. A held page image is not replaced by a
@@ -2438,5 +2467,38 @@ mod cache_policy_tests {
         let (slot, forced) = evict_slot(&c, 100, false);
         assert_eq!(slot, 9, "unarmed: the plain LRU, exactly as before phase 11");
         assert!(!forced, "…and nothing reported as forced");
+    }
+
+    /// **The background drain honours the occupancy bound**: with the frame already standing on
+    /// the ceiling it rasterises nothing and keeps the queue; below it, it proceeds.
+    #[test]
+    fn the_background_drain_stops_at_the_occupancy_bound() {
+        let _g = crate::testlock::serial();
+        reset_prewarm_for_test();
+        let key = |n: u8| WarmKey { bytes: vec![b'z', n], sz: 20, bold: 0 };
+        BACKGROUND.with(|b| *b.borrow_mut() = (0..3).map(key).collect());
+        let ceiling = TCACHE - PREWARM_HEADROOM;
+        assert_eq!(drain_background_prewarm_at(3, || ceiling - 1), 0, "live + 1 >= ceiling: refused");
+        assert!(background_prewarm_pending(), "refused strings stay queued");
+        assert_eq!(drain_background_prewarm_at(1, || ceiling - 2), 1, "one below the bound proceeds");
+        assert_eq!(drain_background_prewarm_at(9, || ceiling - 2), 2);
+        reset_prewarm_for_test();
+    }
+
+    /// **A background queue has one owner**: a stale token (the menu fading out) cannot clear what
+    /// a newer park queued.
+    #[test]
+    fn a_stale_owner_cannot_clear_a_newer_background_queue() {
+        let _g = crate::testlock::serial();
+        reset_prewarm_for_test();
+        PREWARM.with(|q| q.borrow_mut().push_back(WarmKey { bytes: b"old".to_vec(), sz: 20, bold: 0 }));
+        let old = park_prewarm_as_background();
+        PREWARM.with(|q| q.borrow_mut().push_back(WarmKey { bytes: b"new".to_vec(), sz: 20, bold: 0 }));
+        let new = park_prewarm_as_background();
+        assert_ne!(old, new);
+        clear_background_prewarm_owned(old);
+        assert!(background_prewarm_pending(), "the old owner's drop left the new queue alone");
+        clear_background_prewarm_owned(new);
+        assert!(!background_prewarm_pending(), "the current owner clears it");
     }
 }

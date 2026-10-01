@@ -166,7 +166,10 @@ picker, back, back, Other languages and back (when the item has more than one su
 the Audio tab and back. It needs no Plex account. Its `worst_ceiling_ms` of 25 is a budget, and
 the TV does not meet it yet. Measured on 2026-10-01 (screen on, 90 s legs, guest + mock), the grade
 (the 2nd-highest post-warmup `worstframe=`) was 25.3–29.5 ms on most legs and 42.0 ms on one, at
-59–61 fps. The menu-closed control on the same clip graded 25.5–27.2 ms. What is left over 20 ms:
+59–61 fps. The legs were taken across commits `60bf990cc` → `929e28e9a`, not on one build; only
+the final M_osc leg ran at `929e28e9a`. None of these numbers is a measurement of a later commit,
+and the feed-slice low-water exemption and the background-drain occupancy bound (both later) have
+not been measured on the TV. The menu-closed control on the same clip graded 25.5–27.2 ms. What is left over 20 ms:
 
 - **Back-buffer waits.** Most of these frames spend 13–39 ms in `clear`, the frame's first
   framebuffer command, and draw almost nothing else. They come at the same rate with the menu
@@ -181,7 +184,9 @@ the TV does not meet it yet. Measured on 2026-10-01 (screen on, 90 s legs, guest
 Fixed on the way here:
 
 - **Feed backlog.** The prime backlog used to be fed in one tick, and is now fed 3 ms per lane per
-  tick (`FEED_LANE_SLICE_US`).
+  tick (`FEED_LANE_SLICE_US`) once a lane holds its prime depth. A lane below low-water (priming,
+  or under `FEED_LOW_WATER_NS` of lead) is exempt, so a slow `Feed()` cannot stretch the prime or
+  drain the lead.
 - **Cold first tab switch.** The first switch to the other tab rasterised its strings cold
   (`textx8:9.5`). They are now warmed in the background, one string a frame
   (`TrackMenuState::warm_other_tab`).

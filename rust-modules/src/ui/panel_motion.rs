@@ -167,10 +167,11 @@ impl PanelMotion {
     /// background queue rather than the live one: the draw empties the live queue every frame it
     /// has no page warm (`ui::dispatch`), and on the TV that left this warm one string deep, so the
     /// first switch to Audio still rasterised `textx9:8.0` cold. Called with the live queue empty.
-    pub(crate) fn prewarm_background_text(natural: Rect, table: &TableView, measure: &dyn Measure) {
+    /// Returns the queue's owner token ([`crate::text::park_prewarm_as_background`]).
+    pub(crate) fn prewarm_background_text(natural: Rect, table: &TableView, measure: &dyn Measure) -> u64 {
         debug_assert!(!crate::text::prewarm_pending(), "the live queue must not be parked with it");
         Self::record_text(natural, table, measure);
-        crate::text::park_prewarm_as_background();
+        crate::text::park_prewarm_as_background()
     }
 
     /// **Rasterise what [`Self::prewarm_text`] queued** — at most [`PREWARM_STRINGS`] of it — or,
