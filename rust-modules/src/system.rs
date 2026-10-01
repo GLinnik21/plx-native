@@ -532,9 +532,12 @@ pub(crate) fn opaque_route(_player: bool) {}
 // monotonic ms at which the wait began, for lining a frame up with a kernel trace.
 //
 // Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
-// from the process's own scope at first use, so the probe adds no symbol to the link. Unarmed it
-// is one latched bool per presented frame.
-#[cfg(not(feature = "hostsim"))]
+// from the process's own scope, ONCE (`frame_syms`, on the first armed present, before the swap
+// stretch is marked), so the probe adds no symbol to the link and its lookups are not charged to
+// the `s` stretch. Unarmed it is one latched bool per presented frame. The whole probe is
+// compiled only with `devtriggers` (and not in the simulator); the shipping build has the empty
+// stubs at the end of this section.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 crate::dev::latched_flag!(
     /// `/tmp/plxnative-framecb` — see the section comment above.
     pub(crate) fn frame_probe_armed = "framecb";
@@ -542,12 +545,12 @@ crate::dev::latched_flag!(
 
 /// `(frame seq, compositor stamp ms, our CLOCK_MONOTONIC µs at dispatch)` for every `done` that
 /// arrived since the last [`frame_probe_fields`].
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 static FRAME_DONE: std::sync::Mutex<Vec<(u32, u32, u64)>> = std::sync::Mutex::new(Vec::new());
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 static FRAME_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 fn mono_us() -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: a plain clock read into a local.
@@ -556,7 +559,7 @@ fn mono_us() -> u64 {
 }
 
 /// What the frame thread has cost so far, read at each boundary of a frame's present.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 #[derive(Clone, Copy, Default)]
 struct ThreadCost {
     /// `CLOCK_MONOTONIC`, µs.
@@ -572,7 +575,7 @@ struct ThreadCost {
     preempted: u64,
 }
 
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 impl ThreadCost {
     fn now() -> Self {
         let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -626,10 +629,10 @@ impl ThreadCost {
 
 /// This frame's boundaries: `[before the first framebuffer command, back buffer acquired, before
 /// the swap]`. Frame-thread only; a `Mutex` because it is a `static`.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 static FRAME_COST: std::sync::Mutex<[Option<ThreadCost>; 3]> = std::sync::Mutex::new([None; 3]);
 
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 fn frame_probe_mark(slot: usize) {
     if !frame_probe_armed() {
         return;
@@ -640,51 +643,76 @@ fn frame_probe_mark(slot: usize) {
 }
 
 /// The frame's first framebuffer command is next: the wait for a back buffer starts here.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_waiting() {
     frame_probe_mark(0);
 }
 
 /// The frame's first framebuffer command has returned: the back buffer is acquired.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_acquired() {
     frame_probe_mark(1);
 }
 
-#[cfg(not(feature = "hostsim"))]
+/// The libwayland entry points the probe calls, as addresses (a raw pointer is not `Sync`).
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+struct FrameSyms {
+    ctor: usize,
+    add_listener: usize,
+    callback_interface: usize,
+    /// Absent on a libwayland without it: the callback is then simply not destroyed.
+    destroy: Option<usize>,
+}
+
+/// Resolved once. `None` when any of the three request symbols is missing, which makes the probe a
+/// silent no-op.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+fn frame_syms() -> Option<&'static FrameSyms> {
+    static SYMS: std::sync::OnceLock<Option<FrameSyms>> = std::sync::OnceLock::new();
+    SYMS.get_or_init(|| {
+        Some(FrameSyms {
+            ctor: wl_sym("wl_proxy_marshal_constructor")? as usize,
+            add_listener: wl_sym("wl_proxy_add_listener")? as usize,
+            callback_interface: wl_sym("wl_callback_interface")? as usize,
+            destroy: wl_sym("wl_proxy_destroy").map(|p| p as usize),
+        })
+    })
+    .as_ref()
+}
+
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 unsafe extern "C" fn on_frame_done(data: *mut c_void, callback: *mut c_void, time: c_uint) {
     if let Ok(mut done) = FRAME_DONE.lock() {
         done.push((data as usize as u32, time, mono_us()));
     }
     // `wl_callback` is a one-shot: the client destroys it from its own `done`.
-    if let Some(destroy) = wl_sym("wl_proxy_destroy") {
+    if let Some(destroy) = frame_syms().and_then(|s| s.destroy) {
         let destroy: unsafe extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(destroy) };
         unsafe { destroy(callback) };
     }
 }
 
 /// Ask for this frame's callback. Call on a PRESENTING frame, before the swap that commits it.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_request() {
     if !frame_probe_armed() {
         return;
     }
+    // Before the swap stretch is marked, so a first-use lookup is not charged to it.
+    let syms = frame_syms();
     frame_probe_mark(2);
     let surface = unsafe { G_WL_SURFACE };
     if surface.is_null() {
         return;
     }
-    let (Some(ctor), Some(add_listener), Some(iface)) = (
-        wl_sym("wl_proxy_marshal_constructor"),
-        wl_sym("wl_proxy_add_listener"),
-        wl_sym("wl_callback_interface"),
-    ) else {
+    let Some(syms) = syms else {
         return;
     };
+    let iface = syms.callback_interface as *const c_void;
     let ctor: unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, ...) -> *mut c_void =
-        unsafe { std::mem::transmute(ctor) };
+        unsafe { std::mem::transmute(syms.ctor) };
     let add_listener: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> c_int =
-        unsafe { std::mem::transmute(add_listener) };
+        unsafe { std::mem::transmute(syms.add_listener) };
     // `struct wl_callback_listener` is one function pointer.
     static LISTENER: unsafe extern "C" fn(*mut c_void, *mut c_void, c_uint) = on_frame_done;
     const WL_SURFACE_FRAME: c_uint = 3;
@@ -705,7 +733,7 @@ pub(crate) fn frame_probe_request() {
 /// frame made), `mono=` (our monotonic clock, ms, now), the three stretches described in the
 /// section comment, then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each callback that
 /// arrived since the previous line. `""` unarmed.
-#[cfg(not(feature = "hostsim"))]
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_fields() -> String {
     if !frame_probe_armed() {
         return String::new();
@@ -736,13 +764,13 @@ pub(crate) fn frame_probe_fields() -> String {
     out
 }
 
-#[cfg(feature = "hostsim")]
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_request() {}
-#[cfg(feature = "hostsim")]
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_waiting() {}
-#[cfg(feature = "hostsim")]
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_acquired() {}
-#[cfg(feature = "hostsim")]
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_fields() -> String {
     String::new()
 }

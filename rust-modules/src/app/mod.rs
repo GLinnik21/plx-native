@@ -443,6 +443,11 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // flat platform file and cannot fail the boot. The crash channel receives only the reviewed
     // compatibility fields (webOS/API/model/SoC/hardware revision), never device identifiers.
     crate::webos::probe();
+    // libwayland reads `WAYLAND_DEBUG` when SDL connects the display: same "before anything can
+    // read it" rule. It writes the environment, so it runs BEFORE `telemetry::boot`: sentry-native's
+    // `sentry_init` starts its own "sentry-tele" worker threads (logs/metrics are on by default in
+    // 0.16.6), after which `set_var` would race any `getenv` they make.
+    crate::dev::arm_wayland_debug();
     // The stored telemetry decision, BEFORE the first event can be reported — `diag::event` reads
     // a snapshot this publishes, and with none installed it refuses everything. So the ordering is
     // the fail-closed guarantee, not a convenience.
@@ -476,9 +481,6 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // its GStreamer is lazily initialised, so this is early enough and a later arming would be
     // read by nobody. It is the only instrument that can see inside the closed Dolby Vision chain.
     crate::dev::arm_gst_logging();
-    // libwayland reads `WAYLAND_DEBUG` when SDL connects the display: same "before anything can
-    // read it" rule.
-    crate::dev::arm_wayland_debug();
     // Playback tests photograph the television as well as grading its log. This keeps the same
     // ABR/pipeline evidence visible for every automated playback, rather than depending on the
     // previous manual toggle surviving into a new session.

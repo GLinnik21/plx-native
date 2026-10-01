@@ -284,7 +284,11 @@ pub(crate) fn arm_wayland_debug() {
     if !flag("wldebug") {
         return;
     }
-    // SAFETY (of the environment write): single-threaded here, as `arm_gst_logging` argues.
+    // SAFETY (of the environment write): the caller (`app::pre_boot_diagnostics`) runs this before
+    // `telemetry::boot`, whose `sentry_init` is the first step that starts threads (sentry-native's
+    // "sentry-tele" pool; `lab::boot` starts none, its poll thread comes later from
+    // `lab::start_control`). Checked against vendor/sentry-native-src/src/sentry_telemetry.c.
+    // `arm_gst_logging`'s own write runs after it and is not changed here.
     std::env::set_var("WAYLAND_DEBUG", "client");
     let stamp = |clock| {
         let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
