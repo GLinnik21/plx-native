@@ -266,8 +266,9 @@ pub(crate) enum Latched {
     Corners([[f32; 3]; 4]),
 }
 
-/// Presenting frames a page must have been at rest, over the same envelope, before
-/// [`ModalUnderlay::note_at_rest`] lets the preload run (~0.5 s at 60 fps).
+/// Prepare passes a page must have been at rest, over the same envelope, before
+/// [`ModalUnderlay::note_at_rest`] lets the preload run. ~0.5 s at 60 fps only while the video
+/// plane is bound; before that a pass runs only on a presenting frame, so the wait is longer.
 pub(crate) const PRELOAD_REST_FRAMES: u16 = 30;
 
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
@@ -433,7 +434,7 @@ pub struct ModalUnderlay {
     /// ([`note_at_rest`](Self::note_at_rest)), until the presenting side latches it
     /// ([`preload`](Self::preload)).
     wanted: Option<[[f32; 3]; 4]>,
-    /// The envelope the page at rest has been asking for, and for how many presenting frames in a
+    /// The envelope the page at rest has been asking for, and for how many prepare passes in a
     /// row ([`note_at_rest`](Self::note_at_rest)).
     rest_for: Option<[[f32; 3]; 4]>,
     rest: u16,
@@ -488,12 +489,12 @@ impl ModalUnderlay {
     }
 
     /// **Note what the page under an empty stack would have its first surface inherit**, once per
-    /// presenting frame whose prepare ran, `None` when the page is not at rest, is not a video
+    /// prepare pass, `None` when the page is not at rest, is not a video
     /// plane or has not been reached. Records only — no GL — so it may run on any frame whose
     /// prepare pass ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
     ///
-    /// The note stands only after [`PRELOAD_REST_FRAMES`] of them in a row for the same envelope
-    /// (`None` restarts the count and withdraws any note). The latch is a ~8 ms reconstruction on
+    /// The note stands only after [`PRELOAD_REST_FRAMES`] prepare passes in a row for the same
+    /// envelope (`None` or a changed envelope restarts the count and withdraws any note). The latch is a ~8 ms reconstruction on
     /// a frame nobody has budgeted for, so it waits out the playback-start frames, which are the
     /// heaviest the player has.
     pub(crate) fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
@@ -502,6 +503,7 @@ impl ModalUnderlay {
             Some(c) => {
                 self.rest_for = Some(c);
                 self.rest = 1;
+                self.wanted = None;
             }
             None => {
                 self.rest_for = None;

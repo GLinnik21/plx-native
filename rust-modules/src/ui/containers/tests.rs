@@ -680,50 +680,72 @@ fn the_dispatchers_prepare_notes_the_envelope_only_after_the_page_has_rested() {
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::VideoPlane));
     let mut ms = 0;
-    // One PRESENTING frame (prepare runs only on those), then the presenting side's preload.
-    let mut rested = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig| {
+    // One PRESENTING frame (prepare runs only on those), then the presenting side's preload
+    // unless the test wants the note left standing.
+    let mut rested = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, preload: bool| {
         use crate::ui::present::{PresentEvent, Provenance};
         ms += 16;
         d.present.note(PresentEvent::Damage(Provenance::Input));
         assert!(d.frame(rig, tick(ms), vec![], vec![], &mut NoTap).presented);
-        d.nav.modals.preload_underlay();
+        if preload {
+            d.nav.modals.preload_underlay();
+        }
     };
     corners(Some(c));
     for i in 1..n {
-        rested(&mut d, &mut rig);
+        rested(&mut d, &mut rig, true);
         assert!(!d.nav.modals.underlay.field().is_latched(), "frame {i} of {n}: nothing latched yet");
     }
-    rested(&mut d, &mut rig);
+    rested(&mut d, &mut rig, true);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "frame {n}: latched");
 
     // (b) a different envelope restarts the count, and so does a frame with none
     d.nav.modals.underlay.reset();
+    // …and withdraws a note nobody consumed (the frame between did not present): left standing,
+    // it would latch the OLD envelope
+    corners(Some(c));
+    for _ in 0..n {
+        rested(&mut d, &mut rig, false);
+    }
+    assert_eq!(d.nav.modals.underlay.wanted(), Some(c), "the fixture: a note stands, unconsumed");
+    corners(Some(c2));
+    rested(&mut d, &mut rig, false);
+    assert_eq!(d.nav.modals.underlay.wanted(), None, "a changed envelope withdraws the old note");
+    // the count starts over for what follows (a `reset` clears the field, not the rest count)
+    corners(None);
+    rested(&mut d, &mut rig, true);
+    d.nav.modals.underlay.reset();
     corners(Some(c2));
     for _ in 1..n {
-        rested(&mut d, &mut rig);
+        rested(&mut d, &mut rig, true);
     }
     corners(None);
-    rested(&mut d, &mut rig);
+    rested(&mut d, &mut rig, true);
     corners(Some(c2));
     for _ in 1..n {
-        rested(&mut d, &mut rig);
+        rested(&mut d, &mut rig, true);
     }
     assert!(!d.nav.modals.underlay.field().is_latched(), "a frame with no envelope restarted the count");
-    rested(&mut d, &mut rig);
+    rested(&mut d, &mut rig, true);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
 
     // (c) a surface on the stack: the note is not reached, and nothing stale survives it
     d.nav.modals.underlay.reset();
     for _ in 0..n {
-        rested(&mut d, &mut rig);
+        rested(&mut d, &mut rig, true);
     }
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
     d.nav.modals.underlay.reset();
     let _id = open_modal(&mut d, &mut rig, Style::Sheet, 4000);
-    for _ in 0..3 {
-        rested(&mut d, &mut rig);
-    }
+    // a note left standing, as if the page had rested: the dispatcher's own pass must withdraw it
+    // (read BEFORE `preload_underlay`, whose empty-stack check would clear it anyway)
+    d.nav.modals.underlay.want_corners(Some(c2));
+    rested(&mut d, &mut rig, false);
     assert_eq!(d.nav.modals.underlay.wanted(), None, "a surface is up: no note stands");
+    for _ in 0..3 {
+        rested(&mut d, &mut rig, true);
+    }
+    assert!(!d.nav.modals.underlay.field().is_latched(), "nothing was preloaded under a surface");
     corners(None);
 }
 
