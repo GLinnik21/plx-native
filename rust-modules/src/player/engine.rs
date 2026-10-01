@@ -2000,6 +2000,66 @@ impl FeedPace {
     }
 }
 
+/// The most wall-clock time ONE lane may spend feeding in one tick, in µs, once it has fed an AU.
+///
+/// `Feed()` blocks on the frame thread, 0.3–0.7 ms per AU on the TV. In steady state a lane feeds
+/// one or two AUs a frame and never comes near this. The throttle does not apply while priming,
+/// though, and a post-prime lane is a full lead behind, so on 2026-10-01 the first frames of
+/// every playback fed the whole demuxed backlog at once: `FRAMEDROP total=89.1 … sfvx62:19.4,
+/// sfax120:50.8` (62 video and 120 audio AUs in one frame), then `sfax53:38.3` the frame after,
+/// with the player's HUD and track menu on screen. A seek re-primes the same way. Two lanes at
+/// this slice cost at most ~6 ms of a 16.7 ms frame plus one AU's overrun each. Spreading the
+/// backlog makes Play a frame or two later: the prime needs ~17 video and ~10–15 audio AUs.
+/// The slice is per LANE, so the video lane cannot spend the audio lane's share. The old greedy
+/// video lane did exactly that: it fed 2.5 s of video before audio got its turn, and the prime
+/// then fell through to the video-only escape (`primed: v=2541ms a=0ms`).
+const FEED_LANE_SLICE_US: u64 = 3_000;
+
+#[cfg(test)]
+thread_local! {
+    /// The test feed clock: each read advances it by `FEED_TEST_CLOCK_STEP_US`, which is 0 unless
+    /// a test sets it. At 0, the host seam's near-free `sf_feed` never runs out the slice, so a
+    /// slow or preempted test machine cannot change what one tick feeds.
+    static FEED_TEST_CLOCK_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FEED_TEST_CLOCK_STEP_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Monotonic µs for [`FeedSlice`]; only ever differenced.
+fn feed_clock_us() -> u64 {
+    #[cfg(test)]
+    {
+        let step = FEED_TEST_CLOCK_STEP_US.with(|s| s.get());
+        FEED_TEST_CLOCK_US.with(|c| {
+            c.set(c.get() + step);
+            c.get()
+        })
+    }
+    #[cfg(not(test))]
+    {
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static T0: OnceLock<Instant> = OnceLock::new();
+        T0.get_or_init(Instant::now).elapsed().as_micros() as u64
+    }
+}
+
+/// One lane's share of a tick's feeding: [`FEED_LANE_SLICE_US`] from the lane's start.
+struct FeedSlice {
+    start: u64,
+}
+
+impl FeedSlice {
+    fn begin() -> Self {
+        Self { start: feed_clock_us() }
+    }
+
+    /// Whether the lane should stop before its next AU. A lane that has fed nothing yet always
+    /// gets one AU, so the backlog drains on every tick, however slow the sink is.
+    fn spent(&self, fed: usize) -> bool {
+        fed > 0 && feed_clock_us().saturating_sub(self.start) >= FEED_LANE_SLICE_US
+    }
+}
+
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
@@ -2300,6 +2360,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
     };
+    let slice = FeedSlice::begin();
     let mut fed = 0;
     while fed < 120 {
         // Feed each AU, throttled to ~MAX_FEED_AHEAD_NS ahead of the presented position per lane
@@ -2434,6 +2495,10 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 break;
             }
         }
+        // Out of this tick's slice: the AU stays pending, as on a throttle stop, for the next tick.
+        if slice.spent(fed) {
+            break;
+        }
         let presentation_probe = if eng.presentation_rearm_pending {
             let armed = SHARED.begin_native_presentation_probe(eng.native_epoch);
             if !armed {
@@ -2526,6 +2591,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     // multi-second audio budget.
     let shift = SHARED.pts_shift.load(Ordering::Relaxed);
     let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), super::vclock_ms());
+    let slice = FeedSlice::begin();
     let mut fed = 0;
     while fed < 120 {
         if eng.pending_audio.is_none() {
@@ -2553,6 +2619,9 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
             fp = 0;
         }
         if !eng.prime_play && pres != PRES_NONE && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS {
+            break;
+        }
+        if slice.spent(fed) {
             break;
         }
         let r = crate::diag::spans::span("sfa", || unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) });
@@ -3328,6 +3397,63 @@ mod prime_livelock_tests {
             PRIME_NS / 1_000_000,
             abuf / 1_000_000,
             PRIME_AUDIO_NS / 1_000_000,
+        );
+    }
+
+    /// **A prime's backlog is fed a slice per lane per tick, not all in one frame.** On the TV
+    /// every `Feed()` blocks the frame thread, and the first tick of a playback fed 62 video and
+    /// 120 audio AUs at once (an 89 ms frame). Here each feed-clock read costs 1 ms, so a lane
+    /// may feed only up to [`FEED_LANE_SLICE_US`] worth per tick. The prime must still finish, on
+    /// BOTH lanes, rather than by the video-only escape a greedy video lane used to force.
+    #[test]
+    fn a_prime_backlog_is_fed_a_slice_per_lane_per_tick() {
+        let _serial = crate::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FEED_TEST_CLOCK_STEP_US.with(|s| s.set(0));
+                ffi::force_clocksink_for_test(false);
+            }
+        }
+        ffi::force_clocksink_for_test(true);
+        FEED_TEST_CLOCK_STEP_US.with(|s| s.set(1_000));
+        let _restore = Restore;
+
+        let mt = unsafe { crate::task::MainThread::assume() };
+        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+
+        let mut eng = engine_after_reload();
+        push_one_segment(&mut eng);
+        let per_lane_max = (FEED_LANE_SLICE_US / 1_000) as i64 + 1;
+
+        tick(&mt, &mut eng);
+        let v_fed = eng.max_fed_video_pts / V_STEP_NS + 1;
+        let a_fed = eng.max_fed_audio_pts / A_STEP_NS + 1;
+        assert!(
+            eng.max_fed_video_pts > 0 && eng.max_fed_audio_pts > 0,
+            "both lanes must make progress on the first tick (v={}ns a={}ns)",
+            eng.max_fed_video_pts,
+            eng.max_fed_audio_pts,
+        );
+        assert!(
+            v_fed <= per_lane_max && a_fed <= per_lane_max,
+            "one tick fed {v_fed} video and {a_fed} audio AUs; the slice allows {per_lane_max} per lane",
+        );
+
+        let mut ticks = 1;
+        while eng.prime_play && ticks < 100 {
+            tick(&mt, &mut eng);
+            ticks += 1;
+        }
+        let vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
+        let abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
+        assert!(!eng.prime_play, "the prime never completed in {ticks} ticks");
+        assert!(
+            vbuf >= PRIME_NS && abuf >= PRIME_AUDIO_NS,
+            "Play started without both lanes primed (v={}ms a={}ms)",
+            vbuf / 1_000_000,
+            abuf / 1_000_000,
         );
     }
 
