@@ -278,12 +278,9 @@ impl PlayerOverlayScreen {
 
     pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
-            OverlayKind::Tracks { tab } => Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(
-                ps,
-                meta,
-                tab,
-                subtitle_yours_langs(ps, meta),
-            )),
+            OverlayKind::Tracks { tab } => Panel::Tracks(crate::diag::spans::span("tmnew", || {
+                crate::ui::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
+            })),
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
                 Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new(meta))
@@ -375,6 +372,24 @@ impl PlayerOverlayScreen {
         match &self.panel {
             Panel::Tracks(p) => p.sub_track_for_target(target),
             _ => None,
+        }
+    }
+
+    /// `submenuosc`'s read of the Tracks panel: `(tab, page depth, has Other languages)`; `None`
+    /// when the panel on screen is not Tracks.
+    pub(crate) fn tracks_probe(&self) -> Option<(c_int, usize, bool)> {
+        match &self.panel {
+            Panel::Tracks(p) => Some(p.osc_probe()),
+            _ => None,
+        }
+    }
+
+    /// `submenuosc`'s cursor seat: put the Tracks cursor on `row` so the next real RIGHT key
+    /// enters it. `false` when this page has no such row.
+    pub(crate) fn seat_track_row(&mut self, row: crate::ui::track_menu::TrackRow) -> bool {
+        match &mut self.panel {
+            Panel::Tracks(p) => p.focus_id(row),
+            _ => false,
         }
     }
 
@@ -763,7 +778,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     Panel::Tracks(p) => p.update(dt, cx.measure, ps, H::metadata(cx)),
                     Panel::Info(p) => p.update(dt),
                     Panel::Chapters(p) => p.update(dt, H::metadata(cx)),
-                    Panel::More(p) => p.update(dt),
+                    Panel::More(p) => p.update(dt, cx.measure, ps),
                     Panel::Timing(p) => p.update(dt),
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
@@ -949,6 +964,16 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
     }
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
+    }
+    /// **The pointer is held while the panel's card resizes or a page slides** (`ui::panel_motion`):
+    /// the dispatcher swallows it before hit resolution, so a click on a row in motion is neither
+    /// a hit on whatever sits under it nor a miss that would dismiss the surface.
+    fn pointer_held(&self) -> bool {
+        match &self.panel {
+            Panel::Tracks(p) => p.transitioning(),
+            Panel::More(p) => p.transitioning(),
+            Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => false,
+        }
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

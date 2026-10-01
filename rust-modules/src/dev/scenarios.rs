@@ -137,6 +137,8 @@ pub(crate) struct Scenarios {
     pub(crate) menupick_target: Option<String>,
     /// `/tmp/plxnative-subtiming` — see [`subtiming_arm`] and [`Subtiming`].
     pub(crate) subtiming: Subtiming,
+    /// `/tmp/plxnative-submenuosc` — see [`submenuosc_arm`] and [`SubmenuOsc`].
+    pub(crate) submenu_osc: SubmenuOsc,
     pub(crate) pause_tried: bool,
     /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
     pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
@@ -1534,6 +1536,100 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
     }
 }
 
+/// `/tmp/plxnative-submenuosc=<period_ms>`'s own state — see [`submenuosc_arm`].
+#[derive(Debug, Default)]
+pub(crate) struct SubmenuOsc {
+    /// The period, read once when the arm first runs (`None` = not read yet, `Some(0)` = not armed).
+    period: Option<u32>,
+    /// The frame clock of the last key.
+    last: u32,
+    /// Where in [`submenuosc_next`]'s cycle the next key is.
+    step: u8,
+    /// Whether the Subtitles ROOT offered Other languages when last seen there (a pushed page's
+    /// own form has no such row, so the root is the only place to ask).
+    has_other: bool,
+}
+
+/// What one tick of the drill-in oscillator does: seat the cursor on a row (if any), then press `key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubmenuStep {
+    seat: Option<crate::ui::track_menu::TrackRow>,
+    key: Key,
+    next: u8,
+}
+
+/// The oscillator's script, as a pure function of (cycle step, tab, page depth, has Other
+/// languages): Subtitles root -> Style -> Size picker -> back -> back -> Other languages -> back ->
+/// (LEFT at the root) the Audio tab -> (RIGHT) the Subtitles tab, and round again. A step whose
+/// preconditions do not hold (the menu is somewhere the script did not expect, e.g. a key was
+/// dropped) pops a page or restarts the cycle rather than pressing blind, so it re-syncs instead
+/// of drifting. `Other languages` is skipped when the item has none.
+fn submenuosc_next(step: u8, tab: c_int, depth: usize, has_other: bool) -> SubmenuStep {
+    use crate::ui::track_menu::{StyleField, TrackRow};
+    let press = |seat: Option<TrackRow>, key: Key, next: u8| SubmenuStep { seat, key, next };
+    let left = Key::Left;
+    let right = Key::Right;
+    match (step, tab, depth) {
+        (0, 1, 0) => press(Some(TrackRow::Style), right, 1),
+        (1, 1, 1) => press(Some(TrackRow::OpenField(StyleField::Size)), right, 2),
+        (2, 1, 2) => press(None, left, 3),
+        (3, 1, 1) => press(None, left, if has_other { 4 } else { 6 }),
+        (4, 1, 0) => press(Some(TrackRow::OpenOther), right, 5),
+        (5, 1, 1) => press(None, left, 6),
+        (6, 1, 0) => press(None, left, 7),
+        (7, 0, 0) => press(None, right, 0),
+        // Off script: climb out of any page, then rejoin the cycle at the Subtitles root.
+        (_, _, d) if d > 0 => press(None, left, step),
+        (_, 0, _) => press(None, right, 0),
+        _ => press(None, left, 0),
+    }
+}
+
+/// `/tmp/plxnative-submenuosc=<period_ms>` — the device frame-time scene for the Tracks panel's
+/// drill-in animation (panel resize + page slide). With the Subtitles menu open
+/// (`plxnative-menu=1`) it presses one REAL key per period through the dispatcher
+/// ([`submenuosc_next`]'s cycle), so every push, pop and tab switch runs the production handlers
+/// and the spring they start. Shaped like `navosc`/`modalosc`: it never opens or dismisses
+/// anything except that a menu dismissed under it (a stray key) is reopened on the Subtitles tab.
+/// The period must exceed the slide's settle time (~0.5 s) to measure transitions, or be shorter
+/// to measure interrupted ones; the manifest scene uses 900 ms.
+fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
+    let period = *app.scenarios.submenu_osc.period.get_or_insert_with(|| {
+        crate::dev::read("submenuosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
+    });
+    if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
+        return;
+    }
+    crate::ui::idle::wake();
+    if fr.now.wrapping_sub(app.scenarios.submenu_osc.last) < period {
+        return;
+    }
+    app.scenarios.submenu_osc.last = fr.now;
+    let probe = crate::app::bridge::player_overlay_mut(&mut app.pages).and_then(|s| s.tracks_probe());
+    let Some((tab, depth, has_other)) = probe else {
+        if !crate::app::bridge::player_overlay_up(&app.pages) {
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab: 1 });
+            pin_headless_hud(app, fr.now, None);
+            app.scenarios.submenu_osc.step = 0;
+        }
+        return;
+    };
+    if tab == 1 && depth == 0 {
+        app.scenarios.submenu_osc.has_other = has_other;
+    }
+    let step = submenuosc_next(app.scenarios.submenu_osc.step, tab, depth, app.scenarios.submenu_osc.has_other);
+    if let Some(row) = step.seat {
+        if let Some(surface) = crate::app::bridge::player_overlay_mut(&mut app.pages) {
+            if !surface.seat_track_row(row) {
+                crate::log(&format!("submenuosc: no row {row:?} on tab {tab} depth {depth} — skipping the step"));
+            }
+        }
+    }
+    crate::log(&format!("submenuosc: step {} -> {} tab={tab} depth={depth} key={:?}", app.scenarios.submenu_osc.step, step.next, step.key));
+    app.scenarios.submenu_osc.step = step.next;
+    app.inputs.extend(crate::app::bridge::script_key(step.key, Tick { ms: fr.now, dt_us: 0 }));
+}
+
 /// `/tmp/plxnative-subtiming`'s own state across frames — see [`subtiming_arm`].
 #[derive(Debug, Default)]
 pub(crate) struct Subtiming {
@@ -1682,6 +1778,57 @@ fn open_timing(app: &mut App) {
 }
 
 #[cfg(test)]
+mod submenuosc_script_tests {
+    use super::submenuosc_next;
+    use crate::ui::machine::Key;
+
+    /// Follow the script against a model of the menu (RIGHT on a seated Nav row pushes, LEFT pops
+    /// or, at the root, goes to Audio, RIGHT on Audio goes back): it must exercise a push, a pop
+    /// and both tab switches, and return to where it began.
+    fn walk(has_other: bool) -> (Vec<(i32, usize)>, u8) {
+        let (mut step, mut tab, mut depth) = (0u8, 1i32, 0usize);
+        let mut seen = Vec::new();
+        for _ in 0..16 {
+            let s = submenuosc_next(step, tab, depth, has_other);
+            match (s.key, s.seat.is_some()) {
+                (Key::Right, true) => depth += 1,
+                (Key::Right, false) => tab = 1,
+                (Key::Left, _) if depth > 0 => depth -= 1,
+                (Key::Left, _) => tab = 0,
+                _ => unreachable!(),
+            }
+            step = s.next;
+            seen.push((tab, depth));
+            if step == 0 && tab == 1 && depth == 0 {
+                return (seen, step);
+            }
+        }
+        (seen, step)
+    }
+
+    #[test]
+    fn the_cycle_pushes_pops_switches_tabs_and_comes_back_to_the_root() {
+        let (seen, step) = walk(true);
+        assert_eq!(step, 0);
+        assert!(seen.contains(&(1, 2)), "Style -> Size picker is reached: {seen:?}");
+        assert!(seen.contains(&(0, 0)), "the Audio tab is visited: {seen:?}");
+        assert_eq!(seen.last(), Some(&(1, 0)));
+        let (without, _) = walk(false);
+        assert!(without.len() < seen.len(), "no Other languages row, no Other languages leg");
+    }
+
+    #[test]
+    fn an_off_script_menu_climbs_out_instead_of_pressing_blind() {
+        // A page is open where the script wants the root: pop it, keep the step.
+        let s = submenuosc_next(0, 1, 2, true);
+        assert_eq!((s.key, s.seat, s.next), (Key::Left, None, 0));
+        // Lost on the Audio tab at step 3: go back to Subtitles and restart.
+        let s = submenuosc_next(3, 0, 0, true);
+        assert_eq!((s.key, s.next), (Key::Right, 0));
+    }
+}
+
+#[cfg(test)]
 mod subtiming_step_tests {
     use super::{subtiming_step, SubtimingStep};
 
@@ -1820,6 +1967,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     menu_arm(app, fr);
     menupick_arm(app, fr);
     subtiming_arm(app, fr);
+    submenuosc_arm(app, fr);
     marker_arm(app, fr);
     if crate::app::bridge::player(&app.pages).is_some() {
         failure_fixture(&mut app.player.session);

@@ -571,6 +571,25 @@
       }
     },
     {
+      "name": "track-menu-submenu-osc",
+      "tier": "player",
+      "route": "player",
+      "overlay": "menu",
+      "loop_floor": 45,
+      "run_secs": 40,
+      "warmup_s": 9,
+      "item": "movie_h264_ac3_1080p",
+      "worst_ceiling_ms": 25,
+      "comment": "The Tracks popover's drill-in animation under load: with the Subtitles menu open (plxnative-menu=1), plxnative-submenuosc=900 presses one REAL key every 900 ms through the dispatcher (dev::scenarios::submenuosc_next): RIGHT into Style, RIGHT into the Size picker, LEFT, LEFT back to the root, RIGHT into Other languages and LEFT back when the item has more than one subtitle language, LEFT to the Audio tab and RIGHT back. Every key is a push, pop or tab switch, so the sampled frames are the panel RESIZE spring and the page SLIDE (two table layers under one animated clip, text at partial alpha), not a settled menu; a 900 ms period lets each transition settle (~0.5 s) before the next one starts. No fps_floor: the present gate is open for the whole scene (the hardware video plane is bound), so fps= is neither an animator nor an idle grade; loop= and worstframe= are the signals.",
+      "_ceiling_note": "25 ms: a frame inside the slide may cost more than a settled one (two layers of rows, the clip, text relayout of both) but no more than 1.5 refreshes at 60 Hz. It passes a 16.7 ms frame and the 20 ms frames of the 50 Hz TV state (docs/agent-reference: tv-fps-50hz), and fails any two-refresh frame (33 ms at 60 Hz), which is a visible hitch in a 300 ms slide. The gate reads the 2nd-highest post-warmup worstframe= (>=5 samples), so one cold glyph-cache frame at the first Style open does not fail it. MEASURED 2026-10-01 (screen on, 90 s legs, guest + mock) across commits 60bf990cc -> 929e28e9a, only the final M_osc leg at 929e28e9a: 25.3-29.5 ms on most legs, 42.0 ms on one; the menu-closed control on the same clip graded 25.5-27.2 ms. The frames over budget are mostly back-buffer waits in glClear that show up with no menu at all, plus the open frame's underlay latch. docs/player-submenus.md 'Device frame-time check' has the breakdown. The ceiling stays a budget the TV does not yet meet.",
+      "_account_free_note": "Runs without any Plex account: tools/tv-session.sh up --guest --mock --screen player=<rk> --arm menu=1 --arm submenuosc=900 --arm framedrop=25, against tests/mock_pms.py started with --media <mockverify dir> (tests/fixtures/make_fixtures.py --only mockverify; its second movie carries an embedded subrip track and a sidecar) or --extra-media <file.mkv> (printed rk=; give it two subtitle languages to include the Other languages leg). The `item` above is the manifest.local.json mapping used by tests/run.py; the mock needs none. docs/player-submenus.md 'Device frame-time check' has the whole sequence.",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-menu": "1",
+        "plxnative-submenuosc": "900"
+      }
+    },
+    {
       "name": "timing-capsule",
       "tier": "player",
       "route": "player",

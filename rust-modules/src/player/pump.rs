@@ -1333,6 +1333,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                                // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
                                // presented position (which would wrongly break feeding on a forward in-place seek).
         SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
+        eng.feed_pace = super::engine::FeedPace::default(); // the run-on belongs to the pre-seek report
         SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
                                          // …and forget the last presentation stamp with it. The plane goes dark across a seek by
                                          // design, so the first frame after one would otherwise post a gap the size of the seek and
@@ -1547,9 +1548,9 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in
             // `feed_both_lanes`, so this call site cannot drift from them.
-            feed_both_lanes(mt, eng);
+            crate::diag::spans::span("feed", || feed_both_lanes(mt, eng));
         } else {
-            feed_sample(mt, eng);
+            crate::diag::spans::span("feed", || feed_sample(mt, eng));
         }
     }
 

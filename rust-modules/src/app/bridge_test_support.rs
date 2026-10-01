@@ -17,7 +17,7 @@ pub(super) fn goto(d: &mut Dispatcher<AppHost>, want: AppArg) {
 
 pub(super) fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick, inputs: Vec<InputEvent<u32>>) -> (&'static str, FrameReport) {
     goto(d, route);
-    super::frame(d, rig, tick, inputs)
+    presented(super::frame(d, rig, tick, inputs))
 }
 
 /// …and the same driver for the two frames that also want the effect tap or a supplied result
@@ -26,14 +26,14 @@ pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rout
     inputs: Vec<InputEvent<u32>>, tap: &mut dyn crate::ui::dispatch::Tap<AppHost>)
     -> (&'static str, FrameReport) {
     goto(d, route);
-    super::frame_with_tap(d, rig, tick, inputs, tap)
+    presented(super::frame_with_tap(d, rig, tick, inputs, tap))
 }
 
 pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
     inputs: Vec<InputEvent<u32>>, take: impl FnOnce() -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
     goto(d, route);
-    super::frame_with_results(d, rig, tick, inputs, take, tap)
+    presented(super::frame_with_results(d, rig, tick, inputs, take, tap))
 }
 
 /// A detail page's argument, for the tests that used to name `Route::Detail` and let a trail
@@ -104,4 +104,11 @@ impl Drop for DirectoryPolicyCleanup {
         // frame), so there is no process-wide store state left for this cleanup to reset.
         crate::plex::reset_servers_for_test();
     }
+}
+
+/// A test frame is a presenting frame: the product drains the Tracks/More text prewarm on the
+/// presenting side of the present decision (`app::run::prepare_window`), after the frame's update.
+fn presented<R>(frame: R) -> R {
+    crate::ui::panel_motion::PanelMotion::drain_queued_text();
+    frame
 }

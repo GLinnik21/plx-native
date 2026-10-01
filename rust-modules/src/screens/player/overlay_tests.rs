@@ -543,6 +543,48 @@ fn clicking_the_title_band_pops_one_page() {
     assert_eq!(tracks_selected(&page), Some(TrackRow::Style));
 }
 
+/// **The panel holds the pointer while it moves and releases it at rest**, and a stop registered
+/// during the slide sits where the page is drawn that frame (the slide's offset), not at its
+/// layout.
+#[test]
+fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
+    use crate::ui::screen::{DrawFrame, Screen};
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    };
+    tick(&mut page, 1_000);
+    assert!(!Screen::<TestHost>::pointer_held(&page), "a panel at rest takes the pointer");
+
+    open_row(&mut page, TrackRow::Style);
+    assert!(Screen::<TestHost>::pointer_held(&page), "a push holds the pointer from the first frame");
+    let stops_of = |page: &PlayerOverlayScreen| {
+        let cx = cx();
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f);
+        f.into_stops()
+    };
+    tick(&mut page, 1_016);
+    let mid = stops_of(&page);
+    let title = mid.iter().find(|s| s.key.elem == TITLE_KEY).expect("title stop");
+    assert!(title.rect.x > title.rest_rect.x, "mid-slide the stop is where the page is DRAWN (arriving from the right)");
+    let cx = cx();
+    let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("place");
+    assert_eq!((placed.rect.x, placed.clip.x), (title.rect.x, title.clip.x), "place and stop agree mid-slide");
+
+    for i in 0..240 {
+        tick(&mut page, 1_032 + i * 16);
+    }
+    assert!(!Screen::<TestHost>::pointer_held(&page), "released once settled");
+    let rest = stops_of(&page);
+    let title = rest.iter().find(|s| s.key.elem == TITLE_KEY).expect("title stop");
+    assert_eq!(title.rect, title.rest_rect, "at rest the stop IS its layout");
+}
+
 /// **The replay canon tells pages and return stacks apart**: the tab, the page path, each opener
 /// and the selected KEY all move the hash; the same state hashes the same.
 #[test]

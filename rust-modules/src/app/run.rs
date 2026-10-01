@@ -157,17 +157,24 @@ pub(crate) unsafe fn run(app: &mut App) {
         // and the offline-pick harness case found no cache record (device, 2026-09-06).
         // Waiting for the handoff costs a headless run the seconds the seating takes.
         app.rec.content_begin();
-        let scenarios_ok = if app.boot_initial.is_some() {
-            crate::dev::scenarios::controlled_each_frame(app, fr)
-        } else {
-            crate::dev::scenarios::each_frame(app, fr)
-        };
+        // The `results` phase is four steps (scenarios, playback pump, clock/press, result
+        // landing); three of them carry their own FRAMEDROP spans (`scen`, `pump`, `land`), so a
+        // slow `results=` names which held the frame.
+        let scenarios_ok = crate::diag::spans::span("scen", || {
+            if app.boot_initial.is_some() {
+                crate::dev::scenarios::controlled_each_frame(app, fr)
+            } else {
+                unsafe { crate::dev::scenarios::each_frame(app, fr) }
+            }
+        });
         if !scenarios_ok {
+            // This iteration presents nothing, so its spans belong to no FRAMEDROP line.
+            let _ = crate::diag::spans::take();
             continue;
         }
-        playback_tick(app, fr);
+        crate::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
         clock_and_press(app, fr);
-        land_results(app, fr);
+        crate::diag::spans::span("land", || unsafe { land_results(app, fr) });
         app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
         // **Was the player the page on top going INTO this frame?** The container's own commit
         // may take it off during `bridge::frame_with_tap` below, and the detail page it uncovers
@@ -427,6 +434,10 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     //   own `frame_clear` overwrites the pixel. After the draw it would be a white pixel over
     //   the finished picture — over FILM, on a player frame.
     if fr.present {
+        // A Tracks/More sub-page's text, recorded in `update` (`PanelMotion::prewarm_text`) and
+        // uploaded here: `fr.present` already carries the window-activity gate, so a frame that
+        // does not present, or one while the window is backgrounded, uploads nothing.
+        crate::ui::panel_motion::PanelMotion::drain_queued_text();
         let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,
@@ -2257,7 +2268,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // rather than on this route test. Calling it in both places would send the
                         // same wayland request twice per frame for the whole of a playback.
                         glClearColor(0.0, 0.0, 0.0, 0.0);
-                        glClear(GL_COLOR_BUFFER_BIT);
+                        // The frame's first framebuffer-0 command, where this driver parks the
+                        // wait for a free back buffer: spanned like every other route's `clear`.
+                        crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -2629,6 +2642,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             }) {
                 log(&line);
             }
+        } else {
+            // Spans recorded on a frame that did not present (`scen`/`pump`/`land`, `feed`, the
+            // engine's `sfv`/`sfa`) belong to no FRAMEDROP line: left in place they would print on
+            // the next presented frame's.
+            let _ = crate::diag::spans::take();
         }
 }
 
@@ -3008,6 +3026,7 @@ mod lifecycle_regression_tests {
                 menupick_tried: Default::default(),
                 menupick_target: Default::default(),
                 subtiming: Default::default(),
+                submenu_osc: Default::default(),
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),

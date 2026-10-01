@@ -73,6 +73,7 @@ use crate::ui::screen::{
     Hover, Part, Placed, Seat, Step, Stop,
 };
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::panel_motion::PanelMotion;
 use crate::ui::table::Row;
 use crate::ui::{theme, Painter, Rect};
 use std::convert::Infallible;
@@ -104,6 +105,14 @@ pub(crate) struct MoreMenuState {
     /// Direct Play drops it), so a row is found by its identity ([`Action`]'s [`FormId`] key),
     /// never by a position. The table is main-thread-only, like every other panel's.
     form: FormTable<Action, Action, Infallible>,
+    /// The row set the form was last built from (what [`rows_for`] answered), so a live change to
+    /// it — Auto's readiness gate opening, Force Direct Play flipping — is noticed and the panel
+    /// rebuilt and RESIZED ([`Self::refresh`]) rather than left showing a ladder that has moved.
+    rows: Vec<Action>,
+    forced: bool,
+    /// The card's resize spring ([`crate::ui::panel_motion`]), the same one the track menu uses:
+    /// a row set that changes height animates the top edge, bottom and right stay on the anchor.
+    motion: PanelMotion,
 }
 
 /// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
@@ -153,7 +162,23 @@ impl MoreMenuState {
         // focus, so the rung has vanished and the menu opens on its first row like an ordinary open.
         let keep = quality.map(Action::SetQuality);
         form.set_or_open(more_form(ps, &rows, forced), keep.as_ref());
-        MoreMenuState { form }
+        MoreMenuState { form, rows, forced, motion: PanelMotion::new() }
+    }
+
+    /// **Follow a live change of the row set**: rebuild the form when [`rows_for`] no longer
+    /// answers what it was built from, keeping the focused row by identity. The panel's height
+    /// follows, and the card animates to it ([`Self::update`]). Returns whether it rebuilt.
+    pub(crate) fn refresh(&mut self, ps: &crate::route::PlaybackSession) -> bool {
+        let forced = crate::route::forced_direct_play(ps);
+        let rows = rows_for(forced);
+        if forced == self.forced && rows == self.rows {
+            return false;
+        }
+        let keep = self.form.selected_id().copied();
+        self.form.set_or_open(more_form(ps, &rows, forced), keep.as_ref());
+        self.rows = rows;
+        self.forced = forced;
+        true
     }
 
     pub(crate) fn new(ps: &crate::route::PlaybackSession) -> Self {
@@ -217,38 +242,54 @@ impl MoreMenuState {
     /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
     /// track menu is anchored to the pair beside it. Shares the track menu's right margin
     /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
-    /// other does not make the panel hop.
+    /// other does not make the panel hop. This is the NATURAL (layout) rect, cached against the
+    /// table's `layout_rev`; [`Self::shown_rect`] is what is on screen while the card resizes.
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
-        let pw = self.form.table.menu_panel_width(measure);
-        let px = crate::ui::player_hud::CTRL_RIGHT - pw;
-        let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
-                                    // The ceiling was 320 while this menu held one row, and it was invisible then. With the
-                                    // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
-                                    // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
-                                    // four of nine rows on screen and
-                                    // silently scrolled the rest, which is a picker whose options you cannot see.
-                                    //
-                                    // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
-                                    // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
-                                    // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
-                                    // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
-                                    // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
-                                    // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
-                                    // the cap it scrolls, which is what `TableView` is for.
-        let ph = self.panel_h();
-        Rect::new(px, bottom - ph, pw, ph)
+        self.motion.natural(self.form.table.layout_rev(), || {
+            let pw = self.form.table.menu_panel_width(measure);
+            let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+            let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
+            let ph = self.panel_h();
+            Rect::new(px, bottom - ph, pw, ph)
+        })
     }
 
-    /// The panel's height alone — what `update` needs, with no measure in hand.
+    /// The panel's height alone. The ceiling was 320 while this menu held one row, and it was
+    /// invisible then. With the Quality ladder beside it `measured_height()` can reach 600 when
+    /// Auto is enabled — two headers, seven rows, a divider, AND the table's own top/bottom
+    /// padding — so a 320 cap put four of nine rows on screen and silently scrolled the rest,
+    /// which is a picker whose options you cannot see.
+    ///
+    /// The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
+    /// is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
+    /// clear margin at the top of the frame while comfortably clearing 600. Reaching for a
+    /// `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
+    /// — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
+    /// rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
+    /// the cap it scrolls, which is what `TableView` is for.
     fn panel_h(&self) -> f32 {
         let bottom = SCR_H - 316.0;
         self.form.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
-    pub(crate) fn update(&mut self, dt: f32) {
+    /// The card as drawn this frame: top and left on their springs toward [`Self::panel_rect`].
+    fn shown_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        self.motion.shown(self.panel_rect(measure))
+    }
+
+    /// Is the card still resizing? The player overlay holds the pointer while it is
+    /// (`Screen::pointer_held`).
+    pub(crate) fn transitioning(&self) -> bool {
+        self.motion.transitioning()
+    }
+
+    pub(crate) fn update(&mut self, dt: f32, measure: &dyn crate::ui::machine::Measure, ps: &crate::route::PlaybackSession) {
+        self.refresh(ps);
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_h();
-        self.form.table.update(dt, h);
+        let natural = self.panel_rect(measure);
+        self.form.table.update(dt, natural.h);
+        self.motion.step(dt, natural);
+        self.motion.prewarm_text(natural, &self.form.table, measure);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -258,9 +299,7 @@ impl MoreMenuState {
         let p = crate::ui::Painter::root()
             .alpha(appear)
             .translate(0.0, 16.0 * (1.0 - appear));
-        let r = self.panel_rect(measure);
-        p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-        self.form.table.draw(p, r, measure);
+        self.motion.draw(p, self.panel_rect(measure), 24.0, &self.form.table, measure);
     }
 }
 
@@ -323,7 +362,7 @@ where
         Some(Placed {
             rect: r,
             rest_rect: r,
-            clip: self.state.panel_rect(cx.measure),
+            clip: self.state.shown_rect(cx.measure),
             index: Some(i),
         })
     }
@@ -357,6 +396,7 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
         let r = self.state.panel_rect(f.measure);
+        let clip = self.state.shown_rect(f.measure);
         for i in 0..self.state.form.table.n_rows() {
             let Some(key) = self.state.form.key_at(i as usize) else {
                 continue;
@@ -371,7 +411,7 @@ where
                         },
                         rect: row,
                         rest_rect: row,
-                        clip: r,
+                        clip,
                         hover: Hover::Focus,
                         activate: Activate::Direct,
                     },
@@ -570,7 +610,7 @@ mod tests {
         form.table.compact = true;
         let keep = focus.map(Action::SetQuality);
         form.set_or_open(more_form(&ps, &rows_for(forced), forced), keep.as_ref());
-        MoreMenuState { form }
+        MoreMenuState { form, rows: rows_for(forced), forced, motion: PanelMotion::new() }
     }
 
     /// Pressing each row commits ITS action, addressed by identity — never by a position.
@@ -619,7 +659,7 @@ mod tests {
         rows.reverse();
         let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
         form.set(more_form(&ps, &rows, false), None);
-        let st = MoreMenuState { form };
+        let st = MoreMenuState { form, rows: rows.clone(), forced: false, motion: PanelMotion::new() };
         for a in rows_for(false) {
             let i = st.form.index_of_key(a.key()).expect("every row keeps its key");
             assert_eq!(st.form.id_at(i), Some(&a));
@@ -703,6 +743,48 @@ mod tests {
         assert_eq!(keys.len(), all.len());
         assert!(keys.iter().all(|k| *k < crate::ui::table_screen::BAND_BASE));
     }
+
+    /// **A row set that changes height animates the card** (`ui::panel_motion`): the panel opens
+    /// at rest, a live change to the set (Force Direct Play dropping the Quality section, Auto's
+    /// gate opening) rebuilds it and the top edge springs to the new layout while the bottom and
+    /// right stay anchored, then it asks for no more frames.
+    #[test]
+    fn a_changed_row_set_resizes_the_card_with_a_spring_and_then_rests() {
+        let _serial = crate::testlock::serial();
+        const DT: f32 = 1.0 / 60.0;
+        let ps = crate::route::PlaybackSession::default();
+        let m = crate::fontcov::advances::ShippedMeasure;
+        let step = |st: &mut MoreMenuState| {
+            crate::ui::idle::frame_begin(DT);
+            st.update(DT, &m, &ps);
+            crate::ui::idle::present_moving()
+        };
+        // opened under Force Direct Play: no Quality section, a short panel
+        let mut st = menu(true, None);
+        let short = st.panel_rect(&m);
+        st.motion.step(DT, short); // the open: the first step places the card AT its layout
+        assert!(!st.transitioning(), "a freshly opened panel is at rest");
+        assert_eq!(st.shown_rect(&m), short);
+
+        // Force Direct Play is switched off under the open panel: the ladder appears, the panel grows
+        assert!(st.refresh(&ps), "the row set moved");
+        assert!(!st.refresh(&ps), "and only once");
+        let tall = st.panel_rect(&m);
+        assert!(tall.h > short.h, "the Quality ladder makes the panel taller: {} > {}", tall.h, short.h);
+        assert_eq!((tall.x + tall.w, tall.y + tall.h), (short.x + short.w, short.y + short.h), "bottom and right are the anchor");
+        assert!(st.transitioning());
+        assert!(step(&mut st), "the resize is motion");
+        let mid = st.shown_rect(&m);
+        assert!(mid.h > short.h && mid.h < tall.h, "mid-resize the card is between the heights: {mid:?}");
+        let mut n = 0;
+        while step(&mut st) {
+            n += 1;
+            assert!(n < 240, "the resize never settles");
+        }
+        assert_eq!(st.shown_rect(&m), tall, "lands exactly on the new layout");
+        assert!(!st.transitioning());
+        assert!(!step(&mut st), "at rest: no frames requested");
+    }
 }
 
 #[cfg(test)]
@@ -750,7 +832,7 @@ mod focus_tests {
         let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
         form.table.compact = true;
         form.set(Form::new().section(sec), None);
-        MoreMenuState { form }
+        MoreMenuState { form, rows: Vec::new(), forced: false, motion: PanelMotion::new() }
     }
 
     /// The focus element of the row at `index` — the keys are identities, not positions.

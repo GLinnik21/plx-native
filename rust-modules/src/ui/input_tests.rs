@@ -427,6 +427,32 @@ fn a_covered_strip_cannot_focus_or_activate_the_modal_and_counts_as_an_outside_c
         "a click outside the compact panel dismisses it even over a covered tab");
 }
 
+/// **A surface that holds the pointer swallows it**: while its content is in motion
+/// (`Screen::pointer_held`) a click that would be an outside MISS is neither a miss nor a dismissal,
+/// and a click on a row is not an activation; when the hold drops, the same miss dismisses.
+#[test]
+fn a_held_pointer_is_swallowed_and_is_never_a_miss() {
+    use super::containers::modal::Phase;
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    for ms in (32..=1600).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Open);
+    d.draw(&mut rig, true);
+
+    super::fixture::hold_modal_pointer(true);
+    d.frame(&mut rig, tick(1616), vec![click(150.0, 30.0, tick(1616))], vec![], &mut NoTap);
+    d.frame(&mut rig, tick(1632), vec![pointer(1800.0, 1000.0, tick(1632))], vec![], &mut NoTap);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Open, "a held pointer is not a miss, so it dismisses nothing");
+
+    super::fixture::hold_modal_pointer(false);
+    d.frame(&mut rig, tick(1648), vec![click(150.0, 30.0, tick(1648))], vec![], &mut NoTap);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing, "the same click, once released, is the miss it always was");
+}
+
 /// §7.3 step 6: a store landing that shrinks the row makes the owner's `reconcile` answer a
 /// different key — delivered as `FocusMoved{Reconcile}` after the notice and before the draw.
 #[test]

@@ -282,6 +282,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
+    /// **The pointer is held** while this screen answers `true`: the dispatcher swallows every
+    /// pointer move, click and drag addressed to it BEFORE hit resolution, so none of them is ever
+    /// a hit, a hover or a MISS (and so never an `OnMiss::Dismiss`), and a hit map built from
+    /// content in motion is never consulted. For a surface whose rows slide or resize
+    /// (`ui::panel_motion`); keys are unaffected. Defaults to `false`.
+    fn pointer_held(&self) -> bool {
+        false
+    }
     /// **The render this screen holds of its own** — how many backing textures, and their bytes —
     /// for the frame's [`RenderSet`](crate::ui::frame::RenderSet) check (§8.3).
     ///

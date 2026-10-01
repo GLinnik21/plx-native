@@ -53,6 +53,9 @@
 #   --no-token        boot with no injected token (exercises the QR sign-in flow, or the
 #                     who's-watching picker for a stored session — a THIRD identity, distinct
 #                     from both --guest and --owner)
+#   --arm NAME[=VAL]  also arm trigger plxnative-NAME (repeatable), written with the screen's own
+#                     triggers BEFORE the launch, which is the only time a boot trigger is read.
+#                     For a scene's extras, e.g. `--arm menu=1 --arm submenuosc=900 --arm framedrop=25`
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
 # SCREEN OFF is a panel state, not an app state. `luna://com.webos.service.tvpower/power/
@@ -68,6 +71,9 @@
 # where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
 # `shot`, or the capture stream: `ui::idle` gates presents and the panel is the thing those
 # measure, so a dark screen makes them either meaningless or silently wrong.
+# The one exception is a scene on the PLAYER route: the bound video plane forces presents
+# (`ui::idle`'s VIDEO_PLANE gate), so its frame times are real with the panel off
+# (docs/player-submenus.md, "Device frame-time check").
 #
 # SOUND is the television's own mute, separate from the panel above and from playback: it silences
 # whatever the set would otherwise put out, panel on or off, app running or not.
@@ -658,7 +664,7 @@ await_direct_screen() {
 # ------------------------------------------------------------ commands -------
 cmd_up() {
   local screen=home guest=0 mock=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
-  local direct_kind="" direct_rk="" direct_marker=""
+  local direct_kind="" direct_rk="" direct_marker="" extra_arm=()
   local identity_desc="" push_guest=0 push_owner=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -677,6 +683,9 @@ cmd_up() {
       --remote=*) remote="${1#*=}"; shift ;;
       --no-token) no_token=1; shift ;;
       --keep) keep=1; shift ;;
+      --arm) [ $# -ge 2 ] || { bad "--arm needs NAME[=VALUE]"; exit 2; }
+             extra_arm+=("$2"); shift 2 ;;
+      --arm=*) extra_arm+=("${1#*=}"); shift ;;
       *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
   done
@@ -744,6 +753,12 @@ cmd_up() {
     *) echo "unknown --screen: $screen" >&2; exit 2 ;;
   esac
   [ "$server_set" = 1 ] && files+=("plxnative-server=$server_slot")
+  # `--arm`: a scene's own extra triggers, e.g. menu=1 + the oscillator + framedrop. A bare NAME is
+  # armed empty (`touch`), matching how the screen triggers above are written.
+  local a
+  for a in ${extra_arm[@]+"${extra_arm[@]}"}; do
+    case "$a" in *=*) files+=("plxnative-$a") ;; *) files+=("plxnative-$a=") ;; esac
+  done
   # capture trigger is DIAG-exempt: arming the live view must not suppress the picker.
   # The content is the port to listen on, and it is written EXPLICITLY rather than left empty
   # (which would fall through to the app's own default) so that the number the app binds and the
