@@ -72,8 +72,8 @@ def version() -> str:
 
     **The same rule, spelled twice, because this script cannot ask cargo what it emitted.** It has
     to match, and the way it can go wrong is worth stating: the cargo subprocess below inherits
-    this process's environment, so it reads the same `PLX_RELEASE` — a Makefile-exported empty
-    value under `make macapp`, `1` under `make RELEASE=1 macapp`. Reading `Cargo.toml` alone (which
+    this process's environment, so it reads the same `PLX_RELEASE` — absent under `make macapp`,
+    `1` under `make RELEASE=1 macapp`. Reading `Cargo.toml` alone (which
     this did) put `0.5.0` in the Finder metadata and the zip filename of a bundle whose diagnostics
     panel says `0.6.0-dev`: the very ambiguity the suffix exists to remove, recreated on the one
     artifact that is handed to somebody who has none of this checkout.
