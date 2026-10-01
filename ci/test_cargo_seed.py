@@ -37,6 +37,27 @@ def touch(path, text="x", mtime=None):
         os.utime(path, (mtime, mtime))
 
 
+LOCK = """version = 4
+
+[[package]]
+name = "plxnative-modules"
+version = "0.7.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "plxnative-storage"
+version = "0.0.0"
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc"
+"""
+
+
 def tree(path):
     out = set()
     for dirpath, _dirs, files in os.walk(path):
@@ -53,7 +74,7 @@ class SeedCase(unittest.TestCase):
         self.cache = os.path.join(self.tmp, "cache")
         os.makedirs(os.path.join(self.root, "rust-modules", "storage"))
         touch(os.path.join(self.root, ".git"), "gitdir: /elsewhere\n")  # a linked worktree
-        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"), "lock-v1\n")
+        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"), LOCK)
         touch(os.path.join(self.root, "rust-modules", "Cargo.toml"), '[package]\nversion = "0.7.0"\nname = "a"\n')
         touch(os.path.join(self.root, "rust-modules", "storage", "Cargo.toml"), '[package]\nversion = "0.0.0"\n')
         self.bin = os.path.join(self.tmp, "bin")
@@ -159,7 +180,7 @@ class Harvest(SeedCase):
         self.assertFalse(os.path.exists(stale), "a seed for the old toolchain survived")
         os.environ["FAKE_RUSTC"] = "a"
         touch(stale)
-        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"), "lock-v2\n")
+        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"), LOCK + "\n# bumped\n")
         self.harvest()
         self.assertFalse(os.path.exists(stale), "a seed for the old Cargo.lock survived")
         self.assertEqual([n for n in os.listdir(os.path.join(self.cache, "cargo-seed")) if "." in n and n != "target.lock"], [])
@@ -232,6 +253,61 @@ class Harvest(SeedCase):
         self.harvest()
         self.assertEqual(tree(self.seed_dir()), good)
         self.assertEqual(sorted(os.listdir(os.path.join(self.cache, "cargo-seed"))), ["target", "target.lock"])
+
+
+    def test_every_sourceless_package_is_stripped_not_only_the_app_named_ones(self):
+        # A path or [patch] crate whose name has nothing to do with the app: cargo judges it by
+        # mtime alone, so a cloned artifact of it could be linked silently from another lane.
+        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"),
+              LOCK + '\n[[package]]\nname = "local-fork"\nversion = "0.1.0"\n')
+        self.build_tdir()
+        for rel in (("debug", "deps", "liblocal_fork-5555.rlib"),
+                    ("debug", "deps", "local_fork-5555.d"),
+                    ("debug", ".fingerprint", "local-fork-5555", "lib-local_fork"),
+                    ("debug", "build", "local-fork-6666", "output")):
+            touch(os.path.join(self.tdir, *rel), "LOCAL-FORK")
+        self.harvest()
+        files = tree(self.seed_dir())
+        self.assertEqual(sorted(f for f in files if "local" in f), [], "a path crate reached the seed")
+        self.assertIn(os.path.join("debug", "deps", "libserde-1111.rlib"), files)
+
+    def test_a_third_party_crate_is_never_taken_for_a_local_one(self):
+        self.assertEqual(seed.local_packages(self.root), {"plxnative-modules", "plxnative-storage"})
+        keep = seed.local_matcher({"plxnative-modules"})
+        self.assertFalse(keep("libserde-1111.rlib"))
+        self.assertTrue(keep("libplxnative_modules-9999.rlib"))
+
+    def test_a_lock_that_lists_no_package_refuses_the_harvest(self):
+        touch(os.path.join(self.root, "rust-modules", "Cargo.lock"), "not a lock\n")
+        self.build_tdir()
+        self.harvest()
+        self.assertFalse(os.path.exists(self.seed_dir()))
+
+    def test_cargo_locks_stay_held_while_the_tree_is_cloned(self):
+        import fcntl
+        self.build_tdir()
+        lock_path = os.path.join(self.tdir, "debug", ".cargo-lock")
+        verdicts = []
+
+        def probing_clone(src, dst):
+            fd = os.open(lock_path, os.O_RDONLY)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                verdicts.append("a cargo could have started mid-clone")
+            except OSError:
+                verdicts.append("held")
+            finally:
+                os.close(fd)
+            copy_clone(src, dst)
+
+        seed.clone_tree = probing_clone
+        self.harvest()
+        self.assertEqual(verdicts, ["held"])
+        self.assertTrue(os.path.isdir(self.seed_dir()))
+        # ...and released afterwards: the lane's own cargo can build again.
+        fd = os.open(lock_path, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 class Restore(SeedCase):

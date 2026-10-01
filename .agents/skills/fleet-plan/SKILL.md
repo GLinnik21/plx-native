@@ -197,7 +197,9 @@ What keeps that in check:
   seed's, the lane builds cold exactly as before. Builds are still per-checkout. **`du` counts a
   clone's blocks in full**, in the seed and in every lane cloned from it, so `make disk` overstates
   what is on the volume once lanes are seeded: `df` is the truth. `tools/build-gc.sh --cache` prunes
-  a seed nothing has used for 30 days.
+  a seed nothing has used for 30 days, and `--auto` runs `--seed` (7 days) as its last stage when
+  free space is below the threshold, so a seed whose donor lanes are gone does not hold ~1.3 GB
+  for a month.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 

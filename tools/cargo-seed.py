@@ -36,7 +36,8 @@ What makes this safe, in order of importance:
   replaces it.
 
 The seed lives under `$PLX_BUILD_CACHE/cargo-seed/<kind>/` (default `~/.cache/plxnative`) beside
-the shared FFmpeg cache, and `tools/build-gc.sh --cache` prunes it by age. `du` counts a clone's
+the shared FFmpeg cache, and `tools/build-gc.sh --cache` (30 days) and `--seed` (7 days, also run by `--auto` under disk
+pressure) prune it by age. `du` counts a clone's
 bytes in full, so a lane that was seeded reads as big as one that was not: `df` is the truth.
 
 Every failure here is non-fatal by design (exit 0 with one warning line); a build never waits on,
@@ -47,6 +48,7 @@ import ctypes
 import fcntl
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -197,19 +199,70 @@ def sweep_leftovers(base):
                 pass
 
 
-def strip_app(tree):
-    """Delete everything of the app crate (and the storage helper) from a cloned target tree."""
+def local_packages(root):
+    """Names of every `Cargo.lock` package that has no `source =` line (a path or `[patch]` crate).
+
+    Cargo judges such a package by the mtimes of its sources alone, and its unit hash is the same
+    in every lane, so a cloned artifact of it could be reported fresh and linked silently. That
+    holds for every one of them, not just the app, so the strip works from the lock rather than
+    from a name. None when the lock lists no package at all (unreadable or not a lock): the
+    caller then refuses to harvest rather than guess what is local.
+    """
+    text = read_bytes(os.path.join(root, "rust-modules", "Cargo.lock")).decode("utf-8", "replace")
+    names, seen = set(), 0
+    for block in text.split("[[package]]")[1:]:
+        seen += 1
+        name, has_source = None, False
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("[") and not line.startswith("[[package"):
+                break
+            m = re.match(r'name\s*=\s*"([^"]+)"', line)
+            if m and name is None:
+                name = m.group(1)
+            if re.match(r"source\s*=", line):
+                has_source = True
+        if name and not has_source:
+            names.add(name)
+    return names if seen else None
+
+
+def local_matcher(names):
+    """A predicate over a target-dir entry name: does it belong to one of the local packages?
+
+    Cargo names a package's output `<name>-<hash>` (fingerprint and build dirs), `<crate>-<hash>.*`
+    and `lib<crate>-<hash>.*` (deps), with `-` written as `_` in the crate name. The app's own
+    binaries (`plxnative-sim`) carry no package name, hence the standing APP_MARK test. A third-party
+    crate whose name merely starts with a local one is stripped too: that costs a rebuild, never
+    a wrong byte.
+    """
+    stems = set()
+    for n in names:
+        for t in {n, n.replace("-", "_")}:
+            stems.update((t, "lib" + t))
+
+    def match(entry):
+        if APP_MARK in entry:
+            return True
+        return any(entry == t or entry.startswith(t + "-") or entry.startswith(t + ".") for t in stems)
+
+    return match
+
+
+def strip_app(tree, local):
+    """Delete everything of the local packages (the app and the storage helper, and any other
+    path crate `local_packages` found) from a cloned target tree. `local` is `local_matcher(...)`."""
     for dirpath, dirnames, filenames in os.walk(tree, topdown=True):
         keep = []
         for d in dirnames:
             full = os.path.join(dirpath, d)
-            if APP_MARK in d or (d == "incremental" and os.path.dirname(full) != tree):
+            if local(d) or (d == "incremental" and os.path.dirname(full) != tree):
                 shutil.rmtree(full, ignore_errors=True)
             else:
                 keep.append(d)
         dirnames[:] = keep
         for f in filenames:
-            if APP_MARK in f:
+            if local(f):
                 try:
                     os.unlink(os.path.join(dirpath, f))
                 except OSError:
@@ -240,26 +293,44 @@ class Flock:
             os.close(self.fd)
 
 
-def cargo_idle(tdir):
-    """True when no cargo is building in `tdir`. Takes shared locks, so a build that starts after
-    the check blocks on cargo's own exclusive one until the clone is done."""
-    fds = []
-    try:
-        for dirpath, dirnames, filenames in os.walk(tdir):
-            if dirpath[len(tdir):].count(os.sep) >= 3:
+class CargoLocks:
+    """Shared locks on every cargo build lock under `tdir`, held for the whole `with` block.
+
+    `idle` is False (and nothing stays held) when a cargo is building there. While the block runs,
+    a cargo that starts blocks on its own exclusive lock instead of writing into the tree being
+    cloned, so the clone is never a mix of two builds' states. clonefile(2) of a directory is not
+    an atomic snapshot, which is why holding these across it matters.
+    """
+
+    def __init__(self, tdir):
+        self.tdir, self.fds, self.idle = tdir, [], True
+
+    def __enter__(self):
+        for dirpath, dirnames, filenames in os.walk(self.tdir):
+            if dirpath[len(self.tdir):].count(os.sep) >= 3:
                 dirnames[:] = []
             for f in filenames:
                 if f in CARGO_LOCKS:
-                    fd = os.open(os.path.join(dirpath, f), os.O_RDONLY)
-                    fds.append(fd)
+                    try:
+                        fd = os.open(os.path.join(dirpath, f), os.O_RDONLY)
+                    except OSError:
+                        continue
+                    self.fds.append(fd)
                     try:
                         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
                     except OSError:
-                        return False
-        return True
-    finally:
-        for fd in fds:
+                        self.idle = False
+                        self.release()
+                        return self
+        return self
+
+    def release(self):
+        for fd in self.fds:
             os.close(fd)
+        self.fds = []
+
+    def __exit__(self, *exc):
+        self.release()
 
 
 def resolve_tdir(tdir, env_var, env_base):
@@ -352,19 +423,27 @@ def harvest(kind, tdir, root):
         return  # nothing this lane has that the seed lacks
     if not missing or os.stat(tdir).st_dev != os.stat(base).st_dev:
         return
+    local = local_packages(root)
+    if local is None:
+        say(f"{kind}: not harvested (Cargo.lock lists no packages, so what is local cannot be told)")
+        return
+    matcher = local_matcher(local)
     with Flock(os.path.join(base, f"{kind}.lock"), exclusive=True) as lock:
-        if not lock.held or not cargo_idle(tdir):
-            return  # somebody is restoring/harvesting, or cargo is mid-build: try next time
+        if not lock.held:
+            return  # somebody is restoring/harvesting: try next time
         tmp = os.path.join(base, f"{kind}.tmp.{os.getpid()}")
         old = os.path.join(base, f"{kind}.old.{os.getpid()}")
         shutil.rmtree(tmp, ignore_errors=True)
-        try:
-            clone_tree(tdir, tmp)
-        except OSError as e:
-            shutil.rmtree(tmp, ignore_errors=True)
-            say(f"{kind}: not harvested ({e.strerror or e})")
-            return
-        strip_app(tmp)
+        with CargoLocks(tdir) as cargo:
+            if not cargo.idle:
+                return  # cargo is mid-build in this tree: try next time
+            try:
+                clone_tree(tdir, tmp)
+            except OSError as e:
+                shutil.rmtree(tmp, ignore_errors=True)
+                say(f"{kind}: not harvested ({e.strerror or e})")
+                return
+        strip_app(tmp, matcher)
         if current:
             for name in sorted(missing):
                 if os.path.isdir(os.path.join(tmp, name)):
