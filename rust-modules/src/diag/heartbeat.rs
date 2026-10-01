@@ -209,9 +209,9 @@ pub(crate) struct FrameRing {
 
 impl FrameRing {
     /// Frames of context written before a slow frame.
-    pub(crate) const BEFORE: usize = 4;
+    const BEFORE: usize = 4;
     /// Frames of context written after it.
-    pub(crate) const AFTER: usize = 3;
+    const AFTER: usize = 3;
 
     pub(crate) fn new(slow_ms: f64) -> Self {
         Self { slow_ms, held: std::collections::VecDeque::with_capacity(Self::BEFORE + 1), after: 0 }

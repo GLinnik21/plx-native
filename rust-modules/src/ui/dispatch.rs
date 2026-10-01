@@ -1152,8 +1152,6 @@ where
         // `take_frame_stats` because that drain belongs to the heartbeat, once a second.
         self.cold.note_prepare(self.budget.refused());
         let parts = self.parts(tick);
-        // A note made on an earlier frame never reaches `ModalStack::preload_underlay`.
-        self.nav.modals.underlay.note_at_rest(None);
         // Latching costs a reconstruction and an upload: only for a page at rest.
         let at_rest = self.page_quiescent && !self.nav.tabs.stack.transition.in_flight();
         {

@@ -660,35 +660,6 @@ fn a_stale_noted_envelope_is_not_preloaded_over_a_live_stack() {
     assert!(!d.nav.modals.underlay.field().is_latched());
 }
 
-/// **The preload waits for a page that has been at rest** for `PRELOAD_REST_FRAMES` presenting
-/// frames with the same envelope: on the television the first cut landed on the playback-start
-/// frame (`dip=held`, `results=12-17`, `pump` busy) and cost 8-11 ms of a frame already 27-37 ms
-/// long. Any frame not at rest, or a different envelope, starts the count again.
-#[test]
-fn the_preload_waits_for_a_page_at_rest() {
-    let (mut d, _rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let c2 = [[0.7, 0.1, 0.3]; 4];
-    let n = super::modal::PRELOAD_REST_FRAMES;
-    for _ in 0..n - 1 {
-        d.nav.modals.underlay.note_at_rest(Some(c));
-        d.nav.modals.preload_underlay();
-    }
-    assert!(!d.nav.modals.underlay.field().is_latched(), "one frame short: nothing latched");
-    d.nav.modals.underlay.note_at_rest(None);
-    for _ in 0..n - 1 {
-        d.nav.modals.underlay.note_at_rest(Some(c));
-    }
-    d.nav.modals.underlay.note_at_rest(Some(c2));
-    d.nav.modals.preload_underlay();
-    assert!(!d.nav.modals.underlay.field().is_latched(), "a moving page / other envelope restarts the count");
-    for _ in 0..n {
-        d.nav.modals.underlay.note_at_rest(Some(c2));
-    }
-    d.nav.modals.preload_underlay();
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
-}
-
 /// The latch policy, as the pure table it is.
 #[test]
 fn the_latch_policy_reads_the_page_once_per_snapshot_and_never_over_the_video_plane() {

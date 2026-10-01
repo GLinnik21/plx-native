@@ -87,7 +87,7 @@ impl ClockWarm {
     }
 
     /// Queue the clocks [`draw_playbar`] draws at `pos_ns` of `dur_ns`, and one second on.
-    pub(crate) fn queue(&mut self, pos_ns: i64, dur_ns: i64) {
+    fn queue(&mut self, pos_ns: i64, dur_ns: i64) {
         const SEC_NS: i64 = 1_000_000_000;
         // `fmt::clock` floors to whole seconds and clamps at zero; the key is that same second.
         let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0));
