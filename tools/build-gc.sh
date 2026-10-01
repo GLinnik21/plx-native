@@ -163,7 +163,9 @@ usage: tools/build-gc.sh [MODE] [-n]
 
   (no mode)       report every checkout's derived trees, the shared cache and free space
   --incremental   delete `target*/debug/incremental` everywhere. Always safe: it is a compile
-                  cache. A linked worktree is not supposed to write one — but the Makefile's
+                  cache. A linked worktree is not supposed to write one (the one sanctioned
+                  exception is the opt-in `make test-fast`, whose own `target-fast` this
+                  reclaims like any other; its next run is a cold build) — but the Makefile's
                   `CARGO_INCREMENTAL=0` only reaches the cargo runs `make` launches, and 12.9 GB
                   of them had accumulated past it by 2026-09-17, which is why this script now
                   installs the same rule as a `.cargo/config.toml` any cargo can see.

@@ -1412,6 +1412,28 @@ check-cargo-unit-hostsim:
 	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
 
+# OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
+# `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
+# CARGO_INCREMENTAL=1 in its OWN target dir. Measured 2026-10-01, same machine, 5 interleaved
+# rounds: an edit-rebuild is ~10 s vs 31-32 s non-incremental, flat across leaf/mid/hub edits;
+# cold is 51.7 s vs 46.2 s; the tree is 2.7 GB (debug/incremental 2.0 GB) vs 1.0 GB. Lanes stay
+# non-incremental by default for the disk (see CARGO_INCREMENTAL above), so this is something you
+# ask for, not something `check` does: NOTHING else here references `$(TEST_FAST_TDIR)`, and it
+# is never a CI step. `T=route::` forwards a test-name filter. `tools/build-gc.sh --incremental`
+# (and `--lanes`) reclaim it: both glob `rust-modules/target*`. `tools/cargo-seed.py` handles only
+# `target` and `target-release`, so it neither harvests nor seeds this dir. RELEASE=1 is refused:
+# that is the shipping feature set, which this host-unit loop does not exercise.
+TEST_FAST_TDIR = target-fast
+.PHONY: test-fast
+test-fast:
+	@$(if $(RELEASE),echo "make test-fast: refused under RELEASE=1 -- it runs the default-feature host unit suite incrementally; RELEASE=1 is the shipping feature set (use make check for gates)." >&2; exit 1,:)
+	@echo "test-fast: incremental host unit tests in rust-modules/$(TEST_FAST_TDIR) -- this dir grows to ~2.7 GB; reclaim it with: tools/build-gc.sh --incremental (cache) or rm -rf rust-modules/$(TEST_FAST_TDIR)"
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
+	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  cargo +$(RUST_NIGHTLY) test --lib $(if $(T),'$(T)')
+
 check-python: check-localization
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
@@ -1531,6 +1553,8 @@ check-python: check-localization
 	python3 ci/test_build_gc.py
 	@# CI runs the cargo half as three parallel jobs: this pins that no gate fell between them.
 	python3 ci/test_ci_split.py
+	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
+	python3 ci/test_test_fast.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py
