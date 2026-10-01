@@ -147,6 +147,7 @@ fn panel_sel(d: &Dispatcher<AppHost>, entry: EntryId) -> i32 {
         .and_then(|i| i.screen.as_any())
         .and_then(|s| s.downcast_ref::<crate::screens::alt_sources::AltSourcesScreen>())
         .expect("the picker")
+        .form
         .table
         .sel
 }

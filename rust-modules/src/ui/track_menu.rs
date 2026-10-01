@@ -12,7 +12,7 @@
 //! section holds Timing and Color; and everything else falls under "Other languages". That
 //! grouping is a pure DATA model, `metadata::sub_layout` (host-tested without a
 //! `PlaybackSession`/`MetadataView` fixture); this module only turns it into `TableView` sections
-//! ([`table_sections`]) and answers focus/OK over the flat [`RowTarget`] vec it yields. "Yours" is
+//! ([`table_form`]) and answers focus/OK by the focused row's [`TrackRow`] identity. "Yours" is
 //! the pref language (if the play resolved under one), the playing audio's language, and the
 //! current subtitle's own language, in that order (`route::cur_sub_pref_lang`, carried in by
 //! `screens::player::overlay`).
@@ -32,8 +32,7 @@
 //! panel open ([`TrackOk::Commit`]'s `keep_open`), so a run of presses is felt immediately — and
 //! re-writes that one row's read-out in place rather than rebuilding the list.
 use crate::metadata;
-use crate::metadata::sub_layout::{self, RowBadge, SubHeader, SubRow, SubSection, SubTrack};
-pub(crate) use crate::metadata::sub_layout::RowTarget;
+use crate::metadata::sub_layout::{self, RowBadge, RowTarget, SubHeader, SubRow, SubSection, SubTrack};
 use crate::metadata::track_label;
 use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
@@ -45,36 +44,69 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
 };
-use crate::ui::table::{row_mut_in, Badge, Row, Section, TableView};
+use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::ui::table::{Badge, Row, Section};
 use crate::ui::theme;
 use crate::ui::{Painter, Rect};
+use std::convert::Infallible;
 use std::os::raw::c_int;
 
 
-/// One drawn row of the Audio tab, by POSITION — the Audio-tab counterpart of [`RowTarget`],
-/// which only ever describes a Subtitles row. [`TrackMenuState::build_audio`] is the only writer;
-/// [`TrackMenuState::on_ok`]'s tab==0 arm dispatches on it instead of comparing `sel` against a
-/// recomputed "row past the last track" boundary, the same shape the Subtitles tab already used.
+/// **What a focusable row of either tab IS** — the identity the [`FormTable`] resolves a press, a
+/// focus move and a rebuild's landing by, never a position. The Audio tab's track rows, the two Plex
+/// Pass DSP toggles and the Subtitles tab's rows share one alphabet so one [`FormTable`] serves both
+/// tabs. The non-selectable footnotes under the DSP pair and under Color are inert slots
+/// ([`FormSection::note`]) and have no identity at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AudioRowTarget {
-    /// A track row — the index into the playing item's audio list
+pub(crate) enum TrackRow {
+    /// An Audio-tab track row — the index into the playing item's audio list
     /// ([`crate::metadata::PlayingItem::audio`]).
-    Track(usize),
-    /// The Boost dialog toggle row (issue #266) — present whenever [`TrackMenuState::enhance_rows`]
-    /// is `Some` (offered OR disabled-with-a-reason), immediately after the last [`Self::Track`].
+    Audio(usize),
+    /// The Boost dialog toggle row (issue #266) — present whenever [`TrackMenuState::enhance_shown`]
+    /// is `Some` (offered) OR [`TrackMenuState::enhance_disabled`] is (dim, with a reason),
+    /// immediately after the last [`Self::Audio`].
     Boost,
-    /// The Normalize loudness toggle row (issue #266) — present whenever
-    /// [`TrackMenuState::enhance_rows`] is `Some`, immediately after [`Self::Boost`].
+    /// The Normalize loudness toggle row (issue #266), immediately after [`Self::Boost`].
     Loudness,
-    /// The non-selectable footnote row under the Boost/Loudness pair — the plain-language reason
-    /// a `Disabled` pair is dim, or the consequence note an `Offered` pair carries (M7: a burned
-    /// subtitle, a dropped Dolby Vision declaration, an unaffected sidecar). A placeholder entry
-    /// only, kept so [`TrackMenuState::audio_targets`] stays one-to-one with the drawn rows
-    /// (`Row::note` is skipped by every selection walk, so `on_ok` can never actually land here;
-    /// the arm exists purely as a defensive match, the same shape `RowTarget::Timing`'s "dim and
-    /// inert" already uses for a comparable non-actionable row).
-    Note,
+    /// The Subtitles tab's Off row.
+    SubOff,
+    /// A Subtitles-tab track row — the index into the playing item's subs list.
+    Sub(usize),
+    /// The Timing row (hands off to the Timing capsule).
+    Timing,
+    /// The Color row (cycles the tone ladder).
+    Color,
 }
+
+impl From<RowTarget> for TrackRow {
+    fn from(t: RowTarget) -> Self {
+        match t {
+            RowTarget::Off => TrackRow::SubOff,
+            RowTarget::Sub(i) => TrackRow::Sub(i),
+            RowTarget::Timing => TrackRow::Timing,
+            RowTarget::Color => TrackRow::Color,
+        }
+    }
+}
+
+/// The hand-assigned focus key of each row: a family base per kind of row plus the track's own
+/// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
+/// track list that sorts differently, the DSP pair appearing) moves no key.
+impl FormId for TrackRow {
+    fn key(&self) -> RowKey {
+        RowKey(match self {
+            TrackRow::Audio(i) => 0x0001_0000 + *i as u32,
+            TrackRow::Boost => 0x0002_0000,
+            TrackRow::Loudness => 0x0002_0001,
+            TrackRow::SubOff => 0x0003_0000,
+            TrackRow::Sub(i) => 0x0004_0000 + *i as u32,
+            TrackRow::Timing => 0x0005_0000,
+            TrackRow::Color => 0x0005_0001,
+        })
+    }
+}
+
+type TrackForm = Form<TrackRow, (), Infallible>;
 
 /// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
 /// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
@@ -83,16 +115,12 @@ pub(crate) struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
-    /// The Subtitles tab's flat row → meaning map — one [`SubRow::target`] per drawn row, kept
-    /// alongside the `Section`s it built so [`Self::on_ok`] reads back what a row IS by POSITION
-    /// instead of re-deriving it (and instead of disagreeing with what was actually drawn, the way
-    /// a fresh call to [`visible_subs`] could once a transcode starts). Empty while the Audio tab
-    /// is built; see [`Self::audio_targets`] for its counterpart.
-    targets: Vec<RowTarget>,
-    /// The Audio tab's flat row → meaning map — [`AudioRowTarget`]'s counterpart to
-    /// [`Self::targets`], built by [`Self::build_audio`] and read back by [`Self::on_ok`]. Empty
-    /// while the Subtitles tab is built.
-    audio_targets: Vec<AudioRowTarget>,
+    /// Both tabs' rows, declared once each as a [`TrackForm`] and resolved by [`TrackRow`]
+    /// identity — [`Self::on_ok`] reads back what the focused row IS from its id rather than from a
+    /// position (and so cannot disagree with what was drawn, the way a fresh call to
+    /// [`visible_subs`] could once a transcode starts). Whichever tab is built owns the table; a
+    /// tab switch replaces it whole ([`Self::rebuild`]).
+    form: FormTable<TrackRow, (), Infallible>,
     /// The timing offset (ms) the Timing row reads out — seeded from the player on open. Kept
     /// locally (rather than re-reading the player's atomic on every draw) so the Timing capsule's
     /// eventual hand-off starts from what THIS panel showed, not from a commit the loop has not
@@ -133,14 +161,14 @@ pub(crate) struct TrackMenuState {
     /// The Audio tab's focused row identity, banked across a live rows-VANISH: the enhancement
     /// offer can drop for a poll or two on a route change this menu never asked for (a subtitle
     /// switched on mid-play, a momentary refusal) and return before the viewer presses anything.
-    /// [`Self::rebuild_audio`] stashes the focused [`AudioRowTarget::Boost`]/[`AudioRowTarget::Loudness`]
+    /// [`Self::rebuild_audio`] stashes the focused [`TrackRow::Boost`]/[`TrackRow::Loudness`]
     /// here the moment those rows are about to disappear, and restores it — in preference to
     /// reading `table.sel` back — the moment they reappear. Reading `table.sel` at that point
     /// instead would be wrong: while the rows are gone `table.sel` sits on whatever the fallback
     /// (or the ENGINE's own raw index clamp while the row count was smaller — see
     /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
     /// rows are back. `None` once consumed, or when nothing needs remembering.
-    sticky_audio_target: Option<AudioRowTarget>,
+    sticky_audio_target: Option<TrackRow>,
     /// M7 follow-up: is the live route actually burning a subtitle into the picture RIGHT NOW
     /// (`route::live_is_own_burn`)? Set on every (re)build of the Subtitles tab (see
     /// [`Self::layout`]) and read back by [`Self::on_ok`], which does not receive `ps` and so
@@ -150,7 +178,6 @@ pub(crate) struct TrackMenuState {
     /// nothing this panel does can reach it. Track-selection rows are unaffected — picking another
     /// subtitle (or Off) still re-routes normally.
     sub_style_locked: bool,
-    table: TableView, // main-thread only
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -221,8 +248,7 @@ impl TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
-            targets: Vec::new(),
-            audio_targets: Vec::new(),
+            form: FormTable::new(crate::ui::table_screen::BAND_BASE),
             offset_ms: crate::player::subtitle_offset_ms(),
             tone: crate::player::subtitle_tone(),
             yours,
@@ -232,7 +258,6 @@ impl TrackMenuState {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             sub_style_locked: false,
-            table: TableView::new(),
         };
         s.sync_item(ps, meta);
         s.rebuild(ps, meta, tab, false);
@@ -244,22 +269,46 @@ impl TrackMenuState {
     /// nothing else, so without this the fingerprint records the panel opening and closing and
     /// nothing between.
     pub(crate) fn sel(&self) -> i32 {
-        self.table.sel
+        self.form.table.sel
     }
 
-    /// The row alphabet at its current tab, for a caller that needs a row's index without
-    /// duplicating this layout by hand (`screens::player::overlay_tests`'s Timing hand-off test).
+    /// The focusable rows at the current tab, in drawn order, by identity — for a test that needs
+    /// to name a row without duplicating this layout by hand (`screens::player::overlay_tests`'s
+    /// Timing hand-off test).
     #[cfg(test)]
-    pub(crate) fn targets(&self) -> &[RowTarget] {
-        &self.targets
+    pub(crate) fn ids(&self) -> Vec<TrackRow> {
+        (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.id_at(i).copied()).collect()
+    }
+
+    /// Every focusable row's focus element, in drawn order.
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> Vec<u32> {
+        self.ids().iter().map(|id| id.key().0).collect()
+    }
+
+    /// The focus element (a row's [`RowKey`] number) of the row `id` names, if this tab has it.
+    #[cfg(test)]
+    pub(crate) fn key_of(&self, id: TrackRow) -> Option<u32> {
+        self.form.index_of(&id).map(|_| id.key().0)
+    }
+
+    /// Move focus onto the row `id` names (a test's way of pressing DOWN to it); `false` when this
+    /// tab has no such row.
+    #[cfg(test)]
+    pub(crate) fn focus_id(&mut self, id: TrackRow) -> bool {
+        self.focus_key(id.key().0);
+        self.form.selected_id() == Some(&id)
     }
 
     /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
     /// [`TrackMenuPart`] answers is the source of geometry, but the ENGINE owns the current
     /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
     /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
-    pub(crate) fn set_sel(&mut self, i: i32) {
-        self.table.sel = i;
+    /// The element is a row's [`RowKey`] number; a key this tab does not know moves nothing.
+    pub(crate) fn focus_key(&mut self, elem: u32) {
+        if let Some(i) = self.form.index_of_key(RowKey(elem)) {
+            self.form.table.sel = i as i32;
+        }
     }
 
     /// index into the playing item's audio list of the chosen audio track
@@ -346,7 +395,7 @@ impl TrackMenuState {
     /// subtitle arm always re-homes the cursor onto the checked row — correct for an open or a tab
     /// switch, wrong for a background poll that must not steal focus from wherever the viewer's
     /// cursor actually is (the exact focus-desync class `rebuild_audio`'s doc above already names)
-    /// — so this looks the current row up by [`RowTarget`] identity in the freshly built list
+    /// — so this looks the current row up by [`TrackRow`] identity in the freshly built list
     /// instead of snapping to the active track, the same fix `rebuild_audio` applies for the Audio
     /// tab's own poll.
     fn poll_subtitle_state(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
@@ -355,29 +404,33 @@ impl TrackMenuState {
         if live_sub == self.active_sub && locked == self.sub_style_locked {
             return;
         }
-        let current = self.targets.get(self.table.sel.max(0) as usize).copied();
+        let current = self.form.selected_id().copied();
         self.active_sub = live_sub;
-        let (sections, targets) = self.layout(ps, meta);
-        let sel = current
-            .and_then(|t| targets.iter().position(|x| *x == t))
-            .map(|i| i as c_int)
-            .unwrap_or_else(|| sel_for_targets(&targets, self.active_sub));
-        self.targets = targets;
-        self.audio_targets = Vec::new();
-        self.table.set_sections(sections, sel, false);
+        let form = self.layout(ps, meta);
+        let keep = Self::landing(&form, current, self.active_sub);
+        self.form.set(form, Some(&keep));
     }
 
-    /// Focus an ABSOLUTE table row — the /tmp/plxnative-menupick trigger's contract ("row N").
-    /// The interactive path always moves relatively; this exists because the initial focus is the
-    /// ACTIVE row (derived from playback state), so a relative walk from it would land elsewhere.
+    /// The row a Subtitles rebuild lands on: `current` if the new form still has it, else the
+    /// checked track (or Off) — [`Self::active_sub`] — else the form's opening row (`set` finds no
+    /// `keep` to land on). The focused row is followed by IDENTITY, never by where it used to sit.
+    fn landing(form: &TrackForm, current: Option<TrackRow>, active_sub: c_int) -> TrackRow {
+        let checked = if active_sub < 0 { TrackRow::SubOff } else { TrackRow::Sub(active_sub as usize) };
+        current.filter(|c| form.contains(c)).unwrap_or(checked)
+    }
+
+    /// Focus an ABSOLUTE table row — the /tmp/plxnative-menupick trigger's contract ("row N"), the
+    /// one dev-only entry that speaks positions (the named targets below do not). The interactive
+    /// path always moves relatively; this exists because the initial focus is the ACTIVE row
+    /// (derived from playback state), so a relative walk from it would land elsewhere.
     pub(crate) fn focus_row(&mut self, row: c_int) {
         for _ in 0..64 {
-            if self.table.sel == row {
+            if self.form.table.sel == row {
                 break;
             }
-            let before = self.table.sel;
-            self.table.move_sel(if self.table.sel < row { 1 } else { -1 });
-            if self.table.sel == before {
+            let before = self.form.table.sel;
+            self.form.table.move_sel(if self.form.table.sel < row { 1 } else { -1 });
+            if self.form.table.sel == before {
                 break; // clamped at an end — row out of range
             }
         }
@@ -387,33 +440,31 @@ impl TrackMenuState {
     /// the `/tmp/plxnative-menupick` trigger's named form — an alternative to a row number hand-
     /// derived from the item's track count, which is exactly the issue #266 PR4 bug: this harness
     /// once hardcoded the Normalize Loudness row from a WRONG assumed track count. Reading it back
-    /// through [`Self::audio_targets`], the same map [`Self::on_ok`] dispatches on, means the name
+    /// through the form, the same identities [`Self::on_ok`] dispatches on, means the name
     /// is correct however many tracks the item actually has. `None` when `name` is unrecognized,
     /// or recognized but not currently built (the DSP toggle rows are not offered right now).
     pub(crate) fn row_for_audio_target(&self, name: &str) -> Option<c_int> {
         let target = match name {
-            "boost" => AudioRowTarget::Boost,
-            "loudness" => AudioRowTarget::Loudness,
+            "boost" => TrackRow::Boost,
+            "loudness" => TrackRow::Loudness,
             _ => return None,
         };
-        self.audio_targets.iter().position(|t| *t == target).map(|i| i as c_int)
+        self.form.index_of(&target).map(|i| i as c_int)
     }
 
     /// Resolve a NAMED Subtitles-tab target to its absolute table row, for the
     /// `/tmp/plxnative-menupick` trigger: `"track:N"` is the N-th (0-based) TRACK row in display
     /// order, skipping Off, Timing, Color and the footnote. A hand-written row number drifts every
     /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
-    /// the Color row); reading the position back through [`Self::targets`], the same map
-    /// [`Self::on_ok`] dispatches on, cannot. `None` for an unrecognized name or an N past the
+    /// the Color row); reading the position back through the form's identities, the same
+    /// ones [`Self::on_ok`] dispatches on, cannot. `None` for an unrecognized name or an N past the
     /// last track.
     pub(crate) fn row_for_sub_target(&self, name: &str) -> Option<c_int> {
         let n: usize = name.strip_prefix("track:")?.trim().parse().ok()?;
-        self.targets
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| matches!(t, RowTarget::Sub(_)))
+        (0..self.form.table.n_rows() as usize)
+            .filter(|i| matches!(self.form.id_at(*i), Some(TrackRow::Sub(_))))
             .nth(n)
-            .map(|(row, _)| row as c_int)
+            .map(|row| row as c_int)
     }
 
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
@@ -430,33 +481,29 @@ impl TrackMenuState {
     /// the container's job now, not this method's; the answer says whether it should.
     pub(crate) fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
         let tab = self.tab;
-        let sel = self.table.sel;
+        let sel = self.form.table.sel;
+        let focused = self.form.selected_id().copied();
         if tab == 0 {
-            // The two Plex Pass DSP rows (issue #266), appended after the audio tracks — see
-            // `Self::build_audio`, which builds `self.audio_targets` alongside them, so a track
-            // pick below is never mistaken for one of these by position arithmetic.
-            return match self.audio_targets.get(sel.max(0) as usize).copied() {
+            // The two Plex Pass DSP rows (issue #266), after the audio tracks — see
+            // `Self::audio_form`, which declares them beside the tracks, so a track pick below is
+            // never mistaken for one of these by position arithmetic.
+            return match focused {
                 // A `Disabled` pair is drawn dim, reading Off, and OK on it is a no-op — same
-                // "focusable but inert" shape `RowTarget::Timing` already uses while subtitles are
-                // Off.
-                Some(AudioRowTarget::Boost) | Some(AudioRowTarget::Loudness)
-                    if self.enhance_disabled.is_some() =>
-                {
+                // "focusable but inert" shape `TrackRow::Timing` already uses while subtitles are
+                // Off. (The footnote under the pair is an inert slot: no key, never focused.)
+                Some(TrackRow::Boost | TrackRow::Loudness) if self.enhance_disabled.is_some() => {
                     TrackOk::Inert
                 }
-                // The non-selectable footnote row — never actually reachable (`Row::note` rows are
-                // skipped by every selection walk), kept only for defensive symmetry.
-                Some(AudioRowTarget::Note) => TrackOk::Inert,
-                target @ (Some(AudioRowTarget::Boost) | Some(AudioRowTarget::Loudness)) => {
+                target @ (Some(TrackRow::Boost) | Some(TrackRow::Loudness)) => {
                     let mut a = self.enhance_shown.unwrap_or(crate::plex::AudioEnhancements::NONE);
-                    if target == Some(AudioRowTarget::Boost) {
+                    if target == Some(TrackRow::Boost) {
                         a.boost_dialog = !a.boost_dialog;
                     } else {
                         a.normalize_loudness = !a.normalize_loudness;
                     }
                     self.enhance_shown = Some(a);
-                    if let Some(row) = self.table.row_mut(sel) {
-                        row.toggle = Some(if target == Some(AudioRowTarget::Boost) {
+                    if let Some(row) = self.form.table.row_mut(sel) {
+                        row.toggle = Some(if target == Some(TrackRow::Boost) {
                             a.boost_dialog
                         } else {
                             a.normalize_loudness
@@ -467,17 +514,18 @@ impl TrackMenuState {
                     });
                     TrackOk::Commit { commit: TrackCommit::AudioEnhancement(a), keep_open: true }
                 }
-                _ => {
-                    let changed = self.active_audio != sel;
-                    self.active_audio = sel;
+                Some(TrackRow::Audio(i)) => {
+                    let pick = i as c_int;
+                    let changed = self.active_audio != pick;
+                    self.active_audio = pick;
                     if changed {
                         // the menu only reports the pick — native-switch vs re-transcode is
                         // route's policy. The demuxer-facing index is the CONTAINER ordinal
                         // (audio_ordinal), not the row.
-                        if let Some(s) = tracks(meta).and_then(|t| t.audio.get(sel.max(0) as usize)) {
+                        if let Some(s) = tracks(meta).and_then(|t| t.audio.get(i)) {
                             let ord = tracks(meta)
-                                .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
-                                .unwrap_or(sel);
+                                .map(|t| metadata::audio_ordinal(&t.audio, i))
+                                .unwrap_or(pick);
                             crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                                 feature: crate::diag::schema::Feature::AudioTrack,
                             });
@@ -489,38 +537,35 @@ impl TrackMenuState {
                     }
                     TrackOk::Dismiss
                 }
+                _ => TrackOk::Dismiss,
             };
         }
 
-        match self.targets.get(sel.max(0) as usize).copied() {
+        match focused {
             // M7 follow-up: while the live route is actually burning a subtitle into the picture,
             // Timing and Color are drawn dim with a reason (`Self::layout`) and OK on either is a
-            // no-op — the same "focusable but inert" shape `RowTarget::Timing`'s "subtitles are
+            // no-op — the same "focusable but inert" shape `TrackRow::Timing`'s "subtitles are
             // Off" case already uses.
-            Some(RowTarget::Color) if self.sub_style_locked => TrackOk::Inert,
-            Some(RowTarget::Color) => {
+            Some(TrackRow::Color) if self.sub_style_locked => TrackOk::Inert,
+            Some(TrackRow::Color) => {
                 // cycle with wrap: no track changes, so no `TrackCommit::Subtitle` — that one
                 // always republishes, and re-committing the track would re-burn a transcode
                 let n = SubtitleTone::LADDER.len() as u8;
                 self.tone = SubtitleTone::from_index((self.tone.index() + 1) % n);
                 // the panel stays up: re-write this row's read-out in place, focus unmoved — the
                 // grouping does not depend on the tone, so nothing else is rebuilt
-                if let Some(row) = self.table.row_mut(sel) {
+                if let Some(row) = self.form.table.row_mut(sel) {
                     row.value = Some(tone_label(self.tone).to_string());
                 }
                 TrackOk::Commit { commit: TrackCommit::SubtitleTone(self.tone), keep_open: true }
             }
-            Some(RowTarget::Timing) if self.sub_style_locked => TrackOk::Inert,
-            Some(RowTarget::Timing) if self.active_sub >= 0 => TrackOk::OpenTiming,
-            Some(RowTarget::Timing) => TrackOk::Inert, // dim and inert while subtitles are Off
-            // The non-selectable footnote row — never actually reachable (`Row::note` rows are
-            // skipped by every selection walk), kept only for defensive symmetry with the Audio
-            // tab's own `AudioRowTarget::Note` arm.
-            Some(RowTarget::Note) => TrackOk::Inert,
+            Some(TrackRow::Timing) if self.sub_style_locked => TrackOk::Inert,
+            Some(TrackRow::Timing) if self.active_sub >= 0 => TrackOk::OpenTiming,
+            Some(TrackRow::Timing) => TrackOk::Inert, // dim and inert while subtitles are Off
             target => {
-                // Off (or a stale/out-of-range selection) → -1; else the row's own subs-list index
+                // Off (or no selection) → -1; else the row's own subs-list index
                 let new_sub: c_int = match target {
-                    Some(RowTarget::Sub(i)) => i as c_int,
+                    Some(TrackRow::Sub(i)) => i as c_int,
                     _ => -1,
                 };
                 let changed = self.active_sub != new_sub;
@@ -587,22 +632,20 @@ impl TrackMenuState {
         }
     }
 
-    /// The Audio tab's sections and row map: the track list, plus — whenever
-    /// [`Self::enhance_shown`] is `Some` OR [`Self::enhance_disabled`] is `Some` (every gate but
-    /// no Plex Pass is now a visible reason, owner direction 2026-09-29) — a second, headerless
-    /// section carrying the two Plex Pass DSP toggles (enabled, or dim with their reason), the
-    /// same "own section, no header" idiom the Subtitles tab's Timing/Color pair uses, plus an
-    /// optional non-selectable note row. The returned `Vec<AudioRowTarget>` names each row in the
-    /// same order the sections draw them, mirroring [`Self::layout`]'s
-    /// `(Vec<Section>, Vec<RowTarget>)` for the Subtitles tab.
-    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<AudioRowTarget>) {
-        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
+    /// The Audio tab as a form: the track list, plus — whenever [`Self::enhance_shown`] is `Some`
+    /// OR [`Self::enhance_disabled`] is `Some` (every gate but no Plex Pass is now a visible
+    /// reason, owner direction 2026-09-29) — a second, headerless section carrying the two Plex
+    /// Pass DSP toggles (enabled, or dim with their reason), the same "own section, no header"
+    /// idiom the Subtitles tab's Timing/Color pair uses, plus an optional non-selectable note (an
+    /// inert slot: it takes a layout row and has no identity). Mirrors [`Self::layout`] for the
+    /// Subtitles tab.
+    fn audio_form(&self, meta: metadata::MetadataView<'_>) -> TrackForm {
+        let mut sec = FormSection::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
             Some(t) => t,
-            None => return (vec![sec], Vec::new()),
+            None => return Form::new().section(sec),
         };
         let names = crate::player::SHARED.track_names.lock().unwrap();
-        let mut targets = Vec::new();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
                 crate::i18n::msg::widgets_tracks_unknown()
@@ -634,44 +677,57 @@ impl TrackMenuState {
             if s.ad {
                 row = row.badge(Badge::Ad);
             }
-            sec = sec.row(row);
-            targets.push(AudioRowTarget::Track(i));
+            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), row);
         }
-        let mut sections = vec![sec];
+        let mut form = Form::new().section(sec);
         if let Some(shown) = self.enhance_shown {
-            let mut enh = Section::new("")
-                .row(Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(shown.boost_dialog))
-                .row(Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness));
-            targets.push(AudioRowTarget::Boost);
-            targets.push(AudioRowTarget::Loudness);
+            let mut enh = FormSection::new("")
+                .item(
+                    TrackRow::Boost,
+                    RowKind::Toggle,
+                    (),
+                    Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(shown.boost_dialog),
+                )
+                .item(
+                    TrackRow::Loudness,
+                    RowKind::Toggle,
+                    (),
+                    Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness),
+                );
             if let Some(route) = self.enhance_route {
                 if let Some(note) = Self::enh_note_text(route, self.enhance_subtitle_effect) {
-                    enh = enh.row(Row::note(note));
-                    targets.push(AudioRowTarget::Note);
+                    enh = enh.note(note);
                 }
             }
-            sections.push(enh);
+            form = form.section(enh);
         } else if let Some(reason) = self.enhance_disabled {
             // Every gate but "no Plex Pass" is now a visible reason (owner direction, 2026-09-29):
             // the rows stay in the list, dim and reading Off, with a one-line non-selectable
             // footnote naming why. "No Plex Pass" is the ONE absence that stays a silent gap (I1/I2).
-            let enh = Section::new("")
-                .row(Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(false).dim(true))
-                .row(Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(false).dim(true))
-                .row(Row::note(Self::enh_reason_text(reason)));
-            sections.push(enh);
-            targets.push(AudioRowTarget::Boost);
-            targets.push(AudioRowTarget::Loudness);
-            targets.push(AudioRowTarget::Note);
+            let enh = FormSection::new("")
+                .item(
+                    TrackRow::Boost,
+                    RowKind::Toggle,
+                    (),
+                    Row::new(crate::i18n::msg::widgets_tracks_boost_dialog()).toggle(false).dim(true),
+                )
+                .item(
+                    TrackRow::Loudness,
+                    RowKind::Toggle,
+                    (),
+                    Row::new(crate::i18n::msg::widgets_tracks_normalize_loudness()).toggle(false).dim(true),
+                )
+                .note(Self::enh_reason_text(reason));
+            form = form.section(enh);
         }
-        (sections, targets)
+        form
     }
 
-    /// Build the Subtitles tab's sections and row map from the CURRENT state — the one place the
-    /// model (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree
+    /// Build the Subtitles tab's form from the CURRENT state — the one place the model
+    /// (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree
     /// with what was drawn. Also writes [`Self::sub_style_locked`] for [`Self::on_ok`] to read back
     /// (M7 follow-up).
-    fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<RowTarget>) {
+    fn layout(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
         let item = tracks(meta);
         let subs: &[metadata::Stream] = item.map(|t| t.subs.as_slice()).unwrap_or(&[]);
         let offered = visible_subs(ps, meta);
@@ -684,14 +740,10 @@ impl TrackMenuState {
         self.sub_style_locked = locked;
         let show_timing = !crate::route::is_transcoding(ps) || locked;
         let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing);
-        let (mut sections, mut targets) = table_sections(&model, self.active_sub, self.offset_ms, self.tone);
-        if locked {
-            lock_style_rows(&mut sections, &mut targets);
-        }
-        (sections, targets)
+        table_form(&model, self.active_sub, self.offset_ms, self.tone, locked)
     }
 
-    /// The [`AudioRowTarget::Boost`]/[`AudioRowTarget::Loudness`] pair's three inputs, read fresh
+    /// The [`TrackRow::Boost`]/[`TrackRow::Loudness`] pair's three inputs, read fresh
     /// off the live route in one place — [`Self::rebuild`] and [`Self::update`] both need exactly
     /// this triple, and computing it once here keeps them from independently re-deriving it (and
     /// risking disagreement).
@@ -722,11 +774,13 @@ impl TrackMenuState {
             let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
             self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, slide);
         } else {
-            let (sections, targets) = self.layout(ps, meta);
-            let sel = sel_for_targets(&targets, self.active_sub);
-            self.targets = targets;
-            self.audio_targets = Vec::new();
-            self.table.set_sections(sections, sel, slide);
+            let form = self.layout(ps, meta);
+            let keep = Self::landing(&form, None, self.active_sub);
+            if slide {
+                self.form.set_sliding(form, Some(&keep));
+            } else {
+                self.form.set(form, Some(&keep));
+            }
         }
     }
 
@@ -734,22 +788,21 @@ impl TrackMenuState {
     /// recomputing it — `update`'s per-frame poll already has it fresh, and handing it here keeps
     /// [`Self::enh_state`] to exactly one call per rebuild instead of two.
     ///
-    /// **Preserves the focused row by its [`AudioRowTarget`] identity** rather than always
+    /// **Preserves the focused row by its [`TrackRow`] identity** rather than always
     /// snapping to the checked track — the fix for a reported focus desync: `update`'s live poll
     /// calls this every time the route's enhancement answer changes (the server settling an
     /// optimistic Boost/Loudness flip, or a mid-play route change), and that used to re-home
-    /// `self.table.sel` (and the drawn pill) onto the active-audio row unconditionally. The
+    /// the table's cursor (and the drawn pill) onto the active-audio row unconditionally. The
     /// ENGINE's own cursor only ever moves in response to a `FocusMoved`
-    /// (`screens::player::overlay::PlayerOverlayScreen::step`'s write via [`Self::set_sel`]), and
+    /// (`screens::player::overlay::PlayerOverlayScreen::step`'s write via [`Self::focus_key`]), and
     /// a poll-driven rebuild fires no such event — so the highlight jumped to the checked language
     /// row while the engine's focus stayed on the toggle row the viewer was actually on, and the
     /// next UP/DOWN/OK acted on a row nothing showed as selected. Looking the previous row up by
-    /// its [`AudioRowTarget`] and reusing its NEW position keeps `table.sel` exactly where the
-    /// engine still thinks it is whenever that target still exists (the common case: toggling a
-    /// bit does not remove or reorder rows). A tab switch/open always reaches here too, but
-    /// `self.audio_targets` is empty then ([`Self::rebuild`]'s Subtitles arm clears it, and the
-    /// constructor never populates it first), so the lookup misses and the fallback below —
-    /// landing on the checked track — is exactly the existing open/switch behaviour.
+    /// its [`TrackRow`] and reusing its NEW position keeps the table's cursor exactly where the
+    /// engine still thinks it is whenever that row still exists (the common case: toggling a
+    /// bit does not remove or reorder rows). A tab switch/open always reaches here too, but the
+    /// form then holds the OTHER tab's rows (or none), so the lookup misses and the fallback
+    /// below — landing on the checked track — is exactly the existing open/switch behaviour.
     fn rebuild_audio(
         &mut self,
         enhance_shown: Option<crate::plex::AudioEnhancements>,
@@ -759,38 +812,39 @@ impl TrackMenuState {
         meta: metadata::MetadataView<'_>,
         slide: bool,
     ) {
-        let prev_target = self.audio_targets.get(self.table.sel.max(0) as usize).copied();
-        // The offer is about to VANISH (Some -> None): bank the toggle row identity before
-        // `self.audio_targets` drops it, so a later return restores it instead of reading
-        // `table.sel` back — see `Self::sticky_audio_target`'s own doc for why that would be wrong.
+        let prev_target = self.form.selected_id().copied();
+        // The offer is about to VANISH (Some -> None): bank the toggle row identity before the
+        // rebuild drops it, so a later return restores it instead of reading the table's cursor
+        // back — see `Self::sticky_audio_target`'s own doc for why that would be wrong.
         if self.enhance_shown.is_some() && enhance_shown.is_none() {
-            if let Some(t @ (AudioRowTarget::Boost | AudioRowTarget::Loudness)) = prev_target {
+            if let Some(t @ (TrackRow::Boost | TrackRow::Loudness)) = prev_target {
                 self.sticky_audio_target = Some(t);
             }
         }
-        self.targets = Vec::new();
         self.enhance_shown = enhance_shown;
         self.enhance_route = enhance_route;
         self.enhance_disabled = enhance_disabled;
         self.enhance_subtitle_effect = enhance_subtitle_effect;
-        let (sections, targets) = self.build_audio(meta);
+        let form = self.audio_form(meta);
         // The offer is back: prefer the banked identity over `prev_target` (which names whatever
-        // row `table.sel` happened to sit on while the rows were gone) whenever it still exists.
+        // row the cursor happened to sit on while the rows were gone) whenever it still exists.
         let restored = if enhance_shown.is_some() { self.sticky_audio_target.take() } else { None };
-        let sel = restored
+        let keep = restored
             .or(prev_target)
-            .and_then(|t| targets.iter().position(|x| *x == t))
-            .map(|i| i as c_int)
-            .unwrap_or_else(|| self.active_audio().max(0));
-        self.audio_targets = targets;
-        self.table.set_sections(sections, sel, slide);
+            .filter(|t| form.contains(t))
+            .unwrap_or(TrackRow::Audio(self.active_audio().max(0) as usize));
+        if slide {
+            self.form.set_sliding(form, Some(&keep));
+        } else {
+            self.form.set(form, Some(&keep));
+        }
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         // Each tab hugs its own rows (shared menu rule); the right edge is fixed, so switching
         // tabs moves only the left edge.
-        let pw = self.table.menu_panel_width(measure);
+        let pw = self.form.table.menu_panel_width(measure);
         // the transport control row's own right edge — one number for the discs and both panels
         let px = crate::ui::player_hud::CTRL_RIGHT - pw;
         // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
@@ -809,9 +863,9 @@ impl TrackMenuState {
     /// so no caller (`update`, hit-testing, `draw`) can read the count a rebuild left stale.
     /// Idempotent and a few short strings per call.
     fn panel_h(&self, measure: &dyn crate::ui::machine::Measure, pw: f32) -> f32 {
-        self.table.fit_notes(pw, measure);
+        self.form.table.fit_notes(pw, measure);
         let (bottom, top_min) = (SCR_H - 316.0, 60.0);
-        self.table.measured_height().clamp(160.0, bottom - top_min)
+        self.form.table.measured_height().clamp(160.0, bottom - top_min)
     }
 
     /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
@@ -842,8 +896,8 @@ impl TrackMenuState {
             self.poll_subtitle_state(ps, meta);
         }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-        let h = self.panel_h(measure, self.table.menu_panel_width(measure));
-        self.table.update(dt, h);
+        let h = self.panel_h(measure, self.form.table.menu_panel_width(measure));
+        self.form.table.update(dt, h);
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -859,7 +913,7 @@ impl TrackMenuState {
         // dark card approximates it); only a hint of video shows through
         p.rect(r, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
-        self.table.draw(p, r, measure);
+        self.form.table.draw(p, r, measure);
     }
 }
 
@@ -898,15 +952,15 @@ where
             reachable: AxisMask::VERTICAL,
             edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Screen],
             extent: self.state.panel_rect(_cx.measure),
-            len: self.state.table.n_rows().max(0) as usize,
+            len: self.state.form.focusable_len(),
             elem: ElemKind::Bare,
         });
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as i32) < self.state.table.n_rows()).then_some(self.group)
+        self.state.form.index_of_key(RowKey(key.index()?)).map(|_| self.group)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        let Some(i) = key.elem.index() else {
+        let Some(from) = key.elem.index() else {
             return Step::Edge;
         };
         let delta = match dir {
@@ -914,14 +968,14 @@ where
             Dir::Down => 1,
             _ => return Step::Edge, // Left/Right: the screen's own tab switch, via `EdgeRule::Screen`
         };
-        match self.state.table.next_selectable(i as i32, delta) {
-            Some(j) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(j as u32) }),
+        match self.state.form.step_key(RowKey(from), delta) {
+            Some(k) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(k.0) }),
             None => Step::Edge,
         }
     }
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let i = key.index()?;
-        let r = self.state.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
+        let i = self.state.form.index_of_key(RowKey(key.index()?))? as u32;
+        let r = self.state.form.table.row_frame(self.state.panel_rect(cx.measure), i as i32)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
@@ -930,26 +984,24 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        // Trust the panel's OWN cursor (`table.sel`), not `want`'s raw index. `table.sel` is
-        // where `rebuild`/`rebuild_audio` already decided focus belongs — including a live poll
-        // rebuild that drops and later restores the enhancement rows (issue #266's follow-up,
-        // `Self::sticky_audio_target`) — so it is the identity-aware answer; clamping `want`
-        // instead would settle onto whatever the ENGINE's stale remembered index happens to land
-        // on once the row count changes, with no notion of which row that index used to name. This
-        // mirrors the documented Slot->Item reconcile shape for a bare `TableView`'s positional
-        // keys (spec §7.3: "a reorder... reconcile returns Item(k) at its new position, so focus
-        // follows the item") — here the panel's `sel` stands in for that recomputed position.
+        // Trust the panel's OWN cursor (`table.sel`), not `want`. The cursor is where
+        // `rebuild`/`rebuild_audio` already decided focus belongs — including a live poll rebuild
+        // that drops and later restores the enhancement rows (issue #266's follow-up,
+        // `Self::sticky_audio_target`) — so it is the identity-aware answer; `want` may name a row
+        // of the OTHER tab (a tab switch replaces the whole form) or one that has left, and there is
+        // no neighbour of a key to slide to. The cursor's row is reported by its KEY.
         let _ = want;
-        FocusKey {
-            entry: self.entry,
-            elem: H::Elem::of_index(self.state.table.settle(self.state.table.sel).max(0) as u32),
-        }
+        let table = &self.state.form.table;
+        let key = self
+            .state
+            .form
+            .key_at(table.settle(table.sel).max(0) as usize)
+            .or_else(|| self.state.form.opening_key());
+        FocusKey { entry: self.entry, elem: H::Elem::of_index(key.map_or(0, |k| k.0)) }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        FocusKey {
-            entry: self.entry,
-            elem: H::Elem::of_index(self.state.table.sel.max(0) as u32),
-        }
+        let key = self.state.form.selected_key().or_else(|| self.state.form.opening_key());
+        FocusKey { entry: self.entry, elem: H::Elem::of_index(key.map_or(0, |k| k.0)) }
     }
 }
 
@@ -963,17 +1015,17 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
         let r = self.state.panel_rect(f.measure);
-        for i in 0..self.state.table.n_rows() {
-            if self.state.table.next_selectable(i, 0) != Some(i) {
+        for i in 0..self.state.form.table.n_rows() {
+            let Some(key) = self.state.form.key_at(i as usize) else {
                 continue;
-            }
-            if let Some(row) = self.state.table.row_frame(r, i) {
+            };
+            if let Some(row) = self.state.form.table.row_frame(r, i) {
                 f.stop(
                     p,
                     Stop {
                         key: FocusKey {
                             entry: self.entry,
-                            elem: H::Elem::of_index(i as u32),
+                            elem: H::Elem::of_index(key.0),
                         },
                         rect: row,
                         rest_rect: row,
@@ -1030,19 +1082,6 @@ fn tone_label(tone: SubtitleTone) -> &'static str {
 /// the one offset formatter).
 fn format_offset(ms: i64) -> String {
     crate::ui::timing_capsule::offset_seconds_in(ms, true, crate::i18n::current())
-}
-
-/// The row whose `RowTarget` names the checked subtitle track (or `Off`), by position in
-/// `targets` — the counterpart to the audio tab's `active_audio().max(0)`.
-fn sel_for_targets(targets: &[RowTarget], active_sub: c_int) -> c_int {
-    targets
-        .iter()
-        .position(|t| match t {
-            RowTarget::Off => active_sub < 0,
-            RowTarget::Sub(i) => active_sub >= 0 && *i == active_sub as usize,
-            RowTarget::Timing | RowTarget::Color | RowTarget::Note => false,
-        })
-        .unwrap_or(0) as c_int
 }
 
 // ---- section building ----
@@ -1145,91 +1184,71 @@ fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
     row
 }
 
-/// **Draw the Subtitles model** (`metadata::sub_layout::sub_sections`) as `TableView` sections —
-/// the catalog words for each header, the checkmark on `active_sub` (-1 for Off), and the
-/// Timing/Color read-outs (`offset_ms`, `tone`; Timing is dim while subtitles are Off).
+/// **Declare the Subtitles model** (`metadata::sub_layout::sub_sections`) as a form — the catalog
+/// words for each header, the checkmark on `active_sub` (-1 for Off), and the Timing/Color
+/// read-outs (`offset_ms`, `tone`; Timing is dim while subtitles are Off).
 ///
-/// Returns the sections AND a flat `targets` vec, one [`SubRow::target`] per row in the SAME
-/// order the sections draw — [`TrackMenuState::on_ok`] reads back what a row IS from
-/// `targets[sel]` rather than re-deriving it.
-fn table_sections(
+/// Every row is declared with its [`TrackRow`] identity beside its drawing, so
+/// [`TrackMenuState::on_ok`] reads back what a row IS from the focused id.
+///
+/// **M7 follow-up**: while the live route is actually burning a subtitle into the picture right
+/// now (`locked`), Timing and Color do nothing — the text is already in the pixels — so they are
+/// drawn dim and one non-selectable note naming why follows Color, the same "visible, dim, plain
+/// reason" idiom the Audio tab's own Boost dialog/Normalize loudness rows use when THEY are
+/// disabled ([`TrackMenuState::audio_form`]).
+fn table_form(
     model: &[SubSection],
     active_sub: c_int,
     offset_ms: i64,
     tone: SubtitleTone,
-) -> (Vec<Section>, Vec<RowTarget>) {
+    locked: bool,
+) -> TrackForm {
     use crate::i18n::msg;
-    let mut targets = Vec::new();
-    let sections = model
-        .iter()
-        .map(|sec| {
-            let mut out = match &sec.header {
-                SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
-                SubHeader::Language { name, tracks } => {
-                    Section::new(name.clone()).accessory(msg::widgets_tracks_count(*tracks as i64))
-                }
-                SubHeader::Bare => Section::new(""),
-                SubHeader::OtherLanguages { languages } => Section::new(msg::widgets_tracks_other_languages())
-                    .accessory(msg::widgets_tracks_language_count(*languages as i64)),
-            };
-            for row in &sec.rows {
-                targets.push(row.target());
-                out = out.row(match row {
-                    SubRow::Off => Row::new(msg::widgets_tracks_off()).checked(active_sub < 0),
-                    SubRow::Flat(t) => flat_row(t, active_sub),
-                    SubRow::InLanguage(t) => in_lang_row(t, active_sub),
-                    SubRow::Timing => Row::new(msg::widgets_tracks_timing())
+    let mut form = Form::new();
+    for sec in model {
+        let head = match &sec.header {
+            SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
+            SubHeader::Language { name, tracks } => {
+                Section::new(name.clone()).accessory(msg::widgets_tracks_count(*tracks as i64))
+            }
+            SubHeader::Bare => Section::new(""),
+            SubHeader::OtherLanguages { languages } => Section::new(msg::widgets_tracks_other_languages())
+                .accessory(msg::widgets_tracks_language_count(*languages as i64)),
+        };
+        let mut out = FormSection::from_head(head);
+        for row in &sec.rows {
+            let id = TrackRow::from(row.target());
+            out = match row {
+                SubRow::Off => out.item(id, RowKind::Choice, (), Row::new(msg::widgets_tracks_off()).checked(active_sub < 0)),
+                SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, active_sub)),
+                SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, active_sub)),
+                SubRow::Timing => out.item(
+                    id,
+                    RowKind::Button,
+                    (),
+                    Row::new(msg::widgets_tracks_timing())
                         .value(format_offset(offset_ms))
                         .chevron(true)
-                        .dim(active_sub < 0),
-                    SubRow::Color => Row::new(msg::widgets_tracks_color()).value(tone_label(tone)),
-                });
-            }
-            out
-        })
-        .collect();
-    (sections, targets)
-}
-
-/// Insert `row` at GLOBAL index `gi`, into whichever section actually spans that position — the
-/// plain-`Vec<Section>` counterpart of a `TableView` insert, needed because [`lock_style_rows`]
-/// runs before the sections are ever handed to a `TableView`.
-fn insert_row_at(sections: &mut [Section], gi: usize, row: Row) {
-    let mut remaining = gi;
-    for sec in sections.iter_mut() {
-        if remaining <= sec.rows.len() {
-            sec.rows.insert(remaining, row);
-            return;
+                        .dim(active_sub < 0 || locked),
+                ),
+                SubRow::Color => {
+                    let color = out.item(
+                        id,
+                        RowKind::Button,
+                        (),
+                        Row::new(msg::widgets_tracks_color()).value(tone_label(tone)).dim(locked),
+                    );
+                    if locked {
+                        color.note(msg::widgets_tracks_style_locked_note())
+                    } else {
+                        color
+                    }
+                }
+            };
         }
-        remaining -= sec.rows.len();
+        form = form.section(out);
     }
-}
-
-/// **M7 follow-up**: while the live route is actually burning a subtitle into the picture right
-/// now, Timing and Color do nothing — the text is already in the pixels — so draw them dim and
-/// append one non-selectable [`Row::note`] naming why, the same "visible, dim, plain reason" idiom
-/// the Audio tab's own Boost dialog/Normalize loudness rows use when THEY are disabled
-/// ([`TrackMenuState::build_audio`]). `targets` is kept in lockstep with `sections`' flattened row
-/// order so [`TrackMenuState::on_ok`] can keep reading it back by position.
-fn lock_style_rows(sections: &mut Vec<Section>, targets: &mut Vec<RowTarget>) {
-    let Some(color_idx) = targets.iter().position(|t| *t == RowTarget::Color) else {
-        return; // no Color row was built at all — nothing to lock
-    };
-    if let Some(timing_idx) = targets.iter().position(|t| *t == RowTarget::Timing) {
-        if let Some(row) = row_mut_in(sections, timing_idx) {
-            row.dim = true;
-        }
-    }
-    if let Some(row) = row_mut_in(sections, color_idx) {
-        row.dim = true;
-    }
-    let note_at = color_idx + 1;
-    insert_row_at(
-        sections,
-        note_at,
-        Row::note(crate::i18n::msg::widgets_tracks_style_locked_note()),
-    );
-    targets.insert(note_at, RowTarget::Note);
+    form
 }
 
 /// The panel at its WIDEST ([`crate::ui::table::MENU_MAX_W`], the shared cap — either tab may hug
@@ -1250,6 +1269,13 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use crate::player::TrackNames;
+    use crate::ui::table::TableView;
+
+    /// The focus element of the `i`-th Audio row — a test names a row by its identity, never by
+    /// where it happens to sit.
+    fn audio_key(i: usize) -> u32 {
+        TrackRow::Audio(i).key().0
+    }
 
     /// The model and its drawing in one call — what the panel shows for these inputs.
     #[allow(clippy::too_many_arguments)]
@@ -1262,10 +1288,13 @@ mod tests {
         show_timing: bool,
         offset_ms: i64,
         tone: SubtitleTone,
-    ) -> (Vec<Section>, Vec<RowTarget>) {
+    ) -> (Vec<Section>, Vec<Option<TrackRow>>) {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
-        table_sections(&model, active_sub, offset_ms, tone)
+        let mut built = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        built.set(table_form(&model, active_sub, offset_ms, tone, false), None);
+        let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
+        (std::mem::take(&mut built.table.sections), ids)
     }
 
     /// A store with `subs` installed as the playing item's subtitle list. `pub(super)`:
@@ -1311,7 +1340,7 @@ mod tests {
         assert_eq!(sections[0].header, "Subtitles");
         assert_eq!(sections[0].rows.len(), 2, "Off + the one track");
         assert_eq!(sections[0].rows[1].label, "Spanish");
-        assert_eq!(targets[1], RowTarget::Sub(0));
+        assert_eq!(targets[1], Some(TrackRow::Sub(0)));
     }
 
     // ---- sub_layout: a nameless track reads as its kind, with no badge ------------------------
@@ -1544,8 +1573,8 @@ mod tests {
         }]);
         let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         assert_eq!(
-            menu.targets,
-            vec![RowTarget::Off, RowTarget::Timing, RowTarget::Color, RowTarget::Sub(0)]
+            menu.ids(),
+            vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Color, TrackRow::Sub(0)]
         );
     }
 
@@ -1579,8 +1608,7 @@ mod tests {
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["rus".into()]);
         menu.active_sub = 1; // the second track is the checked one
         menu.rebuild(&ps, store.view(), 1, false);
-        assert_eq!(menu.targets.get(menu.sel() as usize).copied(), Some(RowTarget::Sub(1)));
-        assert_eq!(menu.sel(), sel_for_targets(&menu.targets, 1));
+        assert_eq!(menu.form.selected_id().copied(), Some(TrackRow::Sub(1)));
     }
 
     /// `row_for_sub_target("track:N")` names the N-th TRACK row, never Off/Timing/Color: the
@@ -1596,9 +1624,9 @@ mod tests {
             stream(2, 1, "French", "fra", "B"),
         ]);
         let menu = TrackMenuState::new(&ps, store.view(), 1, vec![]);
-        let row_of = |t: RowTarget| menu.targets.iter().position(|x| *x == t).map(|r| r as c_int);
-        assert_eq!(menu.row_for_sub_target("track:0"), row_of(RowTarget::Sub(0)));
-        assert_eq!(menu.row_for_sub_target("track:1"), row_of(RowTarget::Sub(1)));
+        let row_of = |t: TrackRow| menu.form.index_of(&t).map(|r| r as c_int);
+        assert_eq!(menu.row_for_sub_target("track:0"), row_of(TrackRow::Sub(0)));
+        assert_eq!(menu.row_for_sub_target("track:1"), row_of(TrackRow::Sub(1)));
         assert!(menu.row_for_sub_target("track:0").unwrap() >= 1, "row 0 is Off");
         assert_eq!(menu.row_for_sub_target("track:2"), None, "past the last track");
         assert_eq!(menu.row_for_sub_target("boost"), None);
@@ -1642,13 +1670,13 @@ mod tests {
         // Off(0), Timing(1), Color(2), English(3), French sidecar(4) — "Other languages" sorts
         // English before French, and the settings section always precedes it.
         assert_eq!(
-            menu.targets,
+            menu.ids(),
             vec![
-                RowTarget::Off,
-                RowTarget::Timing,
-                RowTarget::Color,
-                RowTarget::Sub(0),
-                RowTarget::Sub(1),
+                TrackRow::SubOff,
+                TrackRow::Timing,
+                TrackRow::Color,
+                TrackRow::Sub(0),
+                TrackRow::Sub(1),
             ]
         );
 
@@ -1691,9 +1719,8 @@ mod tests {
         let store = crate::stores::metadata::MetadataStore::default();
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         let color_row = menu
-            .targets
-            .iter()
-            .position(|t| *t == RowTarget::Color)
+            .form
+            .index_of(&TrackRow::Color)
             .expect("Color row");
         menu.focus_row(color_row as c_int);
 
@@ -1704,7 +1731,7 @@ mod tests {
                 TrackOk::Commit { commit: TrackCommit::SubtitleTone(*want), keep_open: true }
             );
             // the read-out is re-written in place on the focused row
-            let row = menu.table.row_mut(color_row as c_int).expect("Color row");
+            let row = menu.form.table.row_mut(color_row as c_int).expect("Color row");
             assert_eq!(row.value.as_deref(), Some(tone_label(*want)));
         }
     }
@@ -1727,18 +1754,17 @@ mod tests {
         }]);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         let timing_row = menu
-            .targets
-            .iter()
-            .position(|t| *t == RowTarget::Timing)
+            .form
+            .index_of(&TrackRow::Timing)
             .expect("Timing row");
 
         menu.focus_row(timing_row as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "subtitles are Off: inert");
 
         let sub_row = menu
-            .targets
+            .ids()
             .iter()
-            .position(|t| matches!(t, RowTarget::Sub(_)))
+            .position(|t| matches!(t, TrackRow::Sub(_)))
             .expect("a track row");
         menu.focus_row(sub_row as c_int);
         menu.on_ok(store.view());
@@ -1853,7 +1879,7 @@ mod tests {
         assert_eq!(menu.on_ok(store.view()), TrackOk::Dismiss);
     }
 
-    /// [`AudioRowTarget`]'s row map, with no enhancement offered: one [`AudioRowTarget::Track`]
+    /// [`TrackRow`]'s Audio-tab identities, with no enhancement offered: one [`TrackRow::Audio`]
     /// per audio track, in the same order they were drawn, and nothing else — varying the track
     /// count to prove the map tracks the list rather than assuming a fixed length.
     #[test]
@@ -1872,8 +1898,8 @@ mod tests {
                 .collect();
             let store = store_with_audio(audio);
             let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-            let want: Vec<AudioRowTarget> = (0..n).map(AudioRowTarget::Track).collect();
-            assert_eq!(menu.audio_targets, want, "n={n}");
+            let want: Vec<TrackRow> = (0..n).map(TrackRow::Audio).collect();
+            assert_eq!(menu.ids(), want, "n={n}");
         }
     }
 }
@@ -1926,7 +1952,7 @@ mod enhancement_menu_tests {
         let (menu, ps) =
             audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
-        assert_eq!(menu.table.sections.len(), 1, "track list only — no second section at all");
+        assert_eq!(menu.form.table.sections.len(), 1, "track list only — no second section at all");
         teardown(&ps);
     }
 
@@ -1948,7 +1974,7 @@ mod enhancement_menu_tests {
         let _g = crate::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotAnalyzed));
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_reason_not_analyzed());
         teardown(&ps);
     }
@@ -1962,7 +1988,7 @@ mod enhancement_menu_tests {
         let (menu, ps) = audio_tab(EnhTestFixture { dv_declared: true, ..Default::default() });
         assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::RemuxDropsDolbyVision));
         assert!(menu.enhance_shown.is_some());
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_note_dv_off());
         teardown(&ps);
     }
@@ -1976,7 +2002,7 @@ mod enhancement_menu_tests {
         let (menu, ps) = audio_tab(EnhTestFixture { dv_base_unusable: true, ..Default::default() });
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::DolbyVisionUnusable));
         assert_eq!(menu.enhance_shown, None);
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_reason_dv_unusable());
         teardown(&ps);
     }
@@ -1993,7 +2019,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::DolbyVisionSubtitle));
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_reason_dv_subtitle());
         teardown(&ps);
     }
@@ -2009,7 +2035,7 @@ mod enhancement_menu_tests {
         });
         assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::Burn));
         assert!(menu.enhance_shown.is_some());
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_note_burn());
         teardown(&ps);
     }
@@ -2025,7 +2051,7 @@ mod enhancement_menu_tests {
         });
         assert_eq!(menu.enhance_route, Some(crate::route::EnhancementRoute::Remux));
         assert!(menu.enhance_shown.is_some());
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_note_sidecar());
         teardown(&ps);
     }
@@ -2038,7 +2064,7 @@ mod enhancement_menu_tests {
         let _g = crate::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::NotOriginalQuality));
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_reason_quality());
         teardown(&ps);
     }
@@ -2074,7 +2100,7 @@ mod enhancement_menu_tests {
         let _g = crate::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { refused: true, ..Default::default() });
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::ServerRefused));
-        let note = menu.table.sections[1].rows.last().unwrap();
+        let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, crate::i18n::msg::widgets_tracks_enh_reason_refused());
         teardown(&ps);
     }
@@ -2094,8 +2120,8 @@ mod enhancement_menu_tests {
         let _g = crate::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
         assert!(menu.enhance_shown.is_some());
-        assert_eq!(menu.table.sections.len(), 2, "track list + the headerless enhancement section");
-        let enh = &menu.table.sections[1];
+        assert_eq!(menu.form.table.sections.len(), 2, "track list + the headerless enhancement section");
+        let enh = &menu.form.table.sections[1];
         assert_eq!(enh.header, "");
         assert_eq!(enh.rows.len(), 2);
         assert_eq!(enh.rows[0].label, crate::i18n::msg::widgets_tracks_boost_dialog());
@@ -2139,7 +2165,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         assert!(menu.enhance_shown.is_some());
-        let enh = &menu.table.sections[1];
+        let enh = &menu.form.table.sections[1];
         assert_eq!(enh.rows[0].toggle, Some(true));
         assert_eq!(enh.rows[1].toggle, Some(false));
         teardown(&ps);
@@ -2163,12 +2189,12 @@ mod enhancement_menu_tests {
             crate::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
         ]);
         let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        assert_eq!(menu.table.sections[0].rows.len(), 2, "both tracks in the track section");
-        let enh = &menu.table.sections[1];
+        assert_eq!(menu.form.table.sections[0].rows.len(), 2, "both tracks in the track section");
+        let enh = &menu.form.table.sections[1];
         assert_eq!(enh.rows.len(), 2, "the toggle rows sit in their own section, right after the tracks");
         assert_eq!(
-            menu.audio_targets,
-            vec![AudioRowTarget::Track(0), AudioRowTarget::Track(1), AudioRowTarget::Boost, AudioRowTarget::Loudness],
+            menu.ids(),
+            vec![TrackRow::Audio(0), TrackRow::Audio(1), TrackRow::Boost, TrackRow::Loudness],
             "the row map names both tracks, then Boost, then Loudness, in drawn order"
         );
         teardown(&ps);
@@ -2191,7 +2217,7 @@ mod enhancement_menu_tests {
                 keep_open: true,
             }
         );
-        assert_eq!(menu.table.sections[1].rows[0].toggle, Some(true));
+        assert_eq!(menu.form.table.sections[1].rows[0].toggle, Some(true));
 
         // a second press on the SAME row flips it back, and the panel is still open to take it
         let outcome = menu.on_ok(store.view());
@@ -2240,7 +2266,7 @@ mod enhancement_menu_tests {
             applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
-        assert_eq!(menu.table.sections[1].rows[1].toggle, Some(true));
+        assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(true));
 
         // The SAME playback settles as Refused (I5 excludes it from the offer entirely) — a LIVE
         // change this menu never caused, delivered exactly the way `PlayerOverlayScreen`'s Tick
@@ -2256,9 +2282,9 @@ mod enhancement_menu_tests {
         // M7: the refusal is now a plain-language `Disabled` reason, not a vanished section — the
         // rows stay, dim, reading Off, with a one-line note naming why.
         assert_eq!(menu.enhance_disabled, Some(crate::route::DisabledReason::ServerRefused));
-        assert_eq!(menu.table.sections.len(), 2, "the headerless DSP section stays, dim, with its reason");
-        assert_eq!(menu.table.sections[1].rows[1].toggle, Some(false));
-        assert!(menu.table.sections[1].rows[1].dim);
+        assert_eq!(menu.form.table.sections.len(), 2, "the headerless DSP section stays, dim, with its reason");
+        assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(false));
+        assert!(menu.form.table.sections[1].rows[1].dim);
 
         teardown(&ps_ok);
     }
@@ -2275,17 +2301,17 @@ mod enhancement_menu_tests {
             applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
-        assert!(!menu.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "premise: no note yet");
+        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "premise: no note yet");
         let (ps_refused, _sid) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
         let store = one_track_store();
         menu.update(0.0, &M, &ps_refused, store.view());
         // no draw, no panel_rect in between: read the table as `update` left it
-        let after_update = menu.table.measured_height();
-        let pw = menu.table.menu_panel_width(&M);
-        menu.table.fit_notes(pw, &M);
-        let note = menu.table.sections.iter().flat_map(|s| s.rows.iter()).find(|r| r.is_note()).expect("the refusal note");
+        let after_update = menu.form.table.measured_height();
+        let pw = menu.form.table.menu_panel_width(&M);
+        menu.form.table.fit_notes(pw, &M);
+        let note = menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).find(|r| r.is_note()).expect("the refusal note");
         assert!(note.note_lines.get() >= 2, "premise: the note wraps at {pw}");
-        assert_eq!(after_update, menu.table.measured_height(), "update left the note at a stale line count");
+        assert_eq!(after_update, menu.form.table.measured_height(), "update left the note at a stale line count");
         teardown(&ps_ok);
     }
 
@@ -2296,7 +2322,7 @@ mod enhancement_menu_tests {
     /// `rebuild_audio` always re-homed `table.sel` onto the checked audio track, so the drawn
     /// highlight jumped there while the ENGINE's own focus — which only moves on an actual
     /// `FocusMoved`, never fired by this poll — stayed on the toggle row: the visual cursor and the
-    /// row the next OK/UP/DOWN actually acts on disagreed. `set_sel` here stands in for the
+    /// row the next OK/UP/DOWN actually acts on disagreed. `focus_key` here stands in for the
     /// engine's write-back exactly as `screens::player::overlay::PlayerOverlayScreen::step` performs
     /// it on a real `FocusMoved`, so `menu.sel()` staying put after `update` is the proof the
     /// engine's remembered element and the drawn cursor still name the same row.
@@ -2309,8 +2335,8 @@ mod enhancement_menu_tests {
         });
         // Row 0 is the one audio track (checked/active); row 1 is Boost dialog. Move the ENGINE's
         // focus there the way a real UP press's `FocusMoved` write-back does.
-        menu.set_sel(1);
-        assert_eq!(menu.audio_targets[1], AudioRowTarget::Boost, "fixture shape: row 1 is Boost");
+        assert_eq!(menu.ids()[1], TrackRow::Boost, "fixture shape: row 1 is Boost");
+        assert!(menu.focus_id(TrackRow::Boost));
 
         // The SAME playback settles Boost dialog ON — a LIVE change this menu did not itself
         // request (mirrors the server's async `EnhancementOutcome` landing), delivered the way
@@ -2328,8 +2354,8 @@ mod enhancement_menu_tests {
             "the toggle row stays focused across a live poll rebuild, not snapped to the checked track"
         );
         assert_eq!(
-            menu.audio_targets.get(menu.sel() as usize).copied(),
-            Some(AudioRowTarget::Boost),
+            menu.form.selected_id().copied(),
+            Some(TrackRow::Boost),
             "and the row at that position is still, logically, the same Boost row"
         );
 
@@ -2342,8 +2368,8 @@ mod enhancement_menu_tests {
     /// drawn); the ONE thing that still flips the rows fully absent is the Plex Pass fact itself
     /// (I1/I2), which is what this fixture now simulates. While the rows are gone, `table.sel`
     /// falls back to the checked track (there is no Boost/Loudness row left to preserve identity
-    /// against), and the ENGINE's own reconcile can independently clamp its stale remembered index
-    /// into the smaller row count and write a DIFFERENT row back via `set_sel` — exactly the way
+    /// against), and the ENGINE's own reconcile can independently clamp its stale remembered key
+    /// into the smaller row count and write a DIFFERENT row back via `focus_key` — exactly the way
     /// `PlayerOverlayScreen::step`'s `FocusMoved` arm does on a real device. Simulating that clamp
     /// here (rather than the checked-track fallback) proves the fix reads back the identity that
     /// was banked before the vanish, not whatever `table.sel` happens to hold once the rows return.
@@ -2367,12 +2393,12 @@ mod enhancement_menu_tests {
         let store = two_tracks();
         let mut menu = TrackMenuState::new(&ps_before, store.view(), 0, Vec::new());
         assert_eq!(
-            menu.audio_targets,
-            vec![AudioRowTarget::Track(0), AudioRowTarget::Track(1), AudioRowTarget::Boost, AudioRowTarget::Loudness],
+            menu.ids(),
+            vec![TrackRow::Audio(0), TrackRow::Audio(1), TrackRow::Boost, TrackRow::Loudness],
             "fixture shape: two tracks, then Boost, then Loudness"
         );
         // The engine's focus lands on Boost, the way a real UP/DOWN's `FocusMoved` write-back does.
-        menu.set_sel(2);
+        assert!(menu.focus_id(TrackRow::Boost));
 
         // The offer vanishes for a frame — under M7 only a Plex Pass flip does that (I1/I2); every
         // other gate that used to hide the rows is now a visible `Disabled` reason instead.
@@ -2388,8 +2414,8 @@ mod enhancement_menu_tests {
         // stale remembered index (2, Boost) is now out of range for the 2-row table and clamps to
         // the last row — Track(1), not the checked Track(0) the fallback above chose. Simulate that
         // write-back exactly as `live_update_preserves_focus_on_the_toggled_row_not_the_checked_track`
-        // simulates a real `FocusMoved` via `set_sel`.
-        menu.set_sel(1);
+        // simulates a real `FocusMoved` via `focus_key`.
+        assert!(menu.focus_id(TrackRow::Audio(1)));
 
         // The offer returns (the subtitle switched off again) — the same live poll this menu never
         // triggered itself.
@@ -2399,8 +2425,8 @@ mod enhancement_menu_tests {
 
         assert!(menu.enhance_shown.is_some(), "fixture shape: the offer is back");
         assert_eq!(
-            menu.audio_targets.get(menu.sel() as usize).copied(),
-            Some(AudioRowTarget::Boost),
+            menu.form.selected_id().copied(),
+            Some(TrackRow::Boost),
             "a rows-vanish-and-return round trip must restore focus to the row the viewer was \
              actually on, not wherever the vanished frame's engine-side clamp happened to land"
         );
@@ -2491,9 +2517,9 @@ mod enhancement_menu_tests {
                 applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
                 ..Default::default()
             });
-            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
+            out.extend(menu.form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
@@ -2512,7 +2538,7 @@ mod enhancement_menu_tests {
     }
 
     fn flat_rows(menu: &TrackMenuState) -> Vec<&Row> {
-        menu.table.sections.iter().flat_map(|s| &s.rows).collect()
+        menu.form.table.sections.iter().flat_map(|s| &s.rows).collect()
     }
 
     /// **The failing case this fix closes**: while the audio enhancement is actually burning the
@@ -2531,21 +2557,21 @@ mod enhancement_menu_tests {
         });
         assert!(menu.sub_style_locked, "the live route is burning this subtitle in");
 
-        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).expect("Timing row present");
-        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).expect("Color row present");
+        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
+        let color_i = menu.form.index_of(&TrackRow::Color).expect("Color row present");
         let rows = flat_rows(&menu);
         assert!(rows[timing_i].dim, "Timing is dim under a live burn");
         assert!(rows[color_i].dim, "Color is dim under a live burn");
 
         let note_i = color_i + 1;
-        assert_eq!(menu.targets[note_i], RowTarget::Note);
+        assert!(menu.form.id_at(note_i).is_none(), "the note is an inert slot: no id, no key, no action");
         assert_eq!(rows[note_i].label, crate::i18n::msg::widgets_tracks_style_locked_note());
         assert!(rows[note_i].sep, "a note row is non-selectable");
 
         // The track rows themselves stay live: Off, and the embedded subtitle, neither dim.
-        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).expect("Off row present");
+        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
         assert!(!rows[off_i].dim);
-        let sub_i = menu.targets.iter().position(|t| *t == RowTarget::Sub(0)).expect("Sub(0) row present");
+        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
         assert!(!rows[sub_i].dim);
 
         teardown(&ps);
@@ -2565,14 +2591,17 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         assert!(!menu.sub_style_locked);
-        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).expect("Timing row present");
+        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         assert!(!flat_rows(&menu)[timing_i].dim);
-        assert!(!menu.targets.contains(&RowTarget::Note));
+        assert!(
+            !flat_rows(&menu).iter().any(|r| r.label == crate::i18n::msg::widgets_tracks_style_locked_note()),
+            "no note while the rows are live",
+        );
         teardown(&ps);
     }
 
     /// OK on the dimmed Timing/Color rows is a no-op (`TrackOk::Inert`), the same "focusable but
-    /// inert" contract `RowTarget::Timing` already had while subtitles are Off — it must not open
+    /// inert" contract `TrackRow::Timing` already had while subtitles are Off — it must not open
     /// the Timing capsule or cycle Color while the server owns the picture.
     #[test]
     fn subtitles_ok_on_locked_timing_and_color_is_inert() {
@@ -2585,11 +2614,11 @@ mod enhancement_menu_tests {
         });
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
 
-        let timing_i = menu.targets.iter().position(|t| *t == RowTarget::Timing).unwrap();
+        let timing_i = menu.form.index_of(&TrackRow::Timing).unwrap();
         menu.focus_row(timing_i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
 
-        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).unwrap();
+        let color_i = menu.form.index_of(&TrackRow::Color).unwrap();
         menu.focus_row(color_i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
 
@@ -2608,7 +2637,7 @@ mod enhancement_menu_tests {
             ..Default::default()
         });
         let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).unwrap();
+        let off_i = menu.form.index_of(&TrackRow::SubOff).unwrap();
         menu.focus_row(off_i as c_int);
         match menu.on_ok(store.view()) {
             TrackOk::Commit { commit: TrackCommit::Subtitle { render_ordinal, stream_id, .. }, keep_open } => {
@@ -2660,11 +2689,11 @@ mod enhancement_menu_tests {
 
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
         assert!(menu.sub_style_locked, "Color/Timing must lock once the live route is really a Burn");
-        let color_i = menu.targets.iter().position(|t| *t == RowTarget::Color).expect("Color row present");
+        let color_i = menu.form.index_of(&TrackRow::Color).expect("Color row present");
         assert!(flat_rows(&menu)[color_i].dim, "Color must actually redraw dim, not just flag it internally");
-        let off_i = menu.targets.iter().position(|t| *t == RowTarget::Off).expect("Off row present");
+        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
         assert!(!flat_rows(&menu)[off_i].checked, "Off must no longer read checked");
-        let sub_i = menu.targets.iter().position(|t| *t == RowTarget::Sub(0)).expect("Sub(0) row present");
+        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
         assert!(flat_rows(&menu)[sub_i].checked, "the embedded track must read checked, not Off");
 
         teardown(&ps_after);
@@ -2685,9 +2714,9 @@ mod enhancement_menu_tests {
                 applied_burn: true,
                 ..Default::default()
             });
-            out.extend(menu.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.table.app_fit_failures_hugged(language.tag()));
+            out.extend(menu.form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
             teardown(&ps);
         }
         crate::ui::table::assert_no_fit_failures(&out);
@@ -2710,12 +2739,12 @@ mod enhancement_menu_tests {
         });
         let note = crate::i18n::msg::widgets_tracks_style_locked_note();
         let line = ShippedMeasure.width_str(&note, crate::ui::theme::size::CAPTION, false);
-        let before = menu.table.measured_height();
-        let pw = menu.table.menu_panel_width(&ShippedMeasure);
-        let issues = menu.table.fit_report(pw, &ShippedMeasure, HEADROOM);
+        let before = menu.form.table.measured_height();
+        let pw = menu.form.table.menu_panel_width(&ShippedMeasure);
+        let issues = menu.form.table.fit_report(pw, &ShippedMeasure, HEADROOM);
         assert!(issues.iter().all(|i| i.origin != crate::ui::table::Origin::App), "{issues:?}");
         assert!(line > pw, "the premise: one line of it is wider than the panel");
-        assert!(menu.table.measured_height() > before, "the panel grows by the wrapped note's extra lines");
+        assert!(menu.form.table.measured_height() > before, "the panel grows by the wrapped note's extra lines");
         teardown(&ps);
     }
 }
@@ -2725,6 +2754,11 @@ mod focus_tests {
     use super::*;
     use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    /// The focus element of the `i`-th Audio row, named by identity.
+    fn audio_key(i: usize) -> u32 {
+        TrackRow::Audio(i).key().0
+    }
 
     struct HostFixture;
     impl Host for HostFixture {
@@ -2752,18 +2786,17 @@ mod focus_tests {
     /// A three-row Audio tab, built without a `PlaybackSession` or a playing item — nothing here
     /// reads either.
     fn three_row_menu() -> TrackMenuState {
-        let mut sec = Section::new("Audio");
-        for label in ["English", "Русский", "Français"] {
-            sec = sec.row(Row::new(label));
+        let mut sec = FormSection::new("Audio");
+        for (i, label) in ["English", "Русский", "Français"].into_iter().enumerate() {
+            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), Row::new(label));
         }
-        let mut table = TableView::new();
-        table.set_sections(vec![sec], 0, false);
+        let mut form = FormTable::new(crate::ui::table_screen::BAND_BASE);
+        form.set(TrackForm::new().section(sec), None);
         TrackMenuState {
             tab: 0,
             active_audio: 0,
             active_sub: -1,
-            targets: Vec::new(),
-            audio_targets: Vec::new(),
+            form,
             offset_ms: 0,
             tone: SubtitleTone::White,
             yours: Vec::new(),
@@ -2773,7 +2806,6 @@ mod focus_tests {
             enhance_subtitle_effect: crate::route::SubtitleEffect::None,
             sticky_audio_target: None,
             sub_style_locked: false,
-            table,
         }
     }
 
@@ -2796,10 +2828,10 @@ mod focus_tests {
                     Step::Edge => None,
                 }
             };
-            assert_eq!(step(0, Dir::Down), Some(1));
-            assert_eq!(step(2, Dir::Down), None, "the last row does not wrap");
-            assert_eq!(step(0, Dir::Up), None, "the first row does not wrap");
-            assert_eq!(step(1, Dir::Up), Some(0));
+            assert_eq!(step(audio_key(0), Dir::Down), Some(audio_key(1)));
+            assert_eq!(step(audio_key(2), Dir::Down), None, "the last row does not wrap");
+            assert_eq!(step(audio_key(0), Dir::Up), None, "the first row does not wrap");
+            assert_eq!(step(audio_key(1), Dir::Up), Some(audio_key(0)));
         });
     }
 
@@ -2815,7 +2847,7 @@ mod focus_tests {
             assert!(matches!(
                 <TrackMenuPart as Focusable<HostFixture>>::neighbour(
                     &part,
-                    FocusKey { entry: e, elem: 1 },
+                    FocusKey { entry: e, elem: audio_key(1) },
                     Dir::Left,
                     cx,
                 ),
@@ -2836,14 +2868,55 @@ mod focus_tests {
         let e = EntryId(5);
         let st = three_row_menu();
         let r = st.panel_rect(&crate::ui::fixture::FixtureMeasure);
-        let want = st.table.row_frame(r, 2);
+        let want = st.form.table.row_frame(r, 2);
         let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
-            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &2u32, cx, At::Drawn);
+            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &audio_key(2), cx, At::Drawn);
             assert_eq!(
                 placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)),
                 want.map(|r| (r.x, r.y, r.w, r.h))
             );
+        });
+    }
+
+    /// **Reordering the menu moves no focus key.** The rows are the same three identities in the
+    /// opposite order: the focused row stays focused (by identity, through `FormTable::set`), its
+    /// key is the one it always had, `seat` hands the engine that key, `place` finds it at its new
+    /// position, and a DOWN step from it goes to whichever row now sits below.
+    #[test]
+    fn reordering_the_rows_moves_no_focus_key() {
+        let e = EntryId(5);
+        let mut st = three_row_menu();
+        st.form.table.sel = 2; // Audio(2), the last row
+        let mut sec = FormSection::new("Audio");
+        for i in [2usize, 1, 0] {
+            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), Row::new(format!("row {i}")));
+        }
+        st.form.set(TrackForm::new().section(sec), st.form.selected_id().copied().as_ref());
+        assert_eq!(st.form.selected_id(), Some(&TrackRow::Audio(2)), "focus followed the identity");
+        assert_eq!(st.form.table.sel, 0, "…to its new position");
+
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let seat = <TrackMenuPart as Focusable<HostFixture>>::seat(
+                &part,
+                GroupId(0),
+                Placed { rect: Rect::new(0.0, 0.0, 1.0, 1.0), rest_rect: Rect::new(0.0, 0.0, 1.0, 1.0), clip: Rect::new(0.0, 0.0, 1.0, 1.0), index: None },
+                cx,
+            );
+            assert_eq!(seat.elem, audio_key(2), "the engine is told the key the row always had");
+            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &audio_key(2), cx, At::Drawn)
+                .expect("the moved row still places");
+            assert_eq!(placed.index, Some(0));
+            let Step::Move(next) = <TrackMenuPart as Focusable<HostFixture>>::neighbour(
+                &part,
+                FocusKey { entry: e, elem: audio_key(2) },
+                Dir::Down,
+                cx,
+            ) else {
+                panic!("DOWN from the first row moves")
+            };
+            assert_eq!(next.elem, audio_key(1), "stepping follows the NEW order");
         });
     }
 
@@ -2863,15 +2936,15 @@ mod focus_tests {
         let mut st = three_row_menu();
         // The panel's own rebuild has already moved `table.sel` to row 2 (e.g. `sticky_audio_target`
         // restoring focus onto the toggle row once the enhancement rows came back).
-        st.table.sel = 2;
+        st.form.table.sel = 2;
         let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
             // The engine still remembers row 0 — a perfectly in-range index for this 3-row table,
             // so the old clamp-`want` implementation would answer it back UNCHANGED.
-            let want = FocusKey { entry: e, elem: 0u32 };
+            let want = FocusKey { entry: e, elem: audio_key(0) };
             let got = <TrackMenuPart as Focusable<HostFixture>>::reconcile(&part, want, cx);
             assert_eq!(
-                got.elem, 2,
+                got.elem, audio_key(2),
                 "reconcile must follow the panel's own table.sel, not echo back an in-range `want`"
             );
         });

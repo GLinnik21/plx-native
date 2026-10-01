@@ -1196,8 +1196,8 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{subtitle_menupick_target(op)}'))
         elif kind == "audio_enhancement":
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
-            # appended after the audio tracks (`track_menu.rs`'s `build_audio`). `menupick` names
-            # them rather than stating a row: `AudioRowTarget`/`TrackMenuState::row_for_audio_target`
+            # appended after the audio tracks (`track_menu.rs`'s `audio_form`). `menupick` names
+            # them rather than stating a row: `TrackRow`/`TrackMenuState::row_for_audio_target`
             # resolve "boost"/"loudness" through the SAME row map `on_ok` dispatches on, so the
             # trigger is correct regardless of the item's own track count — the derived-row-number
             # dance this replaced (PR4's fix for a row hardcoded against a wrong track count) is

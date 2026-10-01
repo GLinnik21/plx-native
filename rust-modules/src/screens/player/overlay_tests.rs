@@ -422,7 +422,10 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then the headerless Timing + Color section
-    let color = 2;
+    let color = {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        menu.key_of(crate::ui::track_menu::TrackRow::Color).expect("the Color row is on the Subtitles tab")
+    };
     deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: color }, by: By::Dir });
     let (_, reqs, dismissed) = activate(&mut page, color);
     assert!(!dismissed, "a Color press keeps the panel open");
@@ -434,8 +437,12 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
     )));
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
 
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 0 }, by: By::Dir });
-    let (_, _, dismissed) = activate(&mut page, 0);
+    let off = {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        menu.key_of(crate::ui::track_menu::TrackRow::SubOff).expect("the Off row")
+    };
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: off }, by: By::Dir });
+    let (_, _, dismissed) = activate(&mut page, off);
     assert!(dismissed, "Off still commits and closes");
 }
 
@@ -451,11 +458,11 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     // no playing item: Off, then Timing, then Color — and Off is the checked row
-    let timing = 1;
-    {
+    use crate::ui::track_menu::TrackRow;
+    let timing = {
         let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        assert_eq!(menu.targets()[timing as usize], crate::ui::track_menu::RowTarget::Timing);
-    }
+        menu.key_of(TrackRow::Timing).expect("the Timing row is on the Subtitles tab")
+    };
     deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
     let (_, reqs, dismissed) = activate(&mut page, timing);
     assert!(!dismissed, "an inert row keeps the panel up");
@@ -490,25 +497,19 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
         }]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    use crate::ui::track_menu::TrackRow;
     let (sub_row, timing_row) = {
         let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
-        let sub_row = menu
-            .targets()
-            .iter()
-            .position(|t| matches!(t, crate::ui::track_menu::RowTarget::Sub(_)))
-            .expect("a subtitle track row");
-        let timing_row = menu
-            .targets()
-            .iter()
-            .position(|t| *t == crate::ui::track_menu::RowTarget::Timing)
-            .expect("Timing row");
-        (sub_row, timing_row)
+        (
+            menu.key_of(TrackRow::Sub(0)).expect("a subtitle track row"),
+            menu.key_of(TrackRow::Timing).expect("Timing row"),
+        )
     };
     // Select the subtitle track first — Timing is inert while subtitles are Off.
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row as u32 }, by: By::Dir });
-    activate(&mut page, sub_row as u32);
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing_row as u32 }, by: By::Dir });
-    let (_, reqs, dismissed) = activate(&mut page, timing_row as u32);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row }, by: By::Dir });
+    activate(&mut page, sub_row);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing_row }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, timing_row);
     assert!(dismissed, "OpenTiming dismisses the Tracks panel");
     assert_eq!(
         reqs,
@@ -756,9 +757,10 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         Focusable::<TestHost>::groups(&page, &cx, &mut groups);
         let mut rows = Vec::new();
         for g in &groups {
-            // the More menu's elements are row identities; every other panel's are positions
+            // the More and Tracks menus' elements are row identities; every other panel's are positions
             let elems: Vec<u32> = match page.panel() {
                 Panel::More(p) => p.keys(),
+                Panel::Tracks(p) => p.keys(),
                 _ => (0..g.len as u32).collect(),
             };
             for elem in elems {

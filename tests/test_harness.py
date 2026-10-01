@@ -3177,7 +3177,7 @@ class AbrTraceMetrics(unittest.TestCase):
 
     def test_audio_enhancement_op_writes_a_named_target_not_a_row(self):
         """issue #266 PR4 review: `audio_enhancement` reuses `plxnative-menupick` at tab 0, but
-        writes a NAMED target (`AudioRowTarget`/`TrackMenuState::row_for_audio_target` resolve it
+        writes a NAMED target (`TrackRow`/`TrackMenuState::row_for_audio_target` resolve it
         against the panel's own row map) rather than a row number derived from the item's track
         count -- the bug this review caught was exactly a hand-derived row going stale against the
         real server's track count. There is no track count to fetch or get wrong any more: the

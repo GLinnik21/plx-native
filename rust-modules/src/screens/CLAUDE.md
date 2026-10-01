@@ -79,11 +79,10 @@ Text that comes from a server or a user is marked with the `server_*` builders s
 never mark the app's own fallback strings. See `ui/CLAUDE.md`, "Localization and shared reading
 layout", for what to do when a string does not fit.
 
-A page on a `ui::form::FormTable` (the Settings root, Playback / Audio & Subtitles, Language, the Legal index, Privacy & data and the item / account / more menus; the track menu and source list migrate per `docs/settings-form.md`)
+A page on a `ui::form::FormTable` (the Settings root, Playback / Audio & Subtitles, Language, the Legal index, Privacy & data and the item / account / more / track menus, the source list, the Alternate-sources panel and the Library menu)
 focuses by IDENTITY: the element the engine holds, the `Fx::Remember` seat and the page's canon are
 the row's `RowKey`, never its table index, so reordering the form moves no focus key. Such a page
-answers `FocusMoved` with `family::form_focus` and draws through `TableScreen::keyed`; a page not yet
-on a form keeps `table_focus` and index elements. A menu outside the Settings family has no `Dest` (an
+answers `FocusMoved` with `family::form_focus` and draws through `TableScreen::keyed`; no screen keeps a parallel rows/actions vector beside its `TableView` any more (the Alternate-sources panel keys its rows by position, which is a dynamic list's documented key). A menu outside the Settings family has no `Dest` (an
 uninhabited `Infallible`) and activates with `FormTable::activate`; it rebuilds with `set_or_open`, so a
 vanished focused row reopens on the safe opening row instead of sliding onto a destructive neighbour.
 
