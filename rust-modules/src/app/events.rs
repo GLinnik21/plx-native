@@ -550,7 +550,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
             None => false,
         }
     } else if tok == "diag" || tok == "diagnostics" {
-        if crate::lab::menu_row_enabled() {
+        if crate::labcfg::menu_row_enabled() {
             crate::lab::request_upload("command", ps);
             true
         } else {

@@ -1612,7 +1612,7 @@ pub(crate) fn panel_rect(&self) -> Rect {
 }
 
 /// The panel's frame WHEN IT IS ON SCREEN — the only question another module asks of this one
-/// (`lab_toast` sits immediately below it, and neither may cover the other). `None` when the
+/// (`lab::toast` sits immediately below it, and neither may cover the other). `None` when the
 /// read-out is off, so the caller cannot forget to ask [`enabled`] first.
 pub(crate) fn frame_if_shown(&self) -> Option<Rect> {
     enabled().then(|| self.panel_rect())

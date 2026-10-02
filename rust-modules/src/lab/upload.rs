@@ -20,7 +20,7 @@
 //! nothing appears to be happening, so the realistic input is four presses in two seconds; a queue
 //! would answer that by sending four near-identical documents over a link that was already the
 //! reason nothing appeared to happen.
-use crate::lab::config;
+use crate::labcfg::config;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering::Relaxed};
 use std::sync::Mutex;
 
