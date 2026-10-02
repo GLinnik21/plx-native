@@ -147,9 +147,11 @@ impl Selftest {
         )
     }
 
-    /// (Re)state the held pin in the key table. Done before every round because
+    /// (Re)state the held pin in the key table. Done before every plane because
     /// `keypin::project` replaces the session's remembered keys wholesale and would take this one
-    /// with it; stating an unchanged pin again does not disturb the latch.
+    /// with it (the pin is filed under a synthetic machine no session holds), so a session write
+    /// that lands mid-round costs at most the plane it overlaps; stating an unchanged pin again
+    /// does not disturb the latch.
     fn assert_table(&self) {
         if let Some(pin) = &self.held {
             keypin::bind(&self.machine, self.cfg.origin.host(), self.cfg.origin.port());
@@ -157,10 +159,24 @@ impl Selftest {
         }
     }
 
-    /// One round: the control plane, then the media plane.
+    /// What the log lines report as `pin_held`: whether the key table holds a pin for this origin
+    /// at the moment the line is written (not whether this run was given or learned one).
+    fn pin_held(&self) -> &'static str {
+        yes_no(keypin::holds(&self.key))
+    }
+
+    /// One round: the control plane, then the media plane, the table re-stated before each.
     pub(crate) fn round(&mut self, r: u32) -> [Plane; 2] {
+        self.round_with(r, || ())
+    }
+
+    /// [`round`](Self::round) with `between` run after the control plane and before the table is
+    /// re-stated for the media plane: where a session write landing mid-round would fall.
+    fn round_with(&mut self, r: u32, between: impl FnOnce()) -> [Plane; 2] {
         self.assert_table();
         let control = self.control(r);
+        between();
+        self.assert_table();
         let media = self.media(r);
         [control, media]
     }
@@ -173,7 +189,6 @@ impl Selftest {
 
     fn control(&mut self, r: u32) -> Plane {
         let reply = crate::auth::get_identity(&self.cfg.origin, self.resolve_pin.as_ref(), PLANE_BUDGET);
-        let held = yes_no(self.held.is_some());
         match reply {
             crate::auth::ProbeReply::Answered { status, peer_pin, .. } => {
                 let mode = self.mode();
@@ -193,20 +208,19 @@ impl Selftest {
                         self.assert_table();
                     }
                 }
-                line.push_str(&format!(" pin_held={held}"));
+                line.push_str(&format!(" pin_held={}", self.pin_held()));
                 Plane { line, ok, key: mode == "key" }
             }
             crate::auth::ProbeReply::Failed(failure) => {
                 let rc = failure.and_then(|f| f.curl_rc).map_or("none".to_owned(), |rc| rc.to_string());
-                Plane { line: format!("tls-selftest r={r} control: refused rc={rc} pin_held={held}"), ok: false, key: false }
+                Plane { line: format!("tls-selftest r={r} control: refused rc={rc} pin_held={}", self.pin_held()), ok: false, key: false }
             }
         }
     }
 
     fn media(&self, r: u32) -> Plane {
         use crate::curlio::{CurlSource, OpenErr};
-        let held = yes_no(self.held.is_some());
-        let refused = |what: String| Plane { line: format!("tls-selftest r={r} media: refused {what} pin_held={held}"), ok: false, key: false };
+        let refused = |what: String| Plane { line: format!("tls-selftest r={r} media: refused {what} pin_held={}", self.pin_held()), ok: false, key: false };
         let reservation = match CurlSource::reserve_open() {
             Ok(res) => res,
             Err(e) => return refused(format!("open={e:?}")),
@@ -224,7 +238,7 @@ impl Selftest {
             return refused(format!("read={n}"));
         }
         let mode = self.mode();
-        Plane { line: format!("tls-selftest r={r} media: ok mode={mode} bytes={n} pin_held={held}"), ok: true, key: mode == "key" }
+        Plane { line: format!("tls-selftest r={r} media: ok mode={mode} bytes={n} pin_held={}", self.pin_held()), ok: true, key: mode == "key" }
     }
 }
 
@@ -232,8 +246,10 @@ fn yes_no(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
-/// The trigger's one entry point, called once from `app::boot` after libcurl is bound. A no-op
-/// without the trigger. The worker is detached and ends with its rounds.
+/// The trigger's one entry point, called once from `app::boot` after libcurl is bound AND after the
+/// boot session projection (`session::project_server_keys`): that projection replaces the key table
+/// wholesale, and this run's pin is filed under a synthetic machine no session holds, so arming
+/// earlier let the projection wipe it under round 1's first handshake. A no-op without the trigger. The worker is detached and ends with its rounds.
 pub(crate) fn arm_at_boot() {
     let Some(value) = crate::dev::read("tls-selftest") else { return };
     let cfg = match parse(&value) {
@@ -376,7 +392,7 @@ mod tests {
         // `pin` absent: the pin is learned. A second run with it given reports `matches_given`.
         let mut run = run_for(port, "");
         let [control, media] = run.round(1);
-        assert_eq!(control.line, "tls-selftest r=1 control: ok mode=strict learned=yes pin_held=no", "{}", control.line);
+        assert_eq!(control.line, "tls-selftest r=1 control: ok mode=strict learned=yes pin_held=yes", "{}", control.line);
         assert!(media.line.starts_with("tls-selftest r=1 media: ok mode=strict bytes="), "{}", media.line);
         assert!(control.ok && media.ok && !control.key && !media.key);
         assert_eq!(run.held.as_deref(), Some(given.as_str()), "the learned pin is the served leaf's");
@@ -406,6 +422,40 @@ mod tests {
         assert_eq!(control.line, "tls-selftest r=7 control: ok mode=key pin_held=yes", "{}", control.line);
         assert!(media.line.starts_with("tls-selftest r=7 media: ok mode=key bytes="), "{}", media.line);
         assert!(control.key && media.key);
+        forget(port);
+        resolve::clear();
+    }
+
+    /// The sequence behind the round-1 refusal seen on a television whose clock was already wrong
+    /// at launch: the table is stated, a session projection replaces it wholesale (this run's pin
+    /// is filed under a machine no session holds), and the handshake that follows finds no pin.
+    /// Arming after the boot projection (`app::boot`) is what keeps this off the real boot; what
+    /// the run itself guarantees is that a wipe costs one plane at most and is reported truthfully
+    /// (`pin_held` is the table, not the run's own "given or learned" field).
+    #[test]
+    fn a_projection_that_wipes_the_pin_costs_one_plane_and_the_line_says_so() {
+        let _serial = crate::testlock::serial();
+        if !(crate::net::global_init() && crate::net::available()) { return; }
+        resolve::clear();
+        let (cert, _ca, port) = serve(-90, -30, "selftest-wiped");
+        let pin = crate::spki::pin_from_spki_der(&cert.spki_der);
+        let mut run = run_for(port, &format!(r#","pin":"{pin}""#));
+        assert!(keypin::holds(&run.key), "stated at construction");
+        let wipe = || crate::plex::session::project_server_keys(&crate::plex::session::Session::default());
+
+        // The projection lands before the first handshake: the control plane is refused, and the
+        // line does not claim a pin the table no longer holds.
+        wipe();
+        assert!(!keypin::holds(&run.key), "the projection took the pin with it");
+        let control = run.control(1);
+        assert_eq!(control.line, "tls-selftest r=1 control: refused rc=60 pin_held=no", "{}", control.line);
+
+        // A projection landing between the planes: the control plane (pin stated at round start)
+        // answers in key mode, and the media plane, re-stated after the wipe, does too.
+        let [control, media] = run.round_with(2, wipe);
+        assert_eq!(control.line, "tls-selftest r=2 control: ok mode=key pin_held=yes", "{}", control.line);
+        assert!(media.line.starts_with("tls-selftest r=2 media: ok mode=key bytes="), "{}", media.line);
+        assert!(media.line.ends_with("pin_held=yes"), "{}", media.line);
         forget(port);
         resolve::clear();
     }

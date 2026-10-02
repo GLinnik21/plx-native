@@ -517,10 +517,6 @@ pub(crate) unsafe fn construct(
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
     let _ = crate::net::global_init();
-    // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
-    // no account (a no-op without the trigger; absent in shipping builds).
-    #[cfg(feature = "devtriggers")]
-    crate::dev::scenarios::tls_selftest::arm_at_boot();
     // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
     // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines
     // up.** It was there first, and the end-to-end run showed why that was wrong: the worker
@@ -646,6 +642,13 @@ pub(crate) unsafe fn construct(
     // The remembered server keys of the session this boot runs on, handed over before any request
     // can leave: a captured session was never READ through the cache that projects them.
     crate::plex::session::project_server_keys(&session);
+    // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
+    // no account (a no-op without the trigger; absent in shipping builds). Armed HERE, after the
+    // projection above, and not beside `global_init`: the projection replaces the key table
+    // wholesale, and the self-test's pin is filed under a machine no session holds, so a projection
+    // landing while round 1's first handshake was in flight wiped it and the round was refused.
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::tls_selftest::arm_at_boot();
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();

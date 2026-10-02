@@ -2365,6 +2365,13 @@ pub(crate) mod keypin {
         state().latched.contains_key(key)
     }
 
+    /// Does the table hold a pin for `key` (`host:port`) right now? Read by the `tls-selftest` dev
+    /// trigger, whose log lines report the table itself and not what the trigger last asked of it.
+    #[cfg(any(test, feature = "devtriggers"))]
+    pub(crate) fn holds(key: &str) -> bool {
+        state().table.contains_key(key)
+    }
+
     /// Removes a test's table and latch entries when it ends, however it ends.
     #[cfg(test)]
     pub(crate) struct Scoped(pub(crate) String);
