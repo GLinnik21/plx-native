@@ -3596,23 +3596,11 @@ pub struct StatusOverlay<'a> {
     pub scales: [f32; STATUS_ROW_MAX],
 }
 
-/// **Where a `Failed` read-out's action row stands under its reason** — one switch, so the two
-/// candidates can be photographed side by side.
-///
-/// Before this the row sat [`space::LG`](theme::space::LG) under the END OF THE RESERVED
-/// TWO-LINE SLOT, which left a two-line reason only that much air above the pills.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RowPlacement {
-    /// ONE row position for every read-out, whatever the reason's line count: the slot's end plus
-    /// [`ROW_FIXED_DROP`]. A one-line reason keeps its empty second line and the extra air too.
-    Fixed,
-    /// The row follows the reason: a constant gap under the LAST line, chosen so a one-line
-    /// reason is exactly where it was before and a two-line one pushes the row down a line pitch.
-    Following,
-}
-pub(crate) const ROW_PLACEMENT: RowPlacement = RowPlacement::Fixed;
-/// [`RowPlacement::Fixed`]'s extra drop under the slot's end, a `theme::space` rung.
-const ROW_FIXED_DROP: f32 = theme::space::MD;
+/// How far a `Failed` read-out's action row sits below the end of its reserved two-line reason
+/// slot, on top of [`space::LG`](theme::space::LG): one position for every reason, whatever its
+/// line count, so a two-line reason keeps air above the pills and a one-line one just keeps its
+/// empty second line. A `theme::space` rung.
+const REASON_ROW_DROP: f32 = theme::space::MD;
 
 /// The most controls one read-out row carries: a primary, a secondary and two `extra` slots.
 pub const STATUS_ROW_MAX: usize = 4;
@@ -3776,14 +3764,6 @@ impl<'a> StatusOverlay<'a> {
         let (sz, ink) = Self::reason_face(self.kind);
         TextView::new(seg, sz, ink).h(HAlign::Center).max_lines(1)
     }
-    /// How many lines the reason occupies in its slot: its forced lines, else the wrapped count.
-    fn reason_line_count(&self, measure: &dyn crate::ui::machine::Measure) -> usize {
-        let Some(r) = self.reason else { return 0 };
-        match Self::reason_segments(r.to_str().unwrap_or("")) {
-            Some(lines) => lines.len().clamp(1, 2),
-            None => self.reason_view(r).with_measure(measure).line_count(Self::REASON_W.min(self.frame.w)).min(2),
-        }
-    }
     /// Whether `reason` would be cut short in a `Failed` read-out's two-line slot [`Self::REASON_W`]
     /// wide, measured through the slot's own view, with `headroom` of the width to spare.
     #[cfg(test)]
@@ -3931,31 +3911,14 @@ impl<'a> StatusOverlay<'a> {
     fn bands_measured(&self, measure: &dyn crate::ui::machine::Measure) -> StatusBands {
         let (cap_sz, _, _) = Self::verdict_face(self.kind);
         let (reason_sz, _) = Self::reason_face(self.kind);
-        self.bands_from_heights(
-            measure.line_h(cap_sz),
-            self.reason_h(measure.line_h(reason_sz)),
-            // the wrap that counts the lines is only paid for by the placement that reads it
-            if ROW_PLACEMENT == RowPlacement::Following { self.reason_line_count(measure) } else { 0 },
-        )
+        self.bands_from_heights(measure.line_h(cap_sz), self.reason_h(measure.line_h(reason_sz)))
     }
 
-    /// How far the action row sits below the reserved slot's end plus `space::LG`, by
-    /// [`ROW_PLACEMENT`] — see [`RowPlacement`]. Only a slotted reason moves it: a read-out
-    /// without one, and the `Working`/`Empty` kinds, stack exactly as they always did.
-    fn row_drop(&self, reason_lines: usize) -> f32 {
-        if !self.reason_slotted() || self.reason.is_none() {
-            return 0.0;
-        }
-        Self::row_drop_by(ROW_PLACEMENT, reason_lines, self.reason_view(c"").line_h())
-    }
-
-    /// [`Self::row_drop`] for a named placement, so a test can hold both candidates to their
-    /// numbers whichever one [`ROW_PLACEMENT`] currently selects.
-    fn row_drop_by(placement: RowPlacement, reason_lines: usize, pitch: f32) -> f32 {
-        match placement {
-            RowPlacement::Fixed => ROW_FIXED_DROP,
-            RowPlacement::Following => reason_lines.saturating_sub(1) as f32 * pitch,
-        }
+    /// How far the action row sits below the reserved slot's end plus `space::LG`
+    /// ([`REASON_ROW_DROP`]). Only a slotted reason moves it: a read-out without one, and the
+    /// `Working`/`Empty` kinds, stack exactly as they always did.
+    fn row_drop(&self) -> f32 {
+        if self.reason_slotted() && self.reason.is_some() { REASON_ROW_DROP } else { 0.0 }
     }
 
     /// The reason band's height from one reason line: absent, one line, or the reserved slot.
@@ -3967,7 +3930,7 @@ impl<'a> StatusOverlay<'a> {
         }
     }
 
-    fn bands_from_heights(&self, cap_h: f32, reason_h: f32, reason_lines: usize) -> StatusBands {
+    fn bands_from_heights(&self, cap_h: f32, reason_h: f32) -> StatusBands {
         let cy = self.frame.cy();
         let cap_y = if self.kind == StatusKind::Working {
             cy + theme::space::XS
@@ -3984,7 +3947,7 @@ impl<'a> StatusOverlay<'a> {
             below = r.y + h;
             r
         });
-        let action_y = below + theme::space::LG + self.row_drop(reason_lines);
+        let action_y = below + theme::space::LG + self.row_drop();
         StatusBands { cap, reason, action_y }
     }
 

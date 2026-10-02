@@ -2710,7 +2710,7 @@ mod tests {
 
     /// **The failed read-out stands on the page read-out's anchor and never grows.** Its verdict
     /// hangs from `StatusOverlay::FULL_ANCHOR_TOP` and its row — *Try again* / *Details*, nothing
-    /// else — stacks `space::LG` under the reason; a report's status line, a sendable offer and a
+    /// else — stacks `space::LG` plus the fixed drop under the reserved two-line reason slot; a report's status line, a sendable offer and a
     /// delivered report all leave the row exactly where it was.
     #[test]
     fn the_failed_readout_stands_on_the_page_lines_and_never_grows() {

@@ -945,7 +945,8 @@ fn output_failed_naming(output: &dyn owner::ObservationSink, epoch: u64, message
 /// ([`crate::plex::account::DISPLAY_NAME_TIMEOUTS`], 5 s), made after discovery has already ended
 /// in [`Discovery::NoServers`]: a successful sign-in never asks, and nothing asks before discovery.
 /// `None` for every other verdict, for a call that failed or timed out, and for an answer with no
-/// usable name — the read-out then says `browse.auth.no_servers`, with no trace of the miss.
+/// usable name — the read-out then says `browse.auth.no_servers` and shows nothing of the miss
+/// (the failed call's status line is still logged, and no log line ever carries the account).
 ///
 /// The name is personal data and goes nowhere but [`LoginProgress::Failed::account`]: it is not
 /// logged here, and the measuring that fits it on a line happens on the screen's thread
@@ -973,8 +974,9 @@ fn no_servers_account_with(d: &Discovery, output: &dyn owner::ObservationSink,
 /// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
 /// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
 /// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
-/// at the name's end would sit against that period as four dots. `None` for a blank name — the caller says
-/// `browse.auth.no_servers` instead, which needs no name.
+/// at the name's end would sit against that period as four dots. `None` for a blank name, or when the sentence
+/// leaves the name no room at all — the caller says `browse.auth.no_servers` instead, which needs
+/// no name.
 ///
 /// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
 /// no font to ask, which is why this takes the capability rather than reading one.
@@ -998,9 +1000,13 @@ pub(crate) fn signed_in_reason(account: &str, measure: &dyn crate::ui::machine::
     // the sum of the parts under-reads the whole (kerning across the name's edges).
     let mut room = column - first_line_w(&message(""));
     loop {
+        // No room for any of the name: the plain caption says it better than a bare ellipsis.
+        if room <= 0.0 {
+            return None;
+        }
         let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
         let out = message(&name);
-        if first_line_w(&out) <= column || room <= 0.0 {
+        if first_line_w(&out) <= column {
             return Some(out);
         }
         room -= 1.0;

@@ -2911,6 +2911,36 @@ fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
     }
 }
 
+/// **A column too narrow for even the bare sentence names nobody.** The reason is `None`, so the
+/// caller shows `browse.auth.no_servers`, rather than the full unshortened name overflowing.
+#[test]
+fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
+    struct Wide;
+    impl crate::ui::machine::Measure for Wide {
+        fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    assert_eq!(signed_in_reason("alexandra", &Wide), None);
+}
+
+/// The user call is not made for a sink that is no longer live (the sign-in was cancelled).
+#[test]
+fn a_dead_sink_never_asks_for_the_account_name() {
+    struct Dead;
+    impl owner::ObservationSink for Dead {
+        fn live(&self) -> bool { false }
+        fn progress(&self, _: AuthProgress) -> bool { false }
+        fn terminal(&self, _: AuthProgress) -> bool { false }
+    }
+    let evidence = crate::telemetry::incident::NoServersEvidence {
+        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    let mut calls = 0;
+    let account = no_servers_account_with(&Discovery::NoServers(evidence), &Dead,
+        || { calls += 1; Some("n".to_owned()) });
+    assert_eq!((account, calls), (None, 0));
+}
+
 #[test]
 fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
     use crate::i18n::{LocaleContext, Preference};

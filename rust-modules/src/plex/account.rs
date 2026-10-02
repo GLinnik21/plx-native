@@ -1188,10 +1188,12 @@ struct AccountDisplayName {
     friendly_name: Option<String>,
 }
 impl AccountDisplayName {
-    /// `username`, else `title`, else `friendlyName` — the first that is not blank, trimmed.
+    /// `username`, else `title`, else `friendlyName` — the first that is not blank, trimmed, with
+    /// control characters dropped (an interior NUL would turn the whole reason into an empty one).
     fn chosen(self) -> Option<String> {
         [self.username, self.title, self.friendly_name].into_iter().flatten()
-            .map(|name| name.trim().to_owned()).find(|name| !name.is_empty())
+            .map(|name| name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_owned())
+            .find(|name| !name.is_empty())
     }
 }
 
@@ -1988,6 +1990,14 @@ mod display_name_tests {
             Some("alexandra"));
         assert_eq!(chosen(r#"{"username":null,"title":"T","friendlyName":"F"}"#).as_deref(), Some("T"));
         assert_eq!(chosen(r#"{"username":"  ","title":"","friendlyName":" F "}"#).as_deref(), Some("F"));
+    }
+
+    #[test]
+    fn control_characters_are_dropped_before_the_blank_check() {
+        assert_eq!(chosen(r#"{"username":"al\u0000ex\u0007andra"}"#).as_deref(), Some("alexandra"));
+        assert_eq!(chosen(r#"{"username":"\u0000\u001f","title":"T"}"#).as_deref(), Some("T"),
+            "a name of only controls is blank");
+        assert_eq!(chosen(r#"{"username":"\u0000"}"#), None);
     }
 
     #[test]
