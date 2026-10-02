@@ -59,6 +59,7 @@ mod screens; // the application's OWNED screens (restructure phase 5b): the Sett
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 mod sha256; // SHA-256 / HMAC / PBKDF2, hand-written: the offline PIN verifier's hash (no crypto dependency)
+mod spki; // a PEM certificate -> its CURLOPT_PINNEDPUBLICKEY string (sha256//<base64 of the SPKI hash>)
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store

@@ -1543,16 +1543,30 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// back as `(0, [])`, and `classify` reads that as [`Outcome::Unreachable`]. `0` is not a status any
 /// server can send, so it cannot be confused with one.
 ///
-/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
-/// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
+/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to the probe request
+/// exactly as `apply_candidate_activation` forwards one to
 /// `register_origin` — the same [`crate::plex::ResolvePin`], used one step earlier: at the DIAL
 /// that decides the winner, not only at the registration of one already decided.
+///
+/// **A pin is also what makes a probe a learning one** (issue #380): a candidate with a
+/// `ResolvePin` is dialled with [`crate::http::request_probe_learning_key`], which reads the
+/// peer's leaf key off the verified connection, and one without it with plain
+/// [`crate::http::request_probe`]. The pinned names (the dashed `*.plex.direct` ones) are the
+/// only origins the offline fallback of #378 can ever apply to, and a server also published at a
+/// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
+/// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
+/// is `Some` exactly when it held.
 fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
-) -> (i32, Vec<u8>) {
-    match crate::http::request_probe(
+) -> ProbeReply {
+    let probe = if pin.is_some() {
+        crate::http::request_probe_learning_key
+    } else {
+        crate::http::request_probe
+    };
+    match probe(
         origin,
         IDENTITY,
         crate::http::Method::Get,
@@ -1565,8 +1579,50 @@ fn get_identity(
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
         // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
         // that might happen to contain a plausible machine id.
-        Some(r) => (r.status, r.body),
-        None => (0, Vec::new()),
+        Some(r) => ProbeReply { status: r.status, body: r.body, peer_pin: r.peer_pin },
+        None => ProbeReply::from((0, Vec::new())),
+    }
+}
+
+/// What one identity dial brought back: the legacy `(status, body)` pair (status `0` is "nothing
+/// answered") and, for a learning probe, the pin of the leaf certificate a strictly verified TLS
+/// connection presented (`crate::http::Reply::peer_pin`). `peer_pin` is `None` over plaintext, for
+/// an origin without a `ResolvePin` (see [`get_identity`]) and on every test seam.
+#[derive(Debug)]
+struct ProbeReply {
+    status: i32,
+    body: Vec<u8>,
+    peer_pin: Option<String>,
+}
+
+impl ProbeReply {
+    /// The acceptance verdict ([`classify`]) for this reply.
+    fn grade(&self, want_machine_id: &str) -> Outcome {
+        classify(self.status, &self.body, want_machine_id)
+    }
+
+    /// [`Self::grade`], and when the answer is accepted for `want_machine_id` over a verified
+    /// connection, remember that machine's public key (issue #380, for the offline fallback of
+    /// #378). Acceptance is [`classify`]'s: a 2xx whose `machineIdentifier` is the one asked for,
+    /// so a stranger answering at the address never teaches a key. Only a probe of a pinned
+    /// `plex.direct` origin carries a key at all ([`get_identity`]). A relay route is skipped as a
+    /// conservative choice: its certificate is not shown to be the server's.
+    fn grade_learning(&self, want_machine_id: &str, location: probe::Location) -> Outcome {
+        let outcome = self.grade(want_machine_id);
+        if let (Outcome::Reachable, Some(pin)) = (outcome, self.peer_pin.as_deref()) {
+            if location != probe::Location::Relay {
+                crate::plex::session::learn_server_key(want_machine_id, pin);
+            }
+        }
+        outcome
+    }
+}
+
+/// The legacy `(status, body)` shape the synchronous test seams script: status `0` is "nothing
+/// answered".
+impl From<(i32, Vec<u8>)> for ProbeReply {
+    fn from((status, body): (i32, Vec<u8>)) -> Self {
+        ProbeReply { status, body, peer_pin: None }
     }
 }
 
@@ -1618,7 +1674,7 @@ impl AdmissionBudget {
 }
 
 type ProbeDial = Arc<
-    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> ProbeReply + Send + Sync + 'static,
 >;
 type ProbeJob = Box<dyn FnOnce() + Send + 'static>;
 
@@ -1813,9 +1869,9 @@ fn race_batch(
         // belongs to a TLS name only) or an unmatched/undecodable label; the request then resolves
         // through DNS exactly as before.
         let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
+        let location = c.location;
         let job = Box::new(move || {
-            let (status, body) = dial(&origin, pin.as_ref(), budget);
-            let outcome = classify(status, &body, &machine_id);
+            let outcome = dial(&origin, pin.as_ref(), budget).grade_learning(&machine_id, location);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
             // this result is inert. If this claim wins and the worker is descheduled before send,
@@ -3352,8 +3408,8 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         } else {
             PROBE_DEADLINES.remote
         };
-        let (status, body) = get_identity(&origin, pin.as_ref(), budget);
-        let outcome = classify(status, &body, &plan.machine_id);
+        let outcome = get_identity(&origin, pin.as_ref(), budget)
+            .grade_learning(&plan.machine_id, cached.tier.unwrap_or(probe::Location::Relay));
         let source = (outcome == Outcome::Reachable).then(|| {
             let mut fresh = cached.clone();
             fresh.token = resource.access_token.clone();

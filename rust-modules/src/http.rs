@@ -99,6 +99,10 @@ impl Method {
 pub(crate) struct Reply {
     pub status: i32,
     pub body: Vec<u8>,
+    /// The peer leaf's `CURLOPT_PINNEDPUBLICKEY` string. Present only on the answer to a
+    /// [`request_probe_learning_key`] over a strictly verified TLS connection (see
+    /// [`crate::net::Resp::peer_pin`]); `None` for every other request and always over plaintext.
+    pub peer_pin: Option<String>,
 }
 
 /// One deadline-bearing request, classified where its transport still knows what ended it.
@@ -138,7 +142,7 @@ pub(crate) const ACCEPT_JSON: &str = "Accept: application/json";
 enum BodyPolicy {
     Api,
     Bulk,
-    Probe { max: usize, timeout_s: i32 },
+    Probe { max: usize, timeout_s: i32, learn_pin: bool },
     Deadline { at: std::time::Instant },
 }
 
@@ -235,6 +239,39 @@ pub(crate) fn request_probe(
     timeout_s: i32,
     pin: Option<&ResolvePin>,
 ) -> Option<Reply> {
+    probe(origin, path, method, headers, max_body, timeout_s, pin, false)
+}
+
+/// [`request_probe`] that also reads the peer's public key off a connection libcurl verified, into
+/// [`Reply::peer_pin`] (issue #380, for the offline fallback of #378). The identity probe is its
+/// only caller, and only for a candidate that has a [`ResolvePin`] (`auth::get_identity`):
+/// reading the chain makes libcurl decode all of it, which no ordinary request should pay, and the
+/// key is only worth remembering when the same probe also learns WHICH machine answered. The rules
+/// for when a pin is present live on [`crate::net::Resp::peer_pin`]; over plaintext it is always
+/// `None`.
+pub(crate) fn request_probe_learning_key(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+    max_body: usize,
+    timeout_s: i32,
+    pin: Option<&ResolvePin>,
+) -> Option<Reply> {
+    probe(origin, path, method, headers, max_body, timeout_s, pin, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probe(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+    max_body: usize,
+    timeout_s: i32,
+    pin: Option<&ResolvePin>,
+    learn_pin: bool,
+) -> Option<Reply> {
     request_with(
         origin,
         path,
@@ -243,6 +280,7 @@ pub(crate) fn request_probe(
         BodyPolicy::Probe {
             max: max_body,
             timeout_s,
+            learn_pin,
         },
         pin,
     )
@@ -536,7 +574,7 @@ fn plaintext(
     if status == 0 {
         RequestOutcome::Transport
     } else {
-        RequestOutcome::Response(Reply { status, body })
+        RequestOutcome::Response(Reply { status, body, peer_pin: None })
     }
 }
 
@@ -611,7 +649,7 @@ fn tls(
                 caller_owns_timeout,
             )
         }
-        BodyPolicy::Probe { max, timeout_s } => (
+        BodyPolicy::Probe { max, timeout_s, .. } => (
             crate::net::Timeouts {
                 connect_s: timeout_s as _,
                 total_s: timeout_s as _,
@@ -625,7 +663,8 @@ fn tls(
     };
     // PMS redirects are responses, never instructions: the path already carries a token. Keeping
     // `FOLLOWLOCATION` off also makes the TLS arm's 3xx semantics match the plaintext arm.
-    match crate::net::request_result(
+    let learn_pin = matches!(body_policy, BodyPolicy::Probe { learn_pin: true, .. });
+    match crate::net::request_result_evidence(
         &url,
         &owned,
         method.as_str(),
@@ -634,15 +673,17 @@ fn tls(
         false,
         max_body,
         resolve.as_deref(),
+        learn_pin,
     ) {
         Ok(r) => RequestOutcome::Response(Reply {
             status: r.status as i32,
             body: r.body,
+            peer_pin: r.peer_pin,
         }),
-        Err(crate::net::RequestError::TimedOut) if caller_owns_timeout => RequestOutcome::Deadline,
-        Err(crate::net::RequestError::TimedOut | crate::net::RequestError::Transport) => {
-            RequestOutcome::Transport
+        Err(failure) if failure.cause == crate::net::RequestError::TimedOut && caller_owns_timeout => {
+            RequestOutcome::Deadline
         }
+        Err(_) => RequestOutcome::Transport,
     }
 }
 
@@ -709,8 +750,9 @@ mod tests {
         });
     }
 
-    /// **`request_probe` — the discovery race's entry point — carries a pin the same way
-    /// [`request`] does over TLS, and structurally cannot over plaintext.** `auth::race_batch`
+    /// **`request_probe` — one of the two discovery-probe entry points; `auth::get_identity`
+    /// uses `request_probe_learning_key`, the same request that also reads the peer key, when it
+    /// holds a pin, and this one otherwise — carries a pin the same way [`request`] does over TLS, and structurally cannot over plaintext.** `auth::race_batch`
     /// builds a [`ResolvePin`] only for a TLS origin (`ResolvePin::for_origin` refuses anything
     /// else outright), and `request_with`'s `Scheme::Http` arm calls `plaintext(...)`, which has no
     /// `pin` parameter at all — there is no plumbing left for a foreign value to travel through even
@@ -801,6 +843,7 @@ mod tests {
         let r = |status| Reply {
             status,
             body: Vec::new(),
+            peer_pin: None,
         };
         assert!(r(200).ok() && r(204).ok() && r(299).ok());
         assert!(
@@ -913,7 +956,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            RequestOutcome::Response(Reply { status: 500, ref body }) if body.is_empty()
+            RequestOutcome::Response(Reply { status: 500, ref body, .. }) if body.is_empty()
         ));
     }
 

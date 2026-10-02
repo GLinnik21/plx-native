@@ -570,7 +570,13 @@ pub(crate) fn commit_session_with_authority(
 }
 
 fn commit_clear() -> CanonicalCommit {
-    let loaded = match client::load() {
+    commit_clear_with(&mut client::NativeTransport)
+}
+
+/// [`commit_clear`] over an explicit helper transport — sign-out's `ClearTenure`, which the
+/// migration tests drive through the real backend.
+pub(crate) fn commit_clear_with(transport: &mut dyn client::Transport) -> CanonicalCommit {
+    let loaded = match client::load_with(transport) {
         Ok(loaded) => loaded,
         Err(error) => return CanonicalCommit::Failed(helper_error(error)),
     };
@@ -582,7 +588,7 @@ fn commit_clear() -> CanonicalCommit {
         HelperLoad::Missing => None,
         HelperLoad::Present(snapshot) => expected(snapshot),
     };
-    helper_commit(expectation, operation, WireMutation::ClearTenure {})
+    helper_commit_for_app_with(transport, expectation, operation, WireMutation::ClearTenure {})
 }
 
 fn helper_commit(

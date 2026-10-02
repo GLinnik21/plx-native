@@ -103,7 +103,8 @@ pub(crate) struct Record {
 }
 
 /// The body is arbitrary bytes and the frame is JSON, so it is base64 in transit through serde.
-/// Hand-rolled: the crate has no base64 dependency and this is the only place that needs one.
+/// Hand-rolled: no base64 dependency. `keymanager::b64` is the crate-visible copy `spki.rs` shares;
+/// this one stays private to the queue's frame.
 mod body_b64 {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

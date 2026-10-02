@@ -251,7 +251,7 @@ macro_rules! dynlib_sym {
 ///
 /// Everything **after** the ellipsis is an argument this wrapper passes through the variadic part
 /// of the call — the trailing argument's type is fixed by the option id, which is how one C symbol
-/// is bound as three wrappers:
+/// is bound as more than one wrapper:
 ///
 /// ```ignore
 /// fn curl_easy_setopt_ptr = "curl_easy_setopt"(h: *mut CURL, opt: c_int, ..., v: *const c_void)

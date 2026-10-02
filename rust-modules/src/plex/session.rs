@@ -485,6 +485,25 @@ pub struct Session {
     /// search term would sign the device out on every boot.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub recent_searches: Vec<RecentSearches>,
+    /// **Each server's remembered public key** (issue #380, for the offline fallback of #378), one
+    /// entry per `machineIdentifier`: the pin of the leaf certificate the server presented the last
+    /// time a connection to it passed STRICT verification and its `/identity` named that machine.
+    /// A television cold-booted with no internet has a wrong clock, so the server's own valid
+    /// certificate fails its date check; the key it had is what lets the next layer tell "the
+    /// server I know" from a stranger. Nothing reads it yet — [`Session::server_key_pin`] is the
+    /// accessor, and #378 its reader.
+    ///
+    /// Session-level, not part of [`ServerRef`], [`SourceRef`] or [`ProfileCreds`]: those are
+    /// cloned per profile, while a key is a fact about one machine seen from this television and
+    /// this account. It sits in the PUBLIC preferences, so a pin write is a public-only edit with no
+    /// credential reseal; the price is that sign-out does not take it with the credentials by
+    /// itself. The native `Mutation::ClearTenure` retains public preferences whole EXCEPT the keys
+    /// in `storage::state::ACCOUNT_BOUND_PREFERENCES`, and this field's key is one: sign-out, and
+    /// so "Delete all local data" which follows it, leave the stored record with no learned key. The
+    /// legacy file store drops it with the file. Skipped on write while empty, so a session that never learned one round-trips
+    /// byte-identical to what it wrote before. Soft-parsed: an unreadable entry costs that entry.
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub(crate) server_key_pins: Vec<ServerKeyPin>,
     /// **The library each top tab was last browsed in**, per profile — so a household with two TV
     /// libraries opens the one it actually watches instead of whichever the server happens to list
     /// first.
@@ -608,6 +627,8 @@ struct CanonicalSessionPreferences {
     trailer_autoplay: bool,
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     subtitle_tone: SubtitleTone,
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    server_key_pins: Vec<ServerKeyPin>,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -631,6 +652,7 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
+            server_key_pins: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
@@ -671,6 +693,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
+        server_key_pins: session.server_key_pins.clone(),
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -733,6 +756,7 @@ pub(crate) fn join_canonical(
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        server_key_pins: preferences.server_key_pins,
         profiles,
         extensions: auth.extensions,
     })
@@ -754,6 +778,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        server_key_pins: preferences.server_key_pins,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -1356,6 +1381,27 @@ pub struct PinnedLib {
 
 }
 
+/// One server's remembered leaf public key. See [`Session::server_key_pins`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServerKeyPin {
+    pub machine_id: String,
+    /// `sha256//<base64>`, the exact `CURLOPT_PINNEDPUBLICKEY` string (`crate::spki`).
+    pub pin: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+}
+
+/// Is `pin` shaped like `crate::spki::pin_from_pem`'s answer: `sha256//` and the 44 base64
+/// characters of a 32-byte digest. The file is hand-editable and the value goes to libcurl, so a
+/// string that is not one is treated as absent rather than handed on.
+fn is_key_pin(pin: &str) -> bool {
+    pin.strip_prefix("sha256//").is_some_and(|b64| {
+        b64.len() == 44
+            && b64.ends_with('=')
+            && b64.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'='))
+    })
+}
+
 /// One profile's last-browsed library per content type. See [`Session::last_library`].
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
@@ -1677,6 +1723,34 @@ impl Session {
         let mut next = self.clone();
         next.trailer_autoplay = on;
         next
+    }
+
+    /// The pin remembered for `machine_id`, or `None` when none was learned (or the stored string
+    /// is not a pin). **Issue #378 is its reader**; nothing consults it yet, and what is accepted
+    /// on the wire is unchanged (see [`Session::server_key_pins`]).
+    pub(crate) fn server_key_pin(&self, machine_id: &str) -> Option<&str> {
+        self.server_key_pins
+            .iter()
+            .find(|k| k.machine_id == machine_id)
+            .map(|k| k.pin.as_str())
+            .filter(|pin| is_key_pin(pin))
+    }
+
+    /// This session with `machine_id`'s remembered pin set to `pin`, or `None` when that changes
+    /// nothing — the same pin already stored, or an empty machine id or a string that is not a
+    /// pin — so the caller skips the write. One entry per machine: a different key replaces it.
+    pub(crate) fn with_server_key_pin(&self, machine_id: &str, pin: &str) -> Option<Self> {
+        if machine_id.is_empty() || !is_key_pin(pin) || self.server_key_pin(machine_id) == Some(pin) {
+            return None;
+        }
+        let mut next = self.clone();
+        next.server_key_pins.retain(|k| k.machine_id != machine_id);
+        next.server_key_pins.push(ServerKeyPin {
+            machine_id: machine_id.to_owned(),
+            pin: pin.to_owned(),
+            extensions: Default::default(),
+        });
+        Some(next)
     }
 
     pub(crate) fn subtitle_tone(&self) -> SubtitleTone {
@@ -2109,6 +2183,19 @@ fn drop_cache_locked() {
 /// The return value means admitted to the queue, not durably saved.
 pub(crate) fn queue_update(edit: impl FnOnce(&Session) -> Option<Session> + Send + 'static) -> bool {
     queue_update_ticket(edit).is_ok()
+}
+
+/// Remember `pin` as `machine_id`'s public key (issue #380), best-effort and off the caller's
+/// thread. Called by the identity probe on every verified answer, which is often, so it asks the
+/// cached session first and queues nothing when the stored pin already matches; the queued edit
+/// re-checks against the file under IO and writes only a change. Returns whether an edit was
+/// queued — not whether it was saved.
+pub(crate) fn learn_server_key(machine_id: &str, pin: &str) -> bool {
+    if machine_id.is_empty() || peek().server_key_pin(machine_id) == Some(pin) {
+        return false;
+    }
+    let (machine_id, pin) = (machine_id.to_owned(), pin.to_owned());
+    queue_update(move |cur| cur.with_server_key_pin(&machine_id, &pin))
 }
 
 /// The UI may retain the receipt while showing its pending preference locally.
@@ -4455,3 +4542,112 @@ mod migration_tests;
 
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub(crate) mod async_persistence;
+
+/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. Nothing
+/// reads it yet (#378 will); these pin the storage contract so that reader can rely on it.
+#[cfg(test)]
+mod server_key_pin_tests {
+    use super::*;
+
+    fn pin(seed: u8) -> String {
+        crate::spki::pin_from_spki_der(&[seed; 8])
+    }
+
+    fn stored(machine: &str, pin: &str) -> Session {
+        Session::default().with_server_key_pin(machine, pin).expect("a new entry")
+    }
+
+    #[test]
+    fn an_absent_key_is_no_pins_and_an_empty_list_is_not_written() {
+        let old: Session = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(old.server_key_pins.is_empty());
+        assert_eq!(old.server_key_pin("m"), None);
+        let session = Session::default();
+        assert!(!serde_json::to_string(&session).unwrap().contains("server_key_pins"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("server_key_pins"), "{prefs}");
+    }
+
+    #[test]
+    fn a_pin_round_trips_through_both_storage_formats() {
+        let session = stored("m1", &pin(1)).with_server_key_pin("m2", &pin(2)).unwrap();
+        // Legacy: the whole `Session` serialized directly.
+        let round: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        assert_eq!(round.server_key_pins, session.server_key_pins);
+        assert_eq!(round.server_key_pin("m1"), Some(pin(1).as_str()));
+        // Canonical split/join, and the locked-bundle public snapshot.
+        let (public, protected) = split_canonical(&session).unwrap();
+        let joined = join_canonical(&public, &protected).unwrap();
+        assert_eq!(joined.server_key_pins, session.server_key_pins);
+        assert_eq!(public_session(&public).server_key_pins, session.server_key_pins);
+    }
+
+    #[test]
+    fn a_damaged_entry_costs_only_that_entry() {
+        let good = pin(3);
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "server_key_pins": [
+                {"machine_id": "m1", "pin": good},
+                {"machine_id": 7, "pin": "x"},
+                "garbage",
+                {"machine_id": "m2"},
+                {"machine_id": "m3", "pin": good},
+            ]
+        }))
+        .unwrap();
+        let machines: Vec<&str> = session.server_key_pins.iter().map(|k| k.machine_id.as_str()).collect();
+        assert_eq!(machines, ["m1", "m3"]);
+        let not_a_list: Session =
+            serde_json::from_value(serde_json::json!({"server_key_pins": {"m1": "x"}})).unwrap();
+        assert!(not_a_list.server_key_pins.is_empty());
+    }
+
+    #[test]
+    fn a_stored_string_that_is_not_a_pin_is_never_handed_on() {
+        for bad in ["", "sha256//", "sha256//short=", "md5//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA;", "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="] {
+            let session: Session = serde_json::from_value(
+                serde_json::json!({"server_key_pins": [{"machine_id": "m", "pin": bad}]}),
+            )
+            .unwrap();
+            assert_eq!(session.server_key_pin("m"), None, "{bad:?}");
+            assert!(Session::default().with_server_key_pin("m", bad).is_none(), "{bad:?}");
+        }
+        assert!(Session::default().with_server_key_pin("", &pin(1)).is_none());
+    }
+
+    #[test]
+    fn one_entry_per_machine_a_different_key_replaces_and_the_same_key_changes_nothing() {
+        let one = stored("m", &pin(1));
+        assert!(one.with_server_key_pin("m", &pin(1)).is_none(), "same pin: nothing to write");
+        let replaced = one.with_server_key_pin("m", &pin(2)).unwrap();
+        assert_eq!(replaced.server_key_pins.len(), 1);
+        assert_eq!(replaced.server_key_pin("m"), Some(pin(2).as_str()));
+        let two = replaced.with_server_key_pin("n", &pin(3)).unwrap();
+        assert_eq!(two.server_key_pin("m"), Some(pin(2).as_str()), "another machine's entry is left alone");
+        assert_eq!(two.server_key_pin("n"), Some(pin(3).as_str()));
+    }
+
+    /// The probe runs often: learning queues nothing once the stored pin matches, and the legacy
+    /// file store's sign-out takes the entry with the file. (`TempSession` bypasses the canonical
+    /// store, so this does NOT cover the native one; `migration_tests::
+    /// helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none` does.)
+    #[test]
+    fn learning_writes_a_change_once_and_the_file_sign_out_forgets_it() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("server-key-learn");
+        save(&test_support::signed_in());
+        assert!(learn_server_key("m", &pin(1)), "a new pin is queued");
+        crate::storage_worker::drain_for_test();
+        assert_eq!(peek().server_key_pin("m"), Some(pin(1).as_str()));
+        assert!(!learn_server_key("m", &pin(1)), "the same pin is not");
+        assert!(!learn_server_key("", &pin(1)));
+        assert!(learn_server_key("m", &pin(2)), "a different one replaces it");
+        crate::storage_worker::drain_for_test();
+        assert_eq!(peek().server_key_pin("m"), Some(pin(2).as_str()));
+        assert_eq!(peek().account_token, "acct", "the credentials are untouched");
+
+        clear();
+        assert!(peek().server_key_pins.is_empty(), "cleared with the credentials");
+    }
+}

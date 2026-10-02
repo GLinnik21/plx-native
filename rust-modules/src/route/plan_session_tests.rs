@@ -38,6 +38,7 @@ fn prime_refusals_follow_the_issued_cause_not_the_clock_at_return() {
         reply: crate::http::Reply {
             status,
             body: body.to_vec(),
+            peer_pin: None,
         },
         parsed: None,
     };

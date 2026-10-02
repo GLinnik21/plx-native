@@ -52,7 +52,7 @@ pub(crate) struct CurlVersionInfo {
 // refusing to start the process. (5.3.1 and 6.4.0 carry BOTH names, a compat alias LG kept over
 // the transition, which is why `.so.5` reached further than the file listing suggests.)
 //
-// The three setopt/getinfo wrappers share two C symbols via the macro's `= "name"` override. That
+// The four setopt/getinfo wrappers share two C symbols via the macro's `= "name"` override. That
 // is how the variadic API is bound: each call site passes exactly one trailing argument whose type
 // is fixed by the option id, so one concrete non-variadic signature per call shape is both
 // sufficient and what the compiler was already generating. This was hand-written once on the
@@ -78,15 +78,16 @@ crate::dynlib! {
     fn curl_easy_cleanup(handle: *mut CURL);
     fn curl_slist_append(list: *mut curl_slist, s: *const c_char) -> *mut curl_slist;
     fn curl_slist_free_all(list: *mut curl_slist);
-    // The three VARIADIC ones, and the `...` marks exactly what `curl.h` marks: the handle and the
+    // The four VARIADIC ones, and the `...` marks exactly what `curl.h` marks: the handle and the
     // option id are the only named parameters, and the value arrives through `va_arg`. Spelling
-    // that value's type after the ellipsis is what lets one C symbol be bound as three wrappers;
-    // moving it BEFORE the ellipsis would compile, run on the television, and hand libcurl a
+    // that value's type after the ellipsis is what lets one C symbol be bound as more than one
+    // wrapper; moving it BEFORE the ellipsis would compile, run on the television, and hand libcurl a
     // garbage pointer on Apple ARM64 (see `dynlib!`'s doc — it is a stack-vs-register convention
     // difference, and it took sign-in down inside `strlen`).
     fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, ..., v: *const c_void) -> c_int;
     fn curl_easy_setopt_long = "curl_easy_setopt"(handle: *mut CURL, option: c_int, ..., v: c_long) -> c_int;
     fn curl_easy_getinfo_long = "curl_easy_getinfo"(handle: *mut CURL, info: c_int, ..., out: *mut c_long) -> c_int;
+    fn curl_easy_getinfo_ptr = "curl_easy_getinfo"(handle: *mut CURL, info: c_int, ..., out: *mut *const c_void) -> c_int;
 }}
 
 // curl.h option ids (CURLOPTTYPE_LONG=0, OBJECTPOINT=10000, FUNCTIONPOINT=20000).
@@ -152,6 +153,12 @@ const CURLOPT_RESOLVE: c_int = 10203;
 /// `CURLE_UNKNOWN_OPTION` — what `curl_easy_setopt` answers for an option id this libcurl was
 /// built without. The one `setopt` result in this module that is NOT fatal: see [`resolve`].
 const CURLE_UNKNOWN_OPTION: c_int = 48;
+/// `CURLOPT_CERTINFO` (LONG + 172): ask libcurl to keep the peer's certificate chain, decoded to
+/// text, for [`CURLINFO_CERTINFO`] to read after the transfer. libcurl 7.19.1+, the television's
+/// is 7.53.1. An option id on the already-bound [`curl_easy_setopt_long`], not a new symbol. It
+/// costs libcurl a decode of the WHOLE chain, which is why only a request that wants the peer's
+/// key sets it ([`peer_pin_wanted`]).
+const CURLOPT_CERTINFO: c_int = 172;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 /// `CURLINFO_SSL_VERIFYRESULT` (LONG + 13) — the X509 verify result of the peer certificate, as
@@ -160,6 +167,15 @@ const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 /// new symbol. Backends that never fill it leave `0`, so `0` after a verification failure means
 /// "not reported", not "fine".
 const CURLINFO_SSL_VERIFYRESULT: c_int = 0x20_000D;
+/// `CURLINFO_CERTINFO` (`CURLINFO_SLIST` = 0x400000, + 34) — a `struct curl_certinfo *` for the
+/// last connection, read by [`peer_leaf_pin`]. libcurl 7.19.1+. An info id on the already-bound
+/// [`curl_easy_getinfo_ptr`], the same C symbol as [`curl_easy_getinfo_long`] spelled with a
+/// pointer out-parameter. The list is filled only when [`CURLOPT_CERTINFO`] was set; a backend
+/// that does not support it leaves it empty, which reads as "no pin", never as an error. A failed
+/// transfer is NOT guaranteed an empty list: libcurl 7.53.1 gathers the chain before it verifies
+/// the host name, so a host-mismatch failure leaves it filled. The `rc == 0` guard where
+/// [`peer_leaf_pin`] is called is what keeps such a chain from becoming a pin; do not remove it.
+const CURLINFO_CERTINFO: c_int = 0x40_0000 + 34;
 const CURL_GLOBAL_ALL: c_long = 3;
 const CURLVERSION_FIRST: c_int = 0;
 const CURL_VERSION_ASYNCHDNS: c_int = 1 << 7;
@@ -508,6 +524,11 @@ impl Drop for HeaderList {
 pub struct Resp {
     pub status: u16,
     pub body: Vec<u8>,
+    /// The peer leaf's `CURLOPT_PINNEDPUBLICKEY` string, present ONLY when the request asked
+    /// ([`request_result_evidence`]'s `learn_pin`) and [`peer_pin_wanted`] allowed it: an https
+    /// URL, strict verification, no redirects. A transfer that failed has no `Resp`, so this is
+    /// never a pin from a connection that did not complete.
+    pub peer_pin: Option<String>,
 }
 impl Resp {
     pub fn ok(&self) -> bool {
@@ -576,7 +597,7 @@ fn finish_response(
             curl_rc: (rc != 0).then_some(rc as i32),
         });
     }
-    Ok(Resp { status: status.unwrap(), body: sink.body })
+    Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None })
 }
 
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
@@ -686,9 +707,31 @@ pub(crate) fn request_result(
     max_body: Option<usize>,
     resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
-    // A host test that needs to drive the REAL discovery-probe path (`http::request_probe`, and
-    // through it `auth::get_identity`) against a loopback HTTPS server cannot make libcurl trust
-    // that server's self-signed certificate any other way: this function is the one place every
+    request_result_evidence(url, headers, verb, body, t, follow_redirects, max_body, resolve, false)
+        .map_err(|failure| failure.cause)
+}
+
+/// [`request_result`] keeping the whole [`RequestFailure`] — the `CURLcode` a failed request's
+/// evidence names. The same one entry every such request passes.
+///
+/// `learn_pin` asks for [`Resp::peer_pin`]: the identity probe sets it, so a verified connection
+/// teaches the app the server's public key, and nothing else does (it makes libcurl decode the
+/// whole chain).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_result_evidence(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+    resolve: Option<&str>,
+    learn_pin: bool,
+) -> Result<Resp, RequestFailure> {
+    // A host test that needs to drive the REAL discovery-probe path (`auth::get_identity`, and
+    // through it `http::request_probe` or `http::request_probe_learning_key`) against a loopback
+    // HTTPS server cannot make libcurl trust that server's self-signed certificate any other way: this function is the one place every
     // such request enters (see `request_tls_evidence`'s `nowan` comment for the same observation
     // about the offline gate). `test_ca_bundle::get()` is compiled out entirely in a non-test
     // build — there is no bundle to read and no branch that reads one — so this is not a
@@ -696,7 +739,7 @@ pub(crate) fn request_result(
     // exists for the lab receiver.
     #[cfg(test)]
     if let Some(bundle) = test_ca_bundle::get() {
-        return request_tls_result(
+        return request_tls_evidence(
             url,
             headers,
             verb,
@@ -706,9 +749,10 @@ pub(crate) fn request_result(
             max_body,
             Tls::CaBundle(&bundle),
             resolve,
+            learn_pin,
         );
     }
-    request_tls_result(
+    request_tls_evidence(
         url,
         headers,
         verb,
@@ -718,6 +762,7 @@ pub(crate) fn request_result(
         max_body,
         Tls::Ca,
         resolve,
+        learn_pin,
     )
 }
 
@@ -744,7 +789,8 @@ pub(crate) mod test_ca_bundle {
 }
 
 /// Real loopback PMS doubles for driving the discovery-probe race through the REAL curl/TLS
-/// stack (`auth::get_identity` → `http::request_probe` → `net::request_result`, unmodified) rather
+/// stack (`auth::get_identity` → `http::request_probe` or `request_probe_learning_key` →
+/// `net::request_result_evidence`, unmodified) rather
 /// than a fake [`auth::ProbeDial`] closure. `test_ca_bundle` above is the other half: it is how
 /// curl is told to trust the certificate [`mint_cert`] mints here — the same PEM, so a real TLS
 /// handshake against [`spawn_dual_protocol`] genuinely verifies.
@@ -766,6 +812,26 @@ mod loopback_pms {
         cert_der: rustls::pki_types::CertificateDer<'static>,
         key_der: rustls::pki_types::PrivateKeyDer<'static>,
         pub(crate) pem: String,
+        /// The DER `SubjectPublicKeyInfo` of the SERVED leaf's key pair, taken from the key pair
+        /// itself rather than parsed back out of the certificate — the independent half of a
+        /// pin check (`spki::pin_from_spki_der`).
+        pub(crate) spki_der: Vec<u8>,
+        /// Certificates the server sends AFTER the leaf (the issuing CA, for
+        /// [`TestCert::serving_chain`]); empty unless asked, which is the shape a minted self-signed
+        /// certificate has.
+        chain_tail: Vec<rustls::pki_types::CertificateDer<'static>>,
+        /// The issuing CA of a [`mint_ca_issued_cert`] leaf, kept so the chain can be served.
+        issuer_der: Option<rustls::pki_types::CertificateDer<'static>>,
+    }
+
+    impl TestCert {
+        /// This certificate served as the chain `[leaf, issuer]`, the way a real server sends its
+        /// leaf with the CA that signed it. Only a [`mint_ca_issued_cert`] has an issuer.
+        pub(crate) fn serving_chain(mut self) -> TestCert {
+            let issuer = self.issuer_der.clone().expect("only a CA-issued leaf has an issuer to serve");
+            self.chain_tail = vec![issuer];
+            self
+        }
     }
 
     /// Mint a self-signed cert whose SAN list is exactly `names`. rcgen tells a dotted IPv4
@@ -778,19 +844,23 @@ mod loopback_pms {
             rcgen::generate_simple_self_signed(subject_alt_names).expect("test cert generation");
         let pem = cert.pem();
         let cert_der = cert.der().clone();
+        let spki_der = rcgen::PublicKeyData::subject_public_key_info(&signing_key);
         let key_der = rustls::pki_types::PrivateKeyDer::from(signing_key);
         TestCert {
             cert_der,
             key_der,
             pem,
+            spki_der,
+            chain_tail: Vec::new(),
+            issuer_der: None,
         }
     }
 
     /// Mint a CA and a leaf it issues, the leaf valid exactly over `[not_before, not_after]`
     /// (`(year, month, day)`), the SAN list exactly `names`. `pem` is the **CA**: that is what a
-    /// client is told to trust, and the server presents only the leaf — the shape of a real
-    /// `*.plex.direct` certificate, and the only way to give a test a leaf whose validity window
-    /// excludes "now" (a wrong television clock) while the trust anchor stays valid.
+    /// client is told to trust, and the server presents only the leaf (the shape of a real
+    /// `*.plex.direct` certificate) unless [`TestCert::serving_chain`] is asked for — and the
+    /// only way to give a test a leaf whose validity window excludes "now" (a wrong television clock) while the trust anchor stays valid.
     pub(crate) fn mint_ca_issued_cert(
         names: &[&str],
         not_before: (i32, u8, u8),
@@ -818,8 +888,11 @@ mod loopback_pms {
         let leaf = leaf_params.signed_by(&leaf_key, &issuer).expect("leaf cert");
         TestCert {
             cert_der: leaf.der().clone(),
+            spki_der: rcgen::PublicKeyData::subject_public_key_info(&leaf_key),
             key_der: rustls::pki_types::PrivateKeyDer::from(leaf_key),
             pem: ca.pem(),
+            chain_tail: Vec::new(),
+            issuer_der: Some(ca.der().clone()),
         }
     }
 
@@ -832,7 +905,8 @@ mod loopback_pms {
 
     fn tls_config(cert: &TestCert) -> Arc<rustls::ServerConfig> {
         ring_provider_once();
-        let certs = vec![cert.cert_der.clone()];
+        let mut certs = vec![cert.cert_der.clone()];
+        certs.extend(cert.chain_tail.iter().cloned());
         let key = cert.key_der.clone_key();
         let cfg = rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -997,7 +1071,7 @@ fn request_tls_result(
     tls: Tls<'_>,
     resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
-    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, tls, resolve)
+    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, tls, resolve, false)
         .map_err(|failure| failure.cause)
 }
 
@@ -1007,13 +1081,14 @@ pub(crate) fn request_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, resolve: Option<&str>,
 ) -> Result<Resp, RequestFailure> {
-    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca, resolve)
+    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca, resolve, false)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn request_tls_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
+    learn_pin: bool,
 ) -> Result<Resp, RequestFailure> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
@@ -1032,6 +1107,7 @@ fn request_tls_evidence(
     }
     let ua =
         CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
+    let read_peer_pin = learn_pin && peer_pin_wanted(url, &tls, follow_redirects);
     let tls_c = match tls {
         Tls::Ca => TlsCfg::Ca,
         Tls::CaBundle(p) => TlsCfg::CaBundle(CString::new(p).map_err(|_| RequestError::Transport)?),
@@ -1169,6 +1245,10 @@ fn request_tls_evidence(
                 );
             }
         }
+        // The peer's chain, kept for [`peer_leaf_pin`]. A libcurl that refuses the option simply
+        // has no chain to give: the request still goes, and answers without a pin.
+        let read_peer_pin = read_peer_pin
+            && curl_easy_setopt_long(easy.0, CURLOPT_CERTINFO, 1 as c_long) == 0;
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, t.connect_s);
         if t.total_ms > 0 {
@@ -1264,8 +1344,88 @@ fn request_tls_evidence(
             }.to_owned());
             crate::log(&format!("net: curl rc={rc} — {why}"));
         }
+        let peer_pin = if read_peer_pin && rc == 0 { peer_leaf_pin(easy.0) } else { None };
         finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
+            .map(|resp| Resp { peer_pin, ..resp })
     }
+}
+
+/// May this request read the peer's public key: only over https, only when the peer was
+/// verified against a trust store (`Tls::Ca`, or the test `Tls::CaBundle`), and only when no
+/// redirect can have moved the connection to another peer. [`Tls::Pinned`] is the lab receiver,
+/// which turns verification OFF — a key learned from a connection nobody authenticated would be
+/// a stranger's key remembered as the server's.
+fn peer_pin_wanted(url: &str, tls: &Tls<'_>, follow_redirects: bool) -> bool {
+    let https = url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://"));
+    https && !follow_redirects && matches!(tls, Tls::Ca | Tls::CaBundle(_))
+}
+
+/// Read-only view of libcurl's `struct curl_certinfo`: the number of certificates, then one
+/// `struct curl_slist *` per certificate. Never constructed by us except in tests.
+#[repr(C)]
+struct CurlCertInfo {
+    num_of_certs: c_int,
+    certinfo: *const *const CurlStringNode,
+}
+
+/// Read-only view of `struct curl_slist` — a NUL-terminated string and the next node. The public
+/// [`curl_slist`] alias stays an opaque `c_void`; this is the one place that looks inside one.
+#[repr(C)]
+struct CurlStringNode {
+    data: *const c_char,
+    next: *const CurlStringNode,
+}
+
+/// Most nodes read from one certificate's list. libcurl's OpenSSL backend writes a dozen
+/// "Name:value" lines per certificate; the bound is only here so a malformed list cannot loop.
+const CERTINFO_MAX_NODES: usize = 64;
+/// Longest `Cert:` PEM accepted: far above any real leaf, far below an allocation worth worrying
+/// about.
+const CERTINFO_MAX_PEM: usize = 16 * 1024;
+
+/// The pin of the peer's LEAF certificate from a finished transfer, or `None` when libcurl kept
+/// no chain (backend without `CERTINFO`, option refused) or what it kept does not parse.
+fn peer_leaf_pin(easy: *mut CURL) -> Option<String> {
+    if easy.is_null() {
+        return None;
+    }
+    let mut info: *const c_void = ptr::null();
+    // SAFETY: `easy` is a live handle the caller owns and has not cleaned up; the out pointer is a
+    // local pointer, which is what `CURLINFO_CERTINFO` writes. The structure it returns belongs to
+    // the handle and is only read here, before the handle is dropped.
+    let got = unsafe {
+        curl_easy_getinfo_ptr(easy, CURLINFO_CERTINFO, &mut info as *mut *const c_void)
+    } == 0;
+    // SAFETY: a non-null answer is libcurl's own `struct curl_certinfo`, valid until cleanup.
+    got.then(|| unsafe { leaf_pin_of_certinfo(info as *const CurlCertInfo) }).flatten()
+}
+
+/// The pin of certificate index 0 (the peer's own, ahead of its issuers) in `info`.
+///
+/// # Safety
+/// `info` is null or points to a well-formed `curl_certinfo` whose lists and strings stay valid
+/// for the call. Every pointer is null-checked and both walks are bounded; the PEM text itself is
+/// untrusted network input and goes through [`crate::spki::pin_from_pem`], which bounds-checks it.
+unsafe fn leaf_pin_of_certinfo(info: *const CurlCertInfo) -> Option<String> {
+    let info = unsafe { info.as_ref() }?;
+    if info.num_of_certs < 1 || info.certinfo.is_null() {
+        return None;
+    }
+    let mut node = unsafe { *info.certinfo };
+    for _ in 0..CERTINFO_MAX_NODES {
+        let n = unsafe { node.as_ref() }?;
+        if !n.data.is_null() {
+            let line = unsafe { std::ffi::CStr::from_ptr(n.data) }.to_bytes();
+            if let Some(pem) = line.strip_prefix(b"Cert:") {
+                if pem.len() > CERTINFO_MAX_PEM {
+                    return None;
+                }
+                return crate::spki::pin_from_pem(std::str::from_utf8(pem).ok()?);
+            }
+        }
+        node = n.next;
+    }
+    None
 }
 
 /// Civil `(year, month, day)` of a Unix time in UTC — Howard Hinnant's `civil_from_days`, with
@@ -1674,7 +1834,7 @@ mod request_tests {
             let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
             let response = request_tls_evidence(&url, &[], "GET", None,
                 Timeouts { total_s: 5, ..API }, false, None,
-                Tls::CaBundle(ready["ca"].as_str().unwrap()), None);
+                Tls::CaBundle(ready["ca"].as_str().unwrap()), None, false);
             let mut sent = String::new(); output.read_line(&mut sent).unwrap();
             assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
             let failure = response.err().expect("reset transfer cannot expose a partial body");
@@ -2121,5 +2281,115 @@ mod tls_mode_tests {
         std::fs::create_dir_all(dir.join("roots.pem")).expect("temp dirs");
         assert_eq!(shipped_ca_bundle(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+
+#[cfg(test)]
+mod peer_pin_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    /// A `curl_slist` of `lines`, laid out as libcurl lays it out. The nodes borrow the strings.
+    struct List {
+        _lines: Vec<CString>,
+        nodes: Vec<CurlStringNode>,
+    }
+
+    impl List {
+        fn of(lines: &[&str]) -> List {
+            let lines: Vec<CString> = lines.iter().map(|l| CString::new(*l).unwrap()).collect();
+            let mut nodes: Vec<CurlStringNode> = lines
+                .iter()
+                .map(|l| CurlStringNode { data: l.as_ptr(), next: ptr::null() })
+                .collect();
+            for i in 1..nodes.len() {
+                let next = &nodes[i] as *const CurlStringNode;
+                nodes[i - 1].next = next;
+            }
+            List { _lines: lines, nodes }
+        }
+        fn head(&self) -> *const CurlStringNode {
+            self.nodes.first().map_or(ptr::null(), |n| n as *const CurlStringNode)
+        }
+    }
+
+    fn minted() -> (String, String) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["certinfo.invalid".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let pin = crate::spki::pin_from_spki_der(&rcgen::PublicKeyData::subject_public_key_info(&key));
+        (cert.pem(), pin)
+    }
+
+    /// The pin of certificate 0 in a `curl_certinfo` made of `chain`.
+    fn pin_of(chain: &[&List], num_of_certs: c_int) -> Option<String> {
+        let heads: Vec<*const CurlStringNode> = chain.iter().map(|l| l.head()).collect();
+        let info = CurlCertInfo { num_of_certs, certinfo: heads.as_ptr() };
+        unsafe { leaf_pin_of_certinfo(&info) }
+    }
+
+    #[test]
+    fn the_cert_line_of_certificate_zero_is_pinned() {
+        let (leaf_pem, leaf_pin) = minted();
+        let (issuer_pem, _) = minted();
+        let leaf = List::of(&["Subject:CN=leaf", "Version:2", &format!("Cert:{leaf_pem}")]);
+        let issuer = List::of(&[&format!("Cert:{issuer_pem}")]);
+        assert_eq!(pin_of(&[&leaf, &issuer], 2), Some(leaf_pin));
+    }
+
+    #[test]
+    fn nothing_readable_is_none() {
+        let (pem, _) = minted();
+        // No info at all, an empty chain, a null chain pointer.
+        assert_eq!(unsafe { leaf_pin_of_certinfo(ptr::null()) }, None);
+        let leaf = List::of(&[&format!("Cert:{pem}")]);
+        assert_eq!(pin_of(&[&leaf], 0), None);
+        assert_eq!(pin_of(&[&leaf], -1), None);
+        let null_chain = CurlCertInfo { num_of_certs: 1, certinfo: ptr::null() };
+        assert_eq!(unsafe { leaf_pin_of_certinfo(&null_chain) }, None);
+        // An empty list for the leaf, a list with no `Cert:` line, and a `Cert:` that is not X.509.
+        assert_eq!(pin_of(&[&List::of(&[])], 1), None);
+        assert_eq!(pin_of(&[&List::of(&["Subject:CN=leaf", "Version:2"])], 1), None);
+        assert_eq!(pin_of(&[&List::of(&["Cert:not a certificate"])], 1), None);
+        assert_eq!(pin_of(&[&List::of(&["Cert:"])], 1), None);
+        // Only certificate 0 is consulted: a good certificate behind a bad leaf is not the leaf.
+        assert_eq!(pin_of(&[&List::of(&["Subject:CN=leaf"]), &leaf], 2), None);
+    }
+
+    #[test]
+    fn the_walk_is_bounded_and_the_pem_is_capped() {
+        // A list that points back at itself must end rather than spin.
+        let mut looped = List::of(&["Subject:a"]);
+        let head = looped.head();
+        looped.nodes[0].next = head;
+        assert_eq!(pin_of(&[&looped], 1), None);
+        // A `Cert:` line past the node bound is never reached; one over the size cap is refused.
+        let (pem, _) = minted();
+        let mut lines = vec!["Subject:x"; CERTINFO_MAX_NODES];
+        let late = format!("Cert:{pem}");
+        lines.push(&late);
+        assert_eq!(pin_of(&[&List::of(&lines)], 1), None);
+        let huge = format!("Cert:{pem}{}", " ".repeat(CERTINFO_MAX_PEM));
+        assert_eq!(pin_of(&[&List::of(&[&huge])], 1), None);
+        // A node with a null string is skipped, not dereferenced.
+        let (pem, pin) = minted();
+        let mut list = List::of(&["x", &format!("Cert:{pem}")]);
+        list.nodes[0].data = ptr::null();
+        assert_eq!(pin_of(&[&list], 1), Some(pin));
+    }
+
+    /// Only an https request that verified against a trust store and cannot be redirected asks.
+    #[test]
+    fn only_a_strictly_verified_https_request_may_read_the_peer_key() {
+        let ca = Tls::Ca;
+        assert!(peer_pin_wanted("https://pms.plex.direct:32400/identity", &ca, false));
+        assert!(peer_pin_wanted("HTTPS://pms.plex.direct:32400/identity", &Tls::CaBundle("/x.pem"), false));
+        assert!(!peer_pin_wanted("http://192.168.0.2:32400/identity", &ca, false), "plaintext");
+        assert!(!peer_pin_wanted("https://lab.local/x", &Tls::Pinned("sha256//x"), false), "verification off");
+        assert!(!peer_pin_wanted("https://pms.plex.direct/identity", &ca, true), "a redirect can change the peer");
+        assert!(!peer_pin_wanted("", &ca, false));
     }
 }

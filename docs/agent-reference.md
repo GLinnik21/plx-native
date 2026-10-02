@@ -329,8 +329,8 @@ kills the process at `exec()` — before `main`, before the event log exists. So
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
 - **A VARIADIC C function keeps its `...`, in the position `curl.h` puts it** —
   `fn curl_easy_setopt_ptr = "curl_easy_setopt"(h: *mut CURL, opt: c_int, ..., v: *const c_void)`.
-  Naming the trailing argument's concrete type is right and is how one C symbol is bound as three
-  wrappers; moving it *before* the ellipsis is a different CALLING CONVENTION, because **Apple's
+  Naming the trailing argument's concrete type is right and is how one C symbol is bound as more than one
+  wrapper; moving it *before* the ellipsis is a different CALLING CONVENTION, because **Apple's
   ARM64 ABI passes variadic arguments on the stack** while named ones go in registers. ARM32 and
   x86-64 pass both ways identically, so this compiles, passes `make check`, runs on the television
   — and SIGSEGVs inside libcurl's `strlen` on a Mac, at the first plex.tv call. It was the shape

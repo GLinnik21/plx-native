@@ -760,6 +760,67 @@ fn production_client_coordinator_and_helper_backend_reconcile_committed_lost_rep
     assert_eq!(backend.rpc.puts, 2);
 }
 
+/// One committed session of the helper-backed store, through the production coordinator.
+fn commit_fresh(session: &Session, transport: &mut dyn client::Transport) {
+    assert!(matches!(
+        persistence::commit_session_with(session, false, SaveAuthority::FreshReauthentication, 4, transport),
+        persistence::CanonicalCommit::Durable { .. }));
+}
+
+/// The stored public preferences, as the helper holds them.
+fn stored_preferences(transport: &mut dyn client::Transport) -> Value {
+    let client::Load::Present(snapshot) = client::load_with(transport).unwrap() else {
+        panic!("helper snapshot")
+    };
+    snapshot.state.public.preferences
+}
+
+/// **Issue #380: a learned server key belongs to the account that learned it.** The key rides in
+/// the PUBLIC preferences (a pin write must stay a public-only edit, no keymanager reseal), and
+/// ClearTenure retains preferences whole, so sign-out has to drop it by name. Through the real
+/// helper backend: a learned key is stored, sign-out leaves the record naming no server, and the next account to sign in on this television opens
+/// a session with no key.
+#[test]
+fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none() {
+    let mut backend = crate::storage::backend::Backend::new(
+        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = fixture();
+    commit_fresh(&session, &mut transport);
+
+    // A pin write: public-only, the auth half untouched.
+    let learned = Session {
+        server_key_pins: vec![ServerKeyPin {
+            machine_id: "machine".into(),
+            pin: crate::spki::pin_from_spki_der(b"synthetic spki"),
+            extensions: Default::default(),
+        }],
+        ..session.clone()
+    };
+    let client::Load::Present(before) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert!(matches!(
+        persistence::commit_session_with(&learned, false, SaveAuthority::PublicOnly, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let client::Load::Present(after) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert_eq!(before.state.auth_envelope, after.state.auth_envelope, "a pin write reseals nothing");
+    assert!(stored_preferences(&mut transport).get("server_key_pins").is_some(), "the key is stored");
+
+    // Sign-out.
+    assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
+    let kept = stored_preferences(&mut transport);
+    assert!(kept.get("server_key_pins").is_none(), "sign-out must forget every learned key: {kept}");
+    assert_eq!(kept["auto_sign_in"], true, "every other preference is still retained");
+
+    // Another account signs in on this television.
+    let other = Session { client_id: "another-account".into(), ..fixture() };
+    commit_fresh(&other, &mut transport);
+    assert!(stored_preferences(&mut transport).get("server_key_pins").is_none());
+    let persistence::CanonicalRead::Opened { session: opened, .. } = persistence::load_helper_with(&mut transport) else {
+        panic!("the new account's session opens")
+    };
+    assert!(opened.server_key_pins.is_empty(), "no key carried over from the previous account");
+}
+
 #[test]
 fn canonical_pending_secure_import_is_not_missing_or_permission_to_import_another_file() {
     let mut pending = state::CanonicalState::new(state::Flavor::Stable, state::Generation([1; 16]));

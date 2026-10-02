@@ -158,6 +158,13 @@ pub(crate) struct AuthContext {
     pub(crate) auth_generation: Generation,
 }
 
+/// Public preference keys that describe the SIGNED-IN account's world rather than this
+/// installation, so [`Mutation::ClearTenure`] removes them while it retains every other
+/// preference (the install-wide language among them). They live in the public half on purpose:
+/// writing one must stay a public-only edit with no credential reseal. `server_key_pins` is the
+/// learned public key of each server the account reached (`plex::session::Session::server_key_pins`).
+pub(crate) const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins"];
+
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub(crate) enum Mutation {
@@ -663,8 +670,14 @@ impl CanonicalState {
                 next.auth_generation = *auth_generation;
                 next.status = Status::Cleared;
                 next.auth_envelope = None;
+                let mut preferences = self.public.preferences.clone();
+                if let Some(preferences) = preferences.as_object_mut() {
+                    for key in ACCOUNT_BOUND_PREFERENCES {
+                        preferences.remove(*key);
+                    }
+                }
                 next.public = PublicPayload {
-                    preferences: self.public.preferences.clone(),
+                    preferences,
                     ..PublicPayload::default()
                 };
                 let complete = DomainMigration {
@@ -1409,6 +1422,26 @@ mod tests {
         assert_eq!(active.status, Status::Active);
         assert_eq!(active.epoch, cleared.epoch);
         assert_eq!(active.apply(&stale).unwrap_err(), StateError::Conflict);
+    }
+
+    /// ClearTenure drops exactly the account-bound preferences (a learned server key) and keeps
+    /// the rest, so the retained language and every other install preference survive sign-out.
+    #[test]
+    fn clear_tenure_forgets_the_learned_server_keys_and_keeps_other_preferences() {
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({
+                    "language": "be", "volume": 30,
+                    "server_key_pins": [{"machine_id": "m", "pin": "sha256//x"}],
+                }),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences, json!({"language": "be", "volume": 30}));
     }
 
     #[test]

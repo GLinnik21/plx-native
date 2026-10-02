@@ -939,7 +939,7 @@ mod tests {
         assert!(matches!(
             outcome,
             JsonDeadlineOutcome::Response {
-                reply: http::Reply { status: 200, ref body },
+                reply: http::Reply { status: 200, ref body, .. },
                 parsed: None,
             } if body == b"not-json"
         ));
