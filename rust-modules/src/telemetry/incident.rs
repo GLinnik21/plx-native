@@ -147,74 +147,11 @@ impl IncidentKind {
     }
 }
 
-/// What the most recent network call observed, coarsened into the class this report carries. An
-/// `Answered*` class carries the exact status ([`IncidentContext::http_status`]); `Dns`, `Tls`,
-/// `Timeout` and `TransportOther` carry the exact `CURLcode` ([`IncidentContext::curl_rc`]).
-/// `Unknown` is "no call yet" and "refused before libcurl ran" alike — neither has a code to name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum LinkClass {
-    Answered2xx,
-    Answered4xx,
-    Answered5xx,
-    AnsweredOther,
-    Dns,
-    Tls,
-    Timeout,
-    TransportOther,
-    Unknown,
-}
-
-impl LinkClass {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Answered2xx => "answered_2xx",
-            Self::Answered4xx => "answered_4xx",
-            Self::Answered5xx => "answered_5xx",
-            Self::AnsweredOther => "answered_other",
-            Self::Dns => "dns",
-            Self::Tls => "tls",
-            Self::Timeout => "timeout",
-            Self::TransportOther => "transport_other",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-fn answered(status: u16) -> (LinkClass, Option<u16>, Option<i32>) {
-    let class = match status {
-        200..=299 => LinkClass::Answered2xx,
-        400..=499 => LinkClass::Answered4xx,
-        500..=599 => LinkClass::Answered5xx,
-        _ => LinkClass::AnsweredOther,
-    };
-    (class, Some(status), None)
-}
-
-/// Coarsen the last call into its class plus the ONE number that class carries — the HTTP status
-/// or the `CURLcode`, never both. PURE.
-///
-/// `Ok(status)` is a response `net` returned; `Err` is its [`RequestFailure`]. A failure that kept
-/// a validated final status (`net::response_status`'s truncated-refusal evidence) is classed by
-/// that status: the server did answer, and a 401 whose body broke is still a 401.
-pub(crate) fn classify(last: Option<Result<u16, RequestFailure>>) -> (LinkClass, Option<u16>, Option<i32>) {
-    match last {
-        None => (LinkClass::Unknown, None, None),
-        Some(Ok(status)) => answered(status),
-        Some(Err(RequestFailure { status: Some(status), .. })) => answered(status),
-        Some(Err(RequestFailure { cause: RequestError::TimedOut, curl_rc, .. })) => {
-            // `net` only says TimedOut for CURLE_OPERATION_TIMEDOUT, so the code is 28 either way.
-            (LinkClass::Timeout, None, Some(curl_rc.unwrap_or(28)))
-        }
-        Some(Err(RequestFailure { curl_rc: None, .. })) => (LinkClass::Unknown, None, None),
-        Some(Err(RequestFailure { curl_rc: Some(6), .. })) => (LinkClass::Dns, None, Some(6)),
-        Some(Err(RequestFailure { curl_rc: Some(rc @ (35 | 60 | 77 | 90)), .. })) => {
-            (LinkClass::Tls, None, Some(rc))
-        }
-        Some(Err(RequestFailure { curl_rc: Some(rc), .. })) => {
-            (LinkClass::TransportOther, None, Some(rc))
-        }
-    }
-}
+// What the most recent network call observed, coarsened into the class this report carries
+// (`LinkClass`), and the pure `classify` that coarsens it, are defined in `plex::probe`: the probe
+// grades its own transport failures in the same vocabulary and `plex` sits beneath this layer.
+// Re-exported, so every incident producer and reader keeps naming them here.
+pub(crate) use crate::plex::probe::{classify, LinkClass};
 
 /// How many consecutive calls came back with no usable answer, bucketed — never the raw count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1083,61 +1020,6 @@ mod tests {
         for private in ["token", "hostname", "path", "nonce", "uid", "pid"] {
             assert!(!text.contains(private), "private slot: {private}");
         }
-    }
-
-    #[test]
-    fn classify_maps_every_request_outcome_to_its_link_class() {
-        use RequestError::{TimedOut, Transport};
-        assert_eq!(classify(None), (LinkClass::Unknown, None, None));
-        for (status, class) in [
-            (200, LinkClass::Answered2xx),
-            (299, LinkClass::Answered2xx),
-            (429, LinkClass::Answered4xx),
-            (503, LinkClass::Answered5xx),
-            (101, LinkClass::AnsweredOther),
-            (302, LinkClass::AnsweredOther),
-        ] {
-            assert_eq!(classify(Some(Ok(status))), (class, Some(status), None), "{status}");
-        }
-        // A truncated refusal keeps its validated status, and is classed by it.
-        assert_eq!(
-            classify(Some(Err(failure(Transport, Some(401), Some(18))))),
-            (LinkClass::Answered4xx, Some(401), None)
-        );
-        assert_eq!(
-            classify(Some(Err(failure(TimedOut, None, Some(28))))),
-            (LinkClass::Timeout, None, Some(28))
-        );
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, Some(6))))),
-            (LinkClass::Dns, None, Some(6))
-        );
-        for rc in [35, 60, 77, 90] {
-            assert_eq!(
-                classify(Some(Err(failure(Transport, None, Some(rc))))),
-                (LinkClass::Tls, None, Some(rc)),
-                "rc {rc}"
-            );
-        }
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, Some(7))))),
-            (LinkClass::TransportOther, None, Some(7))
-        );
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, None)))),
-            (LinkClass::Unknown, None, None),
-            "a request refused before libcurl ran has no code to report"
-        );
-    }
-
-    /// The real completion boundary: what `net` hands back for a curl failure carries the code
-    /// this classification reads.
-    #[test]
-    fn the_network_layer_reports_the_curl_code_the_classifier_reads() {
-        let dns = crate::net::test_response_failure(6, 0, 0, false).err().expect("a failure");
-        assert_eq!(classify(Some(Err(dns))), (LinkClass::Dns, None, Some(6)));
-        let timeout = crate::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
-        assert_eq!(classify(Some(Err(timeout))), (LinkClass::Timeout, None, Some(28)));
     }
 
     #[test]

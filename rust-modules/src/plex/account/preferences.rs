@@ -253,7 +253,7 @@ impl PreferenceUpdate {
         next.language = (next.auto_select_audio == Some(true))
             .then(|| next.stated_language.clone()).flatten();
         let query = values.into_iter().map(|(key, value)|
-            format!("{key}={}", crate::pms::urlenc_str(&value)))
+            format!("{key}={}", crate::plex::urlenc_str(&value)))
             .collect::<Vec<_>>().join("&");
         Ok((query, next))
     }

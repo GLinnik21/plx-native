@@ -2,7 +2,7 @@
 //!
 //! Replaces every hand-built Plex path/query string in the app with a typed `Client`
 //! method (see `docs/plex-api-design.md` + `docs/plex-api-catalog.md`). Percent-encoding
-//! (`crate::pms::urlenc_str`), the `X-Plex-Token` injection, and the origin-aware HTTP(S)
+//! (`urlenc_str`), the `X-Plex-Token` injection, and the origin-aware HTTP(S)
 //! transport (`crate::http`) are centralised in `client.rs`, so no op file can bypass them.
 //! Response bodies deserialize into `serde` DTOs (`models.rs`).
 //!
@@ -79,9 +79,16 @@ pub(crate) mod pins;
 // `impl AccountClient` block (same pattern as the PMS op files above).
 pub(crate) mod discover;
 
+// The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
+// shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
+// them under their historical names.
+pub(crate) mod retry;
+
 // The re-exports are the public surface the call sites import.
 pub(crate) use client::ArtFetch;
 pub(crate) use client::JsonDeadlineOutcome;
+// The one percent-encoder (RFC 3986 unreserved passthrough) — see its doc.
+pub(crate) use client::urlenc_str;
 // The one link/IP ⇄ u8 encode/decode pair — shared by `Client`'s own atomics and
 // `player::report`'s packed attempt snapshot, so the two never keep a private copy each.
 pub(crate) use client::{decode_ip, decode_link, encode_ip, encode_link};

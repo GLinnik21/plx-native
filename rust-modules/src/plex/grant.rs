@@ -753,7 +753,7 @@ impl PlaintextAsk {
 }
 
 /// **The HTTPS upgrade retry.** While a server is on a grant, its endpoint is re-discovered:
-/// first on `crate::pms`'s hub-retry backoff (2 s doubling to 30 s), then still doubling to a
+/// first on [`super::retry::backoff_secs`]'s hub-retry ladder (2 s doubling to 30 s), then still doubling to a
 /// ten-minute ceiling ([`retry_secs`]) — a server that stays on plaintext all evening costs a few
 /// re-discoveries an hour. Discovery races every HTTPS candidate first, so the attempt that finds
 /// one verifying registers the HTTPS origin, and the registry commit then retires the grant
@@ -777,14 +777,14 @@ impl UpgradeRetry {
     /// The same step writes again any refusal whose write has not landed ([`record`]).
     /// And it requests, once, the endpoint of every server a network change stranded
     /// ([`network_changed`]).
-    pub(crate) fn due(&mut self, now: u32) -> crate::stores::EndpointRefreshSet {
+    pub(crate) fn due(&mut self, now: u32) -> super::retry::EndpointRefreshSet {
         rewrite_unsaved(now);
-        let mut out = crate::stores::EndpointRefreshSet::default();
+        let mut out = super::retry::EndpointRefreshSet::default();
         let mut machines = take_stranded();
         machines.extend(self.poll(now, revision(), granted_machines));
         for machine in machines {
             if let Some(sid) = super::servers::id_of_machine(&machine) {
-                let _ = out.insert(crate::stores::EndpointRefresh { sid });
+                let _ = out.insert(super::retry::EndpointRefresh { sid });
             }
         }
         out
@@ -832,7 +832,7 @@ const UPGRADE_CEILING_S: f32 = 600.0;
 /// The delay before upgrade attempt `attempt`: the hub retry's backoff for the first [`HUB_STEPS`],
 /// then doubling from its ceiling to [`UPGRADE_CEILING_S`].
 fn retry_secs(attempt: u32) -> f32 {
-    let hub = crate::pms::backoff_secs(attempt.min(HUB_STEPS));
+    let hub = super::retry::backoff_secs(attempt.min(HUB_STEPS));
     let doublings = attempt.saturating_sub(HUB_STEPS).min(16);
     (hub * (1u32 << doublings) as f32).min(UPGRADE_CEILING_S)
 }

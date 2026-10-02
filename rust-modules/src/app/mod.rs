@@ -525,6 +525,8 @@ pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
 }
 
 fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_int> {
+    // The hooks `plex` is handed for what it cannot name; first, so no session load precedes them.
+    install_plex_seams();
     let preflight = match bootstrap::Preflight::detect() {
         Ok(mode) => mode,
         Err(reason) => { log(&format!("replay: REFUSED — {reason}")); return Err(1); }
