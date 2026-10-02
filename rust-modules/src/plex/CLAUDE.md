@@ -154,7 +154,10 @@ in `curlio::CurlSource::start_range_until`, which every open, reopen and seek go
 key-mode success the host is LATCHED for 10 minutes on the monotonic clock (later requests skip the
 doomed strict handshake; the timer does not slide; a strict success or a changed pin clears it; rc 90
 in key mode clears it and is the failure). The log carries one line when a host first engages, with
-the year the device believes it is, and one for rc 90, and never a pin or a host:port.
+the year the device believes it is, and one for rc 90, and never a pin or a host:port. The same
+decisions also publish facts the app polls (`keypin::engaged`, `blocked`, `revision`; per host,
+cleared by that host's success or a pin change), and the first engagement of an app run raises ONE
+television toast (`app::clock_notice`; never retried, host-tested only until the set accepts it).
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past

@@ -847,7 +847,7 @@ impl CurlSource {
                         }
                         None => {
                             if let Some(key) = &key {
-                                keypin::strict_established(key);
+                                keypin::unlatch(key);
                             }
                             mode = keypin::Mode::Strict;
                         }
@@ -1137,12 +1137,14 @@ impl CurlSource {
                         self.stop();
                         return Ok(Attempt::Retry(next, why));
                     }
+                    // No key mode to retry in: publish a date failure that no key could answer.
+                    keypin::strict_date_failure(key, self.rc, verify);
                 }
                 keypin::Mode::Strict if established => keypin::strict_established(key),
-                // A different key: stop serving the host in key mode. `validate` logs the one line
-                // for it (`curl_why(90)`), so this does not log a second.
+                // A different key: stop serving the host in key mode and publish it. `validate` logs
+                // the one line for it (`curl_why(90)`), so this does not log a second.
                 keypin::Mode::Key { .. } if self.done && self.failed && self.rc == keypin::PIN_MISMATCH => {
-                    keypin::strict_established(key);
+                    keypin::key_changed(key);
                 }
                 keypin::Mode::Key { pin, verify } if established => keypin::key_established(key, pin, *verify),
                 _ => {}

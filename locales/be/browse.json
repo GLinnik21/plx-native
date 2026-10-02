@@ -482,5 +482,7 @@
   "browse.collection.items": "Элементы",
   "browse.collection.order.release": "Па даце выхаду",
   "browse.collection.order.title": "Па алфавіце",
-  "browse.collection.order.custom": "Уласны парадак"
+  "browse.collection.order.custom": "Уласны парадак",
+  "browse.clock.notice_year": "Час тэлевізара няправільны ({year}). Злучэнне па захаваным ключы.",
+  "browse.clock.notice": "Час тэлевізара няправільны. Злучэнне па захаваным ключы."
 }

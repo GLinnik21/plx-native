@@ -81,7 +81,6 @@ pub(crate) fn grade(reply: &str) -> Outcome {
 /// Show `message` as a system toast, attributed to this app — the as-app call.
 ///
 /// Blocks for an LS2 round trip: never call it from the frame thread.
-#[allow(dead_code)] // The product feature that raises toasts is the next stage; the probe uses `send`.
 pub(crate) fn toast(message: &str) -> Outcome {
     send(message, Identity::AsApp).outcome
 }

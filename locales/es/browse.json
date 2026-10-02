@@ -468,5 +468,7 @@
   "browse.collection.items": "Elementos",
   "browse.collection.order.release": "Por fecha de estreno",
   "browse.collection.order.title": "Por orden alfabético",
-  "browse.collection.order.custom": "Orden personalizado"
+  "browse.collection.order.custom": "Orden personalizado",
+  "browse.clock.notice_year": "Hora del televisor errónea ({year}). Conectado con la clave guardada.",
+  "browse.clock.notice": "Hora del televisor errónea. Conectado con la clave guardada."
 }

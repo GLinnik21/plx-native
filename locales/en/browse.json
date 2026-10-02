@@ -2035,5 +2035,16 @@
   "browse.collection.order.custom": {
     "value": "Custom order",
     "description": "Annotation after the collection page's Items heading: members are in the order the collection's owner set"
+  },
+  "browse.clock.notice_year": {
+    "value": "TV clock looks wrong ({year}). Connected by the remembered key.",
+    "args": {
+      "year": "str"
+    },
+    "description": "System toast shown once per app run when the app had to recognise the Plex server by its remembered key because the television's clock is wrong, so the server's certificate looked expired. {year} is the four-digit year the television believes it is, written as plain digits. The toast wraps at roughly 35 characters per line and shows two lines, so keep the whole sentence under 70 characters."
+  },
+  "browse.clock.notice": {
+    "value": "TV clock looks wrong. Connected by the remembered key.",
+    "description": "Same toast as the year variant, for when the television's year is unknown. Keep it under 70 characters."
   }
 }

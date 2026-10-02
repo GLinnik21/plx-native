@@ -3264,6 +3264,12 @@ fn an_expired_leaf_is_served_when_its_remembered_key_is_known() {
     let _key = remember(port, &cert);
     let resp = identity_request(port, "https", false).expect("the date alone must not refuse the server we know");
     assert_eq!(resp.status, 200);
+    let facts = crate::net::keypin::fact_for(&key_of_port(port));
+    assert!(
+        matches!(facts.engaged, Some(Some(year)) if (2025..2200).contains(&year)),
+        "key mode engaged, carrying the year the device believed: {facts:?}"
+    );
+    assert_eq!(facts.blocked, None, "a served request blocks nothing");
 }
 
 #[test]
@@ -3287,6 +3293,11 @@ fn an_expired_leaf_whose_key_differs_from_the_remembered_one_is_refused_with_a_p
     let failure = identity_request(port, "https", false).err().expect("a stranger's key is not the server's");
     assert_eq!(failure.curl_rc, Some(90));
     assert!(!crate::net::keypin::is_latched(&key_of_port(port)), "a refusal never latches");
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(port)).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the control plane publishes the changed key",
+    );
 }
 
 #[test]
@@ -3308,8 +3319,14 @@ fn an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
     let _serial = crate::testlock::serial();
     if !curl_ready() { return; }
     let (_cert, _ca, port) = expired_server("clock-no-key");
+    let _watched = crate::net::keypin::Scoped::watch(&key_of_port(port));
     let failure = identity_request(port, "https", false).err().expect("nothing to recognise it by");
     assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(port)).blocked,
+        Some(crate::net::keypin::Blocked::NoKey),
+        "a date failure with no key to fall back on is published",
+    );
 }
 
 #[test]
@@ -3326,6 +3343,7 @@ fn an_untrusted_issuer_is_refused_even_with_the_leafs_key_remembered() {
     let failure = identity_request(port, "https", false).err().expect("an untrusted issuer is not a date problem");
     assert_eq!(failure.curl_rc, Some(60));
     assert!(!crate::net::keypin::is_latched(&key_of_port(port)));
+    assert_eq!(crate::net::keypin::fact_for(&key_of_port(port)).blocked, None, "not a date failure, not a fact");
 }
 
 #[test]
@@ -3408,6 +3426,12 @@ fn a_pin_mismatch_in_key_mode_clears_the_latch_and_is_the_failure() {
     assert_eq!(failure.curl_rc, Some(90));
     assert_eq!(served.accepted(), 1, "latched: no strict attempt first");
     assert!(!crate::net::keypin::is_latched(&key), "rc 90 ends key mode for the host");
+    assert_eq!(
+        crate::net::keypin::fact_for(&key).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the engaged fact stands and the change is published",
+    );
+    assert!(crate::net::keypin::fact_for(&key).engaged.is_some(), "…and the engaged fact survives the refusal");
 }
 
 #[test]
@@ -3492,6 +3516,11 @@ fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_misma
         .expect("a stranger's key is not the server's");
     assert_eq!(err, crate::curlio::OpenErr::Transport(90));
     assert!(!crate::net::keypin::is_latched(&key));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the media plane publishes the changed key too",
+    );
 }
 
 #[test]
@@ -3501,10 +3530,16 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-nokey");
     let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let _watched = crate::net::keypin::Scoped::watch(&key_of_port(served.port));
     let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
         .err()
         .expect("nothing to recognise it by");
     assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(served.port)).blocked,
+        Some(crate::net::keypin::Blocked::NoKey),
+        "the media plane publishes a date failure with no key",
+    );
 }
 
 #[test]
