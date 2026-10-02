@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "how_to_raise": "Edit this file in the SAME pull request that grows the number, set limit to the new ceiling, update measured and measured_on, and justify the growth in the PR body (what was added, why it cannot be smaller, what it cost). A budget is raised by a reviewed decision, never to make a red run green.",
+  "budgets": {
+    "binary_bytes": {
+      "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with --no-default-features and is smaller; this is the number CI can measure on every PR.",
+      "unit": "bytes",
+      "mode": "fail",
+      "limit": 12426000,
+      "measured": 11295620,
+      "measured_on": "2026-10-02",
+      "headroom": "10%"
+    },
+    "packages_default": {
+      "what": "Third-party (registry/git) packages the app crate compiles for arm-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
+      "unit": "packages",
+      "mode": "fail",
+      "limit": 72,
+      "measured": 69,
+      "measured_on": "2026-10-02",
+      "headroom": "+3"
+    },
+    "packages_no_default_features": {
+      "what": "The same count with --no-default-features, which is what every shipped binary is built with.",
+      "unit": "packages",
+      "mode": "fail",
+      "limit": 72,
+      "measured": 69,
+      "measured_on": "2026-10-02",
+      "headroom": "+3"
+    },
+    "duplicate_versions_default": {
+      "what": "Crate names present in more than one version in the NORMAL-edge graph for the default feature set (the set `cargo tree -d --edges normal --target arm-unknown-linux-gnueabi` prints).",
+      "unit": "crate names",
+      "mode": "fail",
+      "limit": 4,
+      "measured": 1,
+      "measured_on": "2026-10-02",
+      "headroom": "+3"
+    },
+    "duplicate_versions_no_default_features": {
+      "what": "The same count with --no-default-features.",
+      "unit": "crate names",
+      "mode": "fail",
+      "limit": 4,
+      "measured": 1,
+      "measured_on": "2026-10-02",
+      "headroom": "+3"
+    },
+    "source_lines": {
+      "what": "Lines of Rust under rust-modules/src (every .rs file). Informational: exceeding it warns and never fails, because a growing feature is not a build-health defect by itself.",
+      "unit": "lines",
+      "mode": "warn",
+      "limit": 485000,
+      "measured": 441201,
+      "measured_on": "2026-10-02",
+      "headroom": "10%"
+    }
+  }
+}

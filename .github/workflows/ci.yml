@@ -101,6 +101,14 @@ jobs:
         # incremental check rather than a second build.
         run: cd rust-modules && cargo "+$RUST_NIGHTLY" check --lib --no-default-features
 
+      - name: Build budgets (dependency graph and source size)
+        # Deterministic, so a red result is always a change to the tree: third-party package count
+        # and duplicate crate versions for the ARM target, with and without default features
+        # (`cargo metadata` resolves; it compiles nothing), plus an informational line count.
+        # The binary-size budget runs in cross-build, where the binary exists. Limits and how to
+        # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
+        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src
+
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
         # `make macapp`, which ships `--release --no-default-features --features hostsim` to
@@ -131,6 +139,17 @@ jobs:
         with:
           sdl: "true"
 
+      - name: Compile the test binary with cargo --timings
+        # Build-health evidence, not a gate: `cargo-timing.html` shows which crate sat on the
+        # critical path and for how long, so a build that got slower is a number to read rather
+        # than a feeling. It is the SAME unit `make check-cargo-unit-default` runs next (same
+        # package, profile, features and rustflags; `--timings` is a cargo flag and is not part of
+        # the fingerprint, verified 2026-10-02 by building with and without it and getting `Fresh`
+        # for plxnative-modules both ways), so the `cargo test --lib` below finds everything built
+        # and this step is where the compile happens, not an extra one. The upload below carries it.
+        shell: bash
+        run: cd rust-modules && cargo "+$RUST_NIGHTLY" test --lib --no-run --timings
+
       - name: make check-cargo-unit-default
         # Teed to a file so the size step below can read the `test result:` lines this run already
         # printed instead of compiling and listing the suite a second time. `pipefail` is explicit:
@@ -147,6 +166,18 @@ jobs:
           { echo '```'; grep -E '^test result:' "$RUNNER_TEMP/make-check.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "passed=$(grep -E '^test result:' "$RUNNER_TEMP/make-check.log" \
             | sed -E 's/.* ([0-9]+) passed;.*/\1/' | awk '{n += $1} END {print n+0}')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the cargo build timings
+        # Where to read it: the run page, "Artifacts", `cargo-timings-host-unit-default`. `always()`
+        # so a red test run still leaves the timings of the build that preceded it; a missing file
+        # (the timings step itself failed) is a warning, not a second failure on top of that one.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-timings-host-unit-default
+          path: rust-modules/target/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
 
   host-unit-hostsim:
     name: host unit tests (hostsim)
@@ -310,6 +341,16 @@ jobs:
         # Named explicitly rather than inherited, so this is a decision on the page instead of a
         # default that moves if the Makefile's does.
         run: make ipk FLAVOR=debug WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
+
+      - name: Binary size budget
+        # The STRIPPED binary `make ipk` just staged (the one inside the .ipk), not the unstripped
+        # pkg/plxnative that deploys. `ls` of a glob rather than a literal appid so the flavour
+        # can change without this step quietly measuring nothing: it fails on zero or several matches.
+        run: |
+          set -euo pipefail
+          staged=$(ls ipkroot/data/usr/palm/applications/*/plxnative)
+          [ "$(printf '%s\n' "$staged" | wc -l)" -eq 1 ]
+          python3 ci/check-build-budgets.py --binary "$staged"
 
       - name: ELF assertions
         run: ./ci/check-elf.sh

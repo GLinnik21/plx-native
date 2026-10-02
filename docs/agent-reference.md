@@ -142,6 +142,37 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_INCREMENTAL=0` only when `.git` is a file; the main checkout keeps its cache);
   `ci/test_test_fast.py` pins that the `check*` and `lint` recipes never name `CARGO_INCREMENTAL=1`
   or `target-fast`, and that `tools/cargo-seed.py` and `tools/build-gc.sh` treat the dir correctly.
+- **CI build health** — three tools keep the build from growing unnoticed, and none of them is a
+  device gate.
+  - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
+    `cargo test --lib --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
+    without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
+    rather than adding one). Download `cargo-timings-host-unit-default` from the run page
+    ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
+    path. Locally: `cd rust-modules && cargo +nightly test --lib --no-run --timings` writes
+    `target/cargo-timings/cargo-timing.html`.
+  - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
+    `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
+    the median of the newest 5 runs against the 25 before them, flagging a job GROWN when the recent
+    median is more than 20% and more than 30 s higher, plus the slowest steps. Run it on demand (or
+    from an agent) before and after a change to the build; it is not wired into CI, and its tests
+    (`tools/test_ci_durations.py`, in `check-python`) use canned API output. Runner time is noisy, so a
+    flag is a reason to read the logs, not a verdict. A job renamed or split in the window (the host
+    jobs were one job until the split) only has the runs since.
+  - *Budgets.* `ci/build-budgets.json` holds the deterministic ceilings and `ci/check-build-budgets.py`
+    enforces them: the stripped ARM `plxnative` that `make ipk` stages (the cross-build job, dev
+    flavour), the number of third-party packages in the app crate's resolved graph for
+    `arm-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
+    default features and with `--no-default-features`, which is what ships), and the number of crate
+    names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
+    prints). The graph budgets run in `host-lint` from `cargo metadata`, which compiles nothing. A
+    fourth, the line count of `rust-modules/src`, only warns. Each entry records the value it was set
+    from and the date (10% headroom on sizes, +3 on counts). **To raise a budget deliberately, edit
+    the json in the same PR, update `measured`/`measured_on`, and justify the growth in the PR body**;
+    the failing message says the same. Run it locally with
+    `python3 ci/check-build-budgets.py --graph --src rust-modules/src` (add `--binary <path>` to grade
+    a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
