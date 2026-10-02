@@ -1,8 +1,10 @@
 //! The crop an art tile samples (`art_uv`): every picture keeps its own aspect in its tile.
 
 use super::*;
-use crate::plex::ServerId;
 use crate::ui::card_row::RowStyle;
+
+/// The crop never reads which server a picture came from, so any raw id will do.
+const SRC: u16 = 0;
 
 /// The cast row's circle, at rest and popped. The shape is what matters; the position is not.
 fn cast_circle(scale: f32) -> Rect {
@@ -10,7 +12,7 @@ fn cast_circle(scale: f32) -> Rect {
 }
 
 fn headshot(key: &str) -> Art<'_> {
-    Art::Person { sid: ServerId::UNSET, key, res: (300, 300) }
+    Art::Person { sid: SRC, key, res: (300, 300) }
 }
 
 /// Texels per drawn pixel on each axis — equal ⇔ an even scale, i.e. no distortion.
@@ -46,7 +48,7 @@ fn every_person_photo_takes_the_headshot_crop_and_other_art_is_even() {
     assert_eq!(art_crop(&Art::Poster(None)), crate::ui::Crop::Centre);
     assert_eq!(art_crop(&Art::Still(None)), crate::ui::Crop::Centre);
     assert_eq!(
-        art_crop(&Art::Thumb { sid: ServerId::UNSET, key: "k", res: (300, 300) }),
+        art_crop(&Art::Thumb { sid: SRC, key: "k", res: (300, 300) }),
         crate::ui::Crop::Centre
     );
 }

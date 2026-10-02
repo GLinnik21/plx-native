@@ -33,6 +33,10 @@ use crate::ui::machine::{
 };
 use crate::ui::screen::{Mounter, ReturnState, Screen};
 
+/// The one conversion from a catalog row to the plain facts `ui` draws a tile from. It lives here
+/// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
+pub(crate) mod tile_facts;
+
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
     Session(crate::auth::SessionCmd),

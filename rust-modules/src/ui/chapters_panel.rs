@@ -142,7 +142,7 @@ impl ChaptersState {
             crate::ui::widgets::draw_card(
                 p,
                 card,
-                crate::route::item_sid(crate::route::cur_sid(ps)),
+                crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
                 &ch.thumb,
                 (480, 270),
                 CH_RAD,

@@ -150,6 +150,15 @@ gate, so `ci/check-deps.sh` and review are what stop it; a green `module-cycle: 
 with no Plex type in scope (`fixture.rs`). If you find yourself reaching for `crate::plex` or
 `crate::browse` from a file in this directory, the design says the code belongs in `screens/`.
 
+A widget that needs a fact about an application row takes it as a plain value the caller fills, and
+does not name the row. A catalog row reaches the poster and still tiles, their captions and the
+page wash as `ui::tile::TileFacts`, built by `screens::registry::tile_facts::of` (the resume rule,
+the composite-thumb test and the kind table stay with the layer that owns them and arrive already
+answered); a server is the raw `u16` id `ui::tex` already takes (`ServerId::raw()`); a review score's
+units are `fmt::RatingScale`. Never add an `impl ui::Trait for pms::Type` in a third layer to get
+around this: after the crate split that impl has neither its trait nor its type in its own crate,
+which the orphan rule forbids.
+
 **One owner per state, event and resource (§2.2).** `App` owns a containment tree — never
 references: `Session` (auth, profile, the one `ProfileScope`), `Consent`, `Input` (press, key-repeat
 edges, pointer visibility, the double-buffered hit map, and the `FocusEngine` that holds THE

@@ -316,7 +316,7 @@ pub(crate) fn movie_ctx(m: &crate::pms::PmsMovie) -> String {
 /// evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
 /// `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
 pub(crate) fn warm_up_next_still(sid: crate::plex::ServerId, thumb: &str) {
-    crate::ui::widgets::warm_tex_on(sid, thumb, 480, 270, 0);
+    crate::ui::widgets::warm_tex_on(sid.raw(), thumb, 480, 270, 0);
 }
 
 pub(super) struct LivePlaybackResources;

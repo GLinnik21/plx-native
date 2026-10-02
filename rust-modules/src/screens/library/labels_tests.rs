@@ -80,7 +80,7 @@ fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
     let crate::ui::widgets::Art::Still(Some(art)) = super::parts::grid_art(&item) else {
         panic!("episodes must use their own still, not the show poster");
     };
-    assert_eq!(crate::ui::widgets::still_key(art), "/episode/still");
+    assert_eq!(crate::ui::widgets::still_key(&art), "/episode/still");
     let layout = Layout::new(false, &[], 40, true).with_episodes(true);
     let rect = Rect::new(layout.cell_x(layout.cols() - 1), layout.row_y(0, 0.0),
         layout.card_w(), layout.card_h());

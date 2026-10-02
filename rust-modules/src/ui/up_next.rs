@@ -302,7 +302,7 @@ pub(crate) fn draw(
     draw_card(
         p,
         l.still,
-        crate::route::item_sid(crate::route::cur_sid(ps)),
+        crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
         &u.thumb,
         (480, 270),
         10.0,

@@ -1,5 +1,6 @@
 //! Library paint consumes the same placement queries as keyboard and pointer navigation.
 use super::*;
+use crate::screens::registry::tile_facts;
 use crate::ui::card_row;
 use crate::ui::screen::{Activate, Hover, Stop};
 use crate::ui::theme;
@@ -253,7 +254,7 @@ impl LibraryScreen {
         if focused && f.press.scale > 0.0 { rect = rect.scaled(f.press.scale); }
         if !on_axis(rect.x, rect.w, SCR_W, 32.0) { return; }
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
-        let art = if shelf.landscape { Art::Still(Some(item)) } else { Art::Poster(Some(item)) };
+        let art = if shelf.landscape { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) };
         let resume = if shelf.landscape { None } else { item.resume_frac() };
         if focused {
             card_row::draw_focused(p, art, rect, scale, style, resume,
@@ -263,7 +264,7 @@ impl LibraryScreen {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }
         if shelf.landscape {
-            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
+            crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
         }
     }
 
@@ -307,6 +308,6 @@ pub(super) fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize
     }
     let mut label = if shelf.is_continue { card_row::TileLabel::played(&item.title) }
         else { card_row::TileLabel::title(&item.title) };
-    label.caption = card_row::focused_caption(item, shelf.is_continue);
+    label.caption = card_row::focused_caption(&tile_facts::of(item), shelf.is_continue);
     label
 }

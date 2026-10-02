@@ -1064,6 +1064,7 @@ impl Rig<FixtureHost> for FixtureRig {
     fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
         self.scrim_chrome.then(|| super::widgets::ChromeRead {
             profile: super::widgets::ProfileChipRead {
+                src: 0,
                 thumb: "",
                 initial: &self.scrim_initial,
                 name: &self.scrim_name,

@@ -2561,16 +2561,17 @@ mod tests {
         item.thumb = "/library/metadata/42/thumb".into();
         item.still = "/library/metadata/42/still".into();
         crate::ui::widgets::resolve_card_art(crate::ui::Painter::recording(), rect,
-            &crate::ui::widgets::Art::Poster(Some(&item)));
+            &crate::ui::widgets::Art::Poster(Some(crate::screens::registry::tile_facts::of(&item))));
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
             crate::ui::card_motion::begin_frame(frame * 16);
             crate::ui::idle::frame_begin(0.016);
             crate::ui::idle::take_local_damage();
             let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
-            for art in [crate::ui::widgets::Art::Poster(Some(&item)), crate::ui::widgets::Art::Still(Some(&item)),
-                crate::ui::widgets::Art::Thumb { sid, key: "/test-thumb", res: (250, 375) },
-                crate::ui::widgets::Art::Person { sid, key: "/test-person", res: (250, 250) }] {
+            let facts = crate::screens::registry::tile_facts::of(&item);
+            for art in [crate::ui::widgets::Art::Poster(Some(facts)), crate::ui::widgets::Art::Still(Some(facts)),
+                crate::ui::widgets::Art::Thumb { sid: sid.raw(), key: "/test-thumb", res: (250, 375) },
+                crate::ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
                 crate::ui::widgets::resolve_card_art(painter, rect, &art);
             }
             if frame < 2 {
