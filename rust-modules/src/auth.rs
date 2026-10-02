@@ -2048,7 +2048,7 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
 /// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
 /// is `Some` exactly when it held.
-fn get_identity(
+pub(crate) fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
@@ -2080,7 +2080,7 @@ fn get_identity(
 /// evidence the transport kept. Never collapsed to a sentinel status — the failure's `CURLcode` is
 /// what an insecure-only verdict names per route.
 #[derive(Debug)]
-enum ProbeReply {
+pub(crate) enum ProbeReply {
     /// `peer_pin` is the pin of the leaf certificate a strictly verified TLS connection presented
     /// (`crate::http::Reply::peer_pin`); `None` over plaintext, for an origin without a
     /// `ResolvePin` (see [`get_identity`]) and on every test seam.
