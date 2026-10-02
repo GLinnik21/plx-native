@@ -1025,7 +1025,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                     snapshot.view().hub(hub).and_then(|h| h.items.get(col))
                 });
                 if let Some(pmm) = pmm {
-                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm);
+                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm, &crate::app::playback::movie_ctx(pmm));
                     if requested {
                         // ASYNC (phase 11): nothing here reads `metadata::current()` — the play
                         // plan came from the catalog row itself. The detail is wanted only so the

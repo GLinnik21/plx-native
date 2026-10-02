@@ -325,6 +325,9 @@ pub(crate) unsafe fn boot(
     mt: crate::task::MainThread,
     preflight: super::bootstrap::Preflight,
 ) -> Result<App, c_int> {
+    // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
+    // so it is handed over here, before any playback can land. Replay boots take it too.
+    crate::route::install_up_next_still_warm(super::playback::warm_up_next_still);
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {

@@ -112,7 +112,11 @@ use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+// The one bit that crosses a module boundary without an instance. It is owned by `player` (the
+// pump samples its diagnostics only while the panel is up, and `player` may not name `app`); this
+// module is its only writer.
+use crate::player::DIAG_READOUT_ON as ON;
 
 /// **The read-out's own state, as ONE `App` field** (`app.diagnostics`; spec §0 done-criterion 1).
 ///
@@ -188,8 +192,9 @@ impl Default for Diagnostics {
 /// how you tell a wedged seek from a wedged load. A BACK handler was tried and removed: it bought
 /// one convenience and cost a special case sniffed above every route arm, in a chain where
 /// `make lint` cannot see a narrower condition placed after a broader one.
-static ON: AtomicBool = AtomicBool::new(false);
-
+///
+/// The flag is [`ON`], i.e. `player::DIAG_READOUT_ON`: a static, and not an `App` field, because the
+/// player's pump reads it too.
 pub(crate) fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }

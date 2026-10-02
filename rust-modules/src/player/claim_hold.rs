@@ -11,7 +11,7 @@
 //! live, and the transport slot already draws its `Working` glyph for that.
 //!
 //! **A viewer's transport press wins.** The viewer owns the transport; the hold is a loan. Any
-//! press that reaches `app::lifecycle::set_transport_paused` calls [`note_user_transport`], which
+//! press that reaches `player::lifecycle::set_transport_paused` calls [`note_user_transport`], which
 //! keeps the spinner (the claim is still flying) but forgets the restore, so a Pause the viewer
 //! pressed during the flight stays paused after the landing and a Play they pressed keeps playing.
 //! The hold's own pause and resume call [`super::pause`]/[`super::resume`] directly and so never
@@ -248,7 +248,7 @@ mod tests {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         // Pause pressed while the hold's own pause is standing.
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, true));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
         let plays = ffi::play_calls_for_test();
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the landing resumed a stream the viewer paused");
@@ -259,10 +259,10 @@ mod tests {
     fn a_viewer_play_during_the_flight_wins_and_is_not_doubled_at_landing() {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, false));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, false));
         assert!(!TX.paused.load(Acquire));
         // ...then paused again before the landing: that later press is the one that stands.
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, true));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the viewer's last press stands");
     }
@@ -304,12 +304,12 @@ mod tests {
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
-        let target = crate::app::lifecycle::transport_target(None, crate::app::lifecycle::viewer_paused());
+        let target = crate::player::lifecycle::transport_target(None, crate::player::lifecycle::viewer_paused());
         assert!(target, "OK during the spinner read the hold's pause as the viewer's and asked for Play");
 
         // Applying that press is the viewer's Pause: it becomes THEIR intent, so the landing
         // must not give play back.
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, target));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, target));
         let plays = ffi::play_calls_for_test();
         release(&mut rig.pa, take(7));
         assert!(TX.paused.load(Acquire), "the viewer's Pause was overridden by the hold's restore");
@@ -323,7 +323,7 @@ mod tests {
         crate::route::force_applying_for_test(7);
         let plays = ffi::play_calls_for_test();
 
-        crate::app::playback::resume_if_paused(&mut rig.pa);
+        crate::player::lifecycle::resume_if_paused(&mut rig.pa);
         assert!(TX.paused.load(Acquire), "Skip Intro / SeekTo / From Beginning resumed the hold's pause");
         assert_eq!(ffi::play_calls_for_test(), plays);
         assert!(!rig.position().1);
@@ -341,7 +341,7 @@ mod tests {
         let mut rig = Rig::paused();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
-        crate::app::playback::resume_if_paused(&mut rig.pa);
+        crate::player::lifecycle::resume_if_paused(&mut rig.pa);
         assert!(!TX.paused.load(Acquire), "a viewer pause is the viewer's to resume");
     }
     /// Finding: `set_transport_paused` compared against the raw `paused()`, so an explicit PLAY
@@ -354,7 +354,7 @@ mod tests {
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
         let plays = ffi::play_calls_for_test();
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, false));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, false));
         assert!(TX.paused.load(Acquire), "PLAY during the hold resumed the old stream mid-flight");
         assert_eq!(ffi::play_calls_for_test(), plays);
         assert!(!rig.position().1);
@@ -367,7 +367,7 @@ mod tests {
     /// Finding: suspend saved `paused()`, i.e. the hold's own pause, as the viewer's.
     #[test]
     fn a_suspend_during_a_hold_saves_playing() {
-        use crate::app::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
+        use crate::player::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
@@ -380,11 +380,11 @@ mod tests {
 
     #[test]
     fn a_suspend_after_a_viewer_pause_during_a_hold_saves_paused() {
-        use crate::app::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
+        use crate::player::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
-        assert!(crate::app::lifecycle::set_transport_paused(&mut rig.pa, true));
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
         assert_eq!(clock_for_suspend_now(&ForegroundLifecycle::IDLE), ForegroundClock::Paused);
     }
 }

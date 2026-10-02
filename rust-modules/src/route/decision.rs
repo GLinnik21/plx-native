@@ -6744,17 +6744,14 @@ fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<
 /// network work runs on a worker and the caller flips the route THIS frame; an empty or Busy request
 /// returns `false` and leaves the current route alone. `app.rs` drains `pump_play` once a frame and
 /// starts the engine when the plan lands.
-pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie) -> bool {
+///
+/// `ctx` is the HUD's context line (`year · rating · runtime`). The caller formats it
+/// (`app::playback::movie_ctx`) because the runtime string is `ui::fmt`'s and `route` sits below
+/// `ui`.
+pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie, ctx: &str) -> bool {
     if m.part.is_empty() {
         return false;
     }
-    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
-    let ctx = format!(
-        "{} \u{b7} {} \u{b7} {}",
-        m.year,
-        rating,
-        crate::ui::fmt::dur_short(m.dur_ns / 1_000_000)
-    );
     // **The ITEM's server, not the browsed one.** This passed `surface_sid()` — i.e. whichever
     // server happens to be current — while the row has carried its own `sid` since item identity
     // became a `(server, key)` pair. Starting a borrowed film therefore sent that film's
@@ -6774,7 +6771,7 @@ pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::sto
         &m.vcodec,
         &m.acodec,
         &m.title,
-        &ctx,
+        ctx,
     )
 }
 
@@ -6798,9 +6795,10 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 /// clone (`route::up_next().cloned()`); the signature is what forces them to.
 ///
 /// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
-/// pre-roll doesn't change shape underneath the user when it does.
-pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext) -> bool {
-    let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
+/// pre-roll doesn't change shape underneath the user when it does. `ctx` is the context line, the
+/// episode kicker (`ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)`): the caller formats it
+/// before handing `u` over, because `route` sits below `ui`.
+pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
     let title = if u.show_title.is_empty() {
         &u.ep_title
     } else {
@@ -6814,7 +6812,7 @@ pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::s
     } else {
         surface_sid()
     };
-    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
+    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, ctx)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -6832,6 +6830,18 @@ pub(crate) fn cancel_play(ps: &mut PlaybackSession) {
     if let Some(landing) = abandoned {
         retire_abandoned_plan(landing.plan);
     }
+}
+
+/// What [`pump_play`] does with the next episode's still: start its fetch, nothing else. Installed
+/// once at boot by `app` (`app::playback::warm_up_next_still`), because the texture cache it
+/// warms is `ui`'s and `route` sits below `ui`. Unset, the landing warms nothing — which is also
+/// what the host suite gets, where [`pump_play`] never calls it.
+static UP_NEXT_STILL_WARM: std::sync::OnceLock<fn(ServerId, &str)> = std::sync::OnceLock::new();
+
+/// Register the Up Next still prefetch ([`UP_NEXT_STILL_WARM`]). Called once, before the loop;
+/// a second registration is ignored.
+pub(crate) fn install_up_next_still_warm(warm: fn(ServerId, &str)) {
+    let _ = UP_NEXT_STILL_WARM.set(warm);
 }
 
 /// MAIN THREAD, once a frame. Returns the generation-owned resume point when a playable fresh plan
@@ -6900,21 +6910,21 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::meta
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
-    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex_wh_on`: this wants
-    // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
-    // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
+    // exactly the moment it appears in front of the user. The prefetch itself is `app`'s
+    // ([`install_up_next_still_warm`]): a texture warm is `ui`'s and `route` sits below it.
     //
     // It sits HERE, in the once-a-frame pump, rather than inside `apply_plan`: that function's
     // contract is that it is the sole WRITER OF THE SESSION, and a texture prefetch is not part of
     // it. Keeping the two apart also keeps the install reachable from the host suite —
-    // `warm_tex` pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
+    // the warm pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
     // The host test binary has no GL symbols; this prefetch is visual-only and production-only.
     // Keeping it out of cfg(test) makes the generation/resource transaction above testable
     // without pretending a desktop unit test can exercise the poster texture path.
     #[cfg(not(test))]
     if let Some(u) = up_next(ps) {
-        crate::ui::widgets::warm_tex_on(item_sid(cur_sid(ps)), &u.thumb, 480, 270, 0);
+        if let Some(warm) = UP_NEXT_STILL_WARM.get() {
+            warm(item_sid(cur_sid(ps)), &u.thumb);
+        }
     }
     ok.then_some(resume_ns)
 }

@@ -101,13 +101,21 @@ pub(crate) enum Start {
     Busy,
 }
 
+/// How much a bound preview multiplies the hero scrim curve: the [`View::field`] of a picture that
+/// is up. 1.35 is the video-bound row the legibility table grades.
+///
+/// `ui::landing_hero::PREVIEW_FIELD` is the same number from the other side: the scrim curve
+/// that consumes it is `ui`'s, and `ui` may not name `player` (nor `player` name `ui`), so each
+/// owns a copy and `screens::detail`'s `preview_plane_tests` pin them equal.
+pub(crate) const PREVIEW_FIELD: f32 = 1.35;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     /// Art texture alpha over the plane. 1 is a still, 0 is picture only.
     pub art: f32,
     /// Meta line and synopsis. Logo, title and the control row do not use this.
     pub prose: f32,
-    /// Raised field strength. 1 until a picture is bound, then [`crate::ui::landing_hero::PREVIEW_FIELD`].
+    /// Raised field strength. 1 until a picture is bound, then [`PREVIEW_FIELD`].
     pub field: f32,
     /// True once a frame has been presented, so hero chrome must not sample the framebuffer.
     pub picture: bool,
@@ -408,7 +416,7 @@ impl Machine {
         View {
             art: 0.0,
             prose: 0.0,
-            field: crate::ui::landing_hero::PREVIEW_FIELD,
+            field: PREVIEW_FIELD,
             picture: true,
             playing: true,
         }
@@ -774,8 +782,8 @@ pub(crate) fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = crate::app::lifecycle::transport_target(play, crate::app::lifecycle::paused());
-    crate::app::lifecycle::set_transport_paused(pa, want)
+    let want = super::lifecycle::transport_target(play, super::lifecycle::paused());
+    super::lifecycle::set_transport_paused(pa, want)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1144,7 +1152,7 @@ mod tests {
         assert!(view.picture);
         assert_eq!(view.prose, 0.0);
         assert_eq!(view.art, 0.0);
-        assert!((view.field - crate::ui::landing_hero::PREVIEW_FIELD).abs() < 1e-6);
+        assert!((view.field - PREVIEW_FIELD).abs() < 1e-6);
     }
 
     fn facts(phase: Phase) -> PumpFacts {

@@ -152,7 +152,7 @@ pub(super) fn request_play_intent(
             ok
         }
         crate::screens::registry::PlayIntent::Movie(m) =>
-            crate::route::request_play_movie(session, meta, m),
+            crate::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
     }
 }
 

@@ -2680,6 +2680,23 @@ mod repair_confirmation_tests {
         assert!(!page.repair_alert.is_open());
         page.repair_alert.close();
     }
+    /// Moved up from `player::machine`'s tests: it builds a replacement `PlayerScreen`, and
+    /// `player` may not name `screens`. The attempt is the `Player` machine's, not the screen's.
+    #[test]
+    fn repair_survives_screen_and_session_recreation_and_rejects_stale_completions() {
+        use crate::webos::jail_repair::{Failure, State};
+        let mut player = crate::player::machine::Player::new();
+        let token = player.repair.begin(true).unwrap();
+        assert!(!player.repair.complete(token + 1, Ok(())));
+        player.session = crate::route::PlaybackSession::IDLE;
+        let _replacement = PlayerScreen::new(EntryId(9));
+        assert_eq!(player.repair.state(), State::Running);
+        assert_eq!(player.repair.begin(true), None);
+        assert!(player.repair.complete(token, Err(Failure::Timeout)));
+        assert!(!player.repair.complete(token, Ok(())));
+        assert_eq!(player.repair.state(), State::Failed(Failure::Timeout));
+        assert_eq!(player.repair.begin(true), None);
+    }
     #[test]
     fn accepted_attempt_hides_forward_action_after_screen_recreation() {
         let _g = crate::testlock::serial();

@@ -753,9 +753,12 @@ unsafe fn poke_i64(base: *mut c_void, off: usize, v: i64) {
 /// The AVIO write side: raw TS bytes -> the mpeg client's socket. Boxed so the
 /// opaque pointer stays stable; `fd` is refreshed by capture.rs before each
 /// encode, `failed` reports a dead socket back without panicking inside FFmpeg.
+/// `send` is the socket-write policy `capture` hands to [`Venc::open`] (`ff` sits below
+/// `capture` and may not name it).
 struct VencSink {
     fd: c_int,
     failed: bool,
+    send: fn(c_int, &[u8]) -> bool,
 }
 
 extern "C" fn venc_write_cb(op: *mut c_void, data: *mut u8, n: c_int) -> c_int {
@@ -765,8 +768,9 @@ extern "C" fn venc_write_cb(op: *mut c_void, data: *mut u8, n: c_int) -> c_int {
             s.failed = true;
             return -1;
         }
-        // one socket-write policy for the whole feature (partial writes, MSG_NOSIGNAL)
-        if !crate::capture::send_all(s.fd, std::slice::from_raw_parts(data, n as usize)) {
+        // one socket-write policy for the whole feature (partial writes, MSG_NOSIGNAL), supplied by
+        // the capture tap that owns the socket
+        if !(s.send)(s.fd, std::slice::from_raw_parts(data, n as usize)) {
             s.failed = true;
             return -1;
         }
@@ -810,7 +814,16 @@ impl Venc {
     /// count and MPEG1 has no intra prediction, so a detailed screen at 960x540 can cost
     /// 50-110ms/frame on this CPU where 480x270 stays near 15-25ms; the caller rebuilds
     /// the session when the geometry changes.
-    pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
+    ///
+    /// `send` writes every byte of a slice to a socket fd and says whether it all went (capture's
+    /// `send_all`: partial writes, `MSG_NOSIGNAL`). The muxer's AVIO write callback calls it, and
+    /// it is a parameter because the dev capture tap that owns the socket is above this module.
+    pub(crate) fn open(
+        w: c_int,
+        h: c_int,
+        bitrate_bps: i64,
+        send: fn(c_int, &[u8]) -> bool,
+    ) -> Option<Box<Venc>> {
         ensure_registered(); // the file's ONE network-init guard
         if !SWS_OK.load(Ordering::Relaxed) {
             crate::eventlog::log("venc: libswscale is not loaded (RELEASE build) — mpeg1 capture off");
@@ -845,6 +858,7 @@ impl Venc {
                 sink: Box::new(VencSink {
                     fd: -1,
                     failed: false,
+                    send,
                 }),
                 st_tb: AVRational { num: 1, den: 90000 },
                 pts: 0,

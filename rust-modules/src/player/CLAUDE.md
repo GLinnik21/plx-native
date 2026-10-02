@@ -131,9 +131,9 @@ something.
   (the viewer's own `player::pause`, then `player::state()` answers `Buffering` so the HUD's
   existing transport spinner draws) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`app::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
-  While the hold's pause stands the viewer's transport reads see PLAYING (`lifecycle::viewer_paused`,
+  While the hold's pause stands the viewer's transport reads see PLAYING (`player::lifecycle::viewer_paused`,
   `claim_hold::owns_pause`): the OK toggle means Pause and a seek's `resume_if_paused` leaves the
   hold alone (its seek is carried past the reload by `pump::commit_or_carry_seek`, including a
   seek pressed mid-flight when none was pending at claim time). An engine failure during the
@@ -206,8 +206,9 @@ something.
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; details in the
-  `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
+  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
+  the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
   failure without repeating route preparation, and applies the saved clock only after `Started`.
