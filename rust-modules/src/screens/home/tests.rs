@@ -314,7 +314,8 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let _guard = crate::testlock::serial();
     crate::plex::grant::reset_for_test();
     let key = keypin::key_of("home-clock.invalid", 32400);
-    let _scoped = keypin::Scoped::watch(&key);
+    let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
+    let _current = current_server_for_test("home-clock-machine");
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
@@ -329,7 +330,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let plain_row = plain.action_frame_measured(&measure).unwrap();
     let plain_caption = plain.caption.to_owned();
 
-    keypin::strict_date_failure(&key, 60, Some(10));
+    keypin::strict_failure(&key, 60, Some(10));
     let before_tick = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(before_tick.reason, None, "the held fact does not change between ticks");
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
@@ -369,6 +370,47 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ServerBadgeMinus), Some(plaintext_question::connect())));
     crate::plex::grant::reset_for_test();
+}
+
+/// Make `machine` the current server (the one a failed Home speaks about) for a test, and put the
+/// registry back when it ends.
+fn current_server_for_test(machine: &str) -> impl Drop {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_pinned_with_client_id(machine, &crate::plex::Origin::http("192.168.1.53", 32400),
+        "", None, "client", Default::default());
+    assert!(crate::plex::set_current(sid) || crate::plex::current_server() == sid, "the test server is current");
+    Reset
+}
+
+/// **A fact about ANOTHER server does not colour a failed Home** (scenario B): Home asks
+/// `net::keypin::blocked_for` about the current server only.
+#[test]
+fn a_failed_home_ignores_a_clock_fact_about_another_server() {
+    use crate::net::keypin;
+    let _guard = crate::testlock::serial();
+    crate::plex::grant::reset_for_test();
+    let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
+    let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
+    let _current = current_server_for_test("home-here-machine");
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+
+    keypin::strict_failure(&elsewhere, 60, Some(10));
+    keypin::key_changed(&elsewhere);
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    assert_eq!(s.clock.blocked(), None);
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!((overlay.reason, overlay.glyph), (None, Some(crate::ui::icons::Icon::ServerBadgeMinus)));
 }
 
 // The observer consumes the same final geometry as widgets::card; the screen

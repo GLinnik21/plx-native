@@ -906,7 +906,9 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
-                self.watch_plaintext(cx);
+                if self.watch_readout(cx) {
+                    fx.invalidate(Provenance::Landing(fx.from()));
+                }
                 self.plaintext_alert.update(tick.dt());
                 if self.grid_reset_pending {
                     if let Some(elem) = self.pair.detail.elem_at(0) {

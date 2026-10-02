@@ -835,7 +835,7 @@ impl HomeScreen {
         if self.plaintext.refresh(current, Near::First) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
-        if self.clock.refresh() {
+        if self.clock.refresh(current) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
         if self.plaintext_alert.is_open()

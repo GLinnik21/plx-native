@@ -23,22 +23,26 @@ pub(crate) fn reason_for(blocked: Option<Blocked>) -> Option<(&'static CStr, Ico
     Some((reason, Icon::ClockBadgeAlert))
 }
 
-/// What a screen holds of `net::keypin::blocked`, re-read only when `keypin::revision` moved.
+/// What a screen holds of `net::keypin::blocked_for` — the fact about the ONE server its read-out
+/// speaks about — re-read only when `keypin::revision` moved or that server changed
+/// (`OfferWatch`'s shape: the revision is global, the answer is per machine).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ClockWatch {
-    seen: Option<u64>,
+    seen: Option<(u64, Option<String>)>,
     held: Option<Blocked>,
 }
 
 impl ClockWatch {
-    /// Re-read the fact; `true` when what the read-out shows changed.
-    pub(crate) fn refresh(&mut self) -> bool {
-        let revision = crate::net::keypin::revision();
-        if self.seen == Some(revision) {
+    /// Re-read the fact about `machine` (`None`: the read-out speaks about no known server, so no
+    /// server's fact applies); `true` when what the read-out shows changed.
+    pub(crate) fn refresh(&mut self, machine: Option<&str>) -> bool {
+        let key = (crate::net::keypin::revision(), machine.map(str::to_owned));
+        if self.seen.as_ref() == Some(&key) {
             return false;
         }
-        self.seen = Some(revision);
-        let next = crate::net::keypin::blocked();
+        self.seen = Some(key);
+        // The empty id names no server: only a dev-planted fact answers it.
+        let next = crate::net::keypin::blocked_for(machine.unwrap_or_default());
         std::mem::replace(&mut self.held, next) != next
     }
 
@@ -75,30 +79,38 @@ mod tests {
         );
         assert_eq!(
             msg::browse_clock_no_key(),
-            "This TV's clock looks wrong. Connect the TV to the internet once, then try again."
+            "This TV’s clock looks wrong. Connect the TV to the internet once, then try again."
         );
         assert_eq!(
             msg::browse_clock_key_changed(),
-            "Your server's key has changed. Connect the TV to the internet once so the app can check it again."
+            "Your server’s key has changed. Connect the TV to the internet once so the app can check it again."
         );
     }
 
-    /// The watch follows `keypin::revision`: it re-reads when a fact moved and says so, and a
-    /// second refresh over an unchanged revision changes nothing and reports nothing.
+    /// The watch follows `keypin::revision` AND the machine it is asked about: it re-reads when a
+    /// fact moved or the read-out changed server and says so, and a second refresh over the same
+    /// pair changes nothing and reports nothing. Another server's fact never shows.
     #[test]
-    fn the_watch_re_reads_when_the_revision_moves_and_not_otherwise() {
+    fn the_watch_re_reads_when_the_revision_or_the_machine_moves_and_not_otherwise() {
         let _serial = crate::testlock::serial();
         let key = keypin::key_of("clock-watch.invalid", 32400);
-        let _scoped = keypin::Scoped::watch(&key);
+        let _scoped = keypin::Scoped::watch_machine("clock-watch-machine", &key);
+        let here = Some("clock-watch-machine");
         let mut watch = ClockWatch::default();
-        watch.refresh();
-        assert_eq!(watch.blocked(), None, "no fact stands");
+        watch.refresh(here);
+        assert_eq!(watch.blocked(), None, "no fact stands for this machine");
         let before = watch.blocked();
-        keypin::strict_date_failure(&key, 60, Some(10));
+        keypin::strict_failure(&key, 60, Some(10));
         assert_eq!(watch.blocked(), before, "a held value does not change under the screen mid-frame");
-        assert!(watch.refresh(), "the revision moved");
+        assert!(watch.refresh(here), "the revision moved");
         assert_eq!(watch.blocked(), Some(Blocked::NoKey));
-        assert!(!watch.refresh(), "nothing moved since");
+        assert!(!watch.refresh(here), "nothing moved since");
+
+        assert!(watch.refresh(Some("clock-watch-other")), "another server: the fact is not its own");
+        assert_eq!(watch.blocked(), None);
+        assert!(!watch.refresh(None), "no server at all: no fact, so nothing the read-out shows moved");
+        assert!(watch.refresh(here), "back to the server the fact is about");
+        assert_eq!(watch.blocked(), Some(Blocked::NoKey));
     }
 
     /// **Both reasons fit the two-line slot in every shipped language**: nothing else fit-tests

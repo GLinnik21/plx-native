@@ -1,6 +1,7 @@
 //! `/tmp/plxnative-toast=<text>` — ask the television's notification service, in-process and jailed
-//! as the app, whether it will show `<text>` as a system toast. Evidence, not a feature: no product
-//! code raises a toast yet, and this is the measurement that says whether one can.
+//! as the app, whether it will show `<text>` as a system toast. A measurement, not the feature: the
+//! product toast is `app::clock_notice`, and this trigger asks the same service with arbitrary
+//! text, plain and as the app, logging each outcome.
 //!
 //! **Two attempts, each on its own log line, so a refusal is never silent:**
 //!

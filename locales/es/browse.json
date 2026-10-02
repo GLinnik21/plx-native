@@ -469,8 +469,8 @@
   "browse.collection.order.release": "Por fecha de estreno",
   "browse.collection.order.title": "Por orden alfabético",
   "browse.collection.order.custom": "Orden personalizado",
-  "browse.clock.notice_year": "Hora del televisor errónea ({year}). Conectado con la clave guardada.",
-  "browse.clock.notice": "Hora del televisor errónea. Conectado con la clave guardada.",
+  "browse.clock.notice_year": "La hora del TV parece incorrecta ({year}). Conectado con la clave guardada.",
+  "browse.clock.notice": "La hora del TV parece incorrecta. Conectado con la clave guardada.",
   "browse.clock.no_key": "La hora del televisor parece incorrecta. Conecta el televisor a internet una vez e inténtalo de nuevo.",
   "browse.clock.key_changed": "La clave de tu servidor ha cambiado. Conecta el televisor a internet una vez para que la app pueda comprobarla de nuevo."
 }

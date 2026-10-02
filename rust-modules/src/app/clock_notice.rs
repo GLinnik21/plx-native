@@ -34,19 +34,28 @@ impl ClockNotice {
 
     /// One frame's look: an atomic load unless a fact moved.
     pub(crate) fn poll(&mut self) {
-        if let Some(message) = self.step(keypin::revision(), keypin::engaged()) {
+        if let Some(message) = self.poll_with(keypin::revision, keypin::engaged) {
             send(message);
         }
     }
 
-    /// The decision, free of the bus and the process-wide facts: the message to show now, if this
-    /// is the one time it is due. `engaged` is [`keypin::engaged`] as read at `revision`.
-    fn step(&mut self, revision: u64, engaged: Option<Option<i64>>) -> Option<String> {
-        if self.told || self.seen == Some(revision) {
+    /// The decision, with the two process-wide reads injected so a test can count them. Evaluated
+    /// as late as it can be: `engaged` takes the keypin lock and scans its table, which the frame
+    /// thread must not do every frame, so it is only read for a revision not yet seen.
+    fn poll_with(
+        &mut self,
+        revision: impl FnOnce() -> u64,
+        engaged: impl FnOnce() -> Option<Option<i64>>,
+    ) -> Option<String> {
+        if self.told {
+            return None;
+        }
+        let revision = revision();
+        if self.seen == Some(revision) {
             return None;
         }
         self.seen = Some(revision);
-        let year = engaged?;
+        let year = engaged()?;
         self.told = true;
         Some(message(year))
     }
@@ -75,34 +84,65 @@ fn send(message: String) {
 mod tests {
     use super::*;
 
+    /// One poll over the given reads.
+    fn step(notice: &mut ClockNotice, revision: u64, engaged: Option<Option<i64>>) -> Option<String> {
+        notice.poll_with(|| revision, || engaged)
+    }
+
     #[test]
     fn it_fires_exactly_once_however_often_the_facts_move() {
         let mut notice = ClockNotice::new();
-        assert_eq!(notice.step(1, None), None, "a revision with nothing engaged tells nobody");
-        assert_eq!(notice.step(1, None), None);
-        let first = notice.step(2, Some(Some(2020)));
+        assert_eq!(step(&mut notice, 1, None), None, "a revision with nothing engaged tells nobody");
+        assert_eq!(step(&mut notice, 1, None), None);
+        let first = step(&mut notice, 2, Some(Some(2020)));
         assert!(first.is_some_and(|m| m.contains("2020")), "the first engagement is told");
         // Re-engagements after a latch lapse, a blocked fact appearing or clearing, and the same
         // revision read again: none of them tell it twice.
-        assert_eq!(notice.step(2, Some(Some(2020))), None);
-        assert_eq!(notice.step(3, Some(Some(2020))), None);
-        assert_eq!(notice.step(9, Some(Some(2031))), None);
-        assert_eq!(notice.step(10, Some(None)), None);
+        assert_eq!(step(&mut notice, 2, Some(Some(2020))), None);
+        assert_eq!(step(&mut notice, 3, Some(Some(2020))), None);
+        assert_eq!(step(&mut notice, 9, Some(Some(2031))), None);
+        assert_eq!(step(&mut notice, 10, Some(None)), None);
     }
 
     #[test]
     fn a_fact_published_before_the_first_poll_is_still_seen() {
         let mut notice = ClockNotice::new();
-        assert!(notice.step(0, Some(Some(2020))).is_some(), "revision 0 is a revision like another");
+        assert!(step(&mut notice, 0, Some(Some(2020))).is_some(), "revision 0 is a revision like another");
+    }
+
+    /// The frame loop polls forever: `engaged` locks the keypin mutex, so once told it is never read
+    /// and while the revision stands still it is not read either; a moved revision reads it once.
+    #[test]
+    fn the_locking_read_happens_only_for_a_revision_not_yet_seen_and_never_once_told() {
+        let engaged_reads = std::cell::Cell::new(0);
+        let poll = |notice: &mut ClockNotice, revision: u64, engaged: Option<Option<i64>>| {
+            notice.poll_with(|| revision, || {
+                engaged_reads.set(engaged_reads.get() + 1);
+                engaged
+            })
+        };
+        let mut notice = ClockNotice::new();
+        assert_eq!(poll(&mut notice, 4, None), None);
+        assert_eq!(engaged_reads.get(), 1, "a first sight of a revision reads the facts");
+        for _ in 0..1000 {
+            assert_eq!(poll(&mut notice, 4, None), None);
+        }
+        assert_eq!(engaged_reads.get(), 1, "an unchanged revision costs no lock");
+        assert!(poll(&mut notice, 5, Some(Some(2020))).is_some());
+        assert_eq!(engaged_reads.get(), 2);
+        for revision in 6..1000 {
+            assert_eq!(poll(&mut notice, revision, Some(Some(2020))), None);
+        }
+        assert_eq!(engaged_reads.get(), 2, "once told, nothing is read at all");
     }
 
     #[test]
     fn it_does_not_burn_its_one_chance_on_an_unengaged_revision() {
         let mut notice = ClockNotice::new();
         for revision in 1..5 {
-            assert_eq!(notice.step(revision, None), None);
+            assert_eq!(step(&mut notice, revision, None), None);
         }
-        assert!(notice.step(5, Some(None)).is_some());
+        assert!(step(&mut notice, 5, Some(None)).is_some());
     }
 
     #[test]
@@ -114,11 +154,14 @@ mod tests {
         assert!(!message(Some(2020)).contains("2,020"));
     }
 
-    /// The system toast wraps at roughly 35 characters a line and two lines are proven to show.
+    /// The system toast wraps and two lines are proven to show. **Measured on the television**
+    /// (`noaction`, no arrow): the first line held 45 Latin characters ("TV clock looks wrong
+    /// (2020). Connected by the"). So a line is budgeted at 40, which leaves a margin for the
+    /// wider Cyrillic glyphs, and the whole text at two such lines (80).
     #[test]
     fn every_shipped_language_fits_the_toast() {
-        const LIMIT: usize = 70;
-        const LINE: usize = 35;
+        const LIMIT: usize = 80;
+        const LINE: usize = 40;
         for language in crate::i18n::SHIPPED {
             let _guard = crate::i18n::language_on_this_thread_for_test(language);
             for (what, text) in [("with a year", message(Some(2020))), ("no year", message(None))] {

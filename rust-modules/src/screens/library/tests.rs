@@ -439,7 +439,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
     }
 }
 
-/// **A failed source names a wrong clock when key mode cannot help** (`net::keypin::blocked`): the
+/// **A failed source names a wrong clock when key mode cannot help** (`net::keypin::blocked_for`): the
 /// clock reason and glyph take the slot, ahead of the "shared by" line and behind an offered
 /// plaintext server's reason. No fact is byte-for-byte today's read-out, the reason moves the row,
 /// and the *Try again* stop is the pill the same frame draws.
@@ -451,20 +451,27 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     let _guard = crate::testlock::serial();
     crate::plex::grant::reset_for_test();
     let key = keypin::key_of("library-clock.invalid", 32400);
-    let _scoped = keypin::Scoped::watch(&key);
+    let _scoped = keypin::Scoped::watch_machine("library-clock-machine", &key);
+    crate::plex::reset_servers_for_test();
+    let failed_sid = crate::plex::register_pinned_with_client_id("library-clock-machine",
+        &crate::plex::Origin::http("192.168.1.51", 32400), "", None, "client", Default::default());
     let owned = |owner: &str| {
         let mut fixture = Fixture::new();
         fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, failed_sid,
             crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
                 state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
         fixture
     };
+    // Whether the tick damaged the frame: a fact appearing or clearing under a static Failed
+    // read-out moves the action row, so it must.
     let tick = |page: &mut LibraryScreen, fixture: &Fixture| {
         let mut out = Vec::new();
         let mut present = crate::ui::present::Present::new();
+        present.take(0);
         page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.changed()
     };
     let read = |page: &LibraryScreen, fixture: &Fixture| {
         let cx = fixture.cx(Some(page.key(RETRY)));
@@ -486,10 +493,10 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
             "no fact: today's read-out");
         assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
 
-        keypin::strict_date_failure(&key, 60, Some(10));
+        keypin::strict_failure(&key, 60, Some(10));
         let (stale, ..) = read(&page, &fixture);
         assert_eq!(stale, shown, "the held fact does not change between ticks");
-        tick(&mut page, &fixture);
+        assert!(tick(&mut page, &fixture), "a fact appearing under a static read-out damages the frame");
         let (shown, glyph, row, clock_caption) = read(&page, &fixture);
         assert_eq!(shown.as_deref(), Some(crate::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
@@ -501,13 +508,13 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert!(row.y >= StatusOverlay::FULL_ANCHOR_TOP);
 
         keypin::key_changed(&key);
-        tick(&mut page, &fixture);
+        assert!(tick(&mut page, &fixture));
         assert_eq!(page.clock.blocked(), Some(Blocked::KeyChanged));
         let (shown, ..) = read(&page, &fixture);
         assert_eq!(shown.as_deref(), Some(crate::i18n::msg::browse_clock_key_changed_c()));
 
         keypin::strict_established(&key);
-        tick(&mut page, &fixture);
+        assert!(tick(&mut page, &fixture), "…and one clearing does too");
         let (shown, glyph, ..) = read(&page, &fixture);
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "the fact cleared: the shared-by line is back");
@@ -524,7 +531,9 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
             state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
     let mut page = fixture.screen();
-    keypin::strict_date_failure(&key, 60, Some(10));
+    let lan_key = keypin::key_of("192.168.1.50", 32400);
+    let _lan = keypin::Scoped::watch_machine("lan-machine", &lan_key);
+    keypin::strict_failure(&lan_key, 60, Some(10));
     crate::plex::grant::offered(crate::plex::grant::scope(),
         crate::plex::grant::PlaintextVerdict { machine_id: "lan-machine".into(), name: "nas".into(), shared_by: String::new(),
             eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
@@ -534,6 +543,54 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     assert!(shown.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{shown:?}");
     assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
     crate::plex::grant::reset_for_test();
+}
+
+/// **A fact about ANOTHER server does not colour this source's read-out** (scenario B): the
+/// Library asks `net::keypin::blocked_for` about the failed source's own machine, so a second bound
+/// server's expired certificate leaves it alone, and a fact for the source's own machine shows.
+#[test]
+fn a_failed_source_ignores_a_clock_fact_about_another_server() {
+    use crate::net::keypin;
+    use crate::ui::icons::Icon;
+    let _guard = crate::testlock::serial();
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+    let here = keypin::key_of("library-here.invalid", 32400);
+    let elsewhere = keypin::key_of("library-elsewhere.invalid", 32400);
+    let _here = keypin::Scoped::watch_machine("library-here-machine", &here);
+    let _elsewhere = keypin::Scoped::watch_machine("library-elsewhere-machine", &elsewhere);
+    let sid = crate::plex::register_pinned_with_client_id("library-here-machine",
+        &crate::plex::Origin::http("192.168.1.52", 32400), "", None, "client", Default::default());
+    let mut fixture = Fixture::new();
+    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
+            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let mut page = fixture.screen();
+    let tick = |page: &mut LibraryScreen| {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        present.take(0);
+        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.changed()
+    };
+    let shown = |page: &LibraryScreen| {
+        let cx = fixture.cx(Some(page.key(RETRY)));
+        let (caption, reason) = page.status_text(&cx);
+        let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
+        (overlay.reason.map(|r| r.to_owned()), overlay.glyph)
+    };
+    tick(&mut page);
+    keypin::strict_failure(&elsewhere, 60, Some(10));
+    keypin::key_changed(&elsewhere);
+    tick(&mut page);
+    assert_eq!(page.clock.blocked(), None, "another server's fact is not this source's");
+    assert_eq!(shown(&page), (None, Some(Icon::ServerBadgeMinus)), "today's read-out");
+
+    keypin::strict_failure(&here, 60, Some(10));
+    tick(&mut page);
+    assert_eq!(shown(&page), (Some(crate::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
 }
 
 /// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the

@@ -43,16 +43,18 @@ impl LibraryScreen {
         self.clock.reason()
     }
 
-    /// Follow the offer for the failed source's server (`plex::grant::offers`), and take the
-    /// question down once the read-out it was asked from no longer asks about that server.
-    pub(super) fn watch_plaintext<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+    /// Follow the offer for the failed source's server (`plex::grant::offers`) and the clock fact
+    /// about that same server (`net::keypin::blocked_for`), and take the question down once the
+    /// read-out it was asked from no longer asks about that server. `true` when what the read-out
+    /// shows changed, so the caller damages the frame (the reason line moves the action row).
+    pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
         let machine = (self.readout == Readout::Failed)
             .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
             .flatten()
             .map(|client| client.machine_id());
-        self.plaintext.refresh(machine, Near::Only);
-        self.clock.refresh();
+        let offer_moved = self.plaintext.refresh(machine, Near::Only);
+        let clock_moved = self.clock.refresh(machine);
         if self.plaintext_alert.is_open()
             && !(self.readout == Readout::Failed
                 && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
@@ -60,6 +62,7 @@ impl LibraryScreen {
         {
             self.plaintext_alert.withdraw();
         }
+        offer_moved || clock_moved
     }
 
     pub(super) fn status_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Rect> {
