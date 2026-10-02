@@ -7,7 +7,7 @@
 > address**, because the host a `plex.direct` certificate is issued for is the hostname plex.tv
 > sends in `Connection.uri` while `Connection.address` is the dotted quad behind it. So read
 > §3.1's `Client { host, port }`, §3.3's `StreamUrl { host, port, path }` and rule 9 ("Numeric host,
-> no DNS") as the state of the world before `rust-modules/src/plex/origin.rs`, whose module doc is
+> no DNS") as the state of the world before `rust-modules/src/net/origin.rs` (then `plex/origin.rs`), whose module doc is
 > the current account — including the bracket invariant (`host()` is bare for the resolver,
 > `authority()` brackets a v6 literal for a URL) that the old pair could not express at all.
 > `Client::host()`/`port()` and `StreamUrl::host()`/`port()` still expose views on that origin, but

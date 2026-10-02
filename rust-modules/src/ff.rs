@@ -2747,6 +2747,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     range_from: Some(target),
                     deadline: None,
                     same_origin_only: false,
+                    credential_gate: crate::http::credential_transport_allowed,
                 };
                 match crate::stream::redirect::open_following(
                     *hs,
@@ -3550,6 +3551,7 @@ fn hls_open_plain(
         deadline,
         // The HLS contract (`crate::hls`): every request stays on the PMS origin.
         same_origin_only: true,
+        credential_gate: crate::http::credential_transport_allowed,
     };
     let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3635,6 +3637,7 @@ fn open_plain_progressive(
         range_from: None,
         deadline: None,
         same_origin_only: false,
+        credential_gate: crate::http::credential_transport_allowed,
     };
     match crate::stream::redirect::open_following(hs_p, &req, &mut crate::checkpoint::NoCheckpoint)
     {
@@ -7661,7 +7664,7 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
 /// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
-/// (`plex/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
+/// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub(crate) fn demux(
     origin: crate::plex::Origin,

@@ -540,11 +540,6 @@ pub enum SwitchOutcome {
 }
 
 #[cfg(test)]
-pub(crate) fn test_refusal_evidence(status: u16, response: Result<crate::net::Resp, crate::net::RequestFailure>) {
-    evidence_tests::assert_refusal_evidence(status, response);
-}
-
-#[cfg(test)]
 mod evidence_tests {
     use super::*;
     use crate::net::{RequestError, RequestFailure, Resp};
@@ -598,7 +593,7 @@ mod evidence_tests {
         }
     }
 
-    pub(super) fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
+    fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
         crate::testlock::assert_held("auth response policy test");
         let failure = response.as_ref().err().copied().expect("incomplete HTTP response");
         set_unreachable_for_test(true);
@@ -622,6 +617,17 @@ mod evidence_tests {
     fn http2_reset_404_remains_gone() { http2_reset_policy(404); }
     #[test]
     fn http2_reset_410_remains_gone() { http2_reset_policy(410); }
+
+    /// The same policy graded on a failure the transport really produced: a CA-trusted HTTP/2
+    /// `RST_STREAM` after the status line, driven by `net`'s fixture (the wire half of this test
+    /// lives in `net`, which cannot name this layer).
+    #[test]
+    fn http2_wire_reset_failure_keeps_the_account_verdict() {
+        let _serial = crate::testlock::serial();
+        for status in [401, 403, 404, 410] {
+            crate::net::with_h2_reset_failure(status, |failure| assert_refusal_evidence(status, Err(failure)));
+        }
+    }
 
     #[test]
     fn incomplete_refusal_survives_real_transport_and_preserves_contact() {

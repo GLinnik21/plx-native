@@ -29,6 +29,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// `Origin`, `Scheme`, `ResolvePin`, `url_host`: the address types the transport reads, which the
+/// Plex layer re-exports (`plex::origin`). They live here so this layer names nothing above it.
+pub(crate) mod origin;
+
 type CURL = c_void;
 pub(crate) type curl_slist = c_void;
 
@@ -148,7 +152,7 @@ const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 const CURLOPT_CAINFO: c_int = 10065;
 /// `CURLOPTTYPE_SLISTPOINT + 203`: a `curl_slist` of `host:port:address` entries that pre-populate
 /// the DNS cache, so the named host is never resolved. Present since 7.21.3; the entry syntax the
-/// television's 7.53.1 parses is documented on [`crate::plex::ResolvePin::entry`]. See [`resolve`].
+/// television's 7.53.1 parses is documented on [`origin::ResolvePin::entry`]. See [`resolve`].
 const CURLOPT_RESOLVE: c_int = 10203;
 /// `CURLE_UNKNOWN_OPTION` — what `curl_easy_setopt` answers for an option id this libcurl was
 /// built without. The one `setopt` result in this module that is NOT fatal: see [`resolve`].
@@ -371,6 +375,22 @@ pub(crate) fn available() -> bool {
 
 pub(crate) fn threaded_tls_ready() -> bool {
     CURL_THREADED_TLS_OK.load(Ordering::Acquire)
+}
+
+/// The `User-Agent` every easy request sends. The transport does not know who the client is — that
+/// is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once, with
+/// [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it. Unset
+/// (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by default.
+static USER_AGENT: OnceLock<String> = OnceLock::new();
+
+/// Install the process's `User-Agent`. The first call wins; it is one value per process.
+pub(crate) fn set_user_agent(user_agent: String) {
+    let _ = USER_AGENT.set(user_agent);
+}
+
+/// The installed `User-Agent` as the `CString` curl takes: `Ok(None)` while none is installed.
+fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
+    USER_AGENT.get().map(|ua| CString::new(ua.as_str())).transpose()
 }
 
 /// One-time process init (call on the main thread at boot before any request; curl's implicit
@@ -1068,8 +1088,8 @@ pub(crate) fn request_tls(
 }
 
 /// `resolve` is a ready-made `CURLOPT_RESOLVE` entry (`host:port:address`, see
-/// [`crate::plex::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
-/// answer. Every request whose origin carries a [`crate::plex::ResolvePin`] passes one; plex.tv
+/// [`origin::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
+/// answer. Every request whose origin carries a [`origin::ResolvePin`] passes one; plex.tv
 /// calls pass `None`, and that is the difference the `nowan` trigger grades (see [`refuse_name`]).
 #[allow(clippy::too_many_arguments)]
 fn request_tls_result(
@@ -1118,11 +1138,10 @@ fn request_tls_evidence(
     // The offline reproduction: with `/tmp/plxnative-nowan` armed, a name reaches the wire only
     // with a pin. This is the ONE place every easy request passes (`request_result` enters here
     // directly), which is why the gate is here and not on `request_tls`.
-    if resolve.is_none() && refuse_name(crate::plex::url_host(url), t.connect_s) {
+    if resolve.is_none() && refuse_name(origin::url_host(url), t.connect_s) {
         return Err(RequestError::Transport.into());
     }
-    let ua =
-        CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
+    let ua = user_agent_c().map_err(|_| RequestError::Transport)?;
     let read_peer_pin = learn_pin && peer_pin_wanted(url, &tls, follow_redirects);
     let tls_c = match tls {
         Tls::Ca => TlsCfg::Ca,
@@ -1274,7 +1293,9 @@ fn request_tls_evidence(
         }
         curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
         curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
-        curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
+        if let Some(ua) = &ua {
+            curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
+        }
 
         // request headers — keep the CStrings alive until after perform.
         let mut slist = HeaderList(ptr::null_mut());
@@ -1675,8 +1696,8 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
 /// be taken back: a re-point that lands on a new host appends, and the old entry stays true.
 /// The table holds one entry per server address this process has ever pinned — a handful.
 pub(crate) mod resolve {
+    use super::origin::ResolvePin;
     use super::{c_int, Mutex, Ordering, CURLE_UNKNOWN_OPTION};
-    use crate::plex::ResolvePin;
 
     static PINS: Mutex<Vec<ResolvePin>> = Mutex::new(Vec::new());
 
@@ -1748,6 +1769,14 @@ pub(crate) mod resolve {
 #[cfg(test)]
 pub(crate) fn with_test_response(reply: Vec<u8>, stall: bool, check: impl FnOnce(&str)) {
     request_tests::with_response(reply, stall, check);
+}
+
+/// The wire half of the HTTP/2 reset tests: a real request against the local fixture that resets
+/// the stream after the status line. `check` gets the transport's failure; the tests of the layers
+/// above grade what they make of one (`plex::account`'s evidence tests).
+#[cfg(test)]
+pub(crate) fn with_h2_reset_failure(status: u16, check: impl FnOnce(RequestFailure)) {
+    request_tests::with_h2_reset_failure(status, check);
 }
 
 /// Test-only input at the curl completion boundary, not a simulated wire exchange.
@@ -1826,11 +1855,12 @@ mod request_tests {
         }
     }
 
-    #[test]
-    fn ca_trusted_http2_wire_reset_retains_refusal() {
+    /// One real HTTP/2 `RST_STREAM` exchange for `status` against the local Python/OpenSSL fixture,
+    /// with libcurl trusting its CA. Hands the transport's failure to `check` while the fixture is
+    /// still up, then lets the fixture finish. The caller holds `crate::testlock::serial()`.
+    pub(super) fn with_h2_reset_failure(status: u16, check: impl FnOnce(RequestFailure)) {
         use std::io::{BufRead, Write};
         use std::process::{Command, Stdio};
-        let _serial = crate::testlock::serial();
         assert!(global_init() && available());
         struct Peer(std::process::Child);
         impl Drop for Peer {
@@ -1839,27 +1869,33 @@ mod request_tests {
                 let _ = self.0.wait();
             }
         }
+        let mut peer = Peer(Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/net/h2_reset_fixture.py"))
+            .arg(status.to_string()).stdin(Stdio::piped()).stdout(Stdio::piped())
+            .stderr(Stdio::inherit()).spawn().expect("local Python/OpenSSL H2 fixture"));
+        let mut output = std::io::BufReader::new(peer.0.stdout.take().unwrap());
+        let mut ready = String::new(); output.read_line(&mut ready).unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&ready).expect("fixture startup");
+        let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
+        let response = request_tls_evidence(&url, &[], "GET", None,
+            Timeouts { total_s: 5, ..API }, false, None,
+            Tls::CaBundle(ready["ca"].as_str().unwrap()), None, false);
+        let mut sent = String::new(); output.read_line(&mut sent).unwrap();
+        assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
+        let failure = response.err().expect("reset transfer cannot expose a partial body");
+        assert_eq!(failure.status, Some(status));
+        assert_eq!(failure.cause, RequestError::Transport);
+        assert_eq!(failure.body_limit, None);
+        check(failure);
+        peer.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+        assert!(peer.0.wait().unwrap().success());
+    }
+
+    #[test]
+    fn ca_trusted_http2_wire_reset_retains_refusal() {
+        let _serial = crate::testlock::serial();
         for status in [401, 403, 404, 410] {
-            let mut peer = Peer(Command::new("python3")
-                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/net/h2_reset_fixture.py"))
-                .arg(status.to_string()).stdin(Stdio::piped()).stdout(Stdio::piped())
-                .stderr(Stdio::inherit()).spawn().expect("local Python/OpenSSL H2 fixture"));
-            let mut output = std::io::BufReader::new(peer.0.stdout.take().unwrap());
-            let mut ready = String::new(); output.read_line(&mut ready).unwrap();
-            let ready: serde_json::Value = serde_json::from_str(&ready).expect("fixture startup");
-            let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
-            let response = request_tls_evidence(&url, &[], "GET", None,
-                Timeouts { total_s: 5, ..API }, false, None,
-                Tls::CaBundle(ready["ca"].as_str().unwrap()), None, false);
-            let mut sent = String::new(); output.read_line(&mut sent).unwrap();
-            assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
-            let failure = response.err().expect("reset transfer cannot expose a partial body");
-            assert_eq!(failure.status, Some(status));
-            assert_eq!(failure.cause, RequestError::Transport);
-            assert_eq!(failure.body_limit, None);
-            crate::plex::account::test_refusal_evidence(status, Err(failure));
-            peer.0.stdin.take().unwrap().write_all(b"\n").unwrap();
-            assert!(peer.0.wait().unwrap().success());
+            with_h2_reset_failure(status, |_| {});
         }
     }
 
@@ -2080,14 +2116,14 @@ mod request_tests {
             return;
         }
         let ran = with_ok_server("[::1]:0", |port, accepts| {
-            let pin = crate::plex::ResolvePin::for_test(
+            let pin = origin::ResolvePin::for_test(
                 "no-such-host.invalid",
                 port as i32,
                 "::1".parse().unwrap(),
             );
             let entry = resolve::entry_of(&pin);
             assert_eq!(
-                curl_version_num() >= crate::plex::origin::CURL_RESOLVE_BRACKETS_SINCE,
+                curl_version_num() >= origin::CURL_RESOLVE_BRACKETS_SINCE,
                 entry.ends_with(":[::1]"),
                 "entry {entry:?} for curl {:#x}",
                 curl_version_num()

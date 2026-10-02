@@ -192,21 +192,11 @@ pub enum Outcome {
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
-/// anything outside `1..=65535`.
-///
-/// **The narrowing is the point.** `port` arrives from plex.tv (and from the session file, and from
-/// the `plxnative-servers` trigger) as an `i64`, because PMS and plex.tv both string-encode numbers
-/// and every numeric field here goes through the lenient `de_i64` — so what lands in a `Candidate`
-/// is whatever the JSON said, not whatever a port can be. `port as i32` on that WRAPS: an answer of
-/// `4_294_999_696` becomes `32400` and the app dials a port nobody advertised, quietly and with a
-/// plausible-looking result. Every site that turns an advertised port into a connection goes
-/// through here.
-///
-/// Out of range drops the CANDIDATE, never the server: another of its addresses may still be
-/// dialable, and the same rule already applies to an address this transport cannot speak to.
-pub fn dial_port(p: i64) -> Option<i32> {
-    (1..=65535).contains(&p).then_some(p as i32)
-}
+/// anything outside `1..=65535`. The narrowing and its reasons are documented where it is defined,
+/// [`crate::net::origin::dial_port`]: it sits beside the `Origin` parsing that shares it, below
+/// the Plex layer (`docs/module-layers.md`, step L6). Re-exported so `probe::dial_port` keeps
+/// resolving for every caller that turns an advertised port into a connection.
+pub use crate::net::origin::dial_port;
 
 /// Is there anything here to dial at all? Only the mechanical half lives here: an address and a
 /// valid port. Rule 1 is applied while candidates are emitted, because it keeps a connection's
@@ -1164,7 +1154,7 @@ mod tests {
     }
 
     /// A v6 candidate's origin is bare for the resolver and bracketed in its URL — the invariant
-    /// `origin.rs` documents, asserted where the v6 candidate is actually built.
+    /// `net/origin.rs` documents, asserted where the v6 candidate is actually built.
     #[test]
     fn a_v6_candidates_origin_is_bare_for_the_resolver() {
         let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
