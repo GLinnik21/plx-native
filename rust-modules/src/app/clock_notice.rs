@@ -154,14 +154,16 @@ mod tests {
         assert!(!message(Some(2020)).contains("2,020"));
     }
 
-    /// The system toast wraps and two lines are proven to show. **Measured on the television**
-    /// (`noaction`, no arrow): the first line held 45 Latin characters ("TV clock looks wrong
-    /// (2020). Connected by the"). So a line is budgeted at 40, which leaves a margin for the
-    /// wider Cyrillic glyphs, and the whole text at two such lines (80).
+    /// The system toast does not truncate at 80 or 120 characters. **Measured on the television**
+    /// (`noaction`, no arrow): a 140-character Latin message showed in full on three lines, about
+    /// 45 Latin characters per line ("TV clock looks wrong (2020). Connected to your" held 45).
+    /// 120 is the cap we hold ourselves to; a line is budgeted at 40, which leaves a margin for
+    /// the wider Cyrillic glyphs, and the text at three such lines.
     #[test]
     fn every_shipped_language_fits_the_toast() {
-        const LIMIT: usize = 80;
+        const LIMIT: usize = 120;
         const LINE: usize = 40;
+        const LINES: usize = 3;
         for language in crate::i18n::SHIPPED {
             let _guard = crate::i18n::language_on_this_thread_for_test(language);
             for (what, text) in [("with a year", message(Some(2020))), ("no year", message(None))] {
@@ -180,7 +182,7 @@ mod tests {
                         width += if width == 0 { w } else { 1 + w };
                     }
                 }
-                assert!(lines <= 2, "{tag} {what}: wraps to {lines} lines at {LINE}: {text}");
+                assert!(lines <= LINES, "{tag} {what}: wraps to {lines} lines at {LINE}: {text}");
             }
             assert!(message(Some(2020)).contains("2020"), "{}: the year is shown", language.tag());
         }

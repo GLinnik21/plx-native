@@ -2041,11 +2041,11 @@
     "args": {
       "year": "str"
     },
-    "description": "System toast shown once per app run when the app had to recognise the Plex server by its remembered key because the server's certificate failed its date check (most likely because the television's clock is wrong, but an expired certificate on a correct clock engages it too). Hedged on purpose (\"looks wrong\"): the app cannot know the clock is the cause. {year} is the four-digit year the television believes it is, written as plain digits. The toast wraps at roughly 40 characters per line and shows two lines, so keep the whole sentence at 80 characters or fewer and hedge it in every language."
+    "description": "System toast shown once per app run when the app had to recognise the Plex server by its remembered key because the server's certificate failed its date check (most likely because the television's clock is wrong, but an expired certificate on a correct clock engages it too). Hedged on purpose (\"looks wrong\"): the app cannot know the clock is the cause. {year} is the four-digit year the television believes it is, written as plain digits. The toast wraps at roughly 40 characters per line and shows up to three lines, so keep the whole sentence at 120 characters or fewer and hedge it in every language."
   },
   "browse.clock.notice": {
     "value": "TV clock looks wrong. Connected by the remembered key.",
-    "description": "Same toast as the year variant, for when the television's year is unknown. Keep it at 80 characters or fewer and hedge it in every language."
+    "description": "Same toast as the year variant, for when the television's year is unknown. Keep it at 120 characters or fewer (up to three lines of roughly 40) and hedge it in every language."
   },
   "browse.clock.no_key": {
     "value": "This TV’s clock looks wrong. Connect the TV to the internet once, then try again.",
