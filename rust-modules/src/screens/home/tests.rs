@@ -862,7 +862,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
             "offset {} is not in progress",
             m.resume_ms
         );
-        let cap = card_row::focused_caption(&m, true).expect("a Continue Watching episode always captions");
+        let cap = card_row::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
         assert!(
             !cap.to_str().unwrap().contains("left"),
             "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -875,7 +875,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
         "20 minutes into 45 IS in progress"
     );
     assert_eq!(
-        card_row::focused_caption(&mid, true).unwrap().to_str().unwrap(),
+        card_row::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
         "Laura \u{00b7} 25 min left"
     );
 }
@@ -2644,7 +2644,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
     }
     let tex_of = |i: usize| {
         let h = hero(i);
-        crate::ui::widgets::resolve_tex_wh_on(h.item.sid, &h.item.art, 1280, 720, 0).0
+        crate::ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0).0
     };
     let who = |tex: u32| (0..n).find(|&i| tex_of(i) == tex);
     let tick = hero_tick;

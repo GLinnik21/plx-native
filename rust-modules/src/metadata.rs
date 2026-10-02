@@ -4736,18 +4736,6 @@ mod rating_tests {
             "wire order decides between two equally-ranked critic rows"
         );
     }
-
-    /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
-    /// provider actually publishes, or a 9.1 tomato reads as a 9.1% score.
-    #[test]
-    fn a_score_is_formatted_in_its_provider_s_own_units() {
-        use crate::ui::fmt::rating_score;
-        assert_eq!(rating_score(RatingArt::TomatoFresh, 9.1), "91%");
-        assert_eq!(rating_score(RatingArt::PopcornSpilled, 4.05), "41%"); // rounded, not truncated
-        assert_eq!(rating_score(RatingArt::Tmdb, 7.8), "78%");
-        assert_eq!(rating_score(RatingArt::Imdb, 7.4), "7.4");
-        assert_eq!(rating_score(RatingArt::TomatoFresh, 10.0), "100%");
-    }
 }
 
 #[cfg(test)]

@@ -1206,14 +1206,20 @@ mod tests {
     /// the poster is the show's IDENTIFYING artwork, which is what this tile's own label is about.
     #[test]
     fn a_landscape_tile_prefers_the_episodes_own_still() {
+        use crate::ui::tile::TileFacts;
         use crate::ui::widgets::still_key;
+        // the artwork a landscape tile would draw: the chain reads the row's three art paths only
+        let key_of = |m: &PmsMovie| {
+            still_key(&TileFacts { still: &m.still, thumb: &m.thumb, art: &m.art, ..Default::default() })
+                .to_owned()
+        };
         let full = PmsMovie {
             still: "/still".into(),
             art: "/art".into(),
             thumb: "/poster".into(),
             ..Default::default()
         };
-        assert_eq!(still_key(&full), "/still");
+        assert_eq!(key_of(&full), "/still");
 
         // no still — an ordinary answer for a specials folder or an item mid-scan
         let no_still = PmsMovie {
@@ -1222,7 +1228,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            still_key(&no_still),
+            key_of(&no_still),
             "/poster",
             "the show's own poster, cover-fitted in the same frame"
         );
@@ -1232,7 +1238,7 @@ mod tests {
             art: "/art".into(),
             ..Default::default()
         };
-        assert_eq!(still_key(&bare), "/art");
+        assert_eq!(key_of(&bare), "/art");
     }
 
     // ---- the publication machine, on the pure struct -----------------------------------------

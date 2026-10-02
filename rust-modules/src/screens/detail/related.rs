@@ -2,6 +2,7 @@
 
 use crate::metadata::Detail;
 use crate::pms::PmsMovie;
+use crate::screens::registry::tile_facts;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::machine::GroupId;
 use crate::ui::widgets::Art;
@@ -111,7 +112,7 @@ pub(crate) fn draw_strip(
         RowStyle::HOME.w + RowStyle::HOME.gap,
         &RowStyle::HOME,
         crate::ui::consts::SCR_W,
-        |i| Art::Poster(items.get(i)),
+        |i| Art::Poster(items.get(i).map(tile_facts::of)),
         |i| items.get(i).and_then(|m| m.resume_frac()),
         |i| card_row::TileLabel::title(&items[i].title),
         |_, _, _, _| {},
@@ -155,7 +156,7 @@ pub(crate) fn draw_focused_in(
     let scale = row.scale(index) * press;
     card_row::draw_focused(
         p,
-        Art::Poster(Some(item)),
+        Art::Poster(Some(tile_facts::of(item))),
         base.scaled(scale),
         scale,
         &RowStyle::HOME,

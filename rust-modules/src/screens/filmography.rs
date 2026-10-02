@@ -738,7 +738,7 @@ impl FilmographyScreen {
                 p.alpha(self.pv_fade.alpha()),
                 preview,
                 widgets::Art::Thumb {
-                    sid: self.sid,
+                    sid: self.sid.raw(),
                     key: thumb,
                     res: (PV.w as c_int, PV.h as c_int),
                 },

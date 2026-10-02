@@ -44,7 +44,7 @@ use std::convert::Infallible;
 use std::os::raw::c_int;
 
 use crate::pms::PmsMovie;
-use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
+use crate::screens::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
 use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use crate::ui::consts::*;
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
@@ -275,7 +275,7 @@ fn build_with(m: &PmsMovie, from_deck: bool, trailer: Option<&crate::metadata::E
     let mut sec = state_rows(
         sec,
         &m.rk,
-        crate::ui::widgets::row_watch_state(m),
+        crate::ui::widgets::row_watch_state(&tile_facts::of(m)),
         leaf,
         trailer.filter(|_| m.kind == 0 || m.kind == 1),
         &m.title,
@@ -808,7 +808,7 @@ mod tests {
             PosterMark::InProgress => {} // a container: neither end
         }
         assert_eq!(
-            crate::ui::widgets::row_watch_state(&m),
+            crate::ui::widgets::row_watch_state(&tile_facts::of(&m)),
             mark,
             "the fixture must build the state it names"
         );

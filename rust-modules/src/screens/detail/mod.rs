@@ -2291,7 +2291,7 @@ impl DetailScreen {
         let art_alpha = (1.0 - sf) * self.preview_art;
         let (sid, _, path) = self.art_identity(d);
         let (texture, width, height) = if art_alpha > 0.01 {
-            crate::ui::widgets::resolve_tex_wh_on(sid, &path, 1920, 1080, 0)
+            crate::ui::widgets::resolve_tex_wh_on(sid.raw(), &path, 1920, 1080, 0)
         } else {
             (0, 0.0, 0.0)
         };
@@ -2391,7 +2391,7 @@ impl DetailScreen {
         let logo_alpha = p.alpha(
             self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
         );
-        HeroLogo::new(self.sid, &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
+        HeroLogo::new(self.sid.raw(), &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
             .draw(logo_alpha, band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
@@ -2511,7 +2511,7 @@ impl DetailScreen {
             let end = i + d.ratings[i..].partition_point(|r| r.art.provider() == provider);
             let scores: Vec<String> = d.ratings[i..end]
                 .iter()
-                .map(|r| crate::ui::fmt::rating_score(r.art, r.value))
+                .map(|r| crate::ui::fmt::rating_score(rating_scale(r.art), r.value))
                 .collect();
             let cells: Vec<crate::ui::widgets::RatingCell<'_>> = d.ratings[i..end]
                 .iter()
@@ -2519,7 +2519,7 @@ impl DetailScreen {
                 .map(|(r, score)| crate::ui::widgets::RatingCell {
                     mark: rating_mark(r.art),
                     value: score,
-                    suffix: crate::ui::fmt::rating_suffix(r.art),
+                    suffix: crate::ui::fmt::rating_suffix(rating_scale(r.art)),
                 })
                 .collect();
             let width = crate::ui::widgets::rating_group_w(provider, &cells, measure);
@@ -2645,7 +2645,7 @@ impl DetailScreen {
             return;
         }
         let band = crate::ui::hero_logo::band_h(LogoRung::Compact);
-        HeroLogo::new(d.sid, &d.rk, &d.title, LogoRung::Compact)
+        HeroLogo::new(d.sid.raw(), &d.rk, &d.title, LogoRung::Compact)
             .align(HAlign::Center)
             .draw(
                 p.alpha(alpha),
@@ -2833,6 +2833,42 @@ fn hero_blurb<'a>(
         String::new(),
         row.map(|m| m.summary.clone()).unwrap_or_default(),
     )
+}
+
+/// The units a provider quotes its score in. `ui::fmt` formats a score from its SCALE alone, so the
+/// screen, which knows the provider, says which: IMDb is out of ten, every other badge a percentage.
+/// Exhaustive on purpose — a provider added to `RatingArt` has to choose its units here.
+fn rating_scale(art: crate::metadata::RatingArt) -> crate::ui::fmt::RatingScale {
+    use crate::metadata::RatingArt as A;
+    use crate::ui::fmt::RatingScale;
+    match art {
+        A::Imdb => RatingScale::OutOfTen,
+        A::TomatoFresh
+        | A::TomatoCertified
+        | A::TomatoRotten
+        | A::PopcornUpright
+        | A::PopcornSpilled
+        | A::Tmdb => RatingScale::Percent,
+    }
+}
+
+#[cfg(test)]
+mod rating_scale_tests {
+    use super::rating_scale;
+    use crate::metadata::RatingArt;
+    use crate::ui::fmt::rating_score;
+
+    /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
+    /// provider actually publishes, or a 9.1 tomato reads as a 9.1% score.
+    #[test]
+    fn a_score_is_formatted_in_its_provider_s_own_units() {
+        let score = |art, value| rating_score(rating_scale(art), value);
+        assert_eq!(score(RatingArt::TomatoFresh, 9.1), "91%");
+        assert_eq!(score(RatingArt::PopcornSpilled, 4.05), "41%"); // rounded, not truncated
+        assert_eq!(score(RatingArt::Tmdb, 7.8), "78%");
+        assert_eq!(score(RatingArt::Imdb, 7.4), "7.4");
+        assert_eq!(score(RatingArt::TomatoFresh, 10.0), "100%");
+    }
 }
 
 fn rating_mark(art: crate::metadata::RatingArt) -> &'static [crate::ui::widgets::MarkLayer] {

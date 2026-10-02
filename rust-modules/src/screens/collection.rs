@@ -22,7 +22,7 @@ use crate::ui::theme;
 use crate::ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Env, Painter, Rect, Spring};
 
-use super::registry::{AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
+use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
 
 const HEADER_ELEM: u32 = 0;
@@ -131,7 +131,7 @@ pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
         };
         return TileLabel::titled(&item.title, &caption);
     }
-    card_row::poster_label(item)
+    card_row::poster_label(&tile_facts::of(item))
 }
 
 pub(crate) struct CollectionScreen {
@@ -401,7 +401,8 @@ impl CollectionScreen {
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem))
             .and_then(|index| collection.items.get(index));
-        let target = PageGround::page_target(focused.or_else(|| collection.items.first()));
+        let target = PageGround::page_target(
+            focused.or_else(|| collection.items.first()).map(tile_facts::of));
         if self.ground_seeded { self.ground.key_target(target, t.dt()); }
         else { self.ground.jump_target(target); self.ground_seeded = true; }
     }
@@ -454,8 +455,11 @@ impl CollectionScreen {
             // tile the Library grid draws for the same collection — its mark and its name.
             crate::ui::collection_tile::draw(p, art, art, theme::CARD_RING_RAD, name);
         } else {
-            widgets::card_named(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
-                Some(name), theme::CARD_RING_RAD, false, 1.0, 0.0);
+            // The name is set over the baked fan only when the thumb IS the server's composite.
+            let fan_name = tile_facts::is_composite_thumb(&collection.thumb).then_some(name.as_str());
+            widgets::card_named(p, art,
+                Art::Thumb { sid: collection.id.sid.raw(), key: &collection.thumb, res: ART_RES },
+                fan_name, theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
         if collection.status == CollectionStatus::Ready {
             card_row::draw_heading(p, crate::i18n::msg::browse_collection_items(), order_note(collection),
@@ -507,10 +511,10 @@ impl CollectionScreen {
             let row = index / crate::ui::poster_grid::COLS;
             let open = self.bands.geometry().iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             let label = member_caption(item).revealed(card_row::band_reveal(open));
-            card_row::draw_focused(p, Art::Poster(Some(item)), rect, scale,
+            card_row::draw_focused(p, Art::Poster(Some(tile_facts::of(item))), rect, scale,
                 &crate::ui::poster_grid::STYLE, resume, &label, measure);
         } else {
-            card_row::draw_tile(p, Art::Poster(Some(item)), rect, scale,
+            card_row::draw_tile(p, Art::Poster(Some(tile_facts::of(item))), rect, scale,
                 &crate::ui::poster_grid::STYLE, resume);
         }
         if !persistent.is_empty() {

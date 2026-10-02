@@ -6914,7 +6914,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::meta
     // without pretending a desktop unit test can exercise the poster texture path.
     #[cfg(not(test))]
     if let Some(u) = up_next(ps) {
-        crate::ui::widgets::warm_tex_on(item_sid(cur_sid(ps)), &u.thumb, 480, 270, 0);
+        crate::ui::widgets::warm_tex_on(item_sid(cur_sid(ps)).raw(), &u.thumb, 480, 270, 0);
     }
     ok.then_some(resume_ns)
 }

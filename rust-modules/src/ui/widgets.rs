@@ -2,11 +2,10 @@
 //! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
-use crate::plex::ServerId;
-use crate::pms::PmsMovie;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
+use crate::ui::tile::{TileFacts, TileKind};
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -209,15 +208,18 @@ fn frost_sweep() -> Option<f32> {
 /// friend's share — so the server is always NAMED. There is deliberately no current-server twin of
 /// this or of [`warm_tex_on`]: a bare form would be the shorter name autocomplete offers for the
 /// case where getting it wrong is another item's picture. Art that genuinely belongs to the
-/// browsed server (the profile chip's avatar) passes `plex::current_server()` and says so.
+/// browsed server (the profile chip's avatar) passes the current server's id and says so.
+///
+/// `srv` is the server's raw id, as `ui::tex` takes it: the library never names the application's
+/// server type, so a caller above it hands over `ServerId::raw()`.
 pub(crate) fn resolve_tex_wh_on(
-    srv: ServerId,
+    srv: u16,
     path: &str,
     w: c_int,
     h: c_int,
     png: c_int,
 ) -> (u32, f32, f32) {
-    crate::ui::tex::resolve_wh_on(srv.raw(), path, w, h, png != 0)
+    crate::ui::tex::resolve_wh_on(srv, path, w, h, png != 0)
 }
 
 /// The prefetch twin of [`resolve_tex_wh_on`]: the same key through `ui::tex::warm_on` — start the
@@ -225,20 +227,22 @@ pub(crate) fn resolve_tex_wh_on(
 /// resolve; a warm at a different size — or on a different server — is a different slot and buys
 /// nothing.
 pub(crate) fn warm_tex_on(
-    srv: ServerId,
+    srv: u16,
     path: &str,
     w: c_int,
     h: c_int,
     png: c_int,
 ) -> crate::ui::tex::Warm {
-    crate::ui::tex::warm_on(srv.raw(), path, w, h, png != 0)
+    crate::ui::tex::warm_on(srv, path, w, h, png != 0)
 }
 
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
 /// keyed thumbnail at an explicit resolution (flat placeholder skeleton), or a person's headshot
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
 pub(crate) enum Art<'a> {
-    Poster(Option<&'a PmsMovie>),
+    /// The facts a poster tile reads of its catalog row — see [`TileFacts`], which the caller (a
+    /// screen) fills from the row; the library never names the row's own type.
+    Poster(Option<TileFacts<'a>>),
     /// **A landscape tile of a real catalog row** — an episode's own still, with the watched disc
     /// and (through `card_row::resume_bar`) the resume bar a poster wears.
     ///
@@ -248,12 +252,12 @@ pub(crate) enum Art<'a> {
     /// A shelf of recently released episodes is exactly where "then the show poster" must be the
     /// LAST resort — several episodes of one show all substituting the same poster is the picture
     /// this variant exists to stop drawing.
-    Still(Option<&'a PmsMovie>),
-    /// `sid` is the server `key` is a path on — an image-transcode path embeds a server-local
-    /// ratingKey, so a still or a poster fetched from another machine is a 404 or, worse, a
-    /// different item's picture. Every variant here carries one for that reason.
+    Still(Option<TileFacts<'a>>),
+    /// `sid` is the raw id of the server `key` is a path on — an image-transcode path embeds a
+    /// server-local ratingKey, so a still or a poster fetched from another machine is a 404 or,
+    /// worse, a different item's picture. Every variant here carries one for that reason.
     Thumb {
-        sid: ServerId,
+        sid: u16,
         key: &'a str,
         res: (c_int, c_int),
     },
@@ -262,7 +266,7 @@ pub(crate) enum Art<'a> {
     /// and an empty circle beside named circles reads as a broken image rather than as a person
     /// the metadata agent has no photo of.
     Person {
-        sid: ServerId,
+        sid: u16,
         key: &'a str,
         res: (c_int, c_int),
     },
@@ -272,14 +276,14 @@ impl Art<'_> {
     fn motion_identity(&self) -> Option<crate::ui::card_motion::Identity> {
         use std::hash::{Hash, Hasher};
         let (owner, sid, key, kind) = match self {
-            Self::Poster(Some(m)) => (*m as *const PmsMovie as usize, m.sid, m.thumb.as_str(), 0u8),
-            Self::Still(Some(m)) => (*m as *const PmsMovie as usize, m.sid, still_key(m), 1),
+            Self::Poster(Some(m)) => (m.owner, m.src, m.thumb, 0u8),
+            Self::Still(Some(m)) => (m.owner, m.src, still_key(m), 1),
             Self::Thumb { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 2),
             Self::Person { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 3),
             Self::Poster(None) | Self::Still(None) => return None,
         };
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        (sid.raw(), key, kind).hash(&mut hash);
+        (sid, key, kind).hash(&mut hash);
         Some(crate::ui::card_motion::Identity { owner, asset: hash.finish() })
     }
 }
@@ -300,15 +304,15 @@ pub(crate) const POSTER_RES: (c_int, c_int) = (250, 375);
 /// **Which artwork a landscape tile draws, in order of preference.** The episode's own still, the
 /// show's backdrop, then the show's poster.
 ///
-/// `PmsMovie::still` is empty on anything that is not an episode and on an episode whose server
+/// `TileFacts::still` is empty on anything that is not an episode and on an episode whose server
 /// sent no thumb of its own, and BOTH of those must fall through to something 16:9-ish before they
 /// reach `thumb` — which for an episode is the SHOW POSTER, i.e. the identical-tiles picture this
 /// whole tile exists to replace. Falling back to it at all is still right for the last resort: a
 /// poster, cover-cropped to the tile ([`art_uv`]), answers "which show" even when it cannot answer
 /// "which episode".
-pub(crate) fn still_key(m: &PmsMovie) -> &str {
+pub(crate) fn still_key<'a>(m: &TileFacts<'a>) -> &'a str {
     if !m.still.is_empty() {
-        &m.still
+        m.still
     } else if !m.thumb.is_empty() {
         // **The show's POSTER before its backdrop** (`Library Screens.dc.html` E): "where an
         // episode has no still, the tile falls back to the show's poster in the same frame,
@@ -316,9 +320,9 @@ pub(crate) fn still_key(m: &PmsMovie) -> &str {
         // episode `thumb` IS `grandparentThumb`, the show poster (`pms::parse_item`); for anything
         // else it is the item's own artwork, which also outranks a shared backdrop. `art` stays as
         // the last resort rather than the second.
-        &m.thumb
+        m.thumb
     } else {
-        &m.art
+        m.art
     }
 }
 
@@ -480,18 +484,18 @@ pub(crate) fn still_line(
 /// see [`still_line`] for why a shelf surface names the show rather than the episode.
 pub(crate) fn still_overlay(
     p: Painter,
-    m: &crate::pms::PmsMovie,
+    m: &TileFacts<'_>,
     card: Rect,
     rad: f32,
     press_plays: bool,
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let show = if m.show_title.is_empty() {
-        m.title.as_str()
+        m.title
     } else {
-        m.show_title.as_str()
+        m.show_title
     };
-    let bar = m.resume_frac();
+    let bar = m.resume.map(|r| r.frac);
     still_line(
         p,
         card,
@@ -594,8 +598,8 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     let _admission = art.motion_identity()
         .map(|id| crate::ui::card_motion::Scope::card(id, p.to_screen(rect).0));
     let image = match art {
-        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, POSTER_RES.0, POSTER_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
-        Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.src, m.thumb, POSTER_RES.0, POSTER_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.src, still_key(&m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
     };
     #[cfg(feature = "devtriggers")]
@@ -605,8 +609,8 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
 
 /// The name a poster card draws on the neutral collection tile, when it draws one: a collection
 /// row whose server sent no `thumb`. A composite or custom thumb is artwork and draws as a poster.
-fn neutral_collection_name(m: Option<&crate::pms::PmsMovie>) -> Option<&str> {
-    m.filter(|m| m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()).map(|m| m.title.as_str())
+fn neutral_collection_name<'a>(m: Option<&TileFacts<'a>>) -> Option<&'a str> {
+    m.filter(|m| m.kind == TileKind::Collection && m.thumb.is_empty()).map(|m| m.title)
 }
 
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
@@ -614,11 +618,16 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
 }
 
 /// [`card`] for a caller whose art is a bare path to a collection's thumb and who knows the
-/// collection's `name` (the collection page's header): when the thumb is a server composite and so
-/// resolves to our baked fan, the name is set over it (`collection_tile::draw_fan_name`), as the
+/// collection's name (the collection page's header): when the thumb is a server composite and so
+/// resolves to our baked fan, `fan_name` is set over it (`collection_tile::draw_fan_name`), as the
 /// poster arm does for a collection ROW by itself. `frame` is the RESTING rect in both.
+///
+/// **`fan_name` is `Some` only when the caller knows the thumb IS a composite.** Whether a path
+/// is one is the application's fact (it is how the Plex layer names its generated art), so the
+/// caller answers it and the library trusts the answer: `None` draws no name, which is what a
+/// custom poster wants.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, rad: f32, focused: bool,
+pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad: f32, focused: bool,
     scale: f32, f: f32) {
     // Text prewarming visits an offscreen page. This leaf has no text: starting
     // image work here would bypass on-screen admission, and pollute its history.
@@ -637,7 +646,7 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
             let (t, tw, th) = image;
-            if let Some(name) = neutral_collection_name(m) {
+            if let Some(name) = neutral_collection_name(m.as_ref()) {
                 // A collection with no artwork of its own: nothing will ever resolve, so a skeleton
                 // would read as loading forever. It wears its mark and name instead, and no state
                 // mark — a collection has no watch state (`poster_mark`).
@@ -648,8 +657,8 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
                 // A collection whose thumb is the server's composite is drawn as our baked fan,
                 // which leaves its name to be set live — on every tile, focused or not.
-                if let Some(m) = m.filter(|m| m.kind == crate::pms::KIND_COLLECTION) {
-                    crate::ui::collection_tile::draw_fan_name(p, frame, r, &m.thumb, &m.title);
+                if let Some(m) = m.filter(|m| m.kind == TileKind::Collection && m.composite_thumb) {
+                    crate::ui::collection_tile::draw_fan_name(p, frame, r, m.title);
                 }
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
@@ -663,9 +672,9 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
             // **Inheriting it is a property of the ART VARIANT, not of the shelf**, and this line
             // claimed Related had it for months while Related passed `Art::Thumb` and so wore no
             // mark at all. A `Thumb` is a path and a size; only `Poster` carries the row the mark is
-            // derived from, so a shelf that wants the state language must hand over a `PmsMovie` —
-            // which is what putting a real catalog row behind Related's tiles bought (2026-08-21,
-            // `metadata::Related`).
+            // derived from, so a shelf that wants the state language must hand over the row's
+            // `TileFacts` — which is what putting a real catalog row behind Related's tiles bought
+            // (2026-08-21, `metadata::Related`).
             //
             // **Amber means "you have watched this"**, one hue for one vocabulary. Until 2026-08-13
             // this corner carried the opposite claim (an amber ANGLE marking a fully UNWATCHED
@@ -681,17 +690,17 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
             // a re-watch is what the viewer is actually doing (`detail::ep_state` resolves the same
             // three states for a still, and its table is the authority for all of them).
             if let Some(m) = m {
-                if poster_mark(m) == PosterMark::Watched {
+                if poster_mark(&m) == PosterMark::Watched {
                     watched_mark(p, r, rad);
                 }
             }
         }
-        Art::Thumb { key, .. } => {
+        Art::Thumb { .. } => {
             let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
-                if let Some(name) = name {
-                    crate::ui::collection_tile::draw_fan_name(p, frame, r, key, name);
+                if let Some(name) = fan_name {
+                    crate::ui::collection_tile::draw_fan_name(p, frame, r, name);
                 }
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
@@ -765,7 +774,7 @@ pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, 
 /// | in progress | the full-bleed resume BAR | the CALLER (`card_row::draw_tile`/`draw_focused`) |
 /// | watched | the amber corner DISC | [`card`] |
 ///
-/// [`PosterMark::InProgress`] is *defined* as "[`PmsMovie::resume_frac`] has a value" — precisely
+/// [`PosterMark::InProgress`] is *defined* as "`PmsMovie::resume_frac` has a value" — precisely
 /// when the caller draws the bar — so the two halves cannot disagree and put two marks on one tile.
 /// That is also the precedence: a re-watch in flight outranks the watched flag, because PMS reports
 /// both on a finished-then-restarted item and being part-way through the re-watch is what the viewer
@@ -793,8 +802,8 @@ pub(crate) enum PosterMark {
 
 /// Resolve [`PosterMark`] from a catalog row. Total and mutually exclusive by construction.
 ///
-/// Keyed on `PmsMovie::watched` — **not** on `!unwatched`, which is a weaker claim for a container:
-/// a SHOW with one episode played is `!unwatched` but nowhere near done, and marking it watched is a
+/// Keyed on the row's `watched` flag (`PmsMovie::watched`) — **not** on `!unwatched`, which is a
+/// weaker claim for a container: a SHOW with one episode played is `!unwatched` but nowhere near done, and marking it watched is a
 /// statement the viewer can see is false. Partly-watched shows therefore land on [`PosterMark::None`]
 /// beside never-started ones; the true statement about a series mid-run is where its next episode
 /// stands, which a poster in a grid is not the place for. **That is this function's rule and not the
@@ -1118,7 +1127,7 @@ pub(crate) const CTRL_GAP: f32 = 20.0;
 pub(crate) fn draw_card(
     p: Painter,
     frame: Rect,
-    sid: ServerId,
+    sid: u16,
     thumb: &str,
     res: (c_int, c_int),
     radius: f32,
@@ -1136,7 +1145,7 @@ pub(crate) fn draw_card(
 pub(crate) fn draw_card_peaked(
     p: Painter,
     frame: Rect,
-    sid: ServerId,
+    sid: u16,
     thumb: &str,
     res: (c_int, c_int),
     radius: f32,
@@ -2385,6 +2394,9 @@ fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<crate::gfx::
 /// session file or asks which profile is current.
 #[derive(Clone, Copy)]
 pub(crate) struct ProfileChipRead<'a> {
+    /// The raw id of the server `thumb` is a path on — the browsed server, which the application
+    /// names when it publishes the read (the library never asks which server is current).
+    pub(crate) src: u16,
     pub(crate) thumb: &'a str,
     pub(crate) initial: &'a CStr,
     pub(crate) name: &'a CStr,
@@ -2472,7 +2484,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expa
     p.focus_shadow(r, d * 0.5, e);
     let mut drew = false;
     if !thumb_s.is_empty() {
-        let (t, tw, th) = resolve_tex_wh_on(crate::plex::current_server(), thumb_s, 128, 128, 0);
+        let (t, tw, th) = resolve_tex_wh_on(data.src, thumb_s, 128, 128, 0);
         if t != 0 {
             // the same crop the profile picker's `Art::Thumb` avatars take, so one person's
             // picture is framed alike on the chip and on the picker
@@ -3408,9 +3420,9 @@ impl PageGround {
     /// A header-and-cards page's ground target: `focused`'s `UltraBlurColors` along
     /// [`CARD_W`](Self::CARD_W) when it carries any, else the warm [`HEADER_W`](Self::HEADER_W)
     /// tint. The Person and Collection pages share it.
-    pub(crate) fn page_target(focused: Option<&crate::pms::PmsMovie>) -> [[f32; 4]; 4] {
-        match focused.filter(|m| m.has_blur) {
-            Some(m) => AmbientWash::keyed(m.blur, Self::CARD_W),
+    pub(crate) fn page_target(focused: Option<TileFacts<'_>>) -> [[f32; 4]; 4] {
+        match focused.and_then(|m| m.blur) {
+            Some(blur) => AmbientWash::keyed(blur, Self::CARD_W),
             None => AmbientWash::target([theme::WASH_WARM; 4], Self::HEADER_W),
         }
     }

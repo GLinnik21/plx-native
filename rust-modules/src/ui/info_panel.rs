@@ -199,7 +199,7 @@ impl InfoPanelState {
         if !thumb_path.is_empty() {
             // the PLAYING item's server — the info panel describes what is on the video plane
             let (t, tw, th) = resolve_tex_wh_on(
-                crate::route::item_sid(crate::route::cur_sid(ps)),
+                crate::route::item_sid(crate::route::cur_sid(ps)).raw(),
                 &thumb_path,
                 480,
                 270,
