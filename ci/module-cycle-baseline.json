@@ -1,51 +1,44 @@
 {
   "members": [
-    "abr",
-    "app",
-    "auth",
-    "browse",
-    "capture",
-    "collection",
-    "curlio",
-    "dev",
-    "devcaps",
     "diag",
-    "egl",
-    "ff",
-    "focusprobe",
     "gfx",
     "gpu_timer",
-    "hls",
     "http",
     "i18n",
     "img",
     "keymanager",
-    "lab",
-    "metadata",
-    "net",
-    "person",
-    "player",
     "plex",
-    "pms",
-    "remote",
-    "route",
-    "screens",
-    "search",
-    "shot",
     "storage",
-    "storage_worker",
-    "stores",
-    "stream",
-    "system",
-    "task",
     "telemetry",
     "text",
-    "textinput",
     "ui",
-    "viewstate",
     "webos"
   ],
-  "size": 44,
-  "outside_count": 15,
-  "other_cycles": []
+  "size": 13,
+  "outside_count": 50,
+  "other_cycles": [
+    [
+      "browse",
+      "collection",
+      "metadata",
+      "person",
+      "pms",
+      "search",
+      "stores",
+      "viewstate"
+    ],
+    [
+      "abr",
+      "curlio",
+      "ff",
+      "hls",
+      "player",
+      "route"
+    ],
+    [
+      "app",
+      "dev",
+      "textinput"
+    ]
+  ]
 }
