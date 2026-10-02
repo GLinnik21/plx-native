@@ -2452,6 +2452,21 @@ mod scrub_ownership_tests {
         crate::player::SHARED.pb_state.store(was, Relaxed);
     }
 
+    /// **The failure table never offers more controls than the read-out's row has slots.** The
+    /// table (`player::failure_actions`) is the player's and the row (`STATUS_ROW_MAX` slots, the
+    /// `ELEM_FAILURE_BASE..ELEM_FAILURE_END` elements) is the UI's, so the one test that holds the
+    /// two to each other lives where both can be named. Over every kind x every context, like the
+    /// table's own property test.
+    #[test]
+    fn the_failure_table_never_outgrows_the_read_outs_row() {
+        for (kind, cx, row) in crate::player::every_failure_row() {
+            assert!(
+                row.len() <= crate::ui::widgets::STATUS_ROW_MAX,
+                "{kind:?} {cx:?}: {row:?}"
+            );
+        }
+    }
+
     /// **(c) The scrubber's stop is a SEEK target, and a drag previews across it.**
     ///
     /// The pointer half of the same gesture. A click on the bar puts the preview under the

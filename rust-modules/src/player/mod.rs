@@ -2296,6 +2296,29 @@ pub(crate) fn failtest_policy_shape_for_test(verdict: &str) -> ErrorShape {
     )
 }
 
+/// Every kind × every context the table can see, so a rule is a property, not an example. Shared
+/// with the tests outside this module that grade the table against a screen's own limits (the
+/// read-out's row has `STATUS_ROW_MAX` slots, which is the UI's to name).
+#[cfg(test)]
+pub(crate) fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
+    use FailureKind as K;
+    let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
+        K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout, K::OriginalRollback,
+        K::JailMissingRtkmem, K::Unspecified];
+    let mut out = Vec::new();
+    for kind in kinds {
+        for forced in [false, true] {
+            for can_retry in [false, true] {
+                for repair_idle in [false, true] {
+                    let cx = FailureContext { forced, can_retry, repair_idle };
+                    out.push((kind, cx, failure_actions(kind, cx)));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2343,26 +2366,6 @@ mod tests {
         assert!(server.readout.contains("server"));
     }
 
-    /// Every kind × every context the table can see, so a rule is a property, not an example.
-    fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
-        use FailureKind as K;
-        let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
-            K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout, K::OriginalRollback,
-            K::JailMissingRtkmem, K::Unspecified];
-        let mut out = Vec::new();
-        for kind in kinds {
-            for forced in [false, true] {
-                for can_retry in [false, true] {
-                    for repair_idle in [false, true] {
-                        let cx = FailureContext { forced, can_retry, repair_idle };
-                        out.push((kind, cx, failure_actions(kind, cx)));
-                    }
-                }
-            }
-        }
-        out
-    }
-
     /// **The owner's bug**: under Force Direct Play the read-out offered the Quality ladder, whose
     /// every rung Force overrides. The fix is the one change that re-enables the fallback.
     #[test]
@@ -2379,8 +2382,9 @@ mod tests {
 
     /// **Offer an action only if it can change the outcome**, over the whole table: no quality
     /// rung under Force, nothing that retries without a request to retry, no retry of a
-    /// deterministic refusal, no repair unless one can start; Back always, last, once; at most
-    /// four controls (the row's slots).
+    /// deterministic refusal, no repair unless one can start; Back always, last, once. (At most
+    /// four controls, the row's slots, is graded against the UI's own slot count in
+    /// `screens::player`'s `the_failure_table_never_outgrows_the_read_outs_row`.)
     #[test]
     fn the_failure_table_offers_only_actions_that_can_change_the_outcome() {
         use FailureAction as A;
@@ -2389,7 +2393,6 @@ mod tests {
             let at = format!("{kind:?} {cx:?}: {row:?}");
             assert_eq!(row.last(), Some(&A::Back), "{at}");
             assert_eq!(row.iter().filter(|a| **a == A::Back).count(), 1, "{at}");
-            assert!(row.len() <= crate::ui::widgets::STATUS_ROW_MAX, "{at}");
             if cx.forced {
                 assert!(!row.contains(&A::ChangeQuality), "Force overrides every rung — {at}");
             } else {

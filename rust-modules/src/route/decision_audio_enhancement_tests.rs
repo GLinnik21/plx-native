@@ -953,10 +953,9 @@ fn eac3_joc_to_ac3_release_immersive_false() {
         can_normalize_loudness: true,
         ..Default::default()
     };
-    crate::app::playback::commit_track(
-        &mut ps,
-        crate::ui::track_menu::TrackCommit::Audio(CarriedAudio::from_stream(&stream, 3)),
-    );
+    // The track menu's pick reaches this through `app::playback::commit_track`, whose `Audio` arm
+    // is exactly this call -- the route's own entry point, which is what is graded here.
+    commit_audio_selection(&mut ps, CarriedAudio::from_stream(&stream, 3));
     assert!(toggle(&mut ps, NONE));
     let (_, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));

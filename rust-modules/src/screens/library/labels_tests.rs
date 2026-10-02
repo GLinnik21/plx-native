@@ -351,3 +351,82 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         let uniform = Layout::new(true, &[poster; 3], 40, true);
         assert_eq!(uniform.grid_block_top(), uniform.library_h() + 3.0 * poster);
     }
+
+/// The artwork FALLBACK CHAIN: the episode's own still, then the show's POSTER, and its
+/// backdrop only as a last resort.
+///
+/// The middle rung was the backdrop until `Library Screens.dc.html` E ruled otherwise — "where
+/// an episode has no still, the tile falls back to the show's poster in the same frame,
+/// cover-fitted, label and all. A crop is better than a row of mixed tile shapes." Both are
+/// show-level images, so neither escapes the identical-tiles problem; what decides it is that
+/// the poster is the show's IDENTIFYING artwork, which is what this tile's own label is about.
+///
+/// (Moved from `browse::section_hubs`'s tests: `still_key` is the UI's, so a test of it is
+/// not the data layer's to own.)
+#[test]
+fn a_landscape_tile_prefers_the_episodes_own_still() {
+    use crate::ui::widgets::still_key;
+    let full = PmsMovie {
+        still: "/still".into(),
+        art: "/art".into(),
+        thumb: "/poster".into(),
+        ..Default::default()
+    };
+    assert_eq!(still_key(&full), "/still");
+
+    // no still — an ordinary answer for a specials folder or an item mid-scan
+    let no_still = PmsMovie {
+        art: "/art".into(),
+        thumb: "/poster".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        still_key(&no_still),
+        "/poster",
+        "the show's own poster, cover-fitted in the same frame"
+    );
+
+    // …and the backdrop only when there is no poster either
+    let bare = PmsMovie {
+        art: "/art".into(),
+        ..Default::default()
+    };
+    assert_eq!(still_key(&bare), "/art");
+}
+
+/// **A PARSED episode draws its OWN still even when its show has no poster.** The parse half of
+/// this (`pms`'s `an_episode_keeps_its_own_still_without_a_show_poster`) grades what lands in
+/// `PmsMovie::still`; this is the half that grades what the tile then DRAWS from it. `still`
+/// used to be populated only when `grandparentThumb` was present, so with the show poster absent
+/// the episode's own 16:9 frame survived only in `thumb`, and `still_key` — which prefers `art`
+/// over `thumb` when there is no `still` — drew the show's shared backdrop: exactly the "every
+/// episode is the same picture" symptom the landscape row was built to end.
+#[test]
+fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
+    use crate::ui::widgets::still_key;
+    let ep = |gp: &str| {
+        let it = crate::plex::Metadata {
+            kind: "episode".into(),
+            rating_key: "9".into(),
+            title: "The Meeting".into(),
+            thumb: "/ep/still".into(),
+            art: "/show/art".into(),
+            grandparent_thumb: gp.into(),
+            grandparent_title: "The Office".into(),
+            ..Default::default()
+        };
+        crate::pms::parse_item(&it, crate::plex::ServerId::from_raw(0))
+    };
+
+    // the show HAS a poster: the poster substitution stands, and the still is kept beside it
+    let with = ep("/show/poster");
+    assert_eq!(still_key(&with), "/ep/still");
+
+    // …and with no show poster the still is STILL the episode's own frame, not the backdrop
+    let without = ep("");
+    assert_eq!(
+        still_key(&without),
+        "/ep/still",
+        "…and never the show's shared art, which is the same picture on every episode"
+    );
+}
