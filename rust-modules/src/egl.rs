@@ -305,7 +305,7 @@ pub(crate) fn probe() {
         // Only with `/tmp/plxnative-eglprobe`, because it MUTATES the live surface: ask for
         // EGL_BUFFER_PRESERVED, read back what we got, and put it back the way SDL had it.
         // Empirical, because a config bit and a driver's answer have disagreed before.
-        if crate::dev::flag("eglprobe") {
+        if crate::devtrig::flag("eglprobe") {
             try_preserve(dpy, surface, &mut lib);
             try_damage(dpy, surface, &mut lib);
         }
@@ -495,7 +495,7 @@ const DMG_WARMUP_FRAMES: u32 = 180;
 /// trigger sets the rect (default 480x270, a sixteenth of the panel), anchored bottom-left
 /// because both damage specs use GL's origin, not the authored top-left one.
 fn damage_init(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>) {
-    let Some(spec) = crate::dev::read("egldamage") else {
+    let Some(spec) = crate::devtrig::read("egldamage") else {
         return;
     };
     let (w, h) = spec

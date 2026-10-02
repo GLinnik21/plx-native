@@ -151,7 +151,7 @@ Three things, and notably no webOS NDK and no nightly:
 Identical to the TV: arm a trigger in the instance root. The catalog is the source, and the
 command that produces it lives in `docs/agent-reference.md` (the "The catalog is the source, not this list"
 bullet) — use that one, not a copy: it has **two** greps, because a single path grep silently
-under-reports the four triggers named nowhere but their `dev::flag`/`dev::read` call. `tv-session`
+under-reports the four triggers named nowhere but their `devtrig::flag`/`devtrig::read` call. `tv-session`
 owns the screen-to-trigger recipes.
 
 ```sh

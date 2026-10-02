@@ -116,12 +116,12 @@ pub(crate) fn capability() -> DvCapability {
     probe().capability
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-dvcaps0` — force the boot's platform answer to unsupported.
     pub(crate) fn forced_unsupported = "dvcaps0";
 );
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-dvcaps1` — force the boot's platform answer to supported.
     pub(crate) fn forced_supported = "dvcaps1";
 );

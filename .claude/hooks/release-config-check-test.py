@@ -270,7 +270,7 @@ def main():
 
     if not hook.has_latched_flag(REPO):
         fails += 1
-        print("  FAIL  dev::latched_flag! not found — the failure message cites a macro that is gone")
+        print("  FAIL  devtrig::latched_flag! not found — the failure message cites a macro that is gone")
 
     total = len(CASES) + len(VERDICTS) + len(TARGET_DIRS) + len(FIRST_ERROR) + 12
     print(f"release-config-check: {total - fails}/{total} checks correct")

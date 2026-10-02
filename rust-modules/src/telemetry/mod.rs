@@ -92,11 +92,11 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
 /// profile, so the answer cannot be a literal.
 ///
 /// `plxnative-consentstate` (dev builds) replaces what is stored, for the onboarding-report
-/// captures — see `dev::scenarios::consent_state_override`. Never under test: a stray trigger in
+/// captures — see `consent::state_override`. Never under test: a stray trigger in
 /// the shared runtime directory must not change what a test's redirected file says.
 pub(crate) fn capture_initial() -> Consent {
     #[cfg(not(test))]
-    if let Some(c) = crate::dev::scenarios::consent_state_override() {
+    if let Some(c) = consent::state_override() {
         return c;
     }
     load_from(&candidates())

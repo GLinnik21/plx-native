@@ -434,10 +434,10 @@ pub(crate) fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
     loading && !thread_finished
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
     /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
-    /// focus, and a `dev::flag` read is a `stat(2)` syscall per call.
+    /// focus, and a `devtrig::flag` read is a `stat(2)` syscall per call.
     fn nopreview_armed = "nopreview";
 );
 

@@ -1552,7 +1552,7 @@ pub(crate) fn boot() {
     }
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
-    if let Some(u) = crate::dev::read("ffprobe") {
+    if let Some(u) = crate::devtrig::read("ffprobe") {
         if !u.is_empty() {
             probe(&u);
         }
@@ -6142,7 +6142,7 @@ fn hls_demux(
         // where the re-seed happens, is what turns that from an argument about source into a
         // before/after a device run can show. `abr: steady` on either side of the seek carries the
         // matching slow/fast/unc/n. Nothing is repaired here; that is increment I8.
-        let pin = crate::dev::abr_pin();
+        let pin = crate::abr::abr_pin();
         let mut controller =
             crate::abr::Controller::starting_at(initial, prior, catalog).pinned_to(pin);
         if let Some((variant, evidence_kbps)) = control.initial_observed {

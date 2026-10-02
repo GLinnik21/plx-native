@@ -1058,7 +1058,7 @@ def triggers_for_case(case, url_base=None):
     than two functions that would drift apart at the first new operation.
     """
     if url_base is not None:
-        # JSON, whole-file — dev::PlayUrl. `separators` drops the spaces `json.dumps` would put
+        # JSON, whole-file — player::playurl::PlayUrl. `separators` drops the spaces `json.dumps` would put
         # after ':' and ',': they are legal JSON and the parser takes them, but this string is
         # about to be printed in the case header and pasted into issues, and short is legible.
         # Today's fields contain no apostrophe (a URL from `lan_ip()` plus codec names plus
@@ -1074,7 +1074,7 @@ def triggers_for_case(case, url_base=None):
             spec["auto_hls_base"] = f"{url_base}/__abr"
             # Enter HLS directly rather than by provoking a starvation. Declared per case: the one
             # case that GRADES the Original->HLS transition must not skip it. See
-            # `dev::PlayUrl::auto_start_hls` — the old entry relied on the starvation horizon
+            # `player::playurl::PlayUrl::auto_start_hls` — the old entry relied on the starvation horizon
             # firing while the reserve was filling, which stopped being possible on 2026-08-27.
             if auto.get("start_hls"):
                 spec["auto_start_hls"] = True
@@ -3223,7 +3223,7 @@ def a_replayed(lines, want):
         site). COUNTED, not merely found: a replay that fires more often than the case armed is a
         loop, and a loop satisfies every other assertion here while meaning the opposite.
       * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
-        `teardown` clears the URL, so a second line is what says `dev::playurl()` was re-read and
+        `teardown` clears the URL, so a second line is what says `player::playurl::playurl()` was re-read and
         the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
         never tore down.
       * the media position FELL and then climbed again. A replay that resumed where the first run

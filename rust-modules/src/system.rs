@@ -371,7 +371,7 @@ unsafe extern "C" fn on_global(
 /// armed; returns without touching the surface's current (NULL) region either way.
 #[cfg(not(feature = "hostsim"))]
 pub(crate) fn opaque_region_init() {
-    if !crate::dev::flag("opaque") {
+    if !crate::devtrig::flag("opaque") {
         return;
     }
     let (display, surface) = unsafe { (G_WL_DISPLAY, G_WL_SURFACE) };
@@ -538,7 +538,7 @@ pub(crate) fn opaque_route(_player: bool) {}
 // compiled only with `devtriggers` (and not in the simulator); the shipping build has the empty
 // stubs at the end of this section.
 #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-framecb` — see the section comment above.
     pub(crate) fn frame_probe_armed = "framecb";
 );

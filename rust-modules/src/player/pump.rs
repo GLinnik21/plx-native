@@ -537,7 +537,7 @@ fn finish_preview_open_failure(
     if crate::player::preview::abandoning() {
         return;
     }
-    let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+    let seam_absent = cfg!(feature = "hostsim") && !crate::devtrig::flag("clocksink");
     if seam_absent {
         crate::player::preview::note_admission_refused();
     } else {
@@ -1498,7 +1498,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             // `rv=1` accepted, 1600 audio AUs fed with `reply=O` and no error of any kind, and the
             // television's own read-out — "Dolby Vision / Dolby Atmos", both lines — photographed
             // in a DISPLAY capture at 11 s. `/tmp/plxnative-noatmosacb` is the way back out.
-            if crate::route::stream_immersive(ps) && !crate::dev::flag("noatmosacb") {
+            if crate::route::stream_immersive(ps) && !crate::devtrig::flag("noatmosacb") {
                 let rv = unsafe { ffi::acb_send_atmos(mt, id.as_ptr()) };
                 super::log(&format!("atmos: acb setMediaAudioData rv={rv}"));
             }

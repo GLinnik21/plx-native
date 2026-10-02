@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 pub(crate) mod owner;
 pub(crate) mod observation;
+mod scripted; // the dev triggers that script the sign-in worker's outcomes (`readout`, `signinfail`)
 pub(crate) use owner::{SessionInit, SessionMachine, SessionRead};
 
 /// Resource executor entry. Every credential and network-policy input is captured by the
@@ -1107,10 +1108,10 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // dev: `/tmp/plxnative-readout=<case>` (paired with `/tmp/plxnative-login`, which already
     // forces this screen with no session) — skip straight to the terminal failure a real run
     // would have reached, with no PIN minted and no call made. `readout_case` reads through
-    // `dev::read`, which is compile-time `None` without `devtriggers` — no cfg needed here, per
-    // this module's own doc. See `dev::scenarios::readout_case`'s doc for why this is the one seam
+    // `devtrig::read`, which is compile-time `None` without `devtriggers` — no cfg needed here, per
+    // this module's own doc. See `scripted::readout_case`'s doc for why this is the one seam
     // that can show every sign-in cause's glyph without a network call or an account.
-    if let Some(case) = crate::dev::scenarios::readout_case() {
+    if let Some(case) = scripted::readout_case() {
         let (message, incident) = case.canned_login_failure();
         return output_failed_naming(output, epoch, &message, incident, None, case.canned_account());
     }
@@ -1220,7 +1221,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
     }
     let mut clock = LiveRetryClock { output, started: Instant::now() };
     let created = retry_account_call(INTERACTIVE_ACCOUNT, &mut clock, |_, _, _| {},
-        |remaining| crate::dev::scenarios::signin_trouble_create()
+        |remaining| scripted::signin_trouble_create()
             .unwrap_or_else(|| ac.create_pin_with(account_timeouts(remaining))));
     let created = match created.result {
         AccountCallEnd::Answer(pin) => Ok(pin),
@@ -1618,7 +1619,7 @@ struct LivePin<'a> {
 
 impl PinWatch for LivePin<'_> {
     fn poll(&mut self) -> PinPoll {
-        crate::dev::scenarios::signin_trouble_poll().unwrap_or_else(|| self.ac.poll_pin(self.id))
+        scripted::signin_trouble_poll().unwrap_or_else(|| self.ac.poll_pin(self.id))
     }
     fn wait(&mut self, d: Duration) -> bool {
         // SLICED, so a cancel is noticed within a slice however far the backoff has grown. The
@@ -3246,7 +3247,7 @@ fn resolved_without_roster(
 fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64, trigger: DiscoveryTrigger,
     ask: &PlaintextAsk, output: &dyn owner::ObservationSink) -> Discovery {
     discover_and_store_with_resources(ac, client_id, epoch, trigger, ask, output,
-        |account, remaining| crate::dev::scenarios::signin_trouble_resources()
+        |account, remaining| scripted::signin_trouble_resources()
             .unwrap_or_else(|| account.resources_with(account_timeouts(remaining))))
 }
 

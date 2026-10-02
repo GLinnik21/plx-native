@@ -11,24 +11,28 @@
 //! the app a whole additional server — an address AND the token to trust it with (see [`servers`])
 //! — and `plxnative-url` replaces the stream the player feeds.
 //!
-//! So every read goes through here, and here is `#[cfg]`-gated on the `devtriggers` feature. In a
-//! `--no-default-features` build [`flag`] is `false` and [`read`] is `None` at COMPILE time, so
-//! no trigger can be armed. Storage and diagnostics still use runtime files; none are developer
-//! triggers.
+//! So every read goes through [`crate::devtrig`] — the primitives (`flag`, `read`, `latched_flag!`,
+//! `read_sample`, `no_wan`, …), a base-layer module no application type can leak into — and that
+//! door is `#[cfg]`-gated on the `devtriggers` feature. In a `--no-default-features` build
+//! `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time, so no trigger can be
+//! armed. Storage and diagnostics still use runtime files; none are developer triggers. THIS
+//! module is the application-layer half: the typed triggers only app code consumes, the directory
+//! scans ([`any_trigger_present`], [`armed_triggers`]) and the one-shot boot instruments.
 //!
 //! That does NOT keep a trigger's NAME out of the binary. A branch behind `flag`/`read` usually
 //! folds away, but not reliably: once the answer is carried through a struct field (the
 //! `nobudget` flag on `DevFlags`), the optimizer may keep the branch and its string literals
 //! in a release build, and `ci/check-package.py` fails the package because it greps the shipped
-//! bytes for every trigger name this module lists. So every statement whose literal names a trigger
-//! (a log line saying `/tmp/plxnative-…`) carries its own `#[cfg(feature = "devtriggers")]`. Never
-//! rely on constant folding for this.
+//! bytes for every trigger name this module's [`DIAG`] and `devtrig`'s `CONTROLLED` list. So every
+//! statement whose literal names a trigger (a log line saying `/tmp/plxnative-…`) carries its own
+//! `#[cfg(feature = "devtriggers")]`. Never rely on constant folding for this.
 //!
 //! Two rules for anything added later:
 //!
-//! 1. **Never open a `/tmp` path directly.** The grep that audits this (`/tmp/plxnative-` outside
-//!    this module and the unconditional log sinks) is the only thing keeping the property
-//!    true. The two profiler logs are dev-only and listed in [`DIAG`] below.
+//! 1. **Never open a `/tmp` path directly.** Read through `crate::devtrig`. The grep that audits
+//!    this (`/tmp/plxnative-` outside this module and the unconditional log sinks) is the only
+//!    thing keeping the property true. The two profiler logs are dev-only and listed in [`DIAG`]
+//!    below.
 //! 2. **A gate is not always a path.** `any_trigger_present` scans the whole directory and names
 //!    no file at all — it was the one surface a literal-replacement sweep would have missed, and
 //!    it silently changes which screen the app boots to. Structural surfaces that take no name
@@ -39,9 +43,9 @@
 //! reads, they are how on-device crash triage works at all, and writing them is not a way for
 //! another process to steer this one.
 //!
-//! **Since UI restructure phase 10, [`scenarios`] is where a read gets ACTED on.** This module is
-//! still the one door onto `/tmp` itself (`flag`/`read`, below); `dev::scenarios` gathers every
-//! ARM — the app-core code that calls through this door and reacts — that used to be scattered
+//! **Since UI restructure phase 10, [`scenarios`] is where a read gets ACTED on.** Both modules
+//! reach `/tmp` only through the one door, [`crate::devtrig`] (`flag`/`read`); `dev::scenarios`
+//! gathers every ARM — the app-core code that calls through this door and reacts — that used to be scattered
 //! across `app/boot.rs`, `app/run.rs`, `app/content.rs` and `app/mod.rs`, plus the per-arm state
 //! (oscillator phases, retry latches) those arms used to keep on `App` itself. Read that module's
 //! doc before adding a new trigger that `app/` consumes.
@@ -145,88 +149,6 @@ const DIAG: [&str; 35] = [
     "plxnative-dvcaps1",
 ];
 
-/// The triggers a CONTROLLED boot (`app::bootstrap`: the recorder, a replay, an explicit
-/// `app-init`) may carry, as bare names. Anything else armed on a recording boot makes its typed
-/// initial unsupported, so a replay cannot silently run under a trigger it never modelled.
-///
-/// One gated table rather than literals at each consumer, for the reason [`DIAG`] is gated: a
-/// full trigger name in the release binary is exactly what `ci/check-package.py` grades as "dev
-/// triggers compiled in", and `plxnative-noidle` is its witness. A release build never arms a
-/// trigger ([`armed_triggers`] is empty there), so it has no vocabulary to check against and the
-/// accessors below answer "not supported" / "not listed" without naming one.
-#[cfg(any(feature = "devtriggers", test))]
-const CONTROLLED: &[&str] = &[
-    "rec", "recplay", "focus", "noidle", "token", "app-init", "settings",
-    "detail", "detailsec", "detailok", "filmography", "personcredits", "nowan",
-];
-
-/// Is the recorded trigger `trigger` (full `plxnative-<name>` form, as [`armed_triggers`] lists
-/// it) one a controlled boot supports? See [`CONTROLLED`].
-#[cfg(any(feature = "devtriggers", test))]
-pub(crate) fn controlled_trigger(trigger: &str) -> bool {
-    trigger.strip_prefix("plxnative-").is_some_and(|name| CONTROLLED.contains(&name))
-}
-#[cfg(not(any(feature = "devtriggers", test)))]
-pub(crate) fn controlled_trigger(_trigger: &str) -> bool {
-    false
-}
-
-/// Does a recorded trigger list (full names, as [`armed_triggers`] returns them) carry the
-/// trigger `name` (bare)? The typed-initial counterpart of [`flag`]: it reads the list a boot was
-/// captured with, never the filesystem. Always `false` in a release build, whose list is empty.
-#[cfg(any(feature = "devtriggers", test))]
-pub(crate) fn listed(triggers: &[String], name: &str) -> bool {
-    triggers.iter().any(|trigger| trigger.strip_prefix("plxnative-") == Some(name))
-}
-#[cfg(not(any(feature = "devtriggers", test)))]
-pub(crate) fn listed(_triggers: &[String], _name: &str) -> bool {
-    false
-}
-
-/// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
-#[cfg(feature = "devtriggers")]
-pub(crate) fn flag(name: &str) -> bool {
-    path(name).exists()
-}
-#[cfg(not(feature = "devtriggers"))]
-pub(crate) fn flag(_name: &str) -> bool {
-    false
-}
-
-/// [`flag`], answered ONCE for the whole process.
-///
-/// **A `dev::flag` is a `stat`, so a trigger read every frame is a syscall on the 60 fps path.**
-/// Latching also fixes a correctness wrinkle that has nothing to do with cost: `tests/run.py`
-/// clears `/tmp/plxnative-*` between cases, so a later read can legitimately find the file gone
-/// mid-run and a per-frame probe would change its answer half way through a case.
-///
-/// A macro rather than a function because the latch has to be a `static` per trigger, and a
-/// function would need a map behind a lock — which is the thing being avoided. It lives HERE
-/// because this module is the one door onto the `/tmp` surface; it was briefly a file-local macro
-/// in `ui/widgets.rs`, which walled it off from the other per-frame `flag` callers
-/// ([`crate::focusprobe::armed`] had already hand-rolled exactly this body, doc comment and all).
-///
-/// No `#[cfg]` arms, deliberately: [`flag`] is already `false` at COMPILE time without the
-/// `devtriggers` feature, so a second gate here would only re-derive what the door behind it
-/// guarantees.
-///
-/// ```ignore
-/// crate::dev::latched_flag!(
-///     /// `/tmp/plxnative-flattabs` — the material off, for an A/B against the flat capsule.
-///     fn flat_tabs_armed = "flattabs";
-/// );
-/// ```
-macro_rules! latched_flag {
-    ($(#[$m:meta])* $vis:vis fn $name:ident = $trigger:literal;) => {
-        $(#[$m])*
-        $vis fn $name() -> bool {
-            static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *SEEN.get_or_init(|| $crate::dev::flag($trigger))
-        }
-    };
-}
-pub(crate) use latched_flag;
-
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
 ///
 /// This is the only instrument that can see inside LG's Dolby Vision chain. That chain is
@@ -249,7 +171,7 @@ pub(crate) use latched_flag;
 /// setting to leave armed while measuring anything about frame pacing.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn arm_gst_logging() {
-    let Some(spec) = read("gstlog") else { return };
+    let Some(spec) = crate::devtrig::read("gstlog") else { return };
     let spec = if spec.is_empty() {
         "dvbin:6,dvsplitter:6,dvsplitter_algo:6,dvmdparse:6,dualsequencer:6".to_string()
     } else {
@@ -281,7 +203,7 @@ pub(crate) fn arm_gst_logging() {}
 /// pacing from another.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn arm_wayland_debug() {
-    if !flag("wldebug") {
+    if !crate::devtrig::flag("wldebug") {
         return;
     }
     // SAFETY (of the environment write): the caller (`app::pre_boot_diagnostics`) runs this before
@@ -301,81 +223,6 @@ pub(crate) fn arm_wayland_debug() {
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_wayland_debug() {}
-
-/// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
-/// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
-/// empty file must not read the same as an absent one.
-#[cfg(feature = "devtriggers")]
-pub(crate) fn read(name: &str) -> Option<String> {
-    std::fs::read_to_string(path(name))
-        .ok()
-        .map(|s| s.trim().to_string())
-}
-#[cfg(not(feature = "devtriggers"))]
-pub(crate) fn read(_name: &str) -> Option<String> {
-    None
-}
-
-/// Boot-latched main-thread checker escape hatch. File content must be exactly `log`.
-#[cfg(feature = "threadcheck")]
-pub(crate) fn guard_log_only() -> bool {
-    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| read("guard").as_deref() == Some("log"))
-}
-
-/// **`/tmp/plxnative-nowan` — refuse every name lookup, as a dead resolver would.**
-///
-/// The offline-mode reproduction. A household whose internet is down but whose LAN is up resolves
-/// no public name at all: `plex.tv`, `discover.provider.plex.tv` and — the one that matters — the
-/// `plex.direct` hostname the app persisted for its OWN server on the LAN. Nothing on a desk can
-/// take the router's uplink away deterministically, so this trigger does it inside the app: while
-/// armed, [`crate::net`], [`crate::curlio`] and [`crate::stream`] refuse any host that is not a
-/// numeric literal, at the point where they would otherwise hand it to a resolver, and return the
-/// same error a failed resolution returns. A name reaches the wire only when the request carries a
-/// resolve pin ([`crate::plex::ResolvePin`]) — which is exactly what the fix provides, so the same
-/// trigger shows the defect red and the fix green with no network condition arranged anywhere.
-///
-/// Content `slow` first sleeps the connect budget an API call would have spent waiting on a dead
-/// resolver ([`crate::net::API`]'s `connect_s`), so a worker that would have stalled stalls here
-/// too. Empty is the fast variant. Latched at first read like every per-frame trigger, and `None`
-/// at COMPILE time without `devtriggers`, so a public binary carries no such switch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NoWan {
-    pub(crate) slow: bool,
-}
-
-pub(crate) fn no_wan() -> Option<NoWan> {
-    static SEEN: std::sync::OnceLock<Option<NoWan>> = std::sync::OnceLock::new();
-    *SEEN.get_or_init(|| {
-        read("nowan").map(|s| NoWan {
-            slow: s.trim() == "slow",
-        })
-    })
-}
-
-/// **Hold the Load-returned flag** — `plxnative-holdload[=ms]`.
-///
-/// `Some(ms)` when armed (default 30000 for a bare/empty trigger, per its own `parse` fallback),
-/// else `None`. `player::threads::load_thread` sleeps this many milliseconds right after the real
-/// `sf_load` call returns and BEFORE `Shared::mark_native_load_returned` publishes that fact — so
-/// issue #74 D.1's budget (the pump's `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the
-/// failure read-out) becomes observable on a real television on demand, rather than only on a
-/// k5lp set that happens to hang there for real. Deliberately NOT `DIAG`: it changes playback
-/// behaviour (a real Load attempt now waits), so arming it must suppress the who's-watching
-/// picker like every other automation trigger.
-#[cfg(feature = "devtriggers")]
-pub(crate) fn holdload_delay_ms() -> Option<u64> {
-    let raw = read("holdload")?;
-    Some(if raw.is_empty() {
-        30_000
-    } else {
-        raw.parse().unwrap_or(30_000)
-    })
-}
-#[cfg(not(feature = "devtriggers"))]
-pub(crate) fn holdload_delay_ms() -> Option<u64> {
-    None
-}
 
 /// Parse `/tmp/plxnative-server=<slot>`, the optional server half of a direct-screen trigger.
 ///
@@ -409,7 +256,7 @@ fn parse_server_slot(s: &str) -> Result<u16, String> {
 /// server happens to be current.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn server_slot() -> Option<Result<u16, String>> {
-    read("server").map(|s| parse_server_slot(&s))
+    crate::devtrig::read("server").map(|s| parse_server_slot(&s))
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn server_slot() -> Option<Result<u16, String>> {
@@ -452,7 +299,7 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
 /// or any screen is created, so it remains reachable when the fault being chased prevents UI boot.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn crash_on_purpose() {
-    let Some(kind) = read("crashtest") else {
+    let Some(kind) = crate::devtrig::read("crashtest") else {
         return;
     };
     if kind == "panic" {
@@ -507,7 +354,7 @@ pub(crate) fn crash_on_purpose() {}
 /// divergence can be diffed word by word. `make softfloat-probe` is the recipe.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn softfloat_probe() {
-    if !flag("softfloat") {
+    if !crate::devtrig::flag("softfloat") {
         return;
     }
     let host = crate::ui::motion::DIFFERENTIAL_HASH_HOST;
@@ -536,7 +383,7 @@ pub(crate) fn softfloat_probe() {}
 /// make a test change the owner's real preference. Unknown and empty values fail closed by
 /// producing no override.
 pub(crate) fn playback_quality_override() -> Option<crate::plex::session::PlaybackQuality> {
-    let value = read("quality")?;
+    let value = crate::devtrig::read("quality")?;
     parse_playback_quality(&value)
 }
 
@@ -626,7 +473,7 @@ fn parse_quality_switch_script(
 }
 
 pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
-    parse_quality_switch_script(&read("qualityswitch")?)
+    parse_quality_switch_script(&crate::devtrig::read("qualityswitch")?)
 }
 
 /// One synchronized user Pause, optionally followed by Resume —
@@ -694,48 +541,7 @@ fn parse_pause_script(raw: &str) -> Option<PauseScript> {
 }
 
 pub(crate) fn pause_script() -> Option<PauseScript> {
-    parse_pause_script(&read("autopause")?)
-}
-
-/// **Pin Auto's HLS ladder to one actuator, by request rate** — `plxnative-abrpin=<kbps>`.
-///
-/// Measurement-only, for step M4 of `docs/adaptive-playback-plan.md`: reading a settled reserve at
-/// a given rung means holding that rung for minutes, and nothing in the app could do that.
-/// [`playback_quality_override`] above cannot serve, for two independent reasons — a non-Auto
-/// quality returns `None` from `route::hls_abr_control` before a controller is ever constructed,
-/// so it measures a different transport path entirely; and [`crate::plex::session::PlaybackQuality`]
-/// has no mid-1080p points, while the ladder this pins has eight of them.
-///
-/// The value is the actuator's REQUEST rate (`Rung::kbps`) — 320, 720, 2000, 4000, 6000, 8000,
-/// 10000, 12000, 14000, 16000, 18000, 20000, 22000 — because that is the number PMS is given and
-/// the one identity in the catalog that does not move when somebody re-measures the server.
-/// An unrecognised or empty value pins nothing, deliberately: a typo must leave Auto alone rather
-/// than silently park playback on the bottom rung for a whole measurement session.
-///
-/// Compiled out with `devtriggers`, so a release build cannot be pinned at all.
-pub(crate) fn abr_pin() -> Option<crate::abr::Rung> {
-    let raw = read("abrpin")?;
-    let kbps: u32 = raw.trim().parse().ok()?;
-    crate::abr::Rung::from_request_kbps(kbps)
-}
-
-/// A raw dev payload in the runtime root, by bare NAME — only `sample.h264` and `sample.h265`,
-/// which predate the `plxnative-` prefix and feed the player a local Annex-B sample instead of a
-/// stream. Everything else here is `plxnative-<name>`; these two are the exception, so they get
-/// their own door rather than a prefix they do not have.
-///
-/// It took an ABSOLUTE path until the flavour split, which left them as the last two runtime
-/// surfaces still pinned to a shared `/tmp` while every other one had moved — harmless in itself
-/// (two installs reading one sample is fine) but a hole in the rule that every runtime surface
-/// resolves through [`crate::paths::in_runtime_dir`], and rules with holes stop being checkable.
-/// NB the file now goes in the install's own root: `$(make -s print-rundir)/sample.h264`.
-#[cfg(feature = "devtriggers")]
-pub(crate) fn read_sample(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(crate::paths::in_runtime_dir(name)).ok()
-}
-#[cfg(not(feature = "devtriggers"))]
-pub(crate) fn read_sample(_name: &str) -> Option<Vec<u8>> {
-    None
+    parse_pause_script(&crate::devtrig::read("autopause")?)
 }
 
 /// One ADDITIONAL server's credentials, injected for an automated run — see [`servers`].
@@ -930,7 +736,7 @@ fn parse_servers(s: &str) -> Result<Vec<DevServer>, String> {
 #[cfg(feature = "devtriggers")]
 pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
     static ONCE: std::sync::OnceLock<Result<Vec<DevServer>, String>> = std::sync::OnceLock::new();
-    ONCE.get_or_init(|| match read("servers") {
+    ONCE.get_or_init(|| match crate::devtrig::read("servers") {
         Some(s) => parse_servers(&s),
         None => Ok(Vec::new()),
     })
@@ -939,162 +745,6 @@ pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
     Ok(Vec::new())
-}
-
-/// A stream to play and **the Load payload declaration to play it with**, with no library item
-/// behind it — `/tmp/plxnative-playurl`, the player-PIPELINE test tier's one entry point.
-///
-/// This is the trigger that makes the pipeline testable without Plex. `plxnative-url` already
-/// hands the engine a URL, and everything downstream of it — `stream.rs`, `ff.rs`, `aq.rs`, the
-/// pump's `Feed()`, the ACB bind — is byte-identical to a real playback. What it CANNOT do is say
-/// what the stream *is*: the Starfish `Load` payload takes its codecs from `route::stream_vcodec`
-/// / `stream_acodec`, and its Dolby nodes from `stream_dovi` / `stream_immersive`, all five of
-/// which are normally installed together by `route::apply_plan` from a PMS decision and replaced
-/// together by later route transitions. So a URL-fed 4K HEVC file was declared to the television
-/// as whatever the route happened to hold — in a fresh boot, the empty string, which falls through
-/// [`crate::player::engine`]'s `_ =>` arm to `"AC3"` and an H264 payload. The declaration is
-/// precisely what governs HEVC-vs-H264 payload selection, the `"AC3 PLUS"` naming trap, and both
-/// Dolby nodes, so a tier that cannot set it cannot test them.
-///
-/// JSON, whole-file, one object. Chosen over a `key=value` line for three reasons: the DV node is
-/// nested, `serde_json` is already a dependency and [`DevServer`] is the established precedent for
-/// exactly this shape, and JSON contains no apostrophes — which matters because `tests/run.py`
-/// writes triggers through a single-quoted `printf` with no escaping.
-///
-/// ```jsonc
-/// {"url":"http://192.0.2.10:8020/pipe_hevc_eac3_4k_dovi_p8.mkv",
-///  "vcodec":"hevc", "acodec":"eac3", "fps":23.976,
-///  "dovi":{"profile":8,"bl_compat":1,"el_present":false},
-///  "atmos":false}
-/// ```
-///
-/// Deliberately **not** `Debug`, for [`DevServer`]'s reason one step removed: `url` is a free
-/// string, and while the pipeline tier's own URLs carry no credentials, the field is the same
-/// shape as `route::url()` — which for a real playback carries `X-Plex-Token` in its query. A
-/// derived `Debug` is how that reaches a log the day someone points this trigger at a PMS part.
-#[derive(serde::Deserialize, Clone)]
-pub(crate) struct PlayUrl {
-    /// `http://<dotted-quad>:<port>/<path>`. **A dotted quad, not a hostname** — `stream.rs` does
-    /// no DNS on this path, so a name is a flat failure to open with nothing to read it by.
-    #[serde(default)]
-    pub(crate) url: String,
-    /// The Load payload's video codec: `"hevc"` selects the H265 payload, anything else H264.
-    #[serde(default)]
-    pub(crate) vcodec: String,
-    /// The Load payload's audio codec, in FFmpeg's spelling (`"eac3"`, not `"AC3 PLUS"`) — the
-    /// engine does the LG-side renaming, which is the trap this tier exists to keep testing.
-    #[serde(default)]
-    pub(crate) acodec: String,
-    /// Source frame rate for the Load `esInfo`; 0 omits it, exactly as a transcode does.
-    #[serde(default)]
-    pub(crate) fps: f64,
-    /// Dolby Vision layering, for the payload's `contents.DolbyHdrInfo` node. Absent = none.
-    #[serde(default)]
-    pub(crate) dovi: PlayDovi,
-    /// Dolby Atmos, for the payload's `contents.immersive` node.
-    #[serde(default)]
-    pub(crate) atmos: bool,
-    /// Pipeline-tier Auto watchdog seam: whole Original wire bitrate. Zero leaves the ordinary
-    /// Plex-free one-shot playback unchanged.
-    #[serde(default)]
-    pub(crate) auto_source_kbps: u32,
-    /// Same-origin fixture HLS root used after the synthetic Original becomes unsustainable.
-    /// Present only in debug/test artifacts; production playback obtains replacement URLs from
-    /// PMS through `HlsAbrControl`.
-    #[serde(default)]
-    pub(crate) auto_hls_base: String,
-    /// **Start in HLS instead of arriving there through a starvation.** The pipeline tier's ABR
-    /// cases exist to exercise the HLS controller, and until 2026-08-27 their only way in was to
-    /// declare an Original source rate no link could carry (900 000 kbps) and let the starvation
-    /// horizon fire. That worked only because the horizon fired without checking whether the
-    /// reserve was actually draining — on an unshaped link it was FILLING — so the entry depended
-    /// on a defect, and it stopped working the moment the defect was fixed
-    /// (`docs/measurements/local-original-blind.md`, `docs/measurements/orig-first-window-fallback.md`).
-    /// With this set, `route::arm_auto_fixture` installs the post-fallback state directly and the
-    /// controller runs from the first segment. `pipe_auto_original_slow_recover` deliberately does
-    /// NOT set it: the transition is what that case grades.
-    #[serde(default)]
-    pub(crate) auto_start_hls: bool,
-    /// **The SOURCE raster, which decides whether the 4K actuator is feasible at all.**
-    ///
-    /// `route::arm_auto_fixture` hardcoded `1920x1080`, and its comment gave the honest reason:
-    /// an unknown source raster is treated as UNBOUNDED by
-    /// [`HlsActuatorCatalog::limited_to`](crate::abr::HlsActuatorCatalog::limited_to), which makes
-    /// the Uhd rung feasible — and `tests/serve_fixtures.py` served no 22000 rung, so a candidate
-    /// there would 404 and read on the television as a rejected encoder. That is a fixture gap
-    /// standing in for a policy, and it is what kept the plan's I9 blocked: with every
-    /// `auto_network` case pinned to a 1080p source, `admits` deletes Uhd and the two entries the
-    /// production table calls empirical are the two no case can reach.
-    ///
-    /// `[w, h]`. Absent or malformed keeps the 1080p default, so every existing case is unchanged
-    /// by construction. The server now answers 22000 with a real 4K clip, so declaring 4K here
-    /// selects a rung that exists rather than one that 404s.
-    #[serde(default)]
-    pub(crate) source_raster: Option<[u16; 2]>,
-}
-
-/// The four DV fields the Load payload actually decides on — [`crate::metadata::Dovi`]'s
-/// decision half. The three descriptive fields (level, version, bl/rpu present) are read by the
-/// tracks panel and by nothing on the playback path, so this trigger does not carry them.
-#[derive(serde::Deserialize, Clone, Copy, Default)]
-pub(crate) struct PlayDovi {
-    /// 5 / 7 / 8. **Zero means no Dolby Vision at all** — it is what drives `present` below,
-    /// rather than a separate flag that could disagree with it.
-    #[serde(default)]
-    pub(crate) profile: i64,
-    /// `DOVIBLCompatID` — 0 none (P5) / 1 HDR10 / 2 SDR / 4 HLG.
-    #[serde(default)]
-    pub(crate) bl_compat: i64,
-    /// An enhancement layer is present (P7).
-    #[serde(default)]
-    pub(crate) el_present: bool,
-}
-
-impl PlayDovi {
-    /// The engine-facing record. `present` is DERIVED from a non-zero profile rather than carried
-    /// separately: two fields that can disagree is a way to declare "Dolby Vision, profile 0",
-    /// which is not a thing, and the harness would have to keep them in step by hand in every case.
-    pub(crate) fn to_dovi(self) -> crate::metadata::Dovi {
-        crate::metadata::Dovi {
-            present: self.profile > 0,
-            profile: self.profile,
-            bl_compat: self.bl_compat,
-            el_present: self.el_present,
-            ..crate::metadata::Dovi::NONE
-        }
-    }
-}
-
-/// Parse the `playurl` trigger's content. Pure, so the host suite can pin it.
-///
-/// An `Err` rather than a defaulted object on malformed input, for [`parse_servers`]' reason: a
-/// run whose declaration was silently dropped grades as "the payload is wrong", when the fault is
-/// a typo in the harness. An empty `url` is an `Err` too — an all-defaults object would send the
-/// engine looking for `plxnative-url` instead and the case would play something else entirely.
-#[cfg(any(feature = "devtriggers", test))]
-fn parse_playurl(s: &str) -> Result<PlayUrl, String> {
-    let p: PlayUrl = serde_json::from_str(s).map_err(|e| e.to_string())?;
-    if p.url.is_empty() {
-        return Err("no `url`".to_string());
-    }
-    Ok(p)
-}
-
-/// This boot's URL-and-declaration, if one was armed — `/tmp/plxnative-playurl`.
-///
-/// `None` = not armed; `Some(Err)` = armed but unreadable, which the caller logs.
-///
-/// **Not memoized**, unlike [`servers`]: every `start_bufferfeed` re-reads it, because a seek that
-/// escalates to a full reload tears the engine down and builds the payload again, and a
-/// declaration that applied only to the first `Load` would make the second one silently wrong.
-/// `servers` is memoized for the opposite reason — credentials are a property of the boot.
-#[cfg(feature = "devtriggers")]
-pub(crate) fn playurl() -> Option<Result<PlayUrl, String>> {
-    read("playurl").map(|s| parse_playurl(&s))
-}
-#[cfg(not(feature = "devtriggers"))]
-pub(crate) fn playurl() -> Option<Result<PlayUrl, String>> {
-    None
 }
 
 /// Is ANY non-diagnostic trigger armed? Used to skip the boot who's-watching picker, so that a
@@ -1161,24 +811,6 @@ fn is_armed_trigger(entry: &std::fs::DirEntry) -> bool {
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn any_trigger_present() -> bool {
     false
-}
-
-/// `true` when this build reads `/tmp` at all — for the one boot log line that says so, and for
-/// call sites gating a whole subsystem (the capture listener, the remote FIFO) rather than a read.
-pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
-
-/// The trigger's absolute path. `/tmp/plxnative-<name>` on the television; see
-/// [`crate::paths::runtime_dir`] for why a host build may put the whole namespace elsewhere.
-///
-/// `test` is in the cfg beside the feature, and only for a compile reason: the test below writes
-/// through this door rather than through a literal, and it guards itself at RUNTIME on
-/// [`ENABLED`] — but a runtime guard cannot stop a call from being compiled, so without this the
-/// whole crate failed to build under `--no-default-features --test` (E0425, "cannot find function
-/// `path` in module `super`"). A shipping release build is unchanged: `cfg(test)` is false there,
-/// and the fn is gone exactly as before.
-#[cfg(any(feature = "devtriggers", test))]
-fn path(name: &str) -> std::path::PathBuf {
-    crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
 }
 
 #[cfg(test)]
@@ -1284,7 +916,7 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn a_directory_is_not_an_armed_trigger() {
-        if !super::ENABLED {
+        if !crate::devtrig::ENABLED {
             return; // a release build reads nothing
         }
         // Test the exact entry rather than scanning the whole host /tmp. Developers legitimately
@@ -1310,32 +942,6 @@ mod tests {
             !armed,
             "a directory named {} read as an armed trigger",
             d.display()
-        );
-    }
-
-    /// An empty trigger file and an absent one mean different things to several call sites
-    /// (`autoseek` empty = one seek to 140s; `navosc` empty = Home <-> the first library section).
-    #[test]
-    fn empty_trigger_is_some_not_none() {
-        if !super::ENABLED {
-            return; // a release build reads nothing; nothing to distinguish
-        }
-        // Arms a real trigger in the shared runtime root, which is what
-        // `a_directory_is_not_an_armed_trigger` scans — they must not overlap.
-        let _g = crate::testlock::serial();
-        // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`. The literal was
-        // right when the namespace was always `/tmp/plxnative-…`, but it stops meeting the read as
-        // soon as an instance root is in effect; `env::temp_dir()` never met it at all, since on
-        // the dev Mac that is a per-user `/var/folders/…/T/` path. Going through the same door the
-        // code under test uses keeps the write and the read together wherever the root points.
-        let p = super::path("devtest-empty");
-        std::fs::write(&p, "").unwrap();
-        let got = super::read("devtest-empty");
-        let _ = std::fs::remove_file(p);
-        assert_eq!(
-            got.as_deref(),
-            Some(""),
-            "an empty trigger must not read as absent"
         );
     }
 
@@ -1618,118 +1224,12 @@ mod tests {
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----
 
-    /// The payload `tests/run.py` writes, verbatim. Pinned as a literal for `parse_servers`'
-    /// reason: nothing links the two languages at build time, so if this has to change, the
-    /// harness's writer changes with it.
-    #[test]
-    fn the_harness_payload_parses_to_the_declaration_it_names() {
-        let p = super::parse_playurl(
-            r#"{"url":"http://192.0.2.10:8020/pipe_hevc_eac3_4k_dovi_p8.mkv","vcodec":"hevc",
-                "acodec":"eac3","fps":23.976,
-                "dovi":{"profile":8,"bl_compat":1,"el_present":false},"atmos":false}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            p.url,
-            "http://192.0.2.10:8020/pipe_hevc_eac3_4k_dovi_p8.mkv"
-        );
-        assert_eq!((p.vcodec.as_str(), p.acodec.as_str()), ("hevc", "eac3"));
-        assert!((p.fps - 23.976).abs() < 1e-9);
-        assert!(!p.atmos);
-        let dv = p.dovi.to_dovi();
-        assert!(dv.present, "profile 8 must derive present=true");
-        assert_eq!((dv.profile, dv.bl_compat, dv.el_present), (8, 1, false));
-    }
-
-    /// The baseline case declares two fields and omits the rest, which must mean "no Dolby
-    /// anything" — not a parse failure and not an inherited value.
-    #[test]
-    fn omitted_fields_default_to_a_silent_declaration() {
-        let p = super::parse_playurl(
-            r#"{"url":"http://10.0.0.2:8020/a.mkv","vcodec":"h264","acodec":"ac3"}"#,
-        )
-        .unwrap();
-        assert_eq!(p.fps, 0.0);
-        assert!(!p.atmos);
-        let dv = p.dovi.to_dovi();
-        assert!(!dv.present);
-        assert_eq!(
-            dv,
-            crate::metadata::Dovi::NONE,
-            "an absent dovi node must be silence itself"
-        );
-    }
-
-    /// The synthetic Auto case carries only public fixture coordinates and a declared source
-    /// rate. Keep that cross-language seam pinned separately from the ordinary declaration: a
-    /// parser that silently defaults either field would play Original forever and make the TV
-    /// network-profile case grade the wrong path.
-    #[test]
-    fn the_auto_fixture_fields_reach_the_runtime_verbatim() {
-        let p = super::parse_playurl(
-            r#"{"url":"http://192.0.2.10:8020/original.mp4","vcodec":"h264","acodec":"aac",
-                "auto_source_kbps":8000,"auto_hls_base":"http://192.0.2.10:8020/__abr"}"#,
-        )
-        .unwrap();
-        assert_eq!(p.auto_source_kbps, 8_000);
-        assert_eq!(p.auto_hls_base, "http://192.0.2.10:8020/__abr");
-    }
-
-    /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
-    #[test]
-    fn dovi_presence_follows_the_profile() {
-        let none = super::PlayDovi {
-            profile: 0,
-            bl_compat: 1,
-            el_present: true,
-        }
-        .to_dovi();
-        assert!(
-            !none.present,
-            "profile 0 is not Dolby Vision whatever else is set"
-        );
-        let p7 = super::PlayDovi {
-            profile: 7,
-            bl_compat: 6,
-            el_present: true,
-        }
-        .to_dovi();
-        assert!(p7.present);
-        assert_eq!((p7.profile, p7.bl_compat, p7.el_present), (7, 6, true));
-    }
-
-    /// An empty `url` must be an Err, not an all-defaults object: on `Ok` the engine would take
-    /// the empty URL, fall through to `plxnative-url` or a local sample, and PLAY SOMETHING ELSE —
-    /// a case grading a stream it was never pointed at. Same class as `parse_servers`' untagged
-    /// ordering trap, in different clothes.
-    #[test]
-    fn an_empty_url_is_refused_rather_than_defaulted() {
-        assert!(super::parse_playurl(r#"{"vcodec":"hevc"}"#).is_err());
-        assert!(super::parse_playurl(r#"{"url":""}"#).is_err());
-        assert!(super::parse_playurl("").is_err());
-        assert!(super::parse_playurl("not json at all").is_err());
-    }
-
     /// The trigger decides WHAT THE APP PLAYS. Listing it in DIAG would leave a headless pipeline
     /// run booting to the who's-watching picker — with no session, to the sign-in screen — instead
     /// of into the player.
     #[test]
     fn playurl_trigger_is_not_diagnostic() {
         assert!(!super::DIAG.contains(&"plxnative-playurl"));
-    }
-
-    /// The harness writes triggers through a single-quoted `printf` with NO escaping
-    /// (`tests/run.py::apply_triggers`), so an apostrophe anywhere in the payload would end the
-    /// quoting and hand the rest to the TV's shell. JSON has no apostrophe in its syntax; this
-    /// pins that the fields we generate carry none either.
-    #[test]
-    fn the_harness_payload_carries_no_apostrophe() {
-        let payload = r#"{"url":"http://192.0.2.10:8020/pipe_h264_ac3_1080p.mkv","vcodec":"h264","acodec":"ac3","fps":24.0}"#;
-        assert!(
-            !payload.contains('\''),
-            "would break apply_triggers' single-quoted printf"
-        );
-        assert!(super::parse_playurl(payload).is_ok());
     }
 
     /// **One vocabulary for a rung, in both directions.** `plxnative-quality` and

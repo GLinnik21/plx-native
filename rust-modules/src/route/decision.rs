@@ -3218,7 +3218,7 @@ pub(crate) fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWa
 /// off only where the transition itself is what is being graded, and give that case a
 /// `network_profile` that starves for real. Removing the candidate is load-bearing: otherwise a
 /// loopback source probe can escape to Original before a request-indexed HLS cliff occurs.
-/// [`crate::dev::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
+/// [`crate::player::playurl::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
 /// source rate no link could carry and relying on a starvation horizon that did not check whether
 /// the reserve was draining.
 pub(crate) fn arm_auto_fixture(
@@ -3241,7 +3241,7 @@ pub(crate) fn arm_auto_fixture(
         // `tests/serve_fixtures.py` served no 22000 rung, so such a candidate would 404 and read
         // on the television as a rejected encoder — a fixture gap standing in for a policy, and
         // the thing that kept the plan's I9 blocked. The server answers 22000 now, so the caller
-        // declares it (`dev::PlayUrl::source_raster`) and the default is still 1080p.
+        // declares it (`player::playurl::PlayUrl::source_raster`) and the default is still 1080p.
         s.cur_src = (
             i64::from(source_kbps),
             i64::from(source_raster.0),
@@ -3281,7 +3281,7 @@ pub(crate) fn arm_auto_fixture(
         return None;
     }
     // Install exactly the state `fallback_auto_to_hls` leaves behind, at the bootstrap rung, and
-    // hand the caller the playlist to open. See `dev::PlayUrl::auto_start_hls` for why this exists
+    // hand the caller the playlist to open. See `player::playurl::PlayUrl::auto_start_hls` for why this exists
     // at all: the alternative was declaring a source rate no link could carry and relying on the
     // starvation horizon to fire on a reserve that was visibly FILLING.
     let rung = crate::abr::Rung::P480;
@@ -4564,7 +4564,7 @@ pub(crate) fn set_stream_source_raster(ps: &mut PlaybackSession, w: u16, h: u16)
 }
 
 /// The whole Load-payload DECLARATION for a stream the app did not SELECT — the pipeline test
-/// tier's `/tmp/plxnative-playurl` ([`crate::dev::PlayUrl`]), whose entire point is that no PMS
+/// tier's `/tmp/plxnative-playurl` ([`crate::player::playurl::PlayUrl`]), whose entire point is that no PMS
 /// chose anything and so `apply_plan` never runs.
 ///
 /// ONE write for the same reason [`set_server_output_declaration`] is one write and [`apply_plan`]

@@ -1883,7 +1883,7 @@ fn the_adapter_drain_order_is_the_documented_one() {
 // no `Sys` variant, `ui::dispatch::ADAPTER_RANKS` names exactly the eleven data-fetch adapters
 // (`auth, pms, browse, search, metadata/season, person, play, metadata/detail, viewstate,
 // alt_sources, poster`) and no twelfth for triggers, and `dev.rs` — the one door onto `/tmp/plxnative-*`
-// — is read directly at the point a boot or a screen needs a flag (`dev::flag`/`dev::read`), gated
+// — is read directly at the point a boot or a screen needs a flag (`devtrig::flag`/`devtrig::read`), gated
 // on the `devtriggers` feature, never through a store or the adapter machinery (see `AGENTS.md`'s
 // "Dev trigger files" section). The design went a different, simpler way: trigger reads are not
 // modelled as async results at all, so there is nothing for a store's `apply`/`run` to receive and

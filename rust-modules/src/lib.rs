@@ -22,6 +22,7 @@ mod coldstart; // retires old last-page bookmarks; authenticated cold boots now 
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
+mod devtrig; // the /tmp trigger PRIMITIVES (`flag`, `read`, `latched_flag!`, `no_wan`…): the one door onto /tmp/plxnative-*, a base-layer leaf every layer may call
 #[macro_use]
 mod diag; // typed usage schema plus log/lab scrub, ring and zlib; native crashes have a separate allowlist
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases

@@ -174,7 +174,7 @@ fn enabled() -> bool {
     }
     static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ONCE.get_or_init(|| {
-        let on = crate::dev::flag("clocksink");
+        let on = crate::devtrig::flag("clocksink");
         if on {
             crate::eventlog::log(
                 "clocksink: ARMED — AUs are accepted and discarded, and the presentation clock \
@@ -470,7 +470,7 @@ static REFUSALS_LEFT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI6
 fn take_refusal() -> bool {
     static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     ONCE.get_or_init(|| {
-        let n = match crate::dev::read("refuseload") {
+        let n = match crate::devtrig::read("refuseload") {
             None => 0,
             Some(v) if v.trim().is_empty() => i64::MAX,
             Some(v) => v.trim().parse::<i64>().unwrap_or(0),

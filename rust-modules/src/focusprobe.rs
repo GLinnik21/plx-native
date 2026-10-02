@@ -49,7 +49,7 @@
 //! over empty stores): **39–223 ns** per frame on every screen except the player, where the line
 //! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
 //! single filesystem `stat`**, inside [`crate::ui::player_hud::transport_hidden`] →
-//! `player_hud::busy` → `dev::flag("failtest")`. The rest of the player's seventeen fields together
+//! `player_hud::busy` → `devtrig::flag("failtest")`. The rest of the player's seventeen fields together
 //! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
 //! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
 //! derivation of a rule that module keeps in one place. The player route is also the one route the idle gate excludes, so it draws
@@ -62,7 +62,7 @@
 //! in [`crate::dev`]'s `DIAG` set, so arming the observer does not also change which screen the app
 //! boots to — the same reasoning `plxnative-noidle` carries, and it matters more here: a harness
 //! that wants to characterize the who's-watching picker must not lose the picker by watching it.
-//! `RELEASE=1` drops the `devtriggers` feature, `dev::flag` becomes `false`, and this whole surface
+//! `RELEASE=1` drops the `devtriggers` feature, `devtrig::flag` becomes `false`, and this whole surface
 //! goes quiet.
 
 use std::ffi::c_int;
@@ -171,7 +171,7 @@ pub(crate) struct Hud {
     pub(crate) visible: bool,
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// Is the probe armed for this boot? Resolved once, from `/tmp/plxnative-focus`.
     ///
     /// Resolved once rather than per frame for two reasons: `tests/run.py` clears `/tmp/plxnative-*`
@@ -179,7 +179,7 @@ crate::dev::latched_flag!(
     /// `exists()` is a syscall this is not worth paying. Call sites may check this before building
     /// arguments — [`sample`] checks it again, so the module is correct on its own.
     ///
-    /// This body was hand-rolled here first; [`crate::dev::latched_flag`] is that body, moved to the
+    /// This body was hand-rolled here first; [`crate::devtrig::latched_flag`] is that body, moved to the
     /// module that owns the trigger surface so every per-frame `flag` caller can have it.
     pub(crate) fn armed = "focus";
 );

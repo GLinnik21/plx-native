@@ -461,6 +461,41 @@ pub(crate) fn errors_id() -> Option<String> {
     })
 }
 
+/// `/tmp/plxnative-consentstate=unset|yes4|yes7|no` — boot with this consent record instead of
+/// the stored one: never asked, error reports allowed at scope 4 (before the onboarding report
+/// existed) or 7, or declined. Installed through `consent::install` like a real load, and written
+/// nowhere. `None` without the trigger or with an unknown value (which is logged). Unused under
+/// test, where `telemetry::capture_initial` never consults it.
+///
+/// It only reads a trigger file and builds this module's own [`Consent`], so it lives here beside
+/// the one consumer (`capture_initial`) rather than in `dev::scenarios`, which the telemetry layer
+/// may not name.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn state_override() -> Option<Consent> {
+    let spec = crate::devtrig::read("consentstate")?;
+    // An answered record as `consent::apply` would have written it: errors on at `scope` with a
+    // freshly minted Crash report ID, or errors off with nothing kept.
+    let answered = |errors: bool, scope: u32| Consent {
+        asked_version: POLICY_VERSION,
+        errors,
+        errors_scope: if errors { scope } else { 0 },
+        errors_id: errors.then(crate::telemetry::mint_id).flatten(),
+        ..Consent::default()
+    };
+    let consent = match spec.as_str() {
+        "unset" => Consent::default(),
+        "yes4" => answered(true, 4),
+        "yes7" => answered(true, ONBOARDING_REPORT_SCOPE),
+        "no" => answered(false, 0),
+        other => {
+            crate::eventlog::log(&format!("dev: consentstate — unknown value {other:?}, ignored"));
+            return None;
+        }
+    };
+    crate::eventlog::log(&format!("dev: consentstate={spec} — booting with that consent record"));
+    Some(consent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,7 +11,7 @@
 //! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
 //! fails loudly instead of capturing the wrong screen.
 //!
-//! Dev-only, like every arm in [`super`]: the reads go through `dev::read`, which is `None` at
+//! Dev-only, like every arm in [`super`]: the reads go through `devtrig::read`, which is `None` at
 //! compile time without the `devtriggers` feature.
 
 use crate::app::run::Frame;
@@ -65,7 +65,7 @@ impl ScreenshotArms {
 /// the body rather than a second, empty twin of this function.
 pub(crate) fn arm_stillclock() {
     #[cfg(feature = "devtriggers")]
-    if let Some(v) = crate::dev::read("stillclock") {
+    if let Some(v) = crate::devtrig::read("stillclock") {
         let ms = v.parse().unwrap_or(0);
         crate::ui::motion::hold_phase_clocks(Some(ms));
         crate::eventlog::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
@@ -130,7 +130,7 @@ pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libtype_done {
         return;
     }
-    let Some(v) = crate::dev::read("libtype") else {
+    let Some(v) = crate::devtrig::read("libtype") else {
         app.scenarios.shots.libtype_done = true;
         return;
     };
@@ -164,7 +164,7 @@ pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
     }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libgrid;
-    let Some((row, col)) = arm.pending("libgrid", || crate::dev::read("libgrid"), "focus seated at row {0} col {1}",
+    let Some((row, col)) = arm.pending("libgrid", || crate::devtrig::read("libgrid"), "focus seated at row {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_grid_position(&app.pages)) else { return };
     if on_library && arm.resend(fr.now) {
         crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::FocusGrid { row, col });
@@ -181,7 +181,7 @@ pub(crate) fn libshelf_arm(app: &mut App, fr: &Frame) {
     }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libshelf;
-    let Some((shelf, col)) = arm.pending("libshelf", || crate::dev::read("libshelf"), "focus seated on shelf {0} col {1}",
+    let Some((shelf, col)) = arm.pending("libshelf", || crate::devtrig::read("libshelf"), "focus seated on shelf {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_shelf_position(&app.pages)) else { return };
     if on_library && arm.resend(fr.now) {
         crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::FocusShelf { shelf, col });
@@ -247,7 +247,7 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libmenu_done || !app.scenarios.shots.libgrid.done {
         return;
     }
-    let Some(v) = crate::dev::read("libmenu") else {
+    let Some(v) = crate::devtrig::read("libmenu") else {
         app.scenarios.shots.libmenu_done = true;
         return;
     };
@@ -292,7 +292,7 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
     {
         let arms = &mut app.scenarios.shots;
         if arms.clockstop.is_none() {
-            arms.clockstop = Some(crate::dev::read("clockstop").map(|v| match v.parse::<u32>() {
+            arms.clockstop = Some(crate::devtrig::read("clockstop").map(|v| match v.parse::<u32>() {
                 Ok(ms) => Some(ms),
                 Err(_) => {
                     crate::eventlog::log(&format!("BADTRIGGER clockstop {v:?}: expected <ms>"));

@@ -2632,7 +2632,7 @@ mod repair_confirmation_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         let hardware_verdict = crate::webos::jail_blocks_native_video();
-        crate::dev::scenarios::failure_fixture(&mut ps);
+        crate::player::failure_fixture(&mut ps);
         let mut page = PlayerScreen::new(EntryId(1));
         assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
         assert!(page.repair_alert.is_open(), "fixture must offer the real confirmation");
@@ -2644,7 +2644,7 @@ mod repair_confirmation_tests {
         deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
         assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
         std::fs::write(&path, "tv").unwrap();
-        crate::dev::scenarios::failure_fixture(&mut ps);
+        crate::player::failure_fixture(&mut ps);
         assert!(!ps.jail_load_blocked, "other failure fixtures must not claim a jail refusal");
     }
 

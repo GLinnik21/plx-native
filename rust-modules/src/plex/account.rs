@@ -42,7 +42,7 @@ const PLEX_TV: &str = "https://plex.tv";
 /// able to point the account API, and the token it carries, at another host. Read once.
 pub(crate) fn plex_tv() -> &'static str {
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BASE.get_or_init(|| match crate::dev::read("plextv") {
+    BASE.get_or_init(|| match crate::devtrig::read("plextv") {
         Some(v) if loopback_http(&v) => {
             #[cfg(feature = "devtriggers")]
             crate::eventlog::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");

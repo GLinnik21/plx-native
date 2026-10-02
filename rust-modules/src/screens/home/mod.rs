@@ -2563,7 +2563,7 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
 fn display_source(real: &str) -> &str {
     static OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     OVERRIDE
-        .get_or_init(|| crate::dev::read("shared"))
+        .get_or_init(|| crate::devtrig::read("shared"))
         .as_deref()
         .unwrap_or(real)
 }

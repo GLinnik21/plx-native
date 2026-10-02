@@ -834,11 +834,11 @@ fn open(
 /// It sets `profiled`, which is the flag [`address`] gates the profile fetch on — so a seeded page makes no
 /// provider request at all, rather than racing one that would overwrite the seed a second later.
 /// The invented roles/dates/birthplace are what make the identity line's separator logic visible;
-/// they are as fictional as the rest of the trigger and never reach a release build (`dev::read` is
+/// they are as fictional as the rest of the trigger and never reach a release build (`devtrig::read` is
 /// `None` at compile time without `devtriggers`).
 #[allow(unused_variables)]
 fn seed_dev_profile(p: &mut Person) {
-    let Some(text) = crate::dev::read("personbio") else {
+    let Some(text) = crate::devtrig::read("personbio") else {
         return;
     };
     p.bio = if text.is_empty() {
@@ -889,7 +889,7 @@ about as closer to theatre than to film.\n\n\
 Alongside acting she writes and records her own music, and has been open about the relationship \
 between the two: songs, she has said, are where the parts she plays go when the run ends. She \
 continues to divide her time between London and New York.";
-/// The release build has no sample — `seed_dev_profile` cannot be reached (`dev::read` is `None` at
+/// The release build has no sample — `seed_dev_profile` cannot be reached (`devtrig::read` is `None` at
 /// compile time), and a few hundred bytes of fiction has no business in a shipped binary.
 #[cfg(not(feature = "devtriggers"))]
 const DEV_BIO: &str = "";
@@ -1043,7 +1043,7 @@ impl PersonState {
 fn seed_dev_credits(state: &mut PersonState) -> bool {
     let arg = if crate::app::bootstrap::stores::active() {
         crate::app::bootstrap::stores::credits().map(|v| v.to_string())
-    } else { crate::dev::read("personcredits") };
+    } else { crate::devtrig::read("personcredits") };
     let Some(arg) = arg else {
         return false;
     };
@@ -1125,7 +1125,7 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
         })
         .collect();
     p.credited = true;
-    // Gated: `personcredits` is a `dev::CONTROLLED` name (a controlled/recorded boot may carry
+    // Gated: `personcredits` is a `devtrig::CONTROLLED` name (a controlled/recorded boot may carry
     // it), and `ci/check-package.py`'s dev-trigger-catalog check greps a release binary for that
     // exact vocabulary. This function is already unreachable without `devtriggers` (`arg` above
     // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still

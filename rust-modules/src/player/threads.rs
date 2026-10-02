@@ -27,7 +27,7 @@ pub(crate) fn load_thread(
     // (the pump's "deferring" line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out) is
     // observable on a real television without a set that hangs here for real. Read AFTER
     // `sf_load` returns and BEFORE `mark_native_load_returned`, matching where this needs to bite.
-    if let Some(ms) = crate::dev::holdload_delay_ms() {
+    if let Some(ms) = crate::devtrig::holdload_delay_ms() {
         super::log(&format!(
             "holdload: armed — holding the Load-returned flag for {ms}ms"
         ));
