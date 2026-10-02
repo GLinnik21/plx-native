@@ -141,22 +141,10 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
         parse_item(&it, sid(0))
     };
 
-    // what a landscape tile would draw: the chain reads the row's three art paths only
-    let still_key = |m: &PmsMovie| {
-        crate::ui::widgets::still_key(&crate::ui::tile::TileFacts {
-            still: &m.still,
-            thumb: &m.thumb,
-            art: &m.art,
-            ..Default::default()
-        })
-        .to_owned()
-    };
-
     // the show HAS a poster: the poster substitution stands, and the still is kept beside it
     let with = ep("/show/poster");
     assert_eq!(with.thumb, "/show/poster", "a portrait card wants the poster");
     assert_eq!(with.still, "/ep/still");
-    assert_eq!(still_key(&with), "/ep/still");
 
     // …and with no show poster the still is STILL the episode's own frame, not the backdrop
     let without = ep("");
@@ -165,11 +153,8 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
         without.still, "/ep/still",
         "the episode's own frame, which the landscape tile is for"
     );
-    assert_eq!(
-        still_key(&without),
-        "/ep/still",
-        "…and never the show's shared art, which is the same picture on every episode"
-    );
+    // (what the tile then DRAWS from `still` — `ui::widgets::still_key` — is graded in
+    // `screens/library/labels_tests.rs`, which may name the UI)
 
     // a MOVIE carries no still: its `thumb` already IS its own artwork
     let film = parse_item(

@@ -1,11 +1,28 @@
-// Housekeeping must not copy page memory, or consume a queued navigation bookmark.
-use super::*;
-use crate::app::bridge::AppHost;
+//! Housekeeping must not copy page memory, or consume a queued navigation bookmark.
+//!
+//! This was `ui/dispatch_return_tests.rs`, `include!`d into the dispatcher's own test module. It
+//! drives `ui::dispatch::Dispatcher` with the application's real effect type (`AppFx`) and the
+//! application's own predicate for which of those effects need a bookmark
+//! (`AppHost::app_fx_needs_return`), over the store commands the app issues as housekeeping, so
+//! it is a whole-app test: it belongs here, to the layer that owns the `AppHost`, `screens` and
+//! `stores` it names, and not in the UI library (docs/module-layers.md, step L13).
+
+use super::AppHost;
 use crate::screens::registry::{AppFx, LibraryReq};
 use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
+use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::machine::{Canon, LogicalState, Machine};
+use crate::ui::frame::Budget;
+use crate::ui::machine::{
+    Canon, Cx, Effects, FocusKey, Fx, GroupId, Handled, Host, InstanceId, LogicalState, Machine,
+    MachineId, NavOp, Stamped, Tick, TimerId,
+};
+use crate::ui::present::Present;
+use crate::ui::screen::{
+    At, Dir, DrawFrame, Focusable, GroupSpec, Mounter, Placed, ReturnState, Screen, ScreenEvent,
+    Step,
+};
 use std::cell::Cell;
 use std::rc::Rc;
 

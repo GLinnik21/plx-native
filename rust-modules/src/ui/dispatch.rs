@@ -37,10 +37,6 @@ use super::screen::{
     GroupSpec, HitSource, Mounter, Placed, ReturnState, Screen, ScreenArg, ScreenEvent, Step, Stop,
 };
 
-#[cfg(test)]
-mod return_tests {
-    include!("dispatch_return_tests.rs");
-}
 use super::{Painter, Rect};
 
 /// The strip's control namespace: `of_index(STRIP_BASE + stable_id)`, never display position.
@@ -341,7 +337,7 @@ pub struct FrameReport {
 pub struct Dispatcher<H: Host> {
     queue: VecDeque<Stamped<H>>,
     parked: Vec<(Stamped<H>, ReturnState<H::Elem, H::Memory>)>,
-    app_returns: VecDeque<(MachineId, ReturnState<H::Elem, H::Memory>)>,
+    pub(crate) app_returns: VecDeque<(MachineId, ReturnState<H::Elem, H::Memory>)>,
     /// Lifecycle steps queued from outside a step (suspend/resume/profile reset), applied at
     /// the next commit ahead of the tree's own.
     parked_life: Vec<Life<H>>,
@@ -677,7 +673,7 @@ where
         self.return_state()
     }
 
-    fn parts(&self, tick: Tick) -> CxParts<H::Elem> {
+    pub(crate) fn parts(&self, tick: Tick) -> CxParts<H::Elem> {
         let owner = self.owner();
         CxParts {
             tick,
@@ -1623,7 +1619,7 @@ where
 
     /// Pop-and-execute until the queue is empty or `max_steps` step invocations are spent;
     /// structural ops are parked for NAV COMMIT; what is left is CARRIED, never dropped.
-    fn drain(
+    pub(crate) fn drain(
         &mut self,
         rig: &mut dyn Rig<H>,
         parts: &CxParts<H::Elem>,
@@ -1709,7 +1705,7 @@ where
     /// mounts it this frame even when the drain's budget was spent before the FIFO reached its
     /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`). Immediate input operations
     /// precede the next input: releases see their arms, and text sees its field/keyboard state.
-    fn absorb(&mut self, out: Vec<Stamped<H>>) {
+    pub(crate) fn absorb(&mut self, out: Vec<Stamped<H>>) {
         let mut immediate_input = Vec::new();
         for s in out {
             match s.fx {

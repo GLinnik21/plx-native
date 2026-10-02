@@ -1196,51 +1196,6 @@ mod tests {
         assert!(!is_episode_shelf(&[]));
     }
 
-    /// The artwork FALLBACK CHAIN: the episode's own still, then the show's POSTER, and its
-    /// backdrop only as a last resort.
-    ///
-    /// The middle rung was the backdrop until `Library Screens.dc.html` E ruled otherwise — "where
-    /// an episode has no still, the tile falls back to the show's poster in the same frame,
-    /// cover-fitted, label and all. A crop is better than a row of mixed tile shapes." Both are
-    /// show-level images, so neither escapes the identical-tiles problem; what decides it is that
-    /// the poster is the show's IDENTIFYING artwork, which is what this tile's own label is about.
-    #[test]
-    fn a_landscape_tile_prefers_the_episodes_own_still() {
-        use crate::ui::tile::TileFacts;
-        use crate::ui::widgets::still_key;
-        // the artwork a landscape tile would draw: the chain reads the row's three art paths only
-        let key_of = |m: &PmsMovie| {
-            still_key(&TileFacts { still: &m.still, thumb: &m.thumb, art: &m.art, ..Default::default() })
-                .to_owned()
-        };
-        let full = PmsMovie {
-            still: "/still".into(),
-            art: "/art".into(),
-            thumb: "/poster".into(),
-            ..Default::default()
-        };
-        assert_eq!(key_of(&full), "/still");
-
-        // no still — an ordinary answer for a specials folder or an item mid-scan
-        let no_still = PmsMovie {
-            art: "/art".into(),
-            thumb: "/poster".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            key_of(&no_still),
-            "/poster",
-            "the show's own poster, cover-fitted in the same frame"
-        );
-
-        // …and the backdrop only when there is no poster either
-        let bare = PmsMovie {
-            art: "/art".into(),
-            ..Default::default()
-        };
-        assert_eq!(key_of(&bare), "/art");
-    }
-
     // ---- the publication machine, on the pure struct -----------------------------------------
 
     fn armed() -> SecHubs {

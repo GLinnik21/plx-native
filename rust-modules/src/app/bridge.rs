@@ -3376,6 +3376,17 @@ mod detail_panel_tests;
 #[path = "surface_navigation_tests.rs"]
 mod surface_navigation_tests;
 
+// Whole-app tests that moved up out of `ui` (docs/module-layers.md, step L13): the dispatcher's
+// bookmark capture, graded with `AppHost`'s own predicate, and the overscan audit over every
+// layer's outermost rects. (`app/mod.rs` may not declare test modules: `check-deps.sh` testmod.)
+#[cfg(test)]
+#[path = "dispatch_return_tests.rs"]
+mod dispatch_return_tests;
+
+#[cfg(test)]
+#[path = "overscan_audit_tests.rs"]
+mod overscan_audit_tests;
+
 #[cfg(test)]
 #[path = "viewstate_directory_policy_tests.rs"]
 mod viewstate_directory_policy_tests;
