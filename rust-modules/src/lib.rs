@@ -13,6 +13,7 @@ mod abr; // client-managed fixed-session HLS controller: estimate, propose, prim
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
+mod b64; // standard base64 encode/decode, a leaf (keymanager sealed blobs, spki pin strings)
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod checkpoint; // the transport-neutral "may I keep waiting?" seam every blocking media wait consults
