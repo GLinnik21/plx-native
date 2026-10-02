@@ -1,7 +1,7 @@
 //! `theme` — the single palette for the whole UI, in TWO LAYERS.
 //!
 //! **Primitives** (private, at the top of this file) are the palette itself: the only place a colour
-//! CODE is written down. **Roles** (`pub`, everything after them) are the JOBS — [`TEXT_PRIMARY`],
+//! CODE is written down, but for the two stops the renderer paints with, which `gfx::tokens` holds. **Roles** (`pub`, everything after them) are the JOBS — [`TEXT_PRIMARY`],
 //! [`ACCENT`], [`HAIRLINE`] — and every role resolves to a primitive, never to a fresh literal. A
 //! screen may only ever name a role; that is the other end of `ui/CLAUDE.md`'s "never write a raw
 //! colour literal" rule. The design project mirrors this split exactly (`tokens/primitives.css` +

@@ -20,11 +20,12 @@
 //!    default set at all**, so a release build cannot acquire it by forgetting a flag. Without the
 //!    feature every entry point below is a compile-time no-op: no ring, no allocation, no key arm,
 //!    no config read, no socket, no thread.
-//! 2. **Call sites carry no `#[cfg]`.** `lib.rs`'s log tap, `app.rs`'s key ladder,
-//!    `ui::consts::is_bound` and the two menus all call plain functions that fold away. That is
-//!    `crate::dev`'s shape and it is deliberate: hand-written `#[cfg]` PAIRS at call sites are the
-//!    one hazard `.claude/hooks/release-config-check.py` exists for, and the gating lives in ONE
-//!    file instead of eight.
+//! 2. **Call sites carry no `#[cfg]`.** The event log's tap, `app.rs`'s key ladder,
+//!    `ui::consts::is_bound` and the two menus all call plain functions that fold away (`labcfg`'s
+//!    two answers, for `ui/`, `appkit/` and `screens/`). That is `crate::devtrig`'s shape and it is
+//!    deliberate: hand-written `#[cfg]` PAIRS at call sites are the one hazard
+//!    `.claude/hooks/release-config-check.py` exists for, and the gating lives in two files
+//!    (`lab/mod.rs`, `labcfg/mod.rs`) instead of eight.
 //! 3. **Nothing enters the payload that is not already allowed on a photograph.** The envelope is
 //!    built from `Diag`, `webos::Info` and `devcaps::Caps` — numbers, bools, enums and short
 //!    platform strings — under the same no-URL / no-credential / no-identity rule `app::diagnostics`

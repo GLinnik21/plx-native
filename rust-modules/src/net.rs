@@ -1364,7 +1364,6 @@ fn request_tls_evidence(
     if resolve.is_none() && refuse_name(origin::url_host(url), t.connect_s) {
         return Err(RequestError::Transport.into());
     }
-    let ua = user_agent_c().map_err(|_| RequestError::Transport)?;
     let verified_https = peer_pin_wanted(url, &tls, follow_redirects);
     let read_peer_pin = learn_pin && verified_https;
     let tls_c = match tls {
@@ -1383,6 +1382,9 @@ fn request_tls_evidence(
     if !available() {
         return Err(RequestError::Transport.into());
     }
+    // Read only past that gate: boot installs the User-Agent before `global_init` publishes
+    // `CURL_OK` (`app::boot::construct`), so a request that gets this far always finds it.
+    let ua = user_agent_c().map_err(|_| RequestError::Transport)?;
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
     // but only one easy request at a time. The normal installed/existing-callback path never takes
     // this mutex, and curlio remains disabled in the degraded state.

@@ -254,8 +254,8 @@ fn defer(e: schema::DiagEvent) {
     q.push_back(Deferred { event: e, stamp });
 }
 
-/// Drain and replay every deferred sign-in event through the normal gated path. Called from the
-/// consent adapter's `commit_live` right after the new decision is published — a "yes" lets these
+/// Drain and replay every deferred sign-in event through the normal gated path. Called from
+/// `telemetry::transition::commit` right after the new decision is published — a "yes" lets these
 /// through exactly as if consent had already been answered when they first happened; a "no" hits
 /// the same gate every other event does and is dropped, which is why this drains UNCONDITIONALLY
 /// rather than checking the answer itself: emptying the queue either way is what keeps a refused
@@ -281,7 +281,7 @@ pub(crate) fn deferred_len() -> usize {
 }
 
 /// Drop every deferred sign-in event with no replay. Called on sign-out/delete-local-data
-/// (`forget_live`) so a queued event from the departing account's attempt can never cross into
+/// (`telemetry::transition::forget`) so a queued event from the departing account's attempt can never cross into
 /// the next account's consent decision.
 pub(crate) fn clear_deferred() {
     DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();

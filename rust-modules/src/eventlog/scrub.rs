@@ -1058,7 +1058,8 @@ mod tests {
     ///
     /// **The exception is scoped by FILE, not by receiver name alone** (fixed 2026-09-10, phase 11
     /// review, finding 1). It used to be a bare substring strip applied to every call in the tree —
-    /// but `ui/tile.rs` defines `pub trait Tile { fn title(&self) -> &str; … }`, the library's own
+    /// but the base module `tile` (re-exported as `ui::tile::Tile`) defines
+    /// `pub trait Tile { fn title(&self) -> &str; … }`, the library's own
     /// CONTENT item (implemented for `pms::PmsMovie`), whose idiomatic receiver name is also
     /// `tile`. A future `log(&format!("… {} …", tile.title()))` over a content tile would spell the
     /// exact exempted substring and this gate would stay silent on a real title leak. So [`BANNED`]

@@ -889,10 +889,10 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
 }
 
 /// **A collection hit routes to the collection page, by ratingKey first and by section + tag id
-/// when it has no ratingKey.** `search::CollectionHit::route` builds the registry's
-/// `ContentArg::Collection`, which is this layer's type, so the half of the search store's tests
-/// that grades what it builds lives here. The store's own tests (`search_merge_ranking_tests`)
-/// grade the fields a hit is made of, from the wire row.
+/// when it has no ratingKey.** `search::CollectionHit::route` builds `ContentArg::Collection`
+/// (`stores::content_arg`, re-exported as `registry::ContentArg`); this test grades what it builds.
+/// The store's own tests (`search_merge_ranking_tests`) grade the fields a hit is made of, from the
+/// wire row.
 #[test]
 fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
     use crate::plex::collections::CollectionRef;

@@ -91,7 +91,7 @@ fn root() -> PathBuf {
 ///
 /// This is blocking disk/storage-helper I/O — a genuine round trip on the television. Callers
 /// must run it off the frame thread (`crate::storage_worker`), never inline from a dispatch path;
-/// see `app::adapters::consent::commit_live`.
+/// see `telemetry::transition::commit`.
 pub(crate) fn record(consent: &Consent) -> PersistOutcome {
     #[cfg(test)]
     note_call_thread();
@@ -101,7 +101,7 @@ pub(crate) fn record(consent: &Consent) -> PersistOutcome {
 /// End the account's tenure over consent: a canonical Cleared tombstone, so a later load cannot
 /// resurrect the previous decision from the canonical record or from a reappeared legacy file.
 ///
-/// Blocking, for the same reason as [`record`]; see `app::adapters::consent::forget_live`.
+/// Blocking, for the same reason as [`record`]; see `telemetry::transition::forget`.
 pub(crate) fn forget() -> PersistOutcome {
     #[cfg(test)]
     note_call_thread();

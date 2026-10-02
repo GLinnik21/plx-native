@@ -41,7 +41,8 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    reading copy, and both heroes now draw it at `LABEL` 26 through `ui::hero_synopsis`. (The hero
    META line this parenthetical used to name is `BODY` 28 and always was.) Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare
    `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung, and if no rung fits a
-   genuinely new role, **add a documented rung to `theme.rs`**, don't inline a literal. Exactly two
+   genuinely new role, **add a documented rung to `pub mod size` in `gfx/tokens.rs`** (`theme::size`
+   re-exports it, so call sites still spell `theme::size::X`), don't inline a literal. Exactly two
    carve-outs live outside the scale (the player-HUD display title `HUD_TITLE_SZ` and the subtitle
    caption); both are **named + commented at their call site**, never bare literals — don't add a
    third; new roles go on the scale. `anim.rs` is a dev-diagnostic overlay, not chrome.

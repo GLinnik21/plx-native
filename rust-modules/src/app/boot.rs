@@ -142,6 +142,25 @@ mod seam_order_tests {
             "the eraser must be installed before telemetry loads and before anything can play"
         );
     }
+
+    /// `construct` hands the transport its `User-Agent` before `net::global_init` makes HTTPS
+    /// available. `net` reads it only once a request has passed `available()`, so with this order
+    /// no request can leave without one; the other order sends the first ones bare.
+    #[test]
+    fn the_user_agent_is_installed_before_libcurl_is_made_available() {
+        // The needles are split with `concat!` so this test's own text, which `include_str!`
+        // reads too and which sits above `construct`, can never be what they match.
+        let source = include_str!("boot.rs");
+        let body = source
+            .split_once(concat!("pub(crate) unsafe fn ", "construct("))
+            .expect("construct")
+            .1;
+        let user_agent = body
+            .find(concat!("crate::net::", "set_user_agent("))
+            .expect("construct must install the User-Agent");
+        let init = body.find(concat!("crate::net::", "global_init()")).expect("construct's libcurl init");
+        assert!(user_agent < init, "set_user_agent must come before net::global_init");
+    }
 }
 
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to

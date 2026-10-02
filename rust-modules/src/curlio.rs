@@ -966,7 +966,7 @@ impl CurlSource {
             }
             // TLS verification ON, both halves, by default — the certificate is issued for the
             // `plex.direct` NAME, which is the entire reason an Origin is parsed from a URL and
-            // never rebuilt from an address (`plex/origin.rs`). Turning either of these off would
+            // never rebuilt from an address (`net/origin.rs`). Turning either of these off would
             // make an https URL "work" against the wrong server. Only the key-mode block below
             // may lower `VERIFYPEER`, and only behind a key pin libcurl accepted
             // (`keypin::apply`); `VERIFYHOST` is never lowered.
