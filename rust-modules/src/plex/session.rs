@@ -5827,7 +5827,7 @@ mod server_key_pin_tests {
     }
 
     /// A new or changed key reaches the table when the write `learn_server_key` queued is applied
-    /// (the session projection is the table's only production writer), and a changed key ends key
+    /// (the session projection is the only production source of a key), and a changed key ends key
     /// mode for the host.
     #[test]
     fn learning_a_new_or_changed_key_updates_the_table_and_clears_the_latch() {
