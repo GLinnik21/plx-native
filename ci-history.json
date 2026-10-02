@@ -1,4 +1,4 @@
-{"updated":"2026-10-02T12:45:00Z",
+{"updated":"2026-10-02T12:57:36Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not coll\u2026","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71}},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76}},
@@ -423,5 +423,6 @@
 {"id":36950539916,"at":"2026-10-02T01:21:26Z","sha":"bc4dc8b6a","title":"CI: a module-cycle ratchet that stops the top-level module cycle abso\u2026","jobs":{"macOS simulator build + launch":1134,"Linux simulator build + launch":277,"Windows launcher syntax":17}},
 {"id":36952715323,"at":"2026-10-02T01:48:50Z","sha":"5fb02e981","title":"Move the base64 helper out of keymanager so spki stays off the module\u2026","jobs":{"Linux simulator build + launch":231,"Windows launcher syntax":22,"macOS simulator build + launch":822}},
 {"id":36954631154,"at":"2026-10-02T02:13:32Z","sha":"6ad7e614e","title":"Reach a server by its remembered key when a wrong clock fails its cer\u2026","jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":218,"macOS simulator build + launch":1089}},
-{"id":36956913857,"at":"2026-10-02T02:43:06Z","sha":"70742716a","title":"Simplify the wrong-clock key fallback: one eligibility predicate, no \u2026","jobs":{"Windows launcher syntax":13,"Linux simulator build + launch":304,"macOS simulator build + launch":850}}
+{"id":36956913857,"at":"2026-10-02T02:43:06Z","sha":"70742716a","title":"Simplify the wrong-clock key fallback: one eligibility predicate, no \u2026","jobs":{"Windows launcher syntax":13,"Linux simulator build + launch":304,"macOS simulator build + launch":850}},
+{"id":37007987985,"at":"2026-10-02T12:39:20Z","sha":"2c93bbb87","title":"Tell the viewer when a wrong clock puts a server in key mode: one sys\u2026","jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":212,"macOS simulator build + launch":1037}}
 ]}
