@@ -398,7 +398,7 @@ impl RouteSurface {
             self.push.open = true;
         }
         // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
-        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `screen.rs`).
+        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
         // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
         // Privacy and every other page here — harmless on a POP, where the key IS meant to name
         // whichever page is being returned to and the `remembered` list above already looked up

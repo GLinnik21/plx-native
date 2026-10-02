@@ -1609,12 +1609,9 @@ mod measured_width_tests {
     }
 }
 
-pub(crate) fn fit_line_by<M: crate::ui::machine::Measure + ?Sized>(
-    measure: &M, s: &str, budget: f32, sz: i32, bold: bool,
-) -> Rc<CStr> {
-    CString::new(elide_by(s, budget, false, |text| measure.width_str(text, sz, bold)))
-        .unwrap_or_default().into_boxed_c_str().into()
-}
+// `Measure::fit_line`'s default body and the supplied-metric elision under it are the machine
+// layer's (`ui::machine`), which may not name this module; they stay reachable at these paths.
+pub(crate) use crate::ui::machine::{elide_by, fit_line_by};
 
 #[derive(Default)]
 struct FittedLines {
@@ -1820,42 +1817,6 @@ fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> St
     elide_by(s, budget, cont, measure)
 }
 
-/// The same truncation rule through a supplied metric source (recorded/fixture/native).
-/// Callers cache the result with their render publication; this function owns no cache or font.
-pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) -> f32) -> String {
-    let target = if cont {
-        format!("{s}\u{2026}")
-    } else {
-        s.to_string()
-    };
-    if budget <= 0.0 || measure(&target) <= budget {
-        return target;
-    }
-    // largest char-prefix of `s` whose "prefix…" still fits `budget`
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let cand = chars[..mid]
-            .iter()
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-            + "\u{2026}";
-        if measure(&cand) <= budget {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    chars[..lo]
-        .iter()
-        .collect::<String>()
-        .trim_end()
-        .to_string()
-        + "\u{2026}"
-}
-
 /// [`elide_by`] that cuts from the MIDDLE: the start and the end of `s` survive around one `…`
 /// (the longer half on the start when the kept count is odd), for text whose END matters or has
 /// other text right behind it — a name followed by its sentence's period reads
@@ -1886,16 +1847,7 @@ pub(crate) fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f3
 
 #[cfg(test)]
 mod supplied_elide_tests {
-    #[test]
-    fn supplied_metrics_keep_unicode_boundaries_and_the_existing_zero_budget_rule() {
-        let width = |s: &str| s.chars().count() as f32;
-        assert_eq!(super::elide_by("абвг", 3.0, false, width), "аб…");
-        assert_eq!(super::elide_by("a🙂bc", 3.0, false, width), "a🙂…");
-        assert_eq!(super::elide_by("short", 8.0, false, width), "short");
-        assert_eq!(super::elide_by("short", 0.0, false, width), "short");
-        assert_eq!(super::elide_by("short", 8.0, true, width), "short…");
-    }
-
+    // `elide_by`'s own test is beside it in `ui::machine`; this one grades the middle cut.
     #[test]
     fn middle_elision_keeps_both_ends_within_the_budget() {
         let width = |s: &str| s.chars().count() as f32;

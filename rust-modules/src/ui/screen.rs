@@ -15,121 +15,15 @@ use std::ops::Deref;
 
 use super::frame::{Budget, RenderReport};
 use super::machine::{
-    Chrome, Cx, Effects, EntryId, FocusKey, GroupId, Host, InputEvent, InstanceId, Leave,
-    LogicalState, Machine, PartId, PressId, PressRead, RequestId, ScreenId, StoreOrd, Tick,
-    TimerId,
+    Cx, Effects, EntryId, FocusKey, GroupId, Host, InstanceId, Leave, LogicalState, Machine,
+    PartId, PressRead, Tick,
 };
+// The screen vocabulary the machine runtime itself names (`Host::Arg: ScreenArg`,
+// `Delivery::Screen(ScreenEvent)`, and `Enter`/`FocusTarget`/`By` through the event) is defined
+// in `ui::machine`, below `ui` in the layer graph (docs/module-layers.md, step L4). These paths
+// stay how the containers, the dispatcher and every screen name it.
+pub use super::machine::{By, Enter, FocusTarget, ScreenArg, ScreenEvent};
 use super::{Painter, Rect};
-
-/// Everything a mounted screen can be told (§6.1).
-pub enum ScreenEvent<H: Host> {
-    Mount,
-    /// Frozen request-time memory, delivered before restored Enter for live and remounted bodies.
-    RestoreMemory(H::Memory),
-    Enter(Enter<H::Elem>),
-    Cover,
-    Uncover,
-    WillLeave(Leave),
-    Unmount,
-    Suspend,
-    Resume,
-    Input(InputEvent<H::Elem>),
-    PressHold(PressId),
-    PressCommit(PressId),
-    Activate(H::Elem),
-    Tick(Tick),
-    Timer(TimerId),
-    Async(RequestId, H::Msg),
-    StoreChanged(StoreOrd, u32),
-    FocusMoved {
-        from: Option<FocusKey<H::Elem>>,
-        to: FocusKey<H::Elem>,
-        by: By,
-    },
-    App(H::Msg),
-}
-
-impl<H: Host> ScreenEvent<H> {
-    /// The event's name for a log line or a recording (`life` records, §5.3).
-    pub fn name(&self) -> &'static str {
-        match self {
-            ScreenEvent::Mount => "mount",
-            ScreenEvent::RestoreMemory(_) => "restore_memory",
-            ScreenEvent::Enter(_) => "enter",
-            ScreenEvent::Cover => "cover",
-            ScreenEvent::Uncover => "uncover",
-            ScreenEvent::WillLeave(_) => "will_leave",
-            ScreenEvent::Unmount => "unmount",
-            ScreenEvent::Suspend => "suspend",
-            ScreenEvent::Resume => "resume",
-            ScreenEvent::Input(_) => "input",
-            ScreenEvent::PressHold(_) => "press_hold",
-            ScreenEvent::PressCommit(_) => "press_commit",
-            ScreenEvent::Activate(_) => "activate",
-            ScreenEvent::Tick(_) => "tick",
-            ScreenEvent::Timer(_) => "timer",
-            ScreenEvent::Async(..) => "async",
-            ScreenEvent::StoreChanged(..) => "store_changed",
-            ScreenEvent::FocusMoved { .. } => "focus_moved",
-            ScreenEvent::App(_) => "app",
-        }
-    }
-}
-
-/// Lifecycle entry (§6.1) — distinct from `Seat`, the focus-entry policy.
-#[derive(Clone, Copy, Debug)]
-pub enum Enter<K> {
-    Fresh { focus: FocusTarget<K> },
-    Restored,
-}
-
-/// "Mount with focus on the strip" is expressible.
-///
-/// `ContainerGroup` and `FirstInGroup` name the SAME group and can resolve through the SAME
-/// `Seat::Remembered` policy, yet they must not be interchangeable: only the container mounting a
-/// page knows whether that page has been seen before. A table's `Seat` is a property of the
-/// GROUP — it says how to seat a cursor that lands there by direction, by a `Link`, or by a plain
-/// re-entry within the still-live screen — and rightly stays `Remembered` for all of those. But
-/// `Enter::Fresh` means the screen is being shown for the first time in this visit, and a
-/// remembered cursor cannot belong to a page nobody has looked at yet: every nested Settings page
-/// shares one `EntryId` with its siblings (the surface's own, `RouteSurface::run_inner`) and every
-/// one of their tables shares `GroupId(0)`, so `Seat::Remembered`'s `(EntryId, GroupId)` key is
-/// literally the SAME key across a push from Root into Legal — pushing OK on Settings' second row
-/// then had Legal open already seated on ITS second row, because `seat_in`'s remembered arm read
-/// the outgoing page's cursor back for the incoming one. `FirstInGroup` is the container's way to
-/// say "ignore whatever is remembered here, this is new" without weakening `Seat::Remembered` for
-/// every ordinary re-entry that still needs it (`ui/focus.rs`'s `enter`, the `FirstInGroup` arm).
-#[derive(Clone, Copy, Debug)]
-pub enum FocusTarget<K> {
-    Elem(FocusKey<K>),
-    /// Seat by the group's own `Seat` policy (`Seat::Remembered` included) — a plain re-entry.
-    ContainerGroup(GroupId),
-    /// Seat at the group's first selectable element, ignoring any remembered cursor for it — a
-    /// page being shown for the first time in this visit, where a remembered cursor cannot be
-    /// ITS memory however the `(EntryId, GroupId)` key happens to compare.
-    FirstInGroup(GroupId),
-    /// The same seat as `FirstInGroup`, reported to `ScreenEvent::FocusMoved` as `By::Dir`
-    /// instead of `By::Restore` — a strip PILL's cover-and-mint (`NavStack`'s `SelectTab`
-    /// arm), never a `Push`/`Root` mint. A tab press always originates FROM the visible strip,
-    /// so the arrival is exactly as deliberate as a directional move into the same group would
-    /// be; reporting `By::Restore` for it read as "the page is being restored to where it was",
-    /// which is false the first time a tab is ever visited, and it silently disabled every
-    /// screen's own "deliberate move" arrival animation (`library::LibraryScreen`'s
-    /// `pop_from_rest`, gated on `By::Dir | By::Pointer`) for that one path only — the reason a
-    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
-    /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
-    /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
-    /// the one constructor; nothing else may produce this variant.
-    FirstInGroupAnimated(GroupId),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum By {
-    Dir,
-    Pointer,
-    Restore,
-    Reconcile,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RenderStrategy {
@@ -354,14 +248,6 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
-}
-
-/// The application's screen argument (§6.1).
-pub trait ScreenArg: Clone + LogicalState + 'static {
-    fn chrome(&self) -> Chrome;
-    fn id(&self) -> ScreenId;
-    fn title(&self) -> Option<&str>;
-    fn same_instance(&self, other: &Self) -> bool;
 }
 
 /// Return state (§6.1 tier 2): on the `Entry`, captured at request time — what an evicted entry

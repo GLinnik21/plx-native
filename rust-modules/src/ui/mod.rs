@@ -2169,3 +2169,30 @@ mod tests {
         let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
     }
 }
+
+#[cfg(test)]
+mod spring_tests {
+    //! `Spring`'s own reports to the present gate. They need `testlock`, which the geometry tests
+    //! above do not (`ui::idle`'s gate state is process-wide).
+    use super::Spring;
+    use crate::ui::idle::{frame_begin, note_present, reset_for_test, should_present};
+
+    /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
+    /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
+    /// The gate's half of this (`note_jump`) is graded in `ui::idle`; this is the guard on the
+    /// `Spring` side of it.
+    #[test]
+    fn spring_jump_reports_only_when_it_changes_something() {
+        let _g = crate::testlock::serial();
+        reset_for_test();
+        let mut s = Spring::at(1.0);
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        s.jump(1.0); // already there
+        assert!(!should_present(10_016));
+
+        frame_begin(1.0 / 60.0);
+        s.jump(2.0); // teleported
+        assert!(should_present(10_032));
+    }
+}

@@ -443,7 +443,7 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     }
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
-    // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
+    // popover sitting on flat grey. See [`page_frozen`] — this is the one refusal that is not a
     // quad and so cannot ride on [`culled`].
     if !frame_clear_allowed() {
         return;
@@ -2690,7 +2690,7 @@ impl FrameCache {
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
     /// [`frame_cache_uv`] is the one orientation rule shared by every future owner.
     ///
-    /// **It lifts [`PAGE_FROZEN`] around its own quad.** This is the one draw in the app that
+    /// **It lifts [`page_frozen`] around its own quad.** This is the one draw in the app that
     /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
     /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
     /// that would show up as a blank screen with no error anywhere.
@@ -4967,46 +4967,11 @@ unsafe fn dither_uniforms(prog: c_uint) -> c_int {
 /// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
-/// **Is the host page being served from [`FrameCache`] rather than rasterized?**
-///
-/// Armed for the length of the page draw underneath an open popover that holds a snapshot, and
-/// LIFTED around the popover's own drawing — [`crate::ui::popover::host`] owns both edges. While it
-/// is on, every primitive in this module refuses its quad, because the pixels it would produce are
-/// already on the framebuffer, one textured quad ago.
-///
-/// **It is a REFUSAL, not a skipped call tree**, and that is what makes it safe to apply to a page
-/// this module knows nothing about: the page's draw code still runs, so its layout is still
-/// measured, its pointer hit rects are still recorded and its poster textures are still uploaded.
-/// Only the FILL is removed — which on this GPU is the whole of the cost. A detail page under an
-/// open track panel measured `draw≈75 ms` per presented frame, entirely in fragments, against a
-/// `drawmask=all` floor of 17 ms.
-///
-/// Main-render-thread only, like every other piece of draw state here.
-static mut PAGE_FROZEN: bool = false;
-
-/// Arm or lift the page freeze, returning the state that was in force.
-///
-/// Callers restore what they were handed rather than storing `false`, so a popover's lift NESTS
-/// inside the page pass instead of ending it — the page draw that follows the popover (another
-/// panel, another scrim) is still frozen.
-#[inline]
-pub(crate) fn set_page_frozen(on: bool) -> bool {
-    unsafe {
-        let was = PAGE_FROZEN;
-        PAGE_FROZEN = on;
-        was
-    }
-}
-
-/// Is the host page frozen right now?
-///
-/// Read by the primitives below, and by [`crate::ui::idle::invalidate`]: a decoration that reports
-/// damage from inside a draw which produced no pixels (a marquee, a spinner) must not keep
-/// re-dirtying the snapshot it is standing in.
-#[inline]
-pub(crate) fn page_frozen() -> bool {
-    unsafe { PAGE_FROZEN }
-}
+// **Is the host page being served from [`FrameCache`] rather than rasterized?** The flag, its doc
+// and its two accessors live in `ui::idle`, the machine layer: `idle::invalidate` has to read it,
+// and this module may name that layer but not the reverse. Every primitive below consults it
+// through these two names exactly as it did when the flag was declared here.
+pub(crate) use crate::ui::idle::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -5073,7 +5038,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 
 /// Should this quad be skipped entirely?
 ///
-/// Two independent reasons. The frozen page ([`PAGE_FROZEN`]) is tested first because it is a
+/// Two independent reasons. The frozen page ([`page_frozen`]) is tested first because it is a
 /// whole-pass state rather than a per-quad geometric one.
 ///
 /// The scissor bounds what a source pass may WRITE, but on a tile-based GPU it does not stop the
@@ -5087,7 +5052,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
 pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
-    if unsafe { PAGE_FROZEN } || crate::ui::frame::backdrop::suppressed() {
+    if page_frozen() || crate::ui::frame::backdrop::suppressed() {
         return true;
     }
     match unsafe { CULL_RECT } {
@@ -5414,7 +5379,7 @@ pub(crate) fn draw_blur_backdrop(
         // would run writes FBOs that `culled` cannot refuse — so it is turned away here, where the
         // whole surface is decided. The popover's own glass never reaches this branch: its draw is
         // wrapped in `popover::host::live`, which lifts the freeze.
-        if PAGE_FROZEN {
+        if page_frozen() {
             return false;
         }
         // DEV: a `drawmask=glass` leg removes the WHOLE surface — chain, composite and the region
@@ -6076,7 +6041,7 @@ fn field_run_finished(run: u32) -> bool {
 ///   gate, and it is why this returns `None` here rather than a photograph of the hole —
 ///   `RouteGround::draw_host` falls back to its corner envelope on exactly this `None` rather than
 ///   latch to black for the life of the ground.
-/// * **While the page is served from [`FrameCache`]** ([`PAGE_FROZEN`]) every primitive in this
+/// * **While the page is served from [`FrameCache`]** ([`page_frozen`]) every primitive in this
 ///   module refuses its quad, the reduction passes included, so the chain would reduce whatever
 ///   was last left in its targets. The pixels on the panel are right; the ones this would read are
 ///   not.
@@ -6089,7 +6054,7 @@ fn field_run_finished(run: u32) -> bool {
 /// never moves, and vertex state is untouched.
 pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
-        if blur_source_pass() || PAGE_FROZEN || masked(Class::Field) {
+        if blur_source_pass() || page_frozen() || masked(Class::Field) {
             return None;
         }
         if video_plane_refuses("gfx::field_kick") {

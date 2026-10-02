@@ -616,7 +616,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
             // "never seen before" — `containers/stack.rs`'s `Self::fresh` currently sends
             // `FirstInGroup(TABLE_GROUP)`, because a fresh mount can reuse a stale `EntryId` and so
             // must not trust that group's remembered cursor (see `Self::fresh`'s own doc and
-            // `FocusTarget`'s doc on `screen.rs`), but `ContainerGroup(TABLE_GROUP)` said the same
+            // `FocusTarget`'s doc on `machine.rs`), but `ContainerGroup(TABLE_GROUP)` said the same
             // thing before that change and this arm accepts either shape for exactly that reason —
             // right for every OTHER mode this screen has (the Settings editor really does want to
             // land on its list), wrong for first run, whose whole point is that the one action pill
@@ -667,7 +667,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                         // `FirstInGroup`, not `ContainerGroup`: this correction is itself firing
                         // inside the handling of an `Enter::Fresh` — "never seen before" — so by
-                        // `FocusTarget`'s own rule (`screen.rs`) a remembered cursor for
+                        // `FocusTarget`'s own rule (`machine.rs`) a remembered cursor for
                         // `BAND_GROUP` cannot be ITS memory either, whichever shape the default
                         // seat arrived as. The `*g != BAND_GROUP` guard above still stops this from
                         // re-firing on its own correction once the second `Enter` already names
@@ -1421,7 +1421,7 @@ mod tests {
     /// here as BOTH `ContainerGroup` (what `NavStack::fresh` sent before `FirstInGroup` existed)
     /// and `FirstInGroup` (what it sends today) — first run answers with a corrective `Enter`
     /// naming the band as `FirstInGroup` (never `ContainerGroup`: the correction is itself firing
-    /// on an `Enter::Fresh`, so by `FocusTarget`'s own rule on `screen.rs` a remembered cursor for
+    /// on an `Enter::Fresh`, so by `FocusTarget`'s own rule on `machine.rs` a remembered cursor for
     /// `BAND_GROUP` cannot be ITS memory either), addressed to `fx.from()`; an `Enter` that already
     /// names the band, in either shape, is left alone (proving the guard that stops this from
     /// re-firing on its own correction); and the Settings editor — which really does want the
