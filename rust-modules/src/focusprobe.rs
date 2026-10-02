@@ -198,7 +198,7 @@ pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Sc
     if last.as_deref() == Some(line.as_str()) {
         return;
     }
-    crate::log(&line);
+    crate::eventlog::log(&line);
     *last = Some(line);
 }
 

@@ -1360,7 +1360,7 @@ impl RootPage {
                 }
                 // OFF is immediate: `grant::record` withdraws the grant NOW, before the
                 // preferences write lands, and records the revocation for this account.
-                crate::log("settings: unencrypted connections turned off for one server");
+                crate::eventlog::log("settings: unencrypted connections turned off for one server");
                 let account = crate::plex::grant::account_key(&self.session_snapshot.account_token);
                 if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
                     self.pending_plaintext = Some((machine, false));

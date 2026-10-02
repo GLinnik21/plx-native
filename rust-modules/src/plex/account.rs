@@ -45,12 +45,12 @@ pub(crate) fn plex_tv() -> &'static str {
     BASE.get_or_init(|| match crate::dev::read("plextv") {
         Some(v) if loopback_http(&v) => {
             #[cfg(feature = "devtriggers")]
-            crate::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
+            crate::eventlog::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
             v.trim_end_matches('/').to_string()
         }
         Some(_) => {
             #[cfg(feature = "devtriggers")]
-            crate::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            crate::eventlog::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
             PLEX_TV.to_string()
         }
         None => PLEX_TV.to_string(),
@@ -972,7 +972,7 @@ fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) ->
         // all, `Eof` a truncated one — and the byte count separates "empty" from "a page of
         // something else". The test below pins the reason, so this is not simplified back to `{e}`.
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "account: {verb} {} -> HTTP {} but the body did not parse: {:?} at line {} col {} ({} bytes)",
                 endpoint_shape(url),
                 resp.status,
@@ -1000,7 +1000,7 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
     // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
     // the shape and the two services share this door — `discover.provider.plex.tv` lines would
     // otherwise read as coming from plex.tv proper.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "account: {verb} {} -> HTTP {}{hint}",
         endpoint_shape(url),
         status

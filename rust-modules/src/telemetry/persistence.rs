@@ -136,7 +136,7 @@ fn cleanup_failure_message(stage: &str, path: &Path, error: &std::io::Error) -> 
 }
 
 fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
-    crate::log(&cleanup_failure_message(stage, path, error));
+    crate::eventlog::log(&cleanup_failure_message(stage, path, error));
 }
 
 /// Sweep telemetry/consent's own legacy candidates once the shared account ClearTenure DB8

@@ -766,7 +766,7 @@ impl SessionAdapter {
             // reports a language it could not reset among its leftovers instead.
             let complete = cleared && (all_local || erasure.preference_failures.is_empty());
             if !complete {
-                crate::log("session: queued clear incomplete; retaining revocation and retrying");
+                crate::eventlog::log("session: queued clear incomplete; retaining revocation and retrying");
             }
             crate::plex::session::revoke_cached_session();
             let mut failures: Vec<String> = if diagnostics {
@@ -831,7 +831,7 @@ impl SessionAdapter {
                 if all_local {
                     let leftovers = super::super::input::delete_all_local_data(meta, worker_failures);
                     if super::super::input::delete_outcome(leftovers.len()).report_leftovers {
-                        crate::log(&format!("privacy: local data erased; {} file(s) could not be removed: {}",
+                        crate::eventlog::log(&format!("privacy: local data erased; {} file(s) could not be removed: {}",
                             leftovers.len(), leftovers.join("; ")));
                     }
                     leftovers.len()
@@ -2409,6 +2409,6 @@ mod tests {
 pub(crate) fn record_plaintext_answer(account: &str, machine_id: &str,
     choice: crate::plex::session::PlaintextChoice) {
     if crate::plex::grant::record(account, machine_id, choice).is_err() {
-        crate::log("session: plaintext answer not saved (storage worker unavailable)");
+        crate::eventlog::log("session: plaintext answer not saved (storage worker unavailable)");
     }
 }

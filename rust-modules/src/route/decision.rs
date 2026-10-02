@@ -4768,7 +4768,7 @@ impl ScrobbleWork {
                     })
                 })
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "timeline stopped t={}s/{}s ok={}",
                 t_ms / 1000,
                 d_ms / 1000,
@@ -4785,7 +4785,7 @@ impl ScrobbleWork {
             let ok = self
                 .client
                 .is_some_and(|c| c.transcode_stop(&self.transcode_session));
-            crate::log(&format!("transcode stopped ok={}", ok as i32));
+            crate::eventlog::log(&format!("transcode stopped ok={}", ok as i32));
         }
     }
 }
@@ -5426,7 +5426,7 @@ pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::log("subtitle size: durable write failed (live value kept for this session)");
+            crate::eventlog::log("subtitle size: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -5459,7 +5459,7 @@ pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::log("subtitle position: durable write failed (live value kept for this session)");
+            crate::eventlog::log("subtitle position: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -8855,7 +8855,7 @@ pub(crate) fn report_timeline(
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
     // already on that line and this runs at 0.1 Hz, so only the silence needs a line of its own.
     if !ok {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "timeline post failed rk={} state={} t={}s",
             report.rating_key,
             report.state.as_str(),

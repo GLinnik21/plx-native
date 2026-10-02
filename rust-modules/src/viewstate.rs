@@ -279,7 +279,7 @@ impl ViewStateState {
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
     // operation to skip and log rather than take to the wrong machine.
     if crate::plex::client_for(sid).is_none() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "viewstate: rk={rk} {} DROPPED — server {} is not registered",
             w.name(),
             sid.raw()
@@ -428,7 +428,7 @@ impl ViewStateState {
         // one PMS write with no line at all, which is what the request-time check above exists to
         // prevent, so it says so here too.
         let Some(c) = crate::plex::client_for(req.sid) else {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
                 req.rk,
                 req.w.name(),
@@ -467,7 +467,7 @@ impl ViewStateState {
             self.retry_cd = RETRY_FRAMES;
             return;
         }
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "viewstate: rk={} {} → server {} (off-thread)",
             req.rk,
             w.name(),
@@ -504,7 +504,7 @@ pub(crate) fn pump_with_gate(
         if exact {
             let r = self.sent.take().expect("the exact in-flight request remains present");
             let done = completion.done;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "viewstate: rk={} {} ok={} others={}",
                 r.rk,
                 r.w.name(),
@@ -527,7 +527,7 @@ pub(crate) fn pump_with_gate(
                 self.want_detail = Some(detail);
             }
         } else {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "viewstate: completion {} ignored — in-flight identity is {}",
                 completion.id.0,
                 self.sent.as_ref().map(|request| request.id.0.to_string())
@@ -700,7 +700,7 @@ fn fan_out(
         // Never a silent no-op. With two sources registered, a title that cannot be identified
         // portably is one whose watch state WILL disagree between them, and this line is the only
         // place that says so.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "viewstate: fanout SKIPPED — rk={rk} on server {} has no guid",
             sid.raw()
         ));
@@ -716,7 +716,7 @@ fn fan_out(
             continue;
         };
         let ok = w.perform(dst, &key);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "viewstate: fanout {guid} {} → server {} rk={key} ok={}",
             w.name(),
             id.raw(),
@@ -768,7 +768,7 @@ fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
                 Some(k) if k.is_empty() => "not held".to_string(),
                 Some(k) => format!("holds {}", k.len()),
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "viewstate: fanout {guid} server {}: {outcome}",
                 id.raw()
             ));

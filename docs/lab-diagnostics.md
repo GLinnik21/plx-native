@@ -28,7 +28,7 @@ normal build.
 
 Five pieces of this feature already exist, and the design is mostly wiring them together.
 
-* **One log sink.** Every diagnostic line in the app goes through `crate::log(&str)` in `lib.rs`,
+* **One log sink.** Every diagnostic line in the app goes through `crate::eventlog::log(&str)`,
   which is also where `redact_tokens` already strips `X-Plex-Token=…`. A ring buffer tapped there
   sees *everything* the app knows and inherits the redaction that is already the shipped policy.
 * **One structured state snapshot, already audited for secrets.** `player::Diag` (`player/mod.rs`,
@@ -171,17 +171,18 @@ by forgetting a flag.
 | `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
 | `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
 | `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
-| `diag/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
+| `eventlog/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
 | `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime. Pure and host-testable. |
-| `diag/scrub.rs` | the **redaction pass** (§6), moved out of `lab/snapshot.rs` on 2026-08-29 when `crate::log` became a second caller. Ungated, so its assertions finally run in the default `make check` — under `lab/` they were skipped by every build that did not set the feature. Two exits: `scrub` may refuse a line, `scrub_local` may only rewrite one. |
+| `eventlog/scrub.rs` | the **redaction pass** (§6), moved out of `lab/snapshot.rs` on 2026-08-29 when the event log (then `crate::log`) became a second caller. Ungated, so its assertions finally run in the default `make check` — under `lab/` they were skipped by every build that did not set the feature. Two exits: `scrub` may refuse a line, `scrub_local` may only rewrite one. |
 | `diag/zlib.rs` | the one-symbol `compress2` table and the gzip envelope (§5) |
 | `lab/upload.rs` | gzip (optional, §5) then one `net::post_pinned`, on a `task::spawn_small` worker. Single-flight: a second BLUE while one is in flight is refused, not queued. |
 
-**The tap** is two lines in `lib.rs::log`, after `redact_tokens`:
+**The tap** is two lines in `eventlog::log`, after `redact_tokens`:
 
 ```rust
-let line = diag::scrub::scrub_local(m);   // was: redact_tokens(m)
-lab::record(&line);                        // a no-op without the feature
+let line = crate::eventlog::scrub::scrub_local(m);   // was: redact_tokens(m)
+#[cfg(feature = "lab-diagnostics")]
+crate::eventlog::ring::record(&line);
 ```
 
 so the ring is a strict subset of what the event log already contains — there is no second logging

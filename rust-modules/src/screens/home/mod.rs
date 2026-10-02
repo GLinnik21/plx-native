@@ -1088,7 +1088,7 @@ impl HomeScreen {
                 self.hero_slide.jump(1.0);
                 if matches!(command, HomeCmd::PinHero(_)) {
                     self.hero_pinned = true;
-                    crate::log(&format!("home: hero pinned at slot {index}"));
+                    crate::eventlog::log(&format!("home: hero pinned at slot {index}"));
                 }
                 fx.invalidate(Provenance::Input);
             }

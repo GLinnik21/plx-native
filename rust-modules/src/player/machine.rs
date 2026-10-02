@@ -94,7 +94,7 @@ impl Player {
         // ONE line per edge, in the event log. The bit decides the present gate, the opaque
         // region, the capture skip and whether a frame may sample the framebuffer at all — and
         // every one of those is invisible from a log that does not say when the plane arrived.
-        crate::log(if bound {
+        crate::eventlog::log(if bound {
             "videoplane: BOUND — the gate presents unconditionally and no frame may snapshot"
         } else {
             "videoplane: unbound — ordinary idle rules from here"

@@ -53,7 +53,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use crate::log;
+use crate::eventlog::log;
 
 /// The listener's port for the app users install. A flavoured install steps off it — see
 /// [`default_port`].

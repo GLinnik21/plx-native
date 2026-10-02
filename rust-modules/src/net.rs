@@ -413,12 +413,12 @@ pub fn global_init() -> bool {
             } else {
                 "no"
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
                  threaded-tls={threaded} legacy-locks={locks:?}"
             ));
             if legacy && !threaded {
-                crate::log(
+                crate::eventlog::log(
                     "net: legacy OpenSSL concurrency unavailable — serialized HTTPS control \
                      remains available; concurrent HTTPS media is disabled",
                 );
@@ -427,14 +427,14 @@ pub fn global_init() -> bool {
             true
         }
         crate::dynlib::Loaded::NoLibrary => {
-            crate::log(
+            crate::eventlog::log(
                 "net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — \
                  account calls and HTTPS PMS control unavailable",
             );
             false
         }
         crate::dynlib::Loaded::Incomplete(soname, n) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "net: {soname} is missing {n} symbol(s) — account calls and HTTPS PMS control unavailable"
             ));
             false
@@ -1157,7 +1157,7 @@ fn request_tls_evidence(
             ($call:expr, $name:literal) => {{
                 let rc = $call;
                 if rc != 0 {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "net: libcurl refused security option {} (rc={rc}); request cancelled",
                         $name
                     ));
@@ -1237,7 +1237,7 @@ fn request_tls_evidence(
             TlsCfg::CaBundle(p) => {
                 let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
                 if rc != 0 {
-                    crate::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
+                    crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
                     return Err(RequestError::Transport.into());
                 }
             }
@@ -1248,7 +1248,7 @@ fn request_tls_evidence(
                     p.as_ptr() as *const c_void,
                 );
                 if rc != 0 {
-                    crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
+                    crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
                     return Err(RequestError::Transport.into());
                 }
                 require_setopt!(
@@ -1337,7 +1337,7 @@ fn request_tls_evidence(
         let info_rc = curl_easy_getinfo_long(easy.0, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
 
         if sink.overflowed {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "net: response exceeded {} byte body limit",
                 max_body.unwrap_or(0)
             ));
@@ -1358,7 +1358,7 @@ fn request_tls_evidence(
                 90 => "certificate pin did not match (stale lab session?)",
                 _ => "transport error",
             }.to_owned());
-            crate::log(&format!("net: curl rc={rc} — {why}"));
+            crate::eventlog::log(&format!("net: curl rc={rc} — {why}"));
         }
         let peer_pin = if read_peer_pin && rc == 0 { peer_leaf_pin(easy.0) } else { None };
         finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
@@ -1587,8 +1587,8 @@ pub(crate) fn post_ca(url: &str, headers: &[String], body: &[u8], t: Timeouts) -
     // between sends, and a line per upload would drown the log it is written into.
     static SAID: std::sync::Once = std::sync::Once::new();
     SAID.call_once(|| match &bundle {
-        Some(p) => crate::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
-        None => crate::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
+        Some(p) => crate::eventlog::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
+        None => crate::eventlog::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
     });
     let tls = match bundle.as_deref() {
         Some(p) => Tls::CaBundle(p),
@@ -1652,10 +1652,10 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
     if nw.slow {
         std::thread::sleep(std::time::Duration::from_secs(connect_s.max(0) as u64));
     }
-    // `host=`, not a bare `{host}` interpolation, so `diag::scrub::scrub_local`'s host clause
+    // `host=`, not a bare `{host}` interpolation, so `eventlog::scrub::scrub_local`'s host clause
     // catches it — a private hostname reaching this line unredacted is the exact device leak
     // `stream.rs`'s DNS-failure line had.
-    crate::log(&format!("net: nowan — refused name host={host}"));
+    crate::eventlog::log(&format!("net: nowan — refused name host={host}"));
     true
 }
 
@@ -1727,14 +1727,14 @@ pub(crate) mod resolve {
             static REPORTED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !REPORTED.swap(true, Ordering::Relaxed) {
-                crate::log(
+                crate::eventlog::log(
                     "net: resolve pin not applied (rc=48, this libcurl has no CURLOPT_RESOLVE); \
                      names resolve through DNS",
                 );
             }
             return if crate::dev::no_wan().is_some() { Err(()) } else { Ok(()) };
         }
-        crate::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
+        crate::eventlog::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
         Err(())
     }
 

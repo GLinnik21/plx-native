@@ -39,7 +39,8 @@ ALLOW_HEADER = """\
 # `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
 # crate can be split along ci/module-layers.ini; the plan step says how. It only shrinks: a fixed
 # entry fails the gate as stale until removed (`ci/check-module-layers.py --prune` does that), and
-# a new upward reference fails it until the code is fixed — not until a line is added here.
+# a new upward reference fails it until the code is fixed — not until a line is added here. The one
+# re-keying allowed: a renamed or split file takes its entries to its new path in the same diff.
 """
 
 
@@ -183,14 +184,21 @@ def main(argv=None):
     declared, allow, malformed = read_allowlist(args.allow)
 
     if args.cycles:
+        # Nodes are the config's members — the units the split moves — so `diag::scrub` and the
+        # rest of `diag` are two nodes, not one. An unplaced module stands for itself.
+        def unit(module):
+            member = layers.member_of(module)
+            return module_graph.name(member if member is not None else module[:1])
         for include_test in (False, True):
-            graph = module_graph.module_edges(crate, 1, include_test)
             adjacency, nodes = collections.defaultdict(set), set()
-            for a, b in graph:
-                adjacency[a].add(b); nodes |= {a, b}
+            for ref in crate.refs:
+                if ref.test and not include_test: continue
+                a, b = unit(ref.source), unit(ref.target)
+                nodes |= {a, b}
+                if a != b: adjacency[a].add(b)
             cycles = [c for c in module_graph.sccs(nodes, adjacency) if len(c) > 1]
             label = 'with cfg(test)' if include_test else 'production'
-            print(f'{label}: ' + ('; '.join(f'{len(c)} modules: {" ".join(c)}' for c in cycles) or 'acyclic'))
+            print(f'{label}: ' + ('; '.join(f'{len(c)} of {len(nodes)} units: {" ".join(c)}' for c in cycles) or 'acyclic'))
         return 0
     if args.report:
         report(crate, layers, found, allow)
@@ -210,7 +218,8 @@ def main(argv=None):
             errors.append(f'{file} names {member} ([{target}]), which [{source}] may not use: {describe(refs)}')
     for key in sorted(set(allow) - set(found)):
         errors.append(f'stale allowlist entry {key[0]}\t{key[1]} — it no longer names that layer; '
-                      f'remove it (ci/check-module-layers.py --prune)')
+                      f'remove it (ci/check-module-layers.py --prune), or, if the file was renamed or '
+                      f'split, move the entry to the new path')
     if declared != len(allow) + len(malformed):
         errors.append(f'{args.allow.name} declares count {declared} but has {len(allow) + len(malformed)} entries')
 

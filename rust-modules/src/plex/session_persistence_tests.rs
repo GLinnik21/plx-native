@@ -284,8 +284,8 @@ fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
 /// the jail the 2026-09-20 field report came from, and the one case where "why did the durable
 /// ones refuse" is the whole question worth answering.
 ///
-/// This suite has no facility to capture `crate::log`'s own output (it goes to a shared, on-disk
-/// event log via `scrub_local` and `lab::record`; building a capture for that under time pressure
+/// This suite has no facility to capture `crate::eventlog::log`'s own output (it goes to a shared, on-disk
+/// event log via `scrub_local` and `eventlog::ring::record`; building a capture for that under time pressure
 /// is out of scope here). Instead this proves what has to be true for the fixed call to say
 /// anything real: replaying `write_atomic_diagnosed` against the same two candidates the real loop
 /// tries (and is refused by) first shows each produces a genuine, non-empty [`CandidateDiagnostic`]

@@ -258,7 +258,7 @@ pub struct ReadyCreds {
 }
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
-use crate::log;
+use crate::eventlog::log;
 
 /// Does restarting this flow begin a NEW sign-in attempt, as the diagnostics count them?
 ///
@@ -713,7 +713,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
 fn retire_grant_on_https(machine_id: &str, origin: &Origin) {
     if origin.is_tls() && crate::plex::grant::granted_origin(machine_id).is_some() {
         crate::plex::grant::revoke(machine_id);
-        crate::log("security: server verified over HTTPS — plaintext upgrade complete");
+        crate::eventlog::log("security: server verified over HTTPS — plaintext upgrade complete");
     }
 }
 

@@ -1217,7 +1217,7 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
     let _ca = TestCaGuard::install(&cert.pem, "expired-leaf");
     let port = crate::net::spawn_dual_protocol(std::sync::Arc::clone(&cert), identity_json("expired"));
 
-    let log = crate::events_log();
+    let log = crate::eventlog::events_log();
     let before = std::fs::metadata(&log).map_or(0, |m| m.len());
     let out = crate::net::request_result_evidence(
         &format!("https://127.0.0.1:{port}/identity"),

@@ -977,8 +977,8 @@ pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, p
 }
 
 /// Builds the "stream: <origin> path=<path>" diagnostic line for the freshly opened
-/// transcode/direct-stream URL. `crate::log()` runs every line through
-/// `diag::scrub::scrub_local()`, which already redacts `X-Plex-Token=` (and other
+/// transcode/direct-stream URL. `crate::eventlog::log()` runs every line through
+/// `eventlog::scrub::scrub_local()`, which already redacts `X-Plex-Token=` (and other
 /// credential query params) by value only, stopping at the next `&` — so the token,
 /// which `Client::with_token` always appends last, never reaches the log. Truncating
 /// `path` here on top of that is redundant, and for a burn transcode URL it cuts the
@@ -1268,7 +1268,7 @@ fn start_bufferfeed_inner(
                                                       // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
                                                       // behind it fails validation however well the packets flow (`plex/origin.rs`).
         if !crate::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
-            crate::log("stream: refused insecure credential transport");
+            crate::eventlog::log("stream: refused insecure credential transport");
             return Err(crate::route::RouteStartResult::StartFailed);
         }
         let path = su.path;
@@ -3239,7 +3239,7 @@ mod stream_open_log_line_tests {
         );
     }
 
-    /// The un-truncated path still passes through `crate::log`'s `scrub_local` pass, which is
+    /// The un-truncated path still passes through `crate::eventlog::log`'s `scrub_local` pass, which is
     /// the ONLY place a token may be redacted — so leaving the full path in is safe precisely
     /// because `Client::with_token` always appends `X-Plex-Token=` last and `scrub_local` already
     /// redacts it by value. This is the end-to-end check that removing the truncation did not
@@ -3248,7 +3248,7 @@ mod stream_open_log_line_tests {
     fn full_path_still_has_its_token_redacted_by_the_existing_scrub_pass() {
         let path = format!("{}&X-Plex-Token=aBcD1234xyzQ", burn_path());
         let line = stream_open_log_line("plex.direct:32400", &path);
-        let scrubbed = crate::diag::scrub::scrub_local(&line);
+        let scrubbed = crate::eventlog::scrub::scrub_local(&line);
         assert!(
             !scrubbed.contains("aBcD1234xyzQ"),
             "token leaked into the event log: {scrubbed}"

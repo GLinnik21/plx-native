@@ -972,7 +972,7 @@ fn pump_with_optional_directory(
         if state.settle_us >= SETTLE_US_TARGET {
             state.armed = false;
             if let Some(q) = terms(state.query()) {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "search: q[{}ch] settled, asking {} source(s)",
                     q.chars().count(),
                     nsrc()
@@ -1017,7 +1017,7 @@ fn pump_with_optional_directory(
     let new_state = state_from_refs(&sources, asking);
     let moved = new_state != state.state;
     if moved {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "search: q[{}ch] state={}",
             state.query().trim().chars().count(),
             new_state.name()
@@ -1045,7 +1045,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
         None if state.src[i].status == Status::Answered => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "search: q[{qlen}ch] sid={i} late failure ignored — already answered"
             ));
         }
@@ -1053,7 +1053,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             let s = &mut state.src[i];
             s.status = Status::Failed;
             s.retry_cd = RETRY_FRAMES;
-            crate::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
+            crate::eventlog::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
         }
         Some(items) => {
             let counts: Vec<String> = KINDS
@@ -1061,7 +1061,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
                 .enumerate()
                 .map(|(k, kind)| format!("{}={}", kind.hubs()[0], items[k].len()))
                 .collect();
-            crate::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
+            crate::eventlog::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`.
@@ -1084,7 +1084,7 @@ fn rebuild(state: &mut SearchState) {
     let sources = live_sources(state, &live);
     let shelves = merge_refs(&sources, &favs(state));
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "search: q[{}ch] shelves={} items={}",
         state.query().trim().chars().count(),
         shelves.len(),
@@ -1237,7 +1237,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
     adapter.fetch[i].claim();
-    crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
+    crate::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::task::spawn_small("search", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE

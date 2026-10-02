@@ -198,13 +198,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
             Ok(results) => results,
             Err(reason) => {
-                crate::log(&format!("replay: REFUSED — {reason}"));
+                crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
                 app.running = false;
                 break;
             }
         };
         let tick = crate::ui::machine::Tick { ms: fr.now, dt_us: (fr.dt * 1_000_000.0) as u32 };
-        if first_controlled_frame { crate::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
+        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
             tick.dt_us, app.pages.nav.tabs.stack.transition.commit_point(),
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.prepare_resources(&mut app.bridge);
@@ -234,11 +234,11 @@ pub(crate) unsafe fn run(app: &mut App) {
             std::mem::take(&mut app.inputs),
             &mut app.rec,
         ) };
-        if first_controlled_frame { crate::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
+        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.resource_requests(app.bridge.take_resource_requests());
         if let Some(reason) = app.rec.failure().or_else(|| app.bridge.controlled_failure()) {
-            crate::log(&format!("replay: REFUSED — {reason}"));
+            crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
             app.running = false;
             break;
         }
@@ -287,7 +287,7 @@ pub(crate) unsafe fn run(app: &mut App) {
 /// a bare units-per-second.
 fn clock_and_press(app: &mut App, fr: &mut Frame) {
     if app.boot_initial.is_some() && app.prev == 0 {
-        crate::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
+        crate::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
     }
     fr.dt = {
         let mut d = if app.prev != 0 {

@@ -186,7 +186,7 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
         return;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — handled playback error was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — handled playback error was not queued");
         return;
     };
     let body = event_body(
@@ -206,7 +206,7 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
     match super::spool::append_if(&record, super::consent::allows_errors) {
         Some(true) => super::flush_soon(),
         Some(false) => {
-            crate::log("telemetry: handled playback error did not fit the durable spool")
+            crate::eventlog::log("telemetry: handled playback error did not fit the durable spool")
         }
         None => {} // consent changed while the event was being shaped
     }

@@ -1059,7 +1059,7 @@ fn register_lazy(
     // same server (every profile switch) stays byte-identical to what it always logged.
     let pinned = pin.is_some_and(crate::net::resolve::add);
     // The NOTE names the family and nothing else. The pin's host is a dashed LAN address and its
-    // `addr` is that address again: `crate::log`'s scrubber rewrites a bare address but has no
+    // `addr` is that address again: `crate::eventlog::log`'s scrubber rewrites a bare address but has no
     // rule for a `192-168-0-10.<hash>.plex.direct` label, so printing either would put the
     // household's LAN layout into the file users paste into issues.
     let pin_note = match pin {
@@ -1114,7 +1114,7 @@ fn register_lazy(
             // still comparable with a current one — and the whole URL the moment the scheme is
             // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
             // can be told from an http one at all. See `Origin::log_form`.
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "plex: server slot {} re-pointed to {}{pin_note}",
                 id.0,
                 origin.log_form()
@@ -1162,7 +1162,7 @@ fn register_lazy(
     if n >= MAX_SERVERS {
         // The sentinel, not `current()` — see this function's doc for what the old answer did to
         // the caller's `describe_server` one line later.
-        crate::log("plex: server registry full — this server was NOT registered");
+        crate::eventlog::log("plex: server registry full — this server was NOT registered");
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
@@ -1184,7 +1184,7 @@ fn register_lazy(
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "plex: server slot {} registered at {}{pin_note}",
         id.0,
         origin.log_form()
@@ -1243,7 +1243,7 @@ pub(crate) fn revoke_for_profile_switch() {
         CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
     }
     if !live.is_empty() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "plex: {} server(s) revoked — profile changed",
             live.len()
         ));
@@ -1287,7 +1287,7 @@ pub(crate) fn finish_roster_refresh(installed: &[ServerId]) {
     }
     commit_installed_roster(installed);
     if !dropped.is_empty() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "plex: {} server(s) retired — no longer granted",
             dropped.len()
         ));
@@ -1388,7 +1388,7 @@ pub(crate) fn revoke_all() {
     FLOOR.store(n, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "plex: {} server(s) revoked — signed out",
             n - floor
         ));
@@ -1428,7 +1428,7 @@ pub(crate) fn regrade_credentials() {
         regraded += 1;
     }
     if regraded > 0 {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "plex: {regraded} server(s) lost their plaintext credential — the grant ended"
         ));
         crate::ui::idle::invalidate();

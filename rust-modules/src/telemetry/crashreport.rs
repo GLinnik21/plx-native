@@ -905,7 +905,7 @@ fn recover_pending_at(path: &std::path::Path) {
     let (snapshot, readable) = match read_snapshot(path) {
         Ok(s) => (s, true),
         Err(e) => {
-            crate::log(&format!("telemetry: crash log not imported: {:?}", e.kind()));
+            crate::eventlog::log(&format!("telemetry: crash log not imported: {:?}", e.kind()));
             (Snapshot::default(), false)
         }
     };
@@ -994,7 +994,7 @@ fn recover_pending_at(path: &std::path::Path) {
     let native_wins = plan.report_native.iter().filter(|n| n.is_some()).count();
     let panic_wins = plan.native_panic.iter().filter(|p| p.is_some()).count();
     if !reports.is_empty() || !natives.is_empty() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: crash log had {} report(s), queued {}, native envelopes {}, native_wins={native_wins}, panic_wins={panic_wins}, symbols={}",
             reports.len(),
             io.queued,
@@ -1017,7 +1017,7 @@ pub(crate) fn discard_pending_before_opt_in() -> bool {
     match cutoff_mark(&log_path()) {
         Ok(mark) => write_mark(&mark),
         Err(e) => {
-            crate::log(&format!("telemetry: crash log cutoff not taken: {:?}", e.kind()));
+            crate::eventlog::log(&format!("telemetry: crash log cutoff not taken: {:?}", e.kind()));
             false
         }
     }
@@ -1044,7 +1044,7 @@ fn resume_from(snapshot: &Snapshot, mark: Option<&Mark>) -> usize {
         || offset > snapshot.bytes.len()
         || Some(prefix_hash(&snapshot.bytes[..offset])) != mark.prefix_hash
     {
-        crate::log("telemetry: crash log is not the one the watermark measured — reading it from the start");
+        crate::eventlog::log("telemetry: crash log is not the one the watermark measured — reading it from the start");
         return 0;
     }
     offset
@@ -1068,7 +1068,7 @@ fn write_mark(mark: &Mark) -> bool {
         // Loud, because the consequence is re-reporting the same crash on every boot until it
         // succeeds — bounded by the deterministic `event_id`, which Sentry dedupes, but still a
         // request per launch that says nothing new.
-        crate::log("telemetry: could not persist the crash watermark to ANY candidate path");
+        crate::eventlog::log("telemetry: could not persist the crash watermark to ANY candidate path");
     }
     stored
 }

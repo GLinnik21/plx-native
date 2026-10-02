@@ -262,7 +262,7 @@ pub(crate) fn arm_gst_logging() {
     std::env::set_var("GST_DEBUG_FILE", &log);
     std::env::set_var("GST_DEBUG_FILE_OVERWRITE", "enable");
     std::env::set_var("GST_DEBUG_NO_COLOR", "1");
-    crate::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
+    crate::eventlog::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_gst_logging() {}
@@ -297,7 +297,7 @@ pub(crate) fn arm_wayland_debug() {
         ts.tv_sec as i64 * 1_000_000 + ts.tv_nsec as i64 / 1000
     };
     let (real, mono) = (stamp(libc::CLOCK_REALTIME), stamp(libc::CLOCK_MONOTONIC));
-    crate::log(&format!("wldebug: WAYLAND_DEBUG=client realtime_us={real} mono_us={mono} offset_us={}", real - mono));
+    crate::eventlog::log(&format!("wldebug: WAYLAND_DEBUG=client realtime_us={real} mono_us={mono} offset_us={}", real - mono));
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_wayland_debug() {}
@@ -459,12 +459,12 @@ pub(crate) fn crash_on_purpose() {
         extern "C" fn callback() {
             panic!("crashtest: deliberate panic");
         }
-        crate::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
+        crate::eventlog::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
         callback();
         return;
     }
     if kind == "unwind" {
-        crate::log(
+        crate::eventlog::log(
             "crashtest: DELIBERATE crash, kind=unwind (unwinds plex_run to its extern \"C\" boundary)",
         );
         panic!("crashtest: deliberate unwinding panic");
@@ -478,14 +478,14 @@ pub(crate) fn crash_on_purpose() {
         "ill" => 4,
         "trap" => 5,
         other => {
-            crate::log(&format!("crashtest: unknown kind {other:?} — not crashing"));
+            crate::eventlog::log(&format!("crashtest: unknown kind {other:?} — not crashing"));
             return;
         }
     };
-    // Logged BEFORE the fault, and flushed by `crate::log`'s own O_APPEND write, so the event log
+    // Logged BEFORE the fault, and flushed by `crate::eventlog::log`'s own O_APPEND write, so the event log
     // says the death was deliberate. Without this line a deliberate crash is indistinguishable
     // from the real one somebody is hunting.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "crashtest: DELIBERATE crash, kind={kind} signal={sig}"
     ));
     if sig == 11 {
@@ -512,7 +512,7 @@ pub(crate) fn softfloat_probe() {
     }
     let host = crate::ui::motion::DIFFERENTIAL_HASH_HOST;
     let here = crate::ui::motion::differential_hash();
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "softfloat: n={} hash={here:#018x} host={host:#018x} {}",
         crate::ui::motion::DIFFERENTIAL_N,
         if here == host { "MATCH" } else { "DIVERGE" }
@@ -522,7 +522,7 @@ pub(crate) fn softfloat_probe() {
     let body: String = t.iter().map(|w| format!("{w:08x}\n")).collect();
     let path = crate::paths::runtime_dir().join("plxnative-softfloat.tbl");
     if let Err(e) = std::fs::write(&path, body) {
-        crate::log(&format!("softfloat: table write failed: {e}"));
+        crate::eventlog::log(&format!("softfloat: table write failed: {e}"));
     }
 }
 #[cfg(not(feature = "devtriggers"))]

@@ -1343,7 +1343,7 @@ pub(crate) unsafe fn construct(
     if app.scenarios.dev.nobudget {
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
         #[cfg(feature = "devtriggers")]
-        crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
+        crate::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");

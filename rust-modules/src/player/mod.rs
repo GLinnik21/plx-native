@@ -94,7 +94,7 @@ pub(crate) fn seed_dev_track_names() {
     let (a, sub) = spec.split_once(';').unwrap_or(("", spec));
     let (audio, subs) = (list(a), list(sub));
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "player: DEV track names seeded (a={} s={}) — /tmp/plxnative-tracknames",
         audio.len(),
         subs.len()
@@ -2003,7 +2003,7 @@ fn sub_text(payload: &[u8]) -> String {
     out.trim().to_string()
 }
 
-pub(crate) use crate::log; // event-log sink (crate-wide single copy in lib.rs)
+pub(crate) use crate::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
 fn find(h: &[u8], n: &[u8]) -> bool {
     !n.is_empty() && h.windows(n.len()).any(|w| w == n)

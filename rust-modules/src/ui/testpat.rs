@@ -217,11 +217,11 @@ pub(crate) fn set(spec: &str) -> bool {
 pub(crate) fn boot() {
     if let Some(v) = crate::dev::read("testpat") {
         if !set(&v) {
-            crate::log(&format!("testpat: unrecognised spec {v:?} — ignored"));
+            crate::eventlog::log(&format!("testpat: unrecognised spec {v:?} — ignored"));
         }
     }
     if let Some(p) = unsafe { *addr_of!(CURRENT) } {
-        crate::log(&format!("testpat: armed — {}", describe(p)));
+        crate::eventlog::log(&format!("testpat: armed — {}", describe(p)));
     }
 }
 

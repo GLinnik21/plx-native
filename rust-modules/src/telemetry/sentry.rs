@@ -746,7 +746,7 @@ mod tests {
     ///
     /// **It never prints the DSN**, on any path — a test failure message goes into a terminal, a
     /// transcript and sometimes an issue. The assertions are shaped to say what is wrong without
-    /// quoting what was read, which is the same rule `diag::scrub`'s tests follow.
+    /// quoting what was read, which is the same rule `eventlog::scrub`'s tests follow.
     #[test]
     fn the_configured_dsn_parses_and_is_eu() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

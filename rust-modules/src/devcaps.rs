@@ -309,7 +309,7 @@ pub(crate) fn probe() {
         Ok(s) => match parse(&s) {
             Some(c) => {
                 measured = true;
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "devcaps: hevc={} {}x{} vp9={} audio={} rows: h264={}x{}@{} hevc={}x{}@{} (device table)",
                     c.hevc,
                     c.hevc_max.0,
@@ -326,14 +326,14 @@ pub(crate) fn probe() {
                 c
             }
             None => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "devcaps: {CAPS_TABLE} unparseable — assuming the 49SM9000PLA profile"
                 ));
                 Caps::assumed()
             }
         },
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "devcaps: {CAPS_TABLE} unreadable ({e}) — assuming the 49SM9000PLA profile"
             ));
             Caps::assumed()

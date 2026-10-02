@@ -5645,12 +5645,12 @@ impl PersonOwnerGateFixture {
 
     def test_tmppath_gate_exempts_a_log_message_mention(self):
         """D4's own exemption: a `/tmp/plxnative-` literal that is only message text passed to
-        `log`/`crate::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
+        `log`/`crate::eventlog::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
         `format!` the way most real call sites spell it, must leave `tmppath` (and the whole
         script) green."""
         r = self._plant(
             "_check_deps_selftest_tmppath_log.rs",
-            'pub fn mention_it(n: u32) {\n    crate::log(&format!(\n'
+            'pub fn mention_it(n: u32) {\n    crate::eventlog::log(&format!(\n'
             '        "selftest: see /tmp/plxnative-selftest ({n})"\n    ));\n}\n',
         )
         out = r.stdout + r.stderr
@@ -5772,8 +5772,9 @@ impl PersonOwnerGateFixture {
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
         # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
-        # upward references that existed when the target crate graph was declared, 2026-10-02.
-        "layers.txt": 231,
+        # upward references that existed when the target crate graph was declared, 2026-10-02 (231),
+        # less step L1's 72, which moved the event log out of lib.rs in the same change.
+        "layers.txt": 159,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,

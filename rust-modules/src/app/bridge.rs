@@ -263,7 +263,7 @@ impl ConsentMachine {
             (usage, next.usage, "usage analytics"),
         ] {
             if asked && !got {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "consent: no /dev/urandom — refusing {channel} rather than inventing an identifier"
                 ));
             }
@@ -1350,7 +1350,7 @@ impl Rig<AppHost> for Bridge {
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
             if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
-                crate::log(&line);
+                crate::eventlog::log(&line);
             }
             return handled;
         }
@@ -1364,7 +1364,7 @@ impl Rig<AppHost> for Bridge {
             return Handled::No;
         };
         if StoreId::from_ord(ord) != Some(store) {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stores: a {} event was addressed to store ordinal {} — dropped",
                 store.name(),
                 ord.0
@@ -1476,7 +1476,7 @@ impl Rig<AppHost> for Bridge {
         self.app_effect(from, fx, out);
     }
     fn log(&mut self, line: &str) {
-        crate::log(line);
+        crate::eventlog::log(line);
     }
     fn system_keyboard(&mut self, up: bool) {
         #[cfg(test)]
@@ -2557,12 +2557,12 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
         if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
-            crate::log("login: server installed — asking which sources feed Home");
+            crate::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
             nav_root_if_unsettled(pages, AppArg::Onboard);
         } else {
-            crate::log("login: server installed — entering Home");
+            crate::eventlog::log("login: server installed — entering Home");
             nav_root_if_unsettled(pages, AppArg::Home);
         }
     } else if bridge.auth_read().0.persistence_warning.is_some() {

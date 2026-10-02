@@ -861,7 +861,7 @@ fn seed_dev_profile(p: &mut Person) {
     }
     p.profiled = true;
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "person: DEV bio seeded ({}B) — /tmp/plxnative-personbio",
         p.bio.len()
     ));
@@ -1131,7 +1131,7 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
     // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still
     // have shipped in the bytes regardless of whether the branch ever ran.
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
         p.credits.len(),
         held.len()
@@ -1206,7 +1206,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             p.birthplace = prof.birth_place;
             p.profiled = true;
             p.profile_tried = true;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: profile guid={} roles='{}' born={} died={} bio={}B",
                 p.guid,
                 p.roles.join(", "),
@@ -1227,7 +1227,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             }
             // The SLOT, never the handle or the address: a plex.tv username is the friend's, and
             // the event log is what users send us.
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: source {} resolve '{}' -> {}",
                 sid.raw(),
                 p.name,
@@ -1248,7 +1248,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             };
             {
                 let s = &mut p.srcs[si];
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "person: source {} '{}' movies={}/{} shows={}/{} joinable={}",
                     sid.raw(),
                     p.name,
@@ -1272,7 +1272,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             true
         }
         Landing::Credits(Some(groups)) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: credits guid={} groups={} rows={}",
                 p.guid,
                 groups.len(),

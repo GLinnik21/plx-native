@@ -921,15 +921,15 @@ else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared 
 # treating a `//` inside a string as one; (2) tracks whether each character is inside a `"…"`
 # string literal, honouring `\"` so an escaped quote does not end it early; (3) as it goes,
 # maintains a stack of the CALL NAME behind every currently-open, not-yet-closed `(` (the token
-# immediately before it) — which is what lets a match inside `crate::log(&format!("…"))` see BOTH
-# enclosing calls, `format!` innermost and `crate::log` beneath it, across as many lines as the
+# immediately before it) — which is what lets a match inside `crate::eventlog::log(&format!("…"))`
+# see BOTH enclosing calls, `format!` innermost and the log call beneath it, across as many lines as the
 # call spans. A hit is a `/tmp/plxnative-` match that is NOT inside a string, or is inside one but
-# no enclosing call on that stack is `log`/`crate::log`/`log!` — i.e. exactly the two exemptions
+# no enclosing call on that stack is `log`/`crate::eventlog::log`/`log!` — i.e. exactly the two exemptions
 # D4 names, comment and log-message text, and nothing else (a bare `let s = "/tmp/plxnative-x";`
 # with no log() around it is a hit, deliberately, even though it opens nothing — the spec's own
 # wording is "any literal…unless", not "any literal that is also an open"). `dev.rs` is the one
 # structural exemption; a second category ("the log sinks") is named in the spec but resolves to
-# NOTHING in this tree today — `lib.rs::events_log`/`app/boot.rs`'s crash-log open both build the
+# NOTHING in this tree today — `eventlog::events_log`/`app/boot.rs`'s crash-log open both build the
 # path through `paths::in_runtime_dir("plxnative-…")`, a bare filename with no `/tmp/` prefix, so
 # neither one is a `/tmp/plxnative-` literal in the first place and there is no second file to
 # name here (re-verify this if a log sink is ever given a hardcoded `/tmp/` path).
@@ -939,7 +939,7 @@ import os, sys
 src = sys.argv[1]
 exempt_files = {os.path.join(src, "dev.rs")}
 needle = "/tmp/plxnative-"
-log_names = {"log", "crate::log", "log!"}
+log_names = {"log", "crate::eventlog::log", "log!"}
 
 def scan(path, text):
     hits = []

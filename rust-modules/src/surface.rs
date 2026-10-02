@@ -24,7 +24,7 @@
 //! the bottom-left corner of the screen. Nothing errors; the app runs; a quarter of the panel has
 //! a UI on it. Since the app has never run on webOS 5+, whether a newer compositor grants exactly
 //! the surface we request is an assumption — and it is a cheap one to stop making.
-use crate::log;
+use crate::eventlog::log;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 

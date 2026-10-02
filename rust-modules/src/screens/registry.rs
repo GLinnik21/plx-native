@@ -318,8 +318,8 @@ pub(crate) struct ItemMenuArg {
 /// Which of the three menus this is, and the data its row set is built from.
 ///
 /// No `Debug`, deliberately: `PmsMovie` is a wire DTO with none, and deriving one for it would put
-/// a household's viewing on the far end of any `{:?}` — which `diag::scrub` cannot make safe,
-/// because nothing distinguishes a title from an ordinary log word (`diag/scrub.rs`'s own rule, and
+/// a household's viewing on the far end of any `{:?}` — which `eventlog::scrub` cannot make safe,
+/// because nothing distinguishes a title from an ordinary log word (`eventlog/scrub.rs`'s own rule, and
 /// the tree-wide grep that enforces it).
 #[derive(Clone)]
 pub(crate) enum ItemMenuKind {

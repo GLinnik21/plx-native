@@ -417,14 +417,14 @@ fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
         match curlmulti::load(None) {
             crate::dynlib::Loaded::Ok(soname) => {
-                crate::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
+                crate::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);
             }
             crate::dynlib::Loaded::NoLibrary => {
-                crate::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
+                crate::eventlog::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
             }
             crate::dynlib::Loaded::Incomplete(soname, n) => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "curlio: {soname} is missing {n} curl_multi_* symbol(s) — https streaming unavailable \
                      (sign-in is unaffected; this table is separate from net.rs's for exactly that reason)"
                 ));

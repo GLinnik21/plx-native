@@ -54,12 +54,12 @@ pub(crate) fn seal(plain: &[u8]) -> Option<Sealed> {
     if modern_key_ready() {
         if let Some(sealed) = modern_crypt(plain, None) {
             SELECTED.store(MODERN, Ordering::Relaxed);
-            crate::log("session protection: keymanager3");
+            crate::eventlog::log("session protection: keymanager3");
             return Some(sealed);
         }
     }
     SELECTED.store(UNAVAILABLE, Ordering::Relaxed);
-    crate::log("session protection: no usable key manager; using the 0600 file fallback");
+    crate::eventlog::log("session protection: no usable key manager; using the 0600 file fallback");
     None
 }
 
@@ -98,7 +98,7 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
-    crate::log("session protection: host tests use the 0600 plaintext fixture");
+    crate::eventlog::log("session protection: host tests use the 0600 plaintext fixture");
 }
 
 // Synthetic LS2 transport for host persistence tests; never compiled into a device build.
@@ -260,7 +260,7 @@ mod platform {
                     dead: false,
                 })
                 .map_err(|e| {
-                    crate::log(&format!("keymanager: LS2 {e}"));
+                    crate::eventlog::log(&format!("keymanager: LS2 {e}"));
                 })
         }
 
@@ -273,14 +273,14 @@ mod platform {
                 Ok(reply) => Ok(reply),
                 Err(crate::webos::ls2::Fail::Timeout) => {
                     self.dead = true;
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "keymanager: no reply in {} ms — this client asks nothing more",
                         started.elapsed().as_millis()
                     ));
                     Err(())
                 }
                 Err(crate::webos::ls2::Fail::Setup { stage, detail, .. }) => {
-                    crate::log(&format!("keymanager: call failed stage={stage} ({detail})"));
+                    crate::eventlog::log(&format!("keymanager: call failed stage={stage} ({detail})"));
                     Err(())
                 }
             }

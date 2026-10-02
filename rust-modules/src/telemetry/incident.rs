@@ -960,7 +960,7 @@ pub(crate) fn report_standing(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — onboarding incident was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — onboarding incident was not queued");
         return None;
     };
     let body = event_body(
@@ -990,7 +990,7 @@ fn queue_standing(record: &super::queue::Record, allowed: impl FnOnce() -> bool)
     match super::spool::append_watched_if(record, tenure, allowed) {
         Some(true) => true,
         Some(false) => {
-            crate::log("telemetry: onboarding incident did not fit the durable spool");
+            crate::eventlog::log("telemetry: onboarding incident did not fit the durable spool");
             false
         }
         None => false, // consent/tenure changed, or no delivery watch could be admitted
@@ -1015,7 +1015,7 @@ pub(crate) fn send_one_off(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
         return None;
     };
     let body = event_body(&event_id, super::sentry::build_id(), None, ctx, ConsentKind::OneOff);

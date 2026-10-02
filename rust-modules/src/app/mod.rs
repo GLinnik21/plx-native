@@ -197,7 +197,7 @@ extern "C" {
     fn glClear(mask: c_uint);
 }
 
-use crate::log;
+use crate::eventlog::log;
 // **The screen ARGUMENT is `screens::registry`'s** since restructure phase 10 (§2.1): the
 // registry owns the concrete `ScreenArg` and the one `mount` match, so `app/` reads it here
 // rather than declaring it. Imported at the tree's root because every module under `app/`
@@ -427,16 +427,16 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
         },
         std::env::var("APPID").unwrap_or_else(|_| "unset".into()),
     ));
-    // ...and the app directory on the NEXT line, from `app_dir()` itself, which logs its own
-    // provenance (`from current_exe` / `PLXNATIVE_APP_DIR` / `macOS bundle`) — strictly more than
-    // repeating the path here would say. Forced now rather than left to whoever calls it first,
-    // so the two lines are adjacent and the pair is what a triage reader sees at the top.
+    // ...and the app directory on the NEXT line, with its provenance (`from current_exe` /
+    // `PLXNATIVE_APP_DIR` / `macOS bundle`) — strictly more than repeating the path here would
+    // say. Logged here rather than by whoever resolves `app_dir()` first, so the two lines are
+    // adjacent and the pair is what a triage reader sees at the top. (`paths` itself cannot log:
+    // the event log resolves its own path through it.)
     //
-    // This ORDER is the reason `install:` does not carry an `appdir=` field: evaluating
-    // `app_dir()` inside the `format!` above would emit ITS line first, and every document that
-    // tells a human to read the first line to learn which install wrote a log would have been
-    // wrong by one line.
-    let _ = crate::paths::app_dir();
+    // The pair stays two lines, `install:` first, rather than an `appdir=` field on `install:`:
+    // every document that tells a human to read the first line to learn which install wrote a log
+    // means the `install:` one.
+    log(&crate::paths::app_dir_line());
     // Before the crash backend is armed, identify the firmware it would need to report. Sentry's
     // scope is snapshotted into the crash event file during `telemetry::boot`; probing afterwards
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one

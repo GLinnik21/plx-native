@@ -371,7 +371,7 @@ impl OnboardScreen {
     fn commit<H: DirectoryLike>(&mut self, directory: DirectoryView<'_>, fx: &mut Effects<'_, H>) {
         if directory.section_count() == 0 {
             fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::RetryDiscovery))));
-            crate::log("onboard: no discovered libraries yet — retry queued");
+            crate::eventlog::log("onboard: no discovered libraries yet — retry queued");
             return;
         }
         // The count logged below is read off `self.draft`, not back from the Browse owner —
@@ -389,7 +389,7 @@ impl OnboardScreen {
             StoreId::Browse,
             StoreCmd::Browse(BrowseCmd::ApplyPins(self.answered())),
         )));
-        crate::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
+        crate::eventlog::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
         self.leave(fx);
     }
 
@@ -555,7 +555,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                         Some(k) if k == self.action_kind(H::directory(cx)) => {
                             self.commit(H::directory(cx), fx)
                         }
-                        Some(_) => crate::log(
+                        Some(_) => crate::eventlog::log(
                             "onboard: the action changed under an armed press — refusing to commit it",
                         ),
                         // `PressCommit` reached us with no recorded arm at all — should not

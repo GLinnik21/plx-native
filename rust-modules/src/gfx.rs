@@ -2871,7 +2871,7 @@ pub(crate) fn draw_tex_carded_still(
     true
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 // ============================== backdrop blur ================================
 // The frosted ground under a popover panel: a blurred snapshot of what the frame had drawn BEHIND
@@ -3017,11 +3017,11 @@ fn blur_taps() -> [f32; 2] {
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
         match (it.next(), it.next()) {
             (Some(Ok(a)), Some(Ok(b))) if a > 0.0 && b > a => {
-                crate::log(&format!("glass: blur taps swept to {a},{b}"));
+                crate::eventlog::log(&format!("glass: blur taps swept to {a},{b}"));
                 [a, b]
             }
             _ => {
-                crate::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
+                crate::eventlog::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
                 BLUR_TAPS
             }
         }
@@ -3292,7 +3292,7 @@ fn rimclear_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("rimclear")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: rim scrim shed swept to {v}"));
+        crate::eventlog::log(&format!("glass: rim scrim shed swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3306,7 +3306,7 @@ fn sharp_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("tracksharp")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: rim sharp source swept to {v}"));
+        crate::eventlog::log(&format!("glass: rim sharp source swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3321,7 +3321,7 @@ fn deep_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("paneldeep")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: panel deep-sample radius swept to {v}"));
+        crate::eventlog::log(&format!("glass: panel deep-sample radius swept to {v}"));
         Some(v.max(0.0))
     })
 }
@@ -3538,7 +3538,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
             edge_a.map(|v| v.clamp(0.0, 1.0)),
             shade.map(|v| v.clamp(0.0, 1.0)),
         );
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "glass: track swept to bevel={} lens={} spec={} edge={:?} shade={:?}",
             out.0, out.1, w, out.3, out.4
         ));
@@ -5063,7 +5063,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
     #[allow(unreachable_code)]
     {
         if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "videoplane: refused {what} — the plane is not in our framebuffer to sample"
             ));
         }

@@ -65,18 +65,18 @@ pub(crate) struct ControlCommand {
 pub(crate) fn boot() {
     #[cfg(feature = "lab-diagnostics")]
     {
-        crate::diag::ring::start_clock();
+        crate::eventlog::ring::start_clock();
         match config::get() {
-            Some(c) => crate::log(&format!(
+            Some(c) => crate::eventlog::log(&format!(
                 "lab: armed session={} endpoint={} control={} triggers={:?} ring={}rec/{}KiB",
                 c.session,
                 c.endpoint,
                 if c.control { "on" } else { "off" },
                 c.trigger_wcodes,
-                crate::diag::ring::MAX_RECORDS,
-                crate::diag::ring::MAX_BYTES / 1024
+                crate::eventlog::ring::MAX_RECORDS,
+                crate::eventlog::ring::MAX_BYTES / 1024
             )),
-            None => crate::log(&format!("lab: INERT — {}", config::why_not())),
+            None => crate::eventlog::log(&format!("lab: INERT — {}", config::why_not())),
         }
     }
 }
@@ -101,16 +101,6 @@ pub(crate) fn take_commands() -> Vec<ControlCommand> {
 pub(crate) fn command_done(_id: u32, _ok: bool) {
     #[cfg(feature = "lab-diagnostics")]
     control::finish(_id, _ok);
-}
-
-/// The log tap. Called by `crate::log` for every line, after `redact_tokens`.
-///
-/// Takes `&str` rather than the `Cow` so the caller's borrow is unambiguous, and copies: the ring
-/// outlives the caller's frame by construction.
-#[inline]
-pub(crate) fn record(_line: &str) {
-    #[cfg(feature = "lab-diagnostics")]
-    crate::diag::ring::record(_line);
 }
 
 /// Is this press the configured lab trigger? Consulted by `ui::consts::is_bound` so that pressing

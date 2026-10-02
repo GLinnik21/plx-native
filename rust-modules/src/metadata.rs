@@ -2800,7 +2800,7 @@ fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
             // time `fetch_full` prints `seasons=` the refusal and a show that genuinely has no
             // seasons are the same zero — so the refusal has to say so HERE, or the log records a
             // failed GET as a fact about the library.
-            crate::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
+            crate::eventlog::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
             return Vec::new();
         }
     };
@@ -2938,7 +2938,7 @@ fn fetch_extras_rows(sid: crate::plex::ServerId, rk: &str) -> Option<Vec<crate::
     match crate::plex::client_for(sid).and_then(|c| c.extras(rk)) {
         Some(mc) => Some(mc.metadata),
         None => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "detail: rk={rk} /extras did not answer — trying primaryExtraKey if the parent named one"
             ));
             None
@@ -3012,7 +3012,7 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> RelatedRows {
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
             // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "detail: rk={rk} /related did not answer — the related= below is that refusal"
             ));
             return RelatedRows::default();
@@ -3133,7 +3133,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
     let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
         ));
         return None;
@@ -3145,7 +3145,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
             // and Related still load, and there is no previous list here to protect. It is still
             // named, because the `eps=` below cannot tell it from a season with no episodes.
             d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
                     s0.rk));
                 Vec::new()
@@ -3214,7 +3214,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
-    // ordinary prose (`diag::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
+    // ordinary prose (`eventlog::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
     // so the only mechanism for viewing content is that no call site writes it. This one did,
     // from the day it was added until phase 11 — `'{}'` with `d.title` in it, on every detail
     // open, in a log the maintainer routinely pastes into a public issue.
@@ -3340,7 +3340,7 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, r
         // Rejected admission owns no queued terminal: settle this new generation synchronously.
         // clear() cancelled previous workers but kept their reservations until acknowledgement.
         adapter.detail_done.store(gen, Ordering::SeqCst);
-        crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", adapter.detail_landing_ref().inflight(addr.to)));
+        crate::eventlog::log(&format!("detail: request rk={rk} REFUSED — {} in flight", adapter.detail_landing_ref().inflight(addr.to)));
     }
     (gen, addr, admission)
 }
@@ -3815,9 +3815,9 @@ fn request_alt_sources(
         // exactly that reasoning, and the reasoning is incomplete: a Plex GUID names the WORK,
         // globally and stably, which is LG's "Content Viewing Information" and the one category
         // this app's Data Safety declaration answers "Not collected" to. It stays here because it
-        // is the only string that says WHICH lookup this was, and `diag::scrub::scrub_viewing`
+        // is the only string that says WHICH lookup this was, and `eventlog::scrub::scrub_viewing`
         // rewrites it to `plex://<guid>` before the line reaches the disk.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "altsrc: asked {n} source(s) for {guid} -> {} copy(ies)",
             list.len()
         ));
@@ -4025,7 +4025,7 @@ fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
         here,
         theirs,
     );
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "altsources: stand-in for rk={} on slot {} (dev)",
         d.rk,
         theirs.raw()

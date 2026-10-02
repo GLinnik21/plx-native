@@ -512,7 +512,7 @@ impl Replay {
         // with an unrelated state mismatch. Dedicated counters identify the exact subcategory.
         self.input_diffs += 1;
         let hashes=hashes.map(|(expected,got)|format!(" expected={expected:#018x} got={got:#018x}")).unwrap_or_default();
-        crate::log(&format!("replay: input diverge f={} resolution_index={index} reason={reason} resolution={}{hashes}",
+        crate::eventlog::log(&format!("replay: input diverge f={} resolution_index={index} reason={reason} resolution={}{hashes}",
             self.rec.frames.get(self.at).map_or(self.at as u64,|f|f.f), if focus { "focus" } else { "hit" }));
     }
     fn same(&self) -> bool {
@@ -595,7 +595,7 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
                 replay.result_diffs += 1;
                 // The payload may be household data. Only the frame, ordinal and finite reason
                 // belong in the shareable event log, never either side's serialized result.
-                crate::log(&format!("replay: result diverge f={} index={} reason={}",
+                crate::eventlog::log(&format!("replay: result diverge f={} index={} reason={}",
                     frame.map_or(replay.at as u64, |f| f.f), replay.result_at,
                     if expected.is_some() { "changed" } else { "extra" }));
             }
@@ -757,10 +757,10 @@ impl Recplay {
                 if expected.is_none_or(|value| value["from"] != from || value["e"] != name
                     || value["payload"] != payload) {
                     replay.effect_diffs += 1;
-                    crate::log(&format!("replay: effect diverge f={} index={}",
+                    crate::eventlog::log(&format!("replay: effect diverge f={} index={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.effect_at));
                     if replay.at < 3 {
-                        crate::log(&format!("replay: effect trace kind={name} from={from} event={} tick_ms={} tick_dt={}",
+                        crate::eventlog::log(&format!("replay: effect trace kind={name} from={from} event={} tick_ms={} tick_dt={}",
                             payload.get("delivery").and_then(|v| v.get("event")).and_then(Value::as_str).unwrap_or("none"),
                             payload.pointer("/delivery/body/ms").and_then(Value::as_u64).unwrap_or(0),
                             payload.pointer("/delivery/body/dt_us").and_then(Value::as_u64).unwrap_or(0)));
@@ -945,7 +945,7 @@ impl Recplay {
                 });
                 if expected_body.as_ref() != Some(&encoded) {
                     replay.input_diffs += 1;
-                    crate::log(&format!("replay: input diverge f={} input_index={} reason={}",
+                    crate::eventlog::log(&format!("replay: input diverge f={} input_index={} reason={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
                         if expected.is_some() { "changed" } else { "extra" }));
                 }
@@ -996,7 +996,7 @@ impl Recplay {
                     if let Some(rec_bit) = fr.present {
                         if rec_bit != bit {
                             r.present_diffs += 1;
-                            crate::log(&format!("replay: present f={} recorded={rec_bit} got={bit}", fr.f));
+                            crate::eventlog::log(&format!("replay: present f={} recorded={rec_bit} got={bit}", fr.f));
                         }
                     }
                 }
@@ -1053,7 +1053,7 @@ impl Recplay {
                 }
                 if let Err(e) = r.w.flush_frame() {
                     r.failure = Some("recording storage failure");
-                    crate::log(&format!("rec: write failed, stopping: {e:?}"));
+                    crate::eventlog::log(&format!("rec: write failed, stopping: {e:?}"));
                 }
                 r.events = false;
                 r.f += 1;
@@ -1081,7 +1081,7 @@ impl Recplay {
                 // result); `extra` means the recording had none left for that store.
                 for (frame, ord, why) in gate.take_diffs() {
                     r.land_diffs += 1;
-                    crate::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
+                    crate::eventlog::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
                 }
                 if let Some(fr) = r.rec.frames.get(r.at) {
                     if fr.readiness.is_some() {
@@ -1091,12 +1091,12 @@ impl Recplay {
                     if r.input_at < scripts {
                         let missing = scripts - r.input_at;
                         r.input_diffs += missing as u64;
-                        crate::log(&format!("replay: input diverge f={} input_index={} reason=missing count={missing}",
+                        crate::eventlog::log(&format!("replay: input diverge f={} input_index={} reason=missing count={missing}",
                             fr.f, r.input_at));
                     }
                     for index in r.result_at..fr.results.len() {
                         r.result_diffs += 1;
-                        crate::log(&format!("replay: result diverge f={} index={} reason=missing", fr.f, index));
+                        crate::eventlog::log(&format!("replay: result diverge f={} index={} reason=missing", fr.f, index));
                     }
                     r.effect_diffs += fr.effects.len().saturating_sub(r.effect_at) as u64;
                     if let Some(expected) = fr.st {
@@ -1104,7 +1104,7 @@ impl Recplay {
                         let got = hash();
                         if got != expected {
                             r.diverged += 1;
-                            crate::log(&format!(
+                            crate::eventlog::log(&format!(
                                 "replay: diverge f={} expected={expected:#018x} got={got:#018x} inputs={}",
                                 fr.f,
                                 fr.inputs.len()
@@ -1124,12 +1124,12 @@ impl Recplay {
                     // end: until the recording is exhausted, "not yet" and "never" look alike.
                     for (ord, frame, count) in gate.unmatched_counts() {
                         r.land_diffs += u64::from(count);
-                        crate::log(&format!(
+                        crate::eventlog::log(&format!(
                             "replay: land diverge f={frame} store={ord} reason={}",
                             crate::ui::landgate::Diff::Missing.name()
                         ));
                     }
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "replay: done frames={} graded={} diverged={} present_diffs={} input_diffs={} result_diffs={} land_diffs={} effect_diffs={} focus_diffs={} hit_diffs={} verdict={}",
                         r.rec.frames.len(),
                         r.graded,
@@ -1168,9 +1168,9 @@ impl Recplay {
         if let Recplay::Recording(r) = self {
             if r.w.finish().is_err() {
                 failed = true;
-                crate::log("rec: final storage flush failed");
+                crate::eventlog::log("rec: final storage flush failed");
             } else if !failed {
-                crate::log("rec: finished");
+                crate::eventlog::log("rec: finished");
             }
         }
         failed

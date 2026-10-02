@@ -145,12 +145,12 @@ fn publish(probe: DvProbe, started: Instant, code: Option<i64>, detail: Option<&
             .filter(|s| !s.is_empty())
             .map(|s| format!(" detail={s}"))
             .unwrap_or_default();
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos-caps: key={KEY} answer=unknown stage={}{}{} elapsed_ms={elapsed}",
             probe.reason, code, detail,
         ));
     } else {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos-caps: key={KEY} answer={} source={} elapsed_ms={elapsed}",
             probe.capability.label(),
             probe.provenance(),
@@ -185,7 +185,7 @@ fn run_probe() {
         override_capability(forced_unsupported(), forced_supported())
     {
         if conflict {
-            crate::log("webos-caps: dvcaps0 and dvcaps1 both armed; dvcaps0 wins");
+            crate::eventlog::log("webos-caps: dvcaps0 and dvcaps1 both armed; dvcaps0 wins");
         }
         publish(
             DvProbe {

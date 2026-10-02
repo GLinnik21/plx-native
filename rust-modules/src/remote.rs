@@ -121,7 +121,7 @@ impl Remote {
                 // local BEFORE the path is rebuilt for the message, so nothing runs between the
                 // failed call and the read.
                 let err = std::io::Error::last_os_error();
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "remote: open {} failed ({err}) — no remote control this run",
                     fifo_path().display()
                 ));

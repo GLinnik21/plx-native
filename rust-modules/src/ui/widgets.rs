@@ -128,7 +128,7 @@ fn panel_tint_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("paneltint")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("panel: field tint swept to {v}"));
+        crate::eventlog::log(&format!("panel: field tint swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -169,7 +169,7 @@ fn material_sweep() -> Option<theme::Material> {
     static SEEN: std::sync::OnceLock<Option<theme::Material>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let m = theme::Material::parse(&crate::dev::read("material")?)?;
-        crate::log(&format!("glass: panel material swept to {m:?}"));
+        crate::eventlog::log(&format!("glass: panel material swept to {m:?}"));
         Some(m)
     })
 }
@@ -183,7 +183,7 @@ fn frost_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("panelfrost")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: panel frost swept to {v}"));
+        crate::eventlog::log(&format!("glass: panel frost swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -5756,7 +5756,7 @@ fn lift_floor() -> f32 {
         else {
             return theme::TAB_GLASS_LIFT_FLOOR;
         };
-        crate::log(&format!("glass: track lift swept to floor={v}"));
+        crate::eventlog::log(&format!("glass: track lift swept to floor={v}"));
         v.clamp(0.0, 1.0)
     })
 }
@@ -5892,10 +5892,10 @@ fn tab_glass_dim_sweep() -> Option<f32> {
             .parse::<f32>()
             .ok()?;
         if !(0.0..=1.0).contains(&v) {
-            crate::log("glass: tabglassdim ignored (want 0..1)");
+            crate::eventlog::log("glass: tabglassdim ignored (want 0..1)");
             return None;
         }
-        crate::log(&format!("glass: track density pinned to {v}"));
+        crate::eventlog::log(&format!("glass: track density pinned to {v}"));
         Some(v)
     })
 }
@@ -5905,7 +5905,7 @@ fn density_max_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("trackmax")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: density ceiling swept to {v}"));
+        crate::eventlog::log(&format!("glass: density ceiling swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -5960,7 +5960,7 @@ fn rim_max_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         let v = crate::dev::read("rimmax")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: rim ceiling swept to {v}"));
+        crate::eventlog::log(&format!("glass: rim ceiling swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -6464,7 +6464,7 @@ impl StripRender {
                 // the bar had never been drawn — an instrument's first line reading as a bug in the
                 // thing it was armed to watch.
                 let drawn = track_density(ground, &mut band.density);
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
                     ground[0], ground[1], ground[2],
                     lstar([ground[0], ground[1], ground[2], 1.0]),

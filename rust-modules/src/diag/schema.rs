@@ -20,7 +20,7 @@
 //! # UNGATED, deliberately
 //!
 //! This module compiles in every build, including one with no telemetry feature at all, for the
-//! reason `diag::scrub` was moved out of `lab/`: **its tests are the guarantee, and tests behind a
+//! reason `eventlog::scrub` was moved out of `lab/`: **its tests are the guarantee, and tests behind a
 //! feature the default gate does not build are tests that never run.** That is not a hypothetical
 //! either — `scrub`'s 31 assertions sat unexecuted for as long as they existed. What IS gated is
 //! everything that would SEND one of these.
@@ -1015,7 +1015,7 @@ mod tests {
     /// statement about the TYPE rather than about how careful the call sites are.
     ///
     /// Greps this file's own source, in the same spirit as
-    /// `diag::scrub`'s `no_log_call_site_interpolates_viewing_content`: the property is structural
+    /// `eventlog::scrub`'s `no_log_call_site_interpolates_viewing_content`: the property is structural
     /// and no unit test of behaviour can express it, because the failure is a variant that does
     /// not exist yet.
     #[test]

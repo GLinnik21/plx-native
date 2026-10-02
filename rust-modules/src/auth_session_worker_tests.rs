@@ -240,7 +240,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
 /// can see a regression here: a `with_ctl(|c| c.foo = …)` spliced back into `login_thread`
 /// compiles cleanly, passes every OTHER test in this file (none of them spin up a real worker
 /// thread against a real plex.tv — see the module doc), and only misbehaves on a device, under
-/// contention nobody happened to be watching for. Modelled on `diag::scrub`'s
+/// contention nobody happened to be watching for. Modelled on `eventlog::scrub`'s
 /// `no_log_call_site_interpolates_viewing_content`, which pins its own "the mechanism is that
 /// nobody writes it" claim the same way.
 ///

@@ -109,11 +109,11 @@ fn persist_record_off_thread(next: Consent) {
     let submitted = crate::storage_worker::submit(move || {
         let outcome = crate::telemetry::persistence::record(&next);
         if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
-            crate::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
+            crate::eventlog::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
         }
     });
     if submitted.is_err() {
-        crate::log("telemetry: the decision could not be queued for persistence");
+        crate::eventlog::log("telemetry: the decision could not be queued for persistence");
     }
     // Tests want the write's effect (and `persistence::last_call_thread()`) settled before the
     // next assertion; production has no such deadline and never drains.
@@ -150,11 +150,11 @@ fn persist_forget_off_thread() {
             crate::telemetry::persistence::PersistResult::Durable
                 | crate::telemetry::persistence::PersistResult::Delegated
         ) {
-            crate::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
+            crate::eventlog::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
         }
     });
     if submitted.is_err() {
-        crate::log("telemetry: sign-out could not be queued for persistence");
+        crate::eventlog::log("telemetry: sign-out could not be queued for persistence");
     }
     #[cfg(test)]
     crate::storage_worker::drain_for_test();

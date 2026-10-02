@@ -66,7 +66,7 @@ pub(crate) fn showing() -> bool {
     match phase() {
         PHASE_IDLE => false,
         PHASE_SENDING => true,
-        _ => crate::diag::ring::t_ms() < UNTIL_MS.load(Relaxed),
+        _ => crate::eventlog::ring::t_ms() < UNTIL_MS.load(Relaxed),
     }
 }
 
@@ -83,7 +83,7 @@ fn set_phase(p: u8, detail: String) {
     *DETAIL.lock().unwrap_or_else(|e| e.into_inner()) = detail;
     UNTIL_MS.store(
         match p {
-            PHASE_OK | PHASE_FAIL => crate::diag::ring::t_ms().saturating_add(TOAST_MS),
+            PHASE_OK | PHASE_FAIL => crate::eventlog::ring::t_ms().saturating_add(TOAST_MS),
             _ => 0,
         },
         Relaxed,
@@ -98,13 +98,13 @@ fn set_phase(p: u8, detail: String) {
 pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
     let Some(cfg) = config::get() else { return };
     if INFLIGHT.swap(true, Relaxed) {
-        crate::log("lab: upload already in flight — press ignored");
+        crate::eventlog::log("lab: upload already in flight — press ignored");
         return;
     }
     let seq = SEQ.fetch_add(1, Relaxed) + 1;
     let route = *ROUTE.lock().unwrap_or_else(|e| e.into_inner());
     // Before the snapshot, so the document contains the line that says why it exists.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "lab: snapshot seq={seq} reason={reason} route={route}"
     ));
     let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route, ps);
@@ -152,21 +152,21 @@ fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String
     };
     match crate::net::post_pinned(url, &headers, &body, pin, t) {
         Some(r) if r.ok() => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "lab: uploaded seq={seq} {raw_len}B -> {sent}B ({encoding}) status={}",
                 r.status
             ));
             (PHASE_OK, format!("{} KB sent", (sent + 512) / 1024))
         }
         Some(r) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "lab: upload seq={seq} REFUSED status={}",
                 r.status
             ));
             (PHASE_FAIL, format!("receiver said {}", r.status))
         }
         None => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "lab: upload seq={seq} did not complete (transport)"
             ));
             (PHASE_FAIL, "no answer from receiver".into())

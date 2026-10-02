@@ -349,7 +349,7 @@ pub(crate) fn initialize(preference: Preference, controlled: bool) {
             cx.language = Language::Pseudo;
         }
     }
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "locale: source={} preference={} ui={} format={} clock={:?}",
         if info.is_some() {
             "settings"
@@ -364,7 +364,7 @@ pub(crate) fn initialize(preference: Preference, controlled: bool) {
         cx.clock()
     ));
     if CURRENT.set(cx).is_err() {
-        crate::log("locale: initialization already completed");
+        crate::eventlog::log("locale: initialization already completed");
     }
 }
 #[derive(Default)]
@@ -404,12 +404,12 @@ fn platform_locale() -> Option<SystemLocale> {
         Ok(raw) => {
             let info = parse_reply(&raw);
             if info.is_none() {
-                crate::log("locale: settings refused or returned malformed localeInfo");
+                crate::eventlog::log("locale: settings refused or returned malformed localeInfo");
             }
             info
         }
         Err(_) => {
-            crate::log("locale: settings unavailable; using fallback");
+            crate::eventlog::log("locale: settings unavailable; using fallback");
             None
         }
     }

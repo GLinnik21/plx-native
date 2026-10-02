@@ -28,7 +28,7 @@
 #[cfg(feature = "devtriggers")]
 mod imp {
     use crate::hwcnt::{self, Sample, COUNTERS};
-    use crate::log;
+    use crate::eventlog::log;
     use std::cell::RefCell;
     use std::fs::{File, OpenOptions};
     use std::io::{BufWriter, Write};

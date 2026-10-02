@@ -19,7 +19,7 @@ extern "C" {
     fn free(ptr: *mut c_void);
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 /// The decode budget, sized for THIS device. `image`'s defaults are not one: `max_image_width` and
 /// `max_image_height` default to `None` — no dimension cap at all — and `max_alloc` to **512 MiB**,

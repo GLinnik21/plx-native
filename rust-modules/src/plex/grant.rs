@@ -369,7 +369,7 @@ fn mint_consented(
     }
     if !already {
         // The authority only — never the machine id (a household fingerprint) nor the token.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "security: consented plaintext credentials for one server at {}",
             origin.log_form()
         ));
@@ -403,7 +403,7 @@ pub(crate) fn granted_machines() -> Vec<String> {
 pub(crate) fn revoke(machine_id: &str) -> bool {
     let removed = retain(|g| g.machine_id != machine_id);
     if removed {
-        crate::log("security: plaintext credentials withdrawn for one server");
+        crate::eventlog::log("security: plaintext credentials withdrawn for one server");
     }
     removed
 }
@@ -429,7 +429,7 @@ pub(crate) fn identity_changed() {
     take_stranded();
     clear_offers();
     if retain(|_| false) {
-        crate::log("security: plaintext credentials withdrawn — identity changed");
+        crate::eventlog::log("security: plaintext credentials withdrawn — identity changed");
     }
     moved();
 }
@@ -454,7 +454,7 @@ pub(crate) fn network_changed() {
     }
     clear_offers();
     if retain(|_| false) {
-        crate::log("security: plaintext credentials withdrawn — network continuity unknown");
+        crate::eventlog::log("security: plaintext credentials withdrawn — network continuity unknown");
     }
     moved();
 }
@@ -478,7 +478,7 @@ pub(crate) fn roster_replaced(installed: &[(String, Origin)]) {
         installed.iter().any(|(machine, origin)| *machine == g.machine_id && *origin == g.origin)
     });
     if removed {
-        crate::log("security: plaintext credentials withdrawn — the roster no longer installs them");
+        crate::eventlog::log("security: plaintext credentials withdrawn — the roster no longer installs them");
     }
 }
 
@@ -572,7 +572,7 @@ fn refuse(machine_id: &str) {
     drop(grants);
     if removed {
         super::servers::regrade_credentials();
-        crate::log("security: plaintext credentials withdrawn for one server");
+        crate::eventlog::log("security: plaintext credentials withdrawn for one server");
     }
 }
 
@@ -634,7 +634,7 @@ fn written(answer: &Answer, landed: bool) {
         unsaved.remove(i);
     } else {
         if unsaved[i].attempts == 1 {
-            crate::log("security: a refused plaintext connection was not saved yet — retrying");
+            crate::eventlog::log("security: a refused plaintext connection was not saved yet — retrying");
         }
         unsaved[i].in_flight = false;
     }

@@ -23,10 +23,10 @@ struct RetireResult {
 pub(crate) fn retire() {
     let result = retire_paths(&crate::paths::obsolete_last_place_candidates());
     if result.removed != 0 {
-        crate::log("coldstart: discarded obsolete last-page bookmark");
+        crate::eventlog::log("coldstart: discarded obsolete last-page bookmark");
     }
     if result.failed != 0 {
-        crate::log("coldstart: could not remove every obsolete last-page bookmark");
+        crate::eventlog::log("coldstart: could not remove every obsolete last-page bookmark");
     }
 }
 

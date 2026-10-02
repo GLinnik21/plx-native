@@ -238,7 +238,7 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
     }
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 // ------------------------------------------------------------------------------------------
 // EXPERIMENT (`/tmp/plxnative-opaque`): declare the UI surface OPAQUE where nothing is behind it

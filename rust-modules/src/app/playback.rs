@@ -800,7 +800,7 @@ pub(crate) fn play_up_next(
     };
     // The ratingKey, not the episode title: `rk` is the handle every other line and every harness
     // assertion already uses, and the title is LG's "Content Viewing Information" — the one
-    // category this app's Data Safety declaration answers "Not collected" to. `diag::scrub` is a
+    // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
     // backstop for shapes like this; not writing it is the mechanism.
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
     let (rk, resume) = (

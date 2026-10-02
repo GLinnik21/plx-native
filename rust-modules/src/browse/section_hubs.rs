@@ -465,7 +465,7 @@ impl super::BrowseState {
         };
         match result.shelves {
             Some(shelves) => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "libhubs: section {} landed {} shelves",
                     result.sec,
                     shelves.len()
@@ -473,7 +473,7 @@ impl super::BrowseState {
                 state.hubs.land_ok(shelves);
             }
             None => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "libhubs: section {} failed ({} in a row)",
                     result.sec,
                     state.hubs.fails + 1

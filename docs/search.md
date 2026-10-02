@@ -104,7 +104,7 @@ because ink alone read too close to idle from the couch (owner feedback). It shi
 owner rejected it on sight the next day: "you made the search bar background white, while I wanted
 text to be white". **The plate is gone (2026-09-04)** — `field.rs`'s test suite carries a narrow
 regression tripwire, reading the file's own source for the exact `p.rect(field_box`/`theme::ACCENT,`
-shape issue 22 shipped (the same technique `diag::scrub` uses for its own absence property), so
+shape issue 22 shipped (the same technique `eventlog::scrub` uses for its own absence property), so
 that specific reintroduction fails loudly. It is a tripwire for the bug that already happened, not a
 proof that no fill can ever reappear under a different name or shape — the actual contract is the
 plain-English one above, upheld by review and device/simulator verification each time this control

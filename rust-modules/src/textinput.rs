@@ -122,7 +122,7 @@ mod host_test_sdl {
     pub(super) unsafe fn SDL_StartTextInput() {}
     pub(super) unsafe fn SDL_StopTextInput() {}
 }
-use crate::log;
+use crate::eventlog::log;
 use std::os::raw::{c_int, c_void};
 use std::ptr::{addr_of, addr_of_mut};
 

@@ -71,7 +71,7 @@ fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<St
         pending.retain(|p| p.account == s.account);
         let slot = pending.iter().position(|p| p.who == s.who);
         if slot.is_none() && pending.len() == PENDING_CAP {
-            crate::log("search: recent-history queue full; edit refused");
+            crate::eventlog::log("search: recent-history queue full; edit refused");
             retry_drain = true;
             return false;
         }

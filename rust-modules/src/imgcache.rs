@@ -265,7 +265,7 @@ impl Cache {
         index.initialized = true;
         index.root = self.candidates.iter().find(|p| probe_dir(p)).cloned();
         let Some(root) = index.root.clone() else {
-            crate::log("imgcache: no writable directory; disk cache unavailable");
+            crate::eventlog::log("imgcache: no writable directory; disk cache unavailable");
             return;
         };
         let Ok(files) = fs::read_dir(&root) else {
@@ -309,7 +309,7 @@ impl Cache {
         }
         self.make_room(index, None, 0, 0);
         self.publish_size(index);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "imgcache: {} entries={} bytes={}",
             root.display(),
             index.entries.len(),

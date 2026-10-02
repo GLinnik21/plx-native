@@ -176,7 +176,7 @@ impl Loaded {
 #[cold]
 #[inline(never)]
 pub fn missing_symbol(lib: &str, sym: &str) -> ! {
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "dynlib: FATAL — {sym} was called but never resolved from {lib}; the load gate was skipped"
     ));
     panic!("dynlib: {lib}:{sym} unresolved");
@@ -201,7 +201,7 @@ pub fn load_into(
             Some(p) if !p.is_null() => resolved.push(p),
             _ => {
                 missing += 1;
-                crate::log(&format!("dynlib: {soname} has no symbol {name}"));
+                crate::eventlog::log(&format!("dynlib: {soname} has no symbol {name}"));
                 resolved.push(null_mut());
             }
         }

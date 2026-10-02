@@ -879,7 +879,7 @@ fn every_route_wearing_the_shared_bar_reaches_the_chrome_paint_guard() {
 /// `#![allow(dead_code)]` on `ui/mod.rs` meaning a stranded `draws_chrome_for` would not even draw
 /// a compiler warning. `draw_chrome`'s body calls into real text measurement with no font loaded
 /// on a host test, so this cannot be driven end to end here; instead it reads the guard's own
-/// source text, the same idiom `diag::scrub`'s `no_log_call_site_interpolates_viewing_content`
+/// source text, the same idiom `eventlog::scrub`'s `no_log_call_site_interpolates_viewing_content`
 /// uses to pin a call-site property no runtime assertion can see.
 ///
 /// Observed RED against the reintroduced bug: reverting only `draw_chrome`'s guard line to the

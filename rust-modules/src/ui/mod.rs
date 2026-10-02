@@ -167,7 +167,7 @@ pub fn guard(f: impl FnOnce()) {
         // an already-flooding stream while telling nobody anything new. One line marks that the
         // barrier is what is keeping the app alive; the hook's lines say what is wrong.
         if !GUARD_RECOVERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
+            crate::eventlog::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
         }
     }
 }

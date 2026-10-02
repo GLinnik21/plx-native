@@ -176,7 +176,7 @@ fn enabled() -> bool {
     *ONCE.get_or_init(|| {
         let on = crate::dev::flag("clocksink");
         if on {
-            crate::log(
+            crate::eventlog::log(
                 "clocksink: ARMED — AUs are accepted and discarded, and the presentation clock \
                  advances at real time. NOTHING IS DECODED and no number from this run is a \
                  device measurement.",
@@ -393,7 +393,7 @@ impl Clock {
             });
         if spawned.is_err() {
             TICKING.store(false, Relaxed);
-            crate::log("clocksink: could not spawn the position thread; no position will report");
+            crate::eventlog::log("clocksink: could not spawn the position thread; no position will report");
         }
     }
 }
@@ -476,7 +476,7 @@ fn take_refusal() -> bool {
             Some(v) => v.trim().parse::<i64>().unwrap_or(0),
         };
         if n > 0 {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "clocksink: plxnative-refuseload armed — the next {} Load(s) get the webOS 10.3.1 \
                  type=18 num=601 refusal after Load() returns ok=1",
                 if n == i64::MAX { "∞".to_string() } else { n.to_string() }

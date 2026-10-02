@@ -101,14 +101,14 @@ pub(crate) fn probe() {
     let info = match std::fs::read_to_string(OS_INFO) {
         Ok(s) => parse(&s),
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "webos: {OS_INFO} unreadable ({e}) — version unknown"
             ));
             Info::default()
         }
     };
     if info.major > 0 {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos: {} release={} codename={} api={} major={}",
             info.name, info.release, info.codename, info.api, info.major
         ));
@@ -205,14 +205,14 @@ fn probe_hw() {
     let hw = match std::fs::read_to_string(DEVICE_INFO) {
         Ok(s) => parse_hw(&s),
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"
             ));
             Hardware::default()
         }
     };
     if !hw.model.is_empty() || !hw.board.is_empty() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos: model={} board={} hw={}",
             hw.model, hw.board, hw.hw_revision
         ));
@@ -283,7 +283,7 @@ fn probe_jail() {
         RtkmemProbe::NotApplicable
     };
     let _ = RTKMEM.set(result);
-    crate::log(&format!("devjail: soc={name} rtkmem={}", rtkmem_context()));
+    crate::eventlog::log(&format!("devjail: soc={name} rtkmem={}", rtkmem_context()));
 }
 
 /// TEST ONLY: force [`jail_blocks_native_video`] to report blocked, without touching the
@@ -412,7 +412,7 @@ pub(crate) fn go_home() {
     // The FIRST line of every root press, and the one that makes the rest of them readable: which
     // legs are even eligible. Without it a reader cannot tell a forced run from an ordinary one,
     // and the device evidence for this change is read by somebody who did not write it.
-    crate::log(&format!("gohome: request mode={mode}"));
+    crate::eventlog::log(&format!("gohome: request mode={mode}"));
     if mode == "minimize" { minimize(); return; }
     if HOME_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
     let probe = mode == "probe";
@@ -420,7 +420,7 @@ pub(crate) fn go_home() {
     if !crate::task::spawn_small("platform home", move || {
         if probe { ls2_probe(); }
         else if !launch_home() {
-            if sam_only { crate::log("gohome: no fallback — the trigger forced SAM only"); }
+            if sam_only { crate::eventlog::log("gohome: no fallback — the trigger forced SAM only"); }
             else { HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release); }
         }
         HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
@@ -467,7 +467,7 @@ fn take_root_press_at(now: std::time::Instant) -> bool {
     let mut last = LAST_REQUEST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(age) = last.map(|t| now.saturating_duration_since(t)) {
         if age < COOLDOWN {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "gohome: a root press {} ms ago still speaks for this one — ignoring it",
                 age.as_millis()
             ));
@@ -561,7 +561,7 @@ mod go_home_tests {
 
 #[cfg(any(feature = "hostsim", test))]
 fn launch_home() -> bool {
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
     ));
     true
@@ -572,7 +572,7 @@ fn minimize() {}
 
 #[cfg(any(feature = "hostsim", test))]
 fn ls2_probe() {
-    crate::log("gohome: no LS2 bus off-device — nothing to probe");
+    crate::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -627,14 +627,14 @@ fn launch_home() -> bool {
     let ms = started.elapsed().as_millis();
     match outcome {
         // The whole reply, not a parse: it is one short platform-authored line, it names the
-        // refusal when there is one, and `diag::scrub` runs over it like every other log write. The
+        // refusal when there is one, and `eventlog::scrub` runs over it like every other log write. The
         // elapsed time is logged beside it because `ls2::BUDGET` was chosen without a measurement,
         // and this is the only place one can ever be taken.
         Ok(reply) => {
             let ok =
                 reply.contains("\"returnValue\":true") || reply.contains("\"returnValue\": true");
             let verdict = if ok { "accepted" } else { "rejected" };
-            crate::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
+            crate::eventlog::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
             ok
         }
         // **Four different failures used to arrive as one sentence**, which is exactly the kind of
@@ -642,20 +642,20 @@ fn launch_home() -> bool {
         // refused this app a registration, the call was never submitted, or the reply really did
         // time out. They are three different bugs and only one of them is about SAM.
         Err(ls2::Fail::Setup { stage, detail, .. }) if detail.is_empty() => {
-            crate::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
+            crate::eventlog::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
             false
         }
         // The hub's own words, when it gave any. The register refusal that shipped with this
         // branch (`Can not find service "" permissions`) was legible ONLY in ls-hubd's log,
         // which nobody reading the app's evidence knew to open.
         Err(ls2::Fail::Setup { stage, detail, .. }) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "gohome: LS2 setup failed stage={stage} after {ms}ms — {detail}"
             ));
             false
         }
         Err(ls2::Fail::Timeout) => {
-            crate::log(&format!("gohome: SAM timed out in {ms}ms"));
+            crate::eventlog::log(&format!("gohome: SAM timed out in {ms}ms"));
             false
         }
     }
@@ -665,13 +665,13 @@ fn launch_home() -> bool {
 fn minimize() {
     let win = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     if win.is_null() {
-        crate::log("gohome: no window bound — cannot leave the foreground");
+        crate::eventlog::log("gohome: no window bound — cannot leave the foreground");
         return;
     }
     // Returns void: SDL has no way to say whether the driver implemented the hook, so this line
     // says what was ASKED and never that it worked. The screenshot is the evidence.
     unsafe { SDL_MinimizeWindow(win) };
-    crate::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
+    crate::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -914,7 +914,7 @@ pub(crate) mod ls2 {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
                 // teardown, against a use-after-free (Codex review, 2026-09-04).
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2: unregister refused — leaking its glib context ({})",
                     error_text(&error)
                 ));
@@ -1000,7 +1000,7 @@ pub(crate) mod ls2 {
                 // into it — which is the registration's lifetime, so it is leaked (Codex review,
                 // 2026-09-04: dropping it regardless was a use-after-free on a retained handle).
                 if !unsafe { LSCallCancel(self.handle, token, &mut error) } {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "ls2: cancel refused after a timeout — leaking the reply slot ({})",
                         error_text(&error)
                     ));
@@ -1032,7 +1032,7 @@ pub(crate) mod ls2 {
         let app_id = match app_id_cstring() {
             Ok(n) => n,
             Err(e) => {
-                crate::log(&format!("ls2probe: {e}"));
+                crate::eventlog::log(&format!("ls2probe: {e}"));
                 return;
             }
         };
@@ -1054,18 +1054,18 @@ pub(crate) mod ls2 {
                 }
             };
             if !ok || handle.is_null() {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2probe: {label}: register REFUSED — {}",
                     error_text(&error)
                 ));
                 unsafe { LSErrorFree(&mut error) };
                 continue;
             }
-            crate::log(&format!("ls2probe: {label}: registered"));
+            crate::eventlog::log(&format!("ls2probe: {label}: registered"));
             reset(&mut error);
             let context = unsafe { g_main_context_new() };
             if context.is_null() {
-                crate::log(&format!("ls2probe: {label}: no glib context"));
+                crate::eventlog::log(&format!("ls2probe: {label}: no glib context"));
                 unsafe {
                     LSUnregister(handle, &mut error);
                     LSErrorFree(&mut error);
@@ -1077,16 +1077,16 @@ pub(crate) mod ls2 {
                 let registration = Registration { handle, context };
                 let uri = "luna://com.webos.applicationManager/getForegroundAppInfo";
                 match registration.call(uri, "{}", BUDGET) {
-                    Ok(r) => crate::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
+                    Ok(r) => crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
                     Err(Fail::Timeout) => {
-                        crate::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
+                        crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
                     }
-                    Err(Fail::Setup { stage, detail, .. }) => crate::log(&format!(
+                    Err(Fail::Setup { stage, detail, .. }) => crate::eventlog::log(&format!(
                         "ls2probe: {label}: call failed stage={stage} ({detail})"
                     )),
                 }
             } else {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2probe: {label}: attach failed — {}",
                     error_text(&error)
                 ));

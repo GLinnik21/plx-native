@@ -2867,7 +2867,7 @@ fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> 
         read.get().unwrap_or(read_live_locked)()
     }));
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-    crate::log("session: authority read reason=miss");
+    crate::eventlog::log("session: authority read reason=miss");
     #[cfg(not(test))]
     let finished = std::time::Instant::now();
     #[cfg(test)]
@@ -3627,7 +3627,7 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
                     retry_canonical: false,
                 },
                 Err(error) => {
-                    crate::log(&format!("session: canonical record is invalid: {error}"));
+                    crate::eventlog::log(&format!("session: canonical record is invalid: {error}"));
                     ReadState::Blocked
                 }
             }
@@ -3689,7 +3689,7 @@ fn migrate_missing_fallback_locked(read: ReadState) -> ReadState {
                         session: session.clone(), plaintext: protection.is_none(), retry_canonical: false,
                     };
                 }
-                _ => crate::log("session: fallback migration did not complete; retaining snapshot for retry"),
+                _ => crate::eventlog::log("session: fallback migration did not complete; retaining snapshot for retry"),
             }
         }
     }
@@ -3749,7 +3749,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
-                    crate::log("session: secure file is present but its device key is unavailable");
+                    crate::eventlog::log("session: secure file is present but its device key is unavailable");
                     return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
                 };
                 return serde_json::from_slice::<Session>(&plain)
@@ -3762,7 +3762,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             }
         }
         if identifies_secure_envelope(&bytes) {
-            crate::log("session: unsupported or damaged secure envelope is locked");
+            crate::eventlog::log("session: unsupported or damaged secure envelope is locked");
             return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
@@ -3807,13 +3807,13 @@ fn seed_fresh_quality(s: &mut Session, persisted: bool, auto_ready: bool) {
     }
 }
 
-/// **Hand the scrubber this household's names**, so `crate::log` can redact them without ever
+/// **Hand the scrubber this household's names**, so `crate::eventlog::log` can redact them without ever
 /// touching this module.
 ///
 /// The scrubber used to call [`peek`] per line, which took [`IO`] and read the file — a deadlock
 /// against every writer here (`save_locked` logs while holding the lock) and a syscall storm on
 /// the log path besides. Ownership is inverted now: the session layer PUSHES on every change and
-/// `diag::scrub` keeps a cached snapshot.
+/// `eventlog::scrub` keeps a cached snapshot.
 ///
 /// Called on load, on save and on a successful `update`, i.e. everywhere the set of names can
 /// move — including a user switch and a roster refresh, both of which land through `update`.
@@ -3840,7 +3840,7 @@ fn publish_identities(s: &Session) {
         }
     }
     v.push(s.server.origin().host().to_string());
-    crate::diag::scrub::set_identities(v);
+    crate::eventlog::scrub::set_identities(v);
 }
 
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
@@ -4216,13 +4216,13 @@ fn save_locked_with_authority(
         match &commit {
             persistence::CanonicalCommit::Durable { .. } => unreachable!(),
             persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
-                crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno} helper={helper:?}"));
+                crate::eventlog::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno} helper={helper:?}"));
             }
             persistence::CanonicalCommit::Failed(error) => {
-                crate::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
+                crate::eventlog::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
             }
             persistence::CanonicalCommit::ProtectionFailed(failure) => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "session: canonical protection failed: {:?}, commit_verified={}",
                     failure.failure, failure.db8_commit_verified
                 ));
@@ -4306,7 +4306,7 @@ fn save_legacy_fallback_locked(
     // Only our marked fallback envelopes may be resealed here. Unmarked legacy secure files
     // still refuse the entire fallback write, as before; the plaintext arm never downgrades either.
     if protected_before || protected_after || has_unmarked_secure_locked() {
-        crate::log("session: preserving the existing protected record; refusing an unprotected downgrade");
+        crate::eventlog::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;
     }
     if let Some(sealed) = crate::keymanager::seal(&serde_json::to_vec_pretty(s).ok()?) {
@@ -4324,7 +4324,7 @@ fn save_legacy_fallback_locked(
                 Ok(()) => {
                     retire_other_fallback_candidates_locked(&winner, true);
                     if !failures.is_empty() {
-                        crate::log(
+                        crate::eventlog::log(
                             "session: protected write succeeded on a later candidate; earlier ones refused",
                         );
                         log_candidate_diagnostics("protected write refused before the later success", &failures);
@@ -4334,14 +4334,14 @@ fn save_legacy_fallback_locked(
                 Err(diagnostic) => failures.push(diagnostic),
             }
         }
-        crate::log("session: key manager succeeded but the protected file could not be written");
+        crate::eventlog::log("session: key manager succeeded but the protected file could not be written");
         log_candidate_diagnostics("protected write refused", &failures);
         return None;
     }
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
     if has_secure_locked() {
-        crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
+        crate::eventlog::log("session: preserving the existing secure file; refusing a plaintext downgrade");
         return None;
     }
     let Ok(json) = fallback_bytes(s) else {
@@ -4358,7 +4358,7 @@ fn save_legacy_fallback_locked(
             Ok(()) => {
                 retire_other_fallback_candidates_locked(&path, false);
                 if !failures.is_empty() {
-                    crate::log(
+                    crate::eventlog::log(
                         "session: plaintext write succeeded on a later candidate; earlier ones refused",
                     );
                     log_candidate_diagnostics("plaintext write refused before the later success", &failures);
@@ -4368,7 +4368,7 @@ fn save_legacy_fallback_locked(
             Err(diagnostic) => failures.push(diagnostic),
         }
     }
-    crate::log(
+    crate::eventlog::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
     log_candidate_diagnostics("plaintext write refused", &failures);
@@ -4603,7 +4603,7 @@ fn log_candidate_diagnostics(context: &str, failures: &[CandidateDiagnostic]) {
             WriteFailure::RenameFailed(_) => "rename_failed",
         };
         let errno = d.failure.errno().map_or_else(|| "none".to_string(), |e| e.to_string());
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "session: {context} path={} {parent} cause={class} errno={errno}",
             d.path.display()
         ));
@@ -4759,7 +4759,7 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
     match outcome {
         persistence::ClearCleanupOutcome::Confirmed => ClearOutcome::Durable { legacy_swept: true },
         persistence::ClearCleanupOutcome::LegacyRetireFailed => {
-            crate::log(
+            crate::eventlog::log(
                 "session: canonical clear is durable but a recognized legacy migration \
                  candidate could not be retired — it remains on disk and will be swept \
                  again on the next sign-out or bootstrap",
@@ -4767,7 +4767,7 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
             ClearOutcome::Durable { legacy_swept: false }
         }
         persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
-            crate::log(
+            crate::eventlog::log(
                 "session: canonical clear reported durable but the immediate authority \
                  read-back did not confirm Cleared — the legacy sweep was skipped and the \
                  account token may still be readable from the canonical authority",
@@ -4879,7 +4879,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             // called here in that release).
             #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
             if !crate::telemetry::cleanup_after_account_clear() {
-                crate::log(
+                crate::eventlog::log(
                     "session: canonical clear is durable but a telemetry/consent legacy \
                      candidate could not be retired — it remains on disk and will be swept \
                      again on the next sign-out",
@@ -4891,21 +4891,21 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             outcome
         }
         persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: canonical clear is uncertain stage={stage:?} errno={errno} helper={helper:?} — the \
                  account token may still be readable from the canonical authority"
             ));
             ClearOutcome::NotDurable
         }
         persistence::CanonicalCommit::Failed(error) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: canonical clear failed: {error:?} — the account token may still be \
                  readable from the canonical authority"
             ));
             ClearOutcome::NotDurable
         }
         persistence::CanonicalCommit::ProtectionFailed(failure) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: canonical clear protection failed: {:?}, commit_verified={} — the \
                  account token may still be readable from the canonical authority",
                 failure.failure, failure.db8_commit_verified
@@ -4993,7 +4993,7 @@ fn persist_fallback_revocation_locked() -> bool {
             ]),
         }
     }
-    crate::log("session: no durable fallback revocation marker; sign-out cannot survive a restart until cleanup succeeds");
+    crate::eventlog::log("session: no durable fallback revocation marker; sign-out cannot survive a restart until cleanup succeeds");
     false
 }
 
@@ -5010,7 +5010,7 @@ fn retire_marked_fallbacks_locked() -> bool {
         match std::fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                crate::log(&format!("session: fallback retirement stat failed path={} errno={}",
+                crate::eventlog::log(&format!("session: fallback retirement stat failed path={} errno={}",
                     path.display(), error.raw_os_error().unwrap_or(0)));
                 complete = false;
                 continue;
@@ -5022,7 +5022,7 @@ fn retire_marked_fallbacks_locked() -> bool {
             Some(bytes) if marked_fallback(&bytes) => complete &= retire_session_candidate(&path),
             Some(_) => {}
             None => {
-                crate::log(&format!("session: fallback retirement could not read candidate path={}", path.display()));
+                crate::eventlog::log(&format!("session: fallback retirement could not read candidate path={}", path.display()));
                 complete = false;
             }
         }
@@ -5052,7 +5052,7 @@ fn retry_pending_revocation_removals_locked() -> bool {
                 Err(error) => match crate::storage::prove_absent_after_refused_unlink(&marker, error) {
                     Ok(()) => true,
                     Err(error) => {
-                        crate::log(&format!("session: revocation retirement failed errno={}",
+                        crate::eventlog::log(&format!("session: revocation retirement failed errno={}",
                             error.raw_os_error().unwrap_or(0)));
                         false
                     }
@@ -5159,7 +5159,7 @@ fn sync_retired_candidate_parent(path: &std::path::Path) -> bool {
         let mut pending = PENDING_RETIREMENTS.lock().unwrap_or_else(|e| e.into_inner());
         if !pending.iter().any(|candidate| candidate == path) { pending.push(path.to_path_buf()); }
         drop(pending);
-        crate::log(&format!("session: sign-out unlink sync failed path={} errno={}",
+        crate::eventlog::log(&format!("session: sign-out unlink sync failed path={} errno={}",
             path.display(), error.raw_os_error().unwrap_or(0)));
         return false;
     }
@@ -5190,7 +5190,7 @@ fn retire_session_candidate(path: &std::path::Path) -> bool {
         // Opened without O_CREAT: the name vanished after the lookup above.
         Err(overwrite) if overwrite.kind() == std::io::ErrorKind::NotFound => true,
         Err(overwrite) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: sign-out candidate retirement failed path={} unlink_errno={} neutralize_errno={}",
                 path.display(), unlink.raw_os_error().unwrap_or(0),
                 overwrite.raw_os_error().unwrap_or(0)

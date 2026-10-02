@@ -780,7 +780,7 @@ impl PlayerScreen {
         }
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
-            crate::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
+            crate::eventlog::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
             Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
             self.scrub.ns = -1;
         }
@@ -1023,7 +1023,7 @@ impl PlayerScreen {
                 // playback is already sitting on — a full reopen + prime and a visible stall, out
                 // of a press the reveal rule promises moves nothing. `step_scrub_hold` clears it
                 // once there is real travel.
-                crate::log("scrub: hold engaged (0x101 repeat)");
+                crate::eventlog::log("scrub: hold engaged (0x101 repeat)");
             }
         }
     }
@@ -1045,7 +1045,7 @@ impl PlayerScreen {
             self.scrub.ns = -1;
             self.scrub.disengage();
         } else if self.scrub.hold {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "scrub: keyup commit (held) {}s",
                 self.scrub.ns / 1_000_000_000
             ));
@@ -1083,7 +1083,7 @@ impl PlayerScreen {
             return;
         }
         if self.scrub.ns >= 0 {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "scrub: tap commit {}s",
                 self.scrub.ns / 1_000_000_000
             ));
@@ -1132,7 +1132,7 @@ impl PlayerScreen {
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.scrub.t = now;
         if now.wrapping_sub(self.scrub.alive) > input::SCRUB_LOST_MS {
-            crate::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
+            crate::eventlog::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
             self.commit_scrub(fx);
             self.scrub.disengage();
         }

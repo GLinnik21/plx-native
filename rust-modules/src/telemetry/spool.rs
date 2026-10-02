@@ -96,7 +96,7 @@ fn read_locked() -> Vec<Record> {
     if d.dropped_bytes > 0 {
         // Expected after a power cut, and worth one line either way: a non-zero count after a CLEAN
         // shutdown means something worse than a torn write.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: spool recovered {} records, {} bytes discarded",
             d.records.len(),
             d.dropped_bytes
@@ -204,7 +204,7 @@ fn append_locked(r: &Record) -> bool {
     let Some(p) = path() else { return false };
     let Some(frame) = queue::encode(r) else {
         // Dropped where there is a caller to blame, rather than becoming a frame no reader accepts.
-        crate::log("telemetry: record over the per-record cap, dropped");
+        crate::eventlog::log("telemetry: record over the per-record cap, dropped");
         return false;
     };
 
@@ -222,7 +222,7 @@ fn append_locked(r: &Record) -> bool {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&p);
     let Ok(mut f) = opened else {
-        crate::log("telemetry: could not open the spool for append");
+        crate::eventlog::log("telemetry: could not open the spool for append");
         return false;
     };
     let Ok(meta) = f.metadata() else { return false };
@@ -230,7 +230,7 @@ fn append_locked(r: &Record) -> bool {
         || meta.uid() != unsafe { libc::geteuid() }
         || meta.permissions().mode() & 0o077 != 0
     {
-        crate::log("telemetry: refused an unsafe spool file");
+        crate::eventlog::log("telemetry: refused an unsafe spool file");
         return false;
     }
     if f.write_all(&frame).is_err() {
@@ -259,7 +259,7 @@ fn write_locked(records: &[Record]) -> bool {
     if dropped > 0 {
         // Never silent. A queue that discards without saying so is a queue whose numbers are wrong
         // in a direction nobody can see.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: spool over cap, dropped {dropped} oldest records"
         ));
         settle_discarded(records, &kept);
@@ -286,7 +286,7 @@ pub(crate) fn commit_retiring(retired: &[String]) {
     let _g = lock();
     let keep = queue::ack(read_locked(), retired);
     if !write_locked(&keep) {
-        crate::log("telemetry: could not persist the spool to ANY candidate path");
+        crate::eventlog::log("telemetry: could not persist the spool to ANY candidate path");
     }
 }
 
@@ -317,7 +317,7 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
         all = queue::purge(all, queue::Category::Usage);
     }
     if all.len() != before {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: withdrawal purged {} queued records",
             before - all.len()
         ));
@@ -347,9 +347,9 @@ pub(crate) fn purge_all_local() {
         return; // nothing queued: no file is created just to be empty
     }
     if write_locked(&[]) {
-        crate::log(&format!("telemetry: local erasure purged {n} queued records"));
+        crate::eventlog::log(&format!("telemetry: local erasure purged {n} queued records"));
     } else {
-        crate::log("telemetry: could not persist the emptied spool to ANY candidate path");
+        crate::eventlog::log("telemetry: could not persist the emptied spool to ANY candidate path");
     }
 }
 

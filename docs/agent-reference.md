@@ -383,7 +383,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **`LAB=1`** adds a THIRD cargo feature, `lab-diagnostics` — the **Cloud Lab bridge** that gets
   logs off and app-level commands onto a television in **LG Cloud Test Lab**, where there is no
   ssh, no console, no stdout and no way to download a file, so the entire `/tmp` trigger surface
-  and every recipe in this file is unreachable. In a lab build `crate::log` also feeds a bounded in-memory ring (4000
+  and every recipe in this file is unreachable. In a lab build `crate::eventlog::log` also feeds a bounded in-memory ring (4000
   records / 768 KiB), a configured remote key or a **Send diagnostics** row in the account /
   player-overflow menu snapshots it together with `player::Diag`, `webos` and `devcaps`, scrubs it
   again, gzips it and POSTs it over **pinned** TLS to `tools/plxnative-lab` on the dev Mac. An
@@ -653,7 +653,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `rust-modules/src/diag/` — **the redaction pass and the diagnostic plumbing every off-device
-  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::log` runs
+  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::eventlog::log` runs
   `scrub_local` on every line in every build, so credentials, hosts, bare addresses, Plex GUIDs,
   search queries and this household's names are rewritten **before the write**, not on the way out.
   **Two exits, differing in exactly one respect** — `scrub` (network) may DROP a line it cannot

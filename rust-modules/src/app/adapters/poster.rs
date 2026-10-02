@@ -609,7 +609,7 @@ fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, pn
 fn warn_key_refused(len: usize) {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, Ordering::Relaxed) {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
         ));
     }
@@ -695,7 +695,7 @@ fn log_residency() {
     st.rearmed = rearmed;
     st.refused = refused;
     drop(st);
-    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
+    crate::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
 /// The settle half of the instrument (see [`log_residency`]'s doc for the gap it closes): called
@@ -727,7 +727,7 @@ fn log_residency_settled(store_idle_this_frame: bool) {
     st.rearmed = rearmed;
     st.refused = refused;
     drop(st);
-    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
+    crate::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
 /// Test-visible read of the two original totals, so a test grades the counters through the same
@@ -1446,7 +1446,7 @@ impl ArtFail {
 ///
 /// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
 /// `&X-Plex-Token=…` (see [`poster_key`], and the test that pins the token to the end of it), and
-/// `crate::redact_tokens`' own doc states the policy that backstop exists to make redundant — no
+/// `crate::eventlog::redact_tokens`' own doc states the policy that backstop exists to make redundant — no
 /// call site formats a URL into a log line in the first place. The server is named by its registry
 /// SLOT NUMBER, the handle `plex: server slot N registered at …` already prints, and by nothing
 /// else: not the address, not the machine identifier, not the friendly name (which defaults to the
@@ -1465,7 +1465,7 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // two), so two workers can reach the same cause for the same server at once and only
     // the one that flipped the bit may write the line.
     if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "posters: art fetch FAILED on server {} - {} (permanent responses are final; transient failures retry with backoff while the tile is on screen; further ones like this are silent)",
             srv.raw(),
             cause.why()
@@ -1496,7 +1496,7 @@ fn disk_namespace(client: &crate::plex::Client) -> String {
 pub(crate) fn log_cache_stats() {
     let s = crate::imgcache::stats();
     let queued = note_backlog(&store().slots);
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "imgcache: hits={} misses={} writes={} evictions={} entries={} bytes={} fetches={} queued_bytes={} peak_queued_bytes={} gpu_bytes={}",
         s.hit, s.miss, s.write, s.eviction, s.entries, s.bytes,
         FETCHES.load(Ordering::Relaxed), queued, BACKLOG_PEAK.load(Ordering::Relaxed), tex::resident_bytes(),
@@ -1700,7 +1700,7 @@ fn poster_worker() {
                         px = img::img_malloc_copy(&out.px, || format!("{}x{} collection {rk} fan", out.w, out.h));
                         (w, h) = (out.w as c_int, out.h as c_int);
                     }
-                    fan::Got::Final => crate::log(&format!(
+                    fan::Got::Final => crate::eventlog::log(&format!(
                         "posters: collection {rk} has no usable member art - its card draws the neutral tile"
                     )),
                     fan::Got::Transient => transient = true,

@@ -1785,7 +1785,7 @@ impl BrowseState {
                 self.reconcile_pins(Some(record));
             }
             // A missing identity or full queue cannot justify undoing the visible selection.
-            None => crate::log(
+            None => crate::eventlog::log(
                 "browse: the session refused this commit — the selection stands for this run, \
                  and nothing was recorded",
             ),
@@ -1841,7 +1841,7 @@ impl BrowseState {
                         if !answered {
                             let who = self.sources.get(source_index)
                                 .map(|source| source.name.clone()).unwrap_or_default();
-                            crate::log(&format!(
+                            crate::eventlog::log(&format!(
                                 "browse: source {source_index} ({who}) did not answer — its group reads unreachable"
                             ));
                         }
@@ -2025,7 +2025,7 @@ impl BrowseState {
             }
         }
         if self.sources.len() != known {
-            crate::log(&format!("browse: roster now {} source(s)", self.sources.len()));
+            crate::eventlog::log(&format!("browse: roster now {} source(s)", self.sources.len()));
         }
         if reclassified || session_changed {
             // **A source changed sides, so the WHOLE pin table is re-resolved** — `pins::resolve`

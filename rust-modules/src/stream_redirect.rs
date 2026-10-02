@@ -130,7 +130,7 @@ pub(crate) fn open_following(
             }
         }
         if !crate::http::credential_transport_allowed(&cur.origin, &cur.path, &header_lines(&extra)) {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stream: {}{} REFUSED: a credential may not travel to this plaintext origin",
                 cur.origin.log_form(),
                 log_endpoint(&cur.path)
@@ -173,7 +173,7 @@ pub(crate) fn open_following(
         };
         let next = hs_redirect_location(hs).and_then(|loc| resolve_location(&cur, &loc));
         let Some(mut next) = next else {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stream: redirect {status} from {}{} has no usable Location",
                 cur.origin.log_form(),
                 log_endpoint(&cur.path)
@@ -181,7 +181,7 @@ pub(crate) fn open_following(
             return Err(FollowError::BadLocation(status));
         };
         if hop >= MAX_HOPS {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stream: redirect {status} -> {}{} REFUSED: more than {MAX_HOPS} hops",
                 next.origin.log_form(),
                 log_endpoint(&next.path)
@@ -191,7 +191,7 @@ pub(crate) fn open_following(
         hop += 1;
         let same = same_origin(&next.origin, req.origin);
         if !same && req.same_origin_only {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stream: redirect {status} -> {}{} REFUSED: this request may not leave {}",
                 next.origin.log_form(),
                 log_endpoint(&next.path),
@@ -204,7 +204,7 @@ pub(crate) fn open_following(
                 next.path = with_query_pair(&next.path, pair);
             }
         }
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "stream: redirect {status} -> {}{} hop={hop} same_origin={same}",
             next.origin.log_form(),
             log_endpoint(&next.path)

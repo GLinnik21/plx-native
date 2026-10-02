@@ -68,7 +68,7 @@ pub(crate) fn arm_stillclock() {
     if let Some(v) = crate::dev::read("stillclock") {
         let ms = v.parse().unwrap_or(0);
         crate::ui::motion::hold_phase_clocks(Some(ms));
-        crate::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
+        crate::eventlog::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
     }
 }
 
@@ -136,17 +136,17 @@ pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     };
     let Some(kind) = parse_type(&v) else {
         #[cfg(feature = "devtriggers")]
-        crate::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
+        crate::eventlog::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
         app.scenarios.shots.libtype_done = true;
         return;
     };
     if crate::app::bridge::Bridge::library_listed(&app.pages) == Some(kind) {
-        crate::log(&format!("libtype: listing {}", v.trim()));
+        crate::eventlog::log(&format!("libtype: listing {}", v.trim()));
         app.scenarios.shots.libtype_done = true;
         return;
     }
     if fr.now.wrapping_sub(app.t0) > CEILING_MS {
-        crate::log(&format!("libtype: gave up; the listing never became {}", v.trim()));
+        crate::eventlog::log(&format!("libtype: gave up; the listing never became {}", v.trim()));
         app.scenarios.shots.libtype_done = true;
         return;
     }
@@ -212,18 +212,18 @@ impl SeatArm {
         };
         let Some(cell) = parse_cell(&v) else {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("BADTRIGGER {name} {v:?}: expected <a>,<b>"));
+            crate::eventlog::log(&format!("BADTRIGGER {name} {v:?}: expected <a>,<b>"));
             self.done = true;
             return None;
         };
         let say = |text: &str| text.replace("{0}", &cell.0.to_string()).replace("{1}", &cell.1.to_string());
         if at() == Some(cell) {
-            crate::log(&format!("{name}: {}", say(reached)));
+            crate::eventlog::log(&format!("{name}: {}", say(reached)));
             self.done = true;
             return None;
         }
         if fr.now.wrapping_sub(t0) > CEILING_MS {
-            crate::log(&format!("{name}: gave up; focus never reached {}", say("{0},{1}")));
+            crate::eventlog::log(&format!("{name}: gave up; focus never reached {}", say("{0},{1}")));
             self.done = true;
             return None;
         }
@@ -258,18 +258,18 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         "type" => LibraryMenuKind::Type,
         _other => {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
+            crate::eventlog::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
             app.scenarios.shots.libmenu_done = true;
             return;
         }
     };
     if crate::app::bridge::library_menu_up(&app.pages) {
-        crate::log(&format!("libmenu: {name} menu up"));
+        crate::eventlog::log(&format!("libmenu: {name} menu up"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
     if fr.now.wrapping_sub(app.t0) > CEILING_MS {
-        crate::log(&format!("libmenu: gave up; the {name} menu never opened"));
+        crate::eventlog::log(&format!("libmenu: gave up; the {name} menu never opened"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
@@ -295,7 +295,7 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
             arms.clockstop = Some(crate::dev::read("clockstop").map(|v| match v.parse::<u32>() {
                 Ok(ms) => Some(ms),
                 Err(_) => {
-                    crate::log(&format!("BADTRIGGER clockstop {v:?}: expected <ms>"));
+                    crate::eventlog::log(&format!("BADTRIGGER clockstop {v:?}: expected <ms>"));
                     None
                 }
             }).unwrap_or(None));
@@ -312,11 +312,11 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
         }
         if crate::app::playback::playpos() >= at {
             arms.clockstop_reached = true;
-            crate::log(&format!("clockstop: clock held at {ms} ms, still playing"));
+            crate::eventlog::log(&format!("clockstop: clock held at {ms} ms, still playing"));
         } else if fr.now.wrapping_sub(app.t0) > CLOCKSTOP_CEILING_MS {
             // Reached or not, the arm stops holding the capture back (`pending`).
             arms.clockstop_reached = true;
-            crate::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
+            crate::eventlog::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
         }
     }
     #[cfg(not(feature = "hostsim"))]

@@ -3,7 +3,7 @@
 //! Lifted out of `lab/snapshot.rs` unchanged on 2026-08-29, for two reasons that are worth keeping
 //! written down.
 //!
-//! **It is no longer lab-only.** `crate::log` applies [`scrub_local`] to every line before the file
+//! **It is no longer lab-only.** `crate::eventlog::log` applies [`scrub_local`] to every line before the file
 //! write, and the telemetry client applies the full [`scrub`] to everything that leaves. Both live
 //! in a build that has no `lab-diagnostics` feature, so this module is UNGATED — which also means
 //! its tests finally run in `make check`. They did not before: everything under `lab/` is
@@ -42,7 +42,7 @@ const CREDENTIAL_HEADERS: [&str; 5] = [
 ];
 
 /// Query parameters whose value is a secret. `X-Plex-Token` is here too even though
-/// [`crate::redact_tokens`] already caught it on the way in — this pass must be correct on its own,
+/// [`crate::eventlog::redact_tokens`] already caught it on the way in — this pass must be correct on its own,
 /// because it is also what protects a record written by a future call site that bypasses the log.
 const CREDENTIAL_PARAMS: [&str; 6] = [
     "x-plex-token=",
@@ -65,7 +65,7 @@ pub(crate) fn scrub(line: &str) -> Scrubbed {
     scrub_with(line, &identities())
 }
 
-/// **The LOCAL exit — what `crate::log` applies to every line before the file write.**
+/// **The LOCAL exit — what `crate::eventlog::log` applies to every line before the file write.**
 ///
 /// Same rewrites as [`scrub`], with one difference that is the entire reason it exists: it
 /// **never drops a line**. [`scrub`]'s `Refuse` arm is correct for the network, where a record
@@ -74,7 +74,7 @@ pub(crate) fn scrub(line: &str) -> Scrubbed {
 /// vanishes from that file is worse for debugging than a leaky one — you cannot grep for the
 /// absence of something you never knew was written.
 ///
-/// Cost: this runs on `crate::log`'s path, which its own doc records as "a few times a second at
+/// Cost: this runs on `crate::eventlog::log`'s path, which its own doc records as "a few times a second at
 /// most, never per frame". Measure before assuming that stays true.
 pub(crate) fn scrub_local(line: &str) -> String {
     scrub_local_with(line, &identities())
@@ -82,7 +82,7 @@ pub(crate) fn scrub_local(line: &str) -> String {
 
 /// [`scrub_local`], against a caller-supplied identity list — the testable half.
 pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
-    let s = crate::redact_tokens(line).into_owned();
+    let s = crate::eventlog::redact_tokens(line).into_owned();
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
@@ -97,7 +97,7 @@ pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
 /// APP knows about this household (see [`identities`]); everything else here is a pure rewrite.
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
-    let s = crate::redact_tokens(line).into_owned();
+    let s = crate::eventlog::redact_tokens(line).into_owned();
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
@@ -397,10 +397,10 @@ fn replace_quoted_value(s: &str, key: &str, close: char, placeholder: &str) -> S
 
 /// The household identity list, **cached**. Never reads the session file.
 ///
-/// # This function is on `crate::log`'s hot path, and the obvious implementation deadlocks
+/// # This function is on `crate::eventlog::log`'s hot path, and the obvious implementation deadlocks
 ///
 /// It used to be `crate::plex::session::peek()`, which is correct and was fine while the only
-/// caller was a once-per-upload snapshot on a worker thread. Putting it under `crate::log` made it
+/// caller was a once-per-upload snapshot on a worker thread. Putting it under `crate::eventlog::log` made it
 /// two separate disasters at once, both found by the host suite hanging rather than failing:
 ///
 /// * **Deadlock.** `peek()` takes the session I/O mutex. Any code that holds that mutex and then
@@ -1029,7 +1029,7 @@ mod tests {
     ///
     /// The scrubber cannot catch a programme title (see the test above), so what actually keeps
     /// viewing content out of the log is that no call site writes it. That is a property of ~520
-    /// `crate::log` sites, it is invisible to every other test in this suite, and it regresses the
+    /// `crate::eventlog::log` sites, it is invisible to every other test in this suite, and it regresses the
     /// moment somebody adds `'{}'` with a title in it — which is exactly how the original leak got
     /// in. So it is asserted the only way it can be: by grepping the tree.
     ///
@@ -1069,7 +1069,7 @@ mod tests {
     /// are exempt.
     #[test]
     fn no_log_call_site_interpolates_viewing_content() {
-        // Walk the source of THIS crate. `file!()` is `src/diag/scrub.rs`, so the tree root is two
+        // Walk the source of THIS crate. `file!()` is `src/eventlog/scrub.rs`, so the tree root is two
         // levels up — resolved from the manifest dir so it is independent of the working directory
         // the test runner happens to have.
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1077,7 +1077,7 @@ mod tests {
         let mut files = 0usize;
         walk(&src, &mut |path: &std::path::Path, text: &str| {
             // this file quotes every banned shape in its own documentation
-            if path.ends_with("diag/scrub.rs") {
+            if path.ends_with("eventlog/scrub.rs") {
                 return;
             }
             files += 1;
@@ -1185,7 +1185,7 @@ mod tests {
     /// The span walker itself, on a shape this tree has and a line-scoped grep cannot see.
     #[test]
     fn a_log_call_is_read_whole_even_when_its_arguments_are_lines_below() {
-        let src = "    crate::log(&format!(\n        \"detail: rk={} '{}'\",\n        d.rk, d.title\n    ));\n    let x = 1;\n";
+        let src = "    crate::eventlog::log(&format!(\n        \"detail: rk={} '{}'\",\n        d.rk, d.title\n    ));\n    let x = 1;\n";
         let calls = log_calls(src);
         assert_eq!(calls.len(), 1, "one call: {calls:?}");
         assert_eq!(calls[0].0, 1, "reported at the line the call OPENS on");
@@ -1208,7 +1208,7 @@ mod tests {
     /// never appended and this assertion failed.
     #[test]
     fn a_closing_paren_inside_the_format_string_does_not_truncate_the_call_span() {
-        let src = "    crate::log(&format!(\n        \"detail: rk={} )) still just the string\",\n        d.rk, d.title\n    ));\n    let x = 1;\n";
+        let src = "    crate::eventlog::log(&format!(\n        \"detail: rk={} )) still just the string\",\n        d.rk, d.title\n    ));\n    let x = 1;\n";
         let calls = log_calls(src);
         assert_eq!(calls.len(), 1, "one call: {calls:?}");
         assert!(

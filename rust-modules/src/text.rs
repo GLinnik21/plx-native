@@ -712,7 +712,7 @@ unsafe fn take_slot(cache: &[TCacheEntry; TCACHE]) -> usize {
     slot
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 /// One line per boot, not one per size — `font_at` is called for every rung of the size ladder,
 /// and 70-odd identical lines would bury the rest of the log.

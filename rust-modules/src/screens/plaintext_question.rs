@@ -110,7 +110,7 @@ impl PlaintextQuestion {
     pub(crate) fn answer(&mut self, alert: &mut DecisionAlert, allow: bool) -> Option<SessionCmd> {
         alert.dismiss();
         let subject = self.subject.take()?;
-        crate::log(if allow {
+        crate::eventlog::log(if allow {
             "plaintext: user allowed an unencrypted connection on this network"
         } else {
             "plaintext: user declined an unencrypted connection"

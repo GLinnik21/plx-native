@@ -13,7 +13,7 @@
 //! the flush, the spool and the one-off fallback all settle, so the screen can say "sent" only once
 //! a server accepted it.
 //!
-//! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record: the
+//! **Ungated**, like `eventlog::scrub` and `diag::schema`, and for the reason both of those record: the
 //! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
 //! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
 //! was on the network is not erased by that flush's commit — and a test behind a feature the
@@ -50,7 +50,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
     let presence = |id: &Option<String>| if id.is_some() { "yes" } else { "none" };
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "telemetry: answered={} errors={} usage={} id={} errors_id={}",
         c.answered(),
         c.errors,
@@ -67,7 +67,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // identical either way — `diag::event` returns before the queue, correctly and silently. This
     // is the line that says whether telemetry is WIRED, as against merely consented to, and it
     // names no endpoint: which projects those are is a release-audit fact, not a per-boot one.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "telemetry: env={} sentry={} posthog={}",
         sender::ENVIRONMENT,
         if sender::has_sentry() { "yes" } else { "no" },
@@ -278,14 +278,14 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
     );
     retired.extend(newly_retired);
     if let Some(s) = retry {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: holding {} records, ~{s}s",
             all.len() - retired.len()
         ));
     }
     if !retired.is_empty() {
         spool::commit_retiring(&retired);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: flushed {} of {} record(s)",
             retired.len(),
             all.len()

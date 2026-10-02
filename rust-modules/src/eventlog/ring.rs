@@ -1,6 +1,6 @@
 //! The bounded diagnostic ring — **the log this app already writes, kept in memory**.
 //!
-//! There is no second logging system here and no new call site anywhere: `crate::log` is the ONE
+//! There is no second logging system here and no new call site anywhere: `crate::eventlog::log` is the ONE
 //! sink every diagnostic line in the app passes through, and this taps it one line below
 //! `redact_tokens`. So the ring is by construction a strict subset of `plxnative-events.log`, with
 //! the shipped credential backstop already applied, and a module that starts logging tomorrow is
@@ -23,7 +23,7 @@
 //! # Cost on the paths it sits on
 //!
 //! One `Mutex` lock, one `String` allocation and a `VecDeque::push_back` per logged line. The log
-//! is written a few times a second at most and never per frame (`crate::log`'s own note), and the
+//! is written a few times a second at most and never per frame (`crate::eventlog::log`'s own note), and the
 //! lock is never held across an I/O call: [`take`] clones the whole buffer out under the lock and
 //! serialises outside it.
 use std::collections::VecDeque;
@@ -75,7 +75,7 @@ pub(crate) fn t_ms() -> u32 {
 /// Append one already-redacted line.
 ///
 /// Poison is stepped over rather than propagated: a panic in some other thread while it held this
-/// lock must not turn every subsequent `crate::log` call into a second panic — the log is how the
+/// lock must not turn every subsequent `crate::eventlog::log` call into a second panic — the log is how the
 /// first one gets diagnosed.
 pub(crate) fn record(line: &str) {
     let t = t_ms();

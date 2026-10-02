@@ -1573,7 +1573,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     // indistinguishable in the log from one still in flight — "hubs: source 1 fetching" with
     // nothing after it says only that the worker started. The SLOT, never the handle (a plex.tv
     // username is the friend's, and the event log is what users send us).
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "hubs: source {} ok — {} shelves, {} in CW",
         s.sid.raw(),
         b.shelves.len(),
@@ -1593,7 +1593,7 @@ fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     // the ONE line that says a dead source is dead ON PURPOSE and is coming back — without it the
     // whole recovery is invisible in the event log. The SLOT, never the handle: a plex.tv username
     // is the friend's, and the event log is what users send us.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "hubs: source {} FAILED (attempt {}) — retrying in {:.0}s",
         s.sid.raw(),
         s.retry_n,
@@ -1640,7 +1640,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
         s.fetching = false;
         Some(landed_fail(s))
     } else {
-        crate::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
+        crate::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
         None
     }
 }
@@ -1959,7 +1959,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     }
     if let Some(build) = build {
         let n = commit(state, build);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "hubs: landed — {n} items, {} shelves",
             hub_count(state)
         ));

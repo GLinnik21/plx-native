@@ -103,7 +103,7 @@ pub(crate) fn start() {
     // HTTPS request behind one mutex. A 15-second long poll would then starve sign-in and uploads;
     // keep diagnostics working and name why control is unavailable instead.
     if !crate::net::threaded_tls_ready() {
-        crate::log("lab-control: disabled — this firmware cannot run concurrent TLS safely");
+        crate::eventlog::log("lab-control: disabled — this firmware cannot run concurrent TLS safely");
         return;
     }
     if STARTED.swap(true, Ordering::AcqRel) {
@@ -116,7 +116,7 @@ pub(crate) fn start() {
     let pin = cfg.pin.clone();
     if !crate::task::spawn_small("labctl", move || run(endpoint, secret, session, pin)) {
         STARTED.store(false, Ordering::Release);
-        crate::log("lab-control: no worker thread — command channel unavailable");
+        crate::eventlog::log("lab-control: no worker thread — command channel unavailable");
     }
 }
 
@@ -152,7 +152,7 @@ fn run(url: String, secret: String, session: String, pin: String) {
                 // request. Clear it before considering the next command carried by that response.
                 ack = None;
                 if !connected {
-                    crate::log(if ever_connected {
+                    crate::eventlog::log(if ever_connected {
                         "lab-control: receiver reconnected"
                     } else {
                         "lab-control: receiver connected"
@@ -177,13 +177,13 @@ fn run(url: String, secret: String, session: String, pin: String) {
                     }
                     Ok(None) => {} // idle long poll expired; immediately open the next one
                     Err(()) => {
-                        crate::log("lab-control: receiver returned malformed JSON");
+                        crate::eventlog::log("lab-control: receiver returned malformed JSON");
                     }
                 }
             }
             Some(r) => {
                 if !failure_reported {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "lab-control: receiver refused poll status={} — retrying",
                         r.status
                     ));
@@ -195,7 +195,7 @@ fn run(url: String, secret: String, session: String, pin: String) {
             }
             None => {
                 if !failure_reported {
-                    crate::log("lab-control: receiver unreachable — retrying");
+                    crate::eventlog::log("lab-control: receiver unreachable — retrying");
                 }
                 failure_reported = true;
                 connected = false;

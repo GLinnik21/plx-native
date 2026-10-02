@@ -1350,7 +1350,7 @@ impl LoginScreen {
         self.report.alert.dismiss();
         if self.report.sheet == Sheet::Details {
             if let Some(o) = self.report.offer.as_ref().filter(|o| send && o.sendable()) {
-                crate::log("login: user sent a sign-in report from Details");
+                crate::eventlog::log("login: user sent a sign-in report from Details");
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::ReportIncident { id: o.id })));
             }
             if self.row().position(DETAILS).is_some() {
@@ -1396,7 +1396,7 @@ impl LoginScreen {
                 // between this screen's last `Tick` and this key), and the event log is the one
                 // place that failure is read from — a claim it did something is exactly the wrong
                 // thing to have written there.
-                crate::log("login: user requested a restart of a stalled sign-in");
+                crate::eventlog::log("login: user requested a restart of a stalled sign-in");
                 if self.pending_restart.is_none() {
                     if let Some(reply) = self.allocate_reply(fx) {
                         self.pending_restart = Some(PendingRestart {

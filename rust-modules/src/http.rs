@@ -360,7 +360,7 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
     if !origin.is_tls() && carries_credential(path, headers) {
         static REPORTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
         if let Some(line) = plaintext_credential_report(&REPORTED, CredentialPolicy::build(), allowed) {
-            crate::log(line);
+            crate::eventlog::log(line);
         }
     }
     allowed
@@ -594,7 +594,7 @@ fn plaintext(
         return failure;
     }
     if overflowed {
-        crate::log("http: response exceeded body limit");
+        crate::eventlog::log("http: response exceeded body limit");
         return RequestOutcome::Transport(None);
     }
     if matches!(body_policy, BodyPolicy::Deadline { .. })
