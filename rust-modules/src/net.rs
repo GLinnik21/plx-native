@@ -2210,6 +2210,8 @@ pub(crate) mod keypin {
 
     /// Why key mode cannot help ANY host right now, if it cannot: [`Blocked::KeyChanged`] outranks
     /// [`Blocked::NoKey`] when both stand.
+    // Read by the Home/Library read-out that follows; the tests read it until that lands.
+    #[allow(dead_code)]
     pub(crate) fn blocked() -> Option<Blocked> {
         let st = state();
         st.blocked
