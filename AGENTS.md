@@ -50,9 +50,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - **New module references only point down.** `ci/module-layers.ini` declares the crates
   `rust-modules/src` is being split into, and `ci/check-module-layers.py` (in `make check`) fails
   on a reference that names a layer its own layer may not use, and on a module placed in no layer.
-  Fix the reference (`docs/module-layers.md` lists the moves; they are independent) instead of
-  adding a (file, layer) pair to `ci/allow/layers.txt`. That list is keyed by path, so renaming or
-  splitting a file that has entries means moving its lines to the new path in the same diff.
+  Fix the reference (`docs/module-layers.md` says where code belongs and how to cut an upward
+  name) instead of adding a (file, layer) pair to `ci/allow/layers.txt`, which the migration
+  emptied (2026-10-02) and which stays empty.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,

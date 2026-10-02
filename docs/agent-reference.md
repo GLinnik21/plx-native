@@ -587,10 +587,13 @@ which the linking section explains is load-bearing rather than tidy.
 
 ### Module-cycle ratchet (`ci/check-module-cycle.py`)
 
-The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app, but a few
-thin upward references (`ui` -> `screens`/`app`, `gfx`/`text` -> `ui`, `plex` -> `route`) close one
-strongly connected component of top-level modules that holds nearly all of the code. The gate does
-not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
+The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app
+(`ci/module-layers.ini` is the full target, gated per reference by `ci/check-module-layers.py`). A
+few thin upward references once closed one strongly connected component of top-level modules
+holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13, which is
+this tool's coarse view of edges the layer gate allows: it sees `ui` and `diag` as one node each,
+while `ui::machine`/`ui::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
+layers. The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
 module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
 strings blanked; the docstring lists what it cannot see), compares the cycle's members with
 `ci/module-cycle-baseline.json`, and **fails** when a module outside the baseline lands on a cycle
@@ -1700,7 +1703,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   to grade `fps=`/`worstframe=` at all) armed**;
   take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
   milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
-  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `gfx::profile::phase` (`ui::profile` until module-layers step L5) on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
   prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
   2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus
