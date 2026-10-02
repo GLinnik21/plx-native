@@ -119,8 +119,8 @@ pub(crate) enum DiagEvent {
         /// How long from `requested` to a picture, as a class.
         startup: &'static str,
     },
-    /// This attempt failed, once. `kind` is `player::FailureKind`'s stable code — never the
-    /// on-screen wording, which is prose and will be re-worded.
+    /// This attempt failed, once. `kind` is `telemetry::classes::FailureClass`'s stable code —
+    /// never the on-screen wording, which is prose and will be re-worded.
     PlaybackFailed {
         playback_id: i64,
         mode: &'static str,
@@ -1099,20 +1099,20 @@ mod tests {
         );
     }
 
-    /// **`playback.failed`'s declared `kind` domain must name every `FailureKind` code.**
+    /// **`playback.failed`'s declared `kind` domain must name every `FailureClass` code.**
     ///
-    /// This is the check that was missing when `FailureKind::JailMissingRtkmem` shipped: nothing
+    /// This is the check that was missing when `FailureClass::JailMissingRtkmem` shipped: nothing
     /// tied the *documented* domain (this file's `EVENT_SPECS`, and through it `PRIVACY.md`, whose
     /// own test only compares the two against EACH OTHER) to the *actual* enum a `playback.failed`
-    /// event's `kind` field is built from — `player::FailureKind::code`. So a new variant reached
-    /// production PostHog rows with a value neither document ever named, which is exactly the
-    /// shape of drift the value would be filtered out by in any dashboard, insight or taxonomy
-    /// definition built from the documented list rather than from the enum itself. Add a
-    /// `FailureKind` variant, forget this list, and this test is what catches it — not a
-    /// dashboard going quiet on a code nobody recognises.
+    /// event's `kind` field is built from — `telemetry::classes::FailureClass::code`, which
+    /// `player::FailureKind::code` returns. So a new variant reached production PostHog rows with
+    /// a value neither document ever named, which is exactly the shape of drift the value would be
+    /// filtered out by in any dashboard, insight or taxonomy definition built from the documented
+    /// list rather than from the enum itself. Add a `FailureClass` variant, forget the domain, and
+    /// this test is what catches it — not a dashboard going quiet on a code nobody recognises.
     #[test]
     fn every_failure_kind_code_is_named_in_the_playback_failed_domain() {
-        use crate::player::FailureKind as F;
+        use crate::telemetry::classes::FailureClass as F;
         let spec = EVENT_SPECS
             .iter()
             .find(|s| s.name == "playback.failed")
@@ -1123,20 +1123,9 @@ mod tests {
             .find(|f| f.key == "kind")
             .expect("playback.failed declares a kind field")
             .domain;
-        // Every current variant, including the retained historical `original_rollback` code — see
-        // `FailureKind`'s own doc for why that one still exists with no live producer.
-        for kind in [
-            F::DecisionRefused,
-            F::NoVideoTranscodeTarget,
-            F::NoVideoTrack,
-            F::MediaSource,
-            F::PlaybackInterrupted,
-            F::TvPipeline,
-            F::OriginalRollback,
-            F::JailMissingRtkmem,
-            F::LoadTimeout,
-            F::Unspecified,
-        ] {
+        // Every variant, including the retained historical `original_rollback` code — see
+        // `FailureClass`'s own doc for why that one still exists with no live producer.
+        for kind in F::ALL {
             assert!(
                 domain.contains(kind.code()),
                 "playback.failed's declared kind domain omits {:?} ({}): {domain}",

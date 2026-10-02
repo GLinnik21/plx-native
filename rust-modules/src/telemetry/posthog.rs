@@ -491,7 +491,7 @@ mod tests {
 
     /// **THE ONE THAT MATTERS FOR ISSUE #74.** A `playback.failed` event, put through the exact
     /// wire body a flush would send (`captured`, off the durable envelope — never `single`, which
-    /// only the legacy tests below exercise), carries the real `FailureKind::code()` as
+    /// only the legacy tests below exercise), carries the real `FailureClass::code()` as
     /// `properties.kind` — for a NON-DEFAULT kind, so this cannot pass by accident on the
     /// `unspecified` fallback every under-diagnosed dev failure produces. This is the check that
     /// would have caught `kind` never reaching a production row: every earlier assertion in this
@@ -501,9 +501,9 @@ mod tests {
     #[test]
     fn a_playback_failed_event_carries_the_real_failure_kind_on_the_durable_wire_body() {
         for kind in [
-            crate::player::FailureKind::TvPipeline,
-            crate::player::FailureKind::LoadTimeout,
-            crate::player::FailureKind::JailMissingRtkmem,
+            crate::telemetry::classes::FailureClass::TvPipeline,
+            crate::telemetry::classes::FailureClass::LoadTimeout,
+            crate::telemetry::classes::FailureClass::JailMissingRtkmem,
         ] {
             let event = DiagEvent::PlaybackFailed {
                 playback_id: 7,
@@ -518,7 +518,7 @@ mod tests {
             );
             assert_eq!(
                 body["properties"]["kind"], kind.code(),
-                "the real FailureKind code did not reach the wire body for {kind:?}"
+                "the real FailureClass code did not reach the wire body for {kind:?}"
             );
             assert_ne!(
                 body["properties"]["kind"], "unspecified",

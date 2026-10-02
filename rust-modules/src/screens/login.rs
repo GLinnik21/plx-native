@@ -350,6 +350,28 @@ fn readout_overlay<'a>(
     o
 }
 
+/// The icon a failed sign-in's mark draws as. Telemetry decides WHICH mark a cause earns
+/// (`IncidentContext::readout_glyph`, from the same evidence as the caption); this screen decides
+/// what each mark looks like. One arm per mark and no wildcard, so a new mark cannot draw nothing.
+fn incident_icon(glyph: crate::telemetry::incident::ReadoutGlyph) -> crate::ui::icons::Icon {
+    use crate::telemetry::incident::ReadoutGlyph as G;
+    use crate::ui::icons::Icon;
+    match glyph {
+        G::ClockBadgeAlert => Icon::ClockBadgeAlert,
+        G::CloudBadgeAlert => Icon::CloudBadgeAlert,
+        G::GlobeBadgeMinus => Icon::GlobeBadgeMinus,
+        G::GlobeBadgeQuestion => Icon::GlobeBadgeQuestion,
+        G::KeyBadgeAlert => Icon::KeyBadgeAlert,
+        G::LockBadgeAlert => Icon::LockBadgeAlert,
+        G::PeopleBadgeAlert => Icon::PeopleBadgeAlert,
+        G::PersonBadgeXmark => Icon::PersonBadgeXmark,
+        G::ServerBadgeMinus => Icon::ServerBadgeMinus,
+        G::ServerBadgePlus => Icon::ServerBadgePlus,
+        G::ServerBadgeXmark => Icon::ServerBadgeXmark,
+        G::WifiSlash => Icon::WifiSlash,
+    }
+}
+
 /// The read-out's controls, placed by the WIDGET through the [`Measure`] capability — the same
 /// `StatusOverlay::action_frames_measured` its draw uses. The overlay built here carries no
 /// caption or reason TEXT: the row moves with the KIND (a `Working` caption sits lower, a
@@ -1258,7 +1280,7 @@ impl LoginScreen {
             return crate::ui::icons::Icon::KeyBadgeAlert;
         }
         match self.report.offer.as_ref().and_then(|o| o.readout_context()) {
-            Some(ctx) => ctx.readout_glyph(),
+            Some(ctx) => incident_icon(ctx.readout_glyph()),
             // No incident context to read (should not happen alongside `Phase::Error`, which
             // `auth::output_failed` always pairs with one) — the wait's own clock is the closest
             // honest reading of "something about time or connectivity went wrong".
@@ -2154,6 +2176,22 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
     // to do anything. Restoring click-anywhere would be a step backward, not a port.
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
+    }
+}
+
+#[cfg(test)]
+mod incident_icon_tests {
+    use super::incident_icon;
+    use crate::telemetry::incident::ReadoutGlyph;
+
+    /// Telemetry's marks and the icon family share names, and the mapping between them is written
+    /// out by hand: a mark that drew a neighbour's icon would put the wrong badge above a verdict
+    /// and still compile.
+    #[test]
+    fn every_incident_mark_draws_the_icon_of_its_own_name() {
+        for glyph in ReadoutGlyph::ALL {
+            assert_eq!(format!("{:?}", incident_icon(glyph)), format!("{glyph:?}"));
+        }
     }
 }
 

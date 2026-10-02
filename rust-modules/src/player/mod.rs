@@ -615,12 +615,12 @@ fn support_line_of(i: &crate::webos::Info, hw: &crate::webos::Hardware, kind: Fa
 /// **Why a playback failed, as a closed set.** Drives the wording below AND the telemetry code, so
 /// the two are one decision.
 ///
-/// Current variants are outcomes `error_shape` can tell apart. One historical wire code,
-/// [`OriginalRollback`](FailureKind::OriginalRollback), remains so old telemetry fixtures and
-/// dashboards retain their meaning after the destructive probe transaction was removed; no live
-/// path emits it now. Runtime source, interrupted-playback and `Load` failures became distinct only
-/// when their worker signals existed. A video-plane bind or stalled feed still reaches
-/// [`Unspecified`](FailureKind::Unspecified) until an equally concrete signal exists.
+/// Current variants are outcomes `error_shape` can tell apart. The retired `original_rollback`
+/// wire code (the destructive probe transaction was removed) has no cause here any more and lives
+/// on only as `telemetry::classes::FailureClass::OriginalRollback`, so old telemetry fixtures and
+/// dashboards retain their meaning. Runtime source, interrupted-playback and `Load` failures became
+/// distinct only when their worker signals existed. A video-plane bind or stalled feed still
+/// reaches [`Unspecified`](FailureKind::Unspecified) until an equally concrete signal exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailureKind {
     /// `/decision` refused the item outright — the server can neither direct play nor convert it.
@@ -641,8 +641,6 @@ pub(crate) enum FailureKind {
     PlaybackInterrupted,
     /// Starfish refused the Load declaration, so no decoder session could start.
     TvPipeline,
-    /// Historical telemetry only: the retired exclusive Original experiment lost its HLS rollback.
-    OriginalRollback,
     /// This device's jail is missing `/dev/rtkmem` on a SoC where that is a known cause of
     /// native A/V crashes — the Load was never attempted. Community-tier finding: see
     /// [`crate::webos::jail_blocks_native_video`]'s doc.
@@ -658,22 +656,29 @@ pub(crate) enum FailureKind {
 }
 
 impl FailureKind {
-    /// The stable wire code. Written out rather than derived from the variant name, because a
-    /// rename is a refactor and must not silently re-partition a year of dashboards.
-    pub(crate) fn code(self) -> &'static str {
+    /// The telemetry wire class of this cause. The wire schema is telemetry's
+    /// (`telemetry::classes::FailureClass`), so this match is the ONE place the player's own enum
+    /// is turned into it, and a new variant cannot compile without choosing its class.
+    pub(crate) fn class(self) -> crate::telemetry::classes::FailureClass {
+        use crate::telemetry::classes::FailureClass as C;
         match self {
-            FailureKind::DecisionRefused => "decision_refused",
-            FailureKind::PlaybackPolicy => "playback_policy",
-            FailureKind::NoVideoTranscodeTarget => "no_video_transcode_target",
-            FailureKind::NoVideoTrack => "no_video_track",
-            FailureKind::MediaSource => "media_source",
-            FailureKind::PlaybackInterrupted => "playback_interrupted",
-            FailureKind::TvPipeline => "tv_pipeline",
-            FailureKind::OriginalRollback => "original_rollback",
-            FailureKind::JailMissingRtkmem => "jail_missing_rtkmem",
-            FailureKind::LoadTimeout => "load_timeout",
-            FailureKind::Unspecified => "unspecified",
+            FailureKind::DecisionRefused => C::DecisionRefused,
+            FailureKind::PlaybackPolicy => C::PlaybackPolicy,
+            FailureKind::NoVideoTranscodeTarget => C::NoVideoTranscodeTarget,
+            FailureKind::NoVideoTrack => C::NoVideoTrack,
+            FailureKind::MediaSource => C::MediaSource,
+            FailureKind::PlaybackInterrupted => C::PlaybackInterrupted,
+            FailureKind::TvPipeline => C::TvPipeline,
+            FailureKind::JailMissingRtkmem => C::JailMissingRtkmem,
+            FailureKind::LoadTimeout => C::LoadTimeout,
+            FailureKind::Unspecified => C::Unspecified,
         }
+    }
+
+    /// The stable wire code, which is its class's: the read-out's support line and the telemetry
+    /// channel quote one string because they read one table.
+    pub(crate) fn code(self) -> &'static str {
+        self.class().code()
     }
 }
 
@@ -731,7 +736,7 @@ pub(crate) fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<Fail
     use FailureAction as A;
     use FailureKind as K;
     let transient = matches!(kind, K::MediaSource | K::PlaybackInterrupted | K::LoadTimeout
-        | K::OriginalRollback | K::Unspecified);
+        | K::Unspecified);
     let mut v = Vec::with_capacity(4);
     match kind {
         // A device finding: nothing about the request changes it; only the repair can.
@@ -2347,7 +2352,7 @@ mod tests {
     fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
         use FailureKind as K;
         let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
-            K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout, K::OriginalRollback,
+            K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
             K::JailMissingRtkmem, K::Unspecified];
         let mut out = Vec::new();
         for kind in kinds {
@@ -2361,6 +2366,35 @@ mod tests {
             }
         }
         out
+    }
+
+    /// **Each cause converts to its own telemetry class, under the code it always had.** The class
+    /// enum is telemetry's and the match that fills it is this layer's, so a copy-paste that sent
+    /// two causes to one class would merge two dashboard series without any compile error. (The
+    /// retired `original_rollback` code has no cause here; its class is exercised by telemetry.)
+    #[test]
+    fn every_failure_kind_converts_to_its_own_stable_wire_class() {
+        use FailureKind as K;
+        let table = [
+            (K::DecisionRefused, "decision_refused"),
+            (K::PlaybackPolicy, "playback_policy"),
+            (K::NoVideoTranscodeTarget, "no_video_transcode_target"),
+            (K::NoVideoTrack, "no_video_track"),
+            (K::MediaSource, "media_source"),
+            (K::PlaybackInterrupted, "playback_interrupted"),
+            (K::TvPipeline, "tv_pipeline"),
+            (K::JailMissingRtkmem, "jail_missing_rtkmem"),
+            (K::LoadTimeout, "load_timeout"),
+            (K::Unspecified, "unspecified"),
+        ];
+        for (kind, code) in table {
+            assert_eq!(kind.code(), code, "{kind:?}");
+            assert_eq!(kind.class().code(), code, "{kind:?}");
+        }
+        let mut classes: Vec<_> = table.iter().map(|(kind, _)| kind.class().code()).collect();
+        classes.sort_unstable();
+        classes.dedup();
+        assert_eq!(classes.len(), table.len(), "two causes share one wire class");
     }
 
     /// **The owner's bug**: under Force Direct Play the read-out offered the Quality ladder, whose
