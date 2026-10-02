@@ -490,7 +490,7 @@ fn field_form(inputs: &FieldListInputs<'_>) -> Form<RowId, Action, SettingsPage>
 fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
 }
-use crate::ui::track_menu::{subtitle_position_label, subtitle_size_label};
+use crate::appkit::track_menu::{subtitle_position_label, subtitle_size_label};
 fn next_episode_label(mode: NextEpisodeMode) -> &'static str {
     match mode {
         NextEpisodeMode::Countdown => crate::i18n::msg::settings_playback_next_episode_countdown(),

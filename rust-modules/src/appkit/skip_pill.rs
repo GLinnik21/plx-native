@@ -50,7 +50,7 @@ impl Prompt {
 }
 
 /// PURE: the offer a given segment makes. Takes the marker rather than reading the playhead, so
-/// the precedence it feeds ([`crate::ui::player_hud::slot_for`]) is host-testable and the whole frame
+/// the precedence it feeds ([`crate::appkit::player_hud::slot_for`]) is host-testable and the whole frame
 /// decides from ONE playhead sample — `playpos_ns` is written by LG's media thread, and re-reading
 /// it per call site let the input path and the draw path disagree within a single frame.
 ///
@@ -72,15 +72,15 @@ pub(crate) fn prompt_for(m: metadata::Marker) -> Prompt {
 
 /// The button's rect — the SHARED control-row slot, so it and Up Next cannot drift apart.
 ///
-/// `row` is the player instance's own [`crate::ui::player_hud::TransportRow`] (restructure phase
+/// `row` is the player instance's own [`crate::appkit::player_hud::TransportRow`] (restructure phase
 /// 9): it carries both the label-width memo this measurement is cached in and the control row's
 /// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
-pub(crate) fn rect(row: &mut crate::ui::player_hud::TransportRow, pr: Prompt, measure: &dyn crate::ui::machine::Measure) -> Rect {
-    crate::ui::player_hud::ctrl_slot(row, pr.label(), measure)
+pub(crate) fn rect(row: &mut crate::appkit::player_hud::TransportRow, pr: Prompt, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    crate::appkit::player_hud::ctrl_slot(row, pr.label(), measure)
 }
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
-pub(crate) fn draw(row: &mut crate::ui::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool, measure: &dyn crate::ui::machine::Measure) {
+pub(crate) fn draw(row: &mut crate::appkit::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool, measure: &dyn crate::ui::machine::Measure) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };

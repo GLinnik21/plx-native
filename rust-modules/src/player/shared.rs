@@ -499,7 +499,7 @@ pub(crate) struct Shared {
     /// `frames` deliberately does not: `pump` zeroes `frames` as *part of applying* a seek, which
     /// makes "we have never shown a frame" and "we just seeked" indistinguishable through it. The
     /// HUD's one rule for which surface owns the "pipeline is working" read-out keys on this bit;
-    /// see `ui::player_hud::busy_surface`. Monotone within a session (false→true only), which is
+    /// see `appkit::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
     pub load_completed: AtomicBool,          // bf_loaded signal

@@ -4,7 +4,7 @@
 //! (the playing item's streams, the demuxer's own tags, "your languages"), so every rule here is
 //! host-tested without a `PlaybackSession`, a store or a `TableView`.
 //!
-//! `ui::track_menu` turns a [`sub_sections`] answer into a keyed form (labels, badges, the
+//! `appkit::track_menu` turns a [`sub_sections`] answer into a keyed form (labels, badges, the
 //! checkmark, the Timing and Style read-outs) and reads a focused row back through
 //! [`SubRow::target`]. The model deliberately carries no checked track, offset or tone: those are
 //! read-outs, so changing one never re-groups the list.
@@ -29,7 +29,7 @@ pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     image_codec_badge(codec).is_some()
 }
 
-/// What a Subtitles-panel row IS — one per drawn row. `ui::track_menu` declares each row under it
+/// What a Subtitles-panel row IS — one per drawn row. `appkit::track_menu` declares each row under it
 /// (as its `TrackRow` identity), and every reader of a focused row matches on that rather than
 /// re-deriving which section a row fell in. (The footnote naming why Timing/Style are dim is an
 /// inert slot there, not a row with a target.)

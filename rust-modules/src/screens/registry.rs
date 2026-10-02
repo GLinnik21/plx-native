@@ -164,9 +164,9 @@ pub(crate) enum PlayerReq {
     /// is a request rather than something `PlayerScreen` performs.
     CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
-    More(crate::ui::more_menu::Action),
+    More(crate::appkit::more_menu::Action),
     /// Apply the Info card's focused action.
-    Info(crate::ui::info_panel::InfoAction),
+    Info(crate::appkit::info_panel::InfoAction),
     /// The panel took a DOWN past its own bottom: drop the HUD's ring onto the tabs row.
     FocusTabs,
     /// Keep the transport alive while a panel is being read (`HUD_MENU_MS`), or hand it the
@@ -178,7 +178,7 @@ pub(crate) enum PlayerReq {
     /// The track menu picked a row. `route::commit_audio_selection`/`commit_subtitle_selection`
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
-    CommitTrack(crate::ui::track_menu::TrackCommit),
+    CommitTrack(crate::appkit::track_menu::TrackCommit),
     /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
     /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
     /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old

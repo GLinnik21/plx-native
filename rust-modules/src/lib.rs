@@ -11,6 +11,7 @@
 //! shapes are migration legacy, not ABI).
 mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
+mod appkit; // widgets shared by several screens, composed from `ui` over application types (the player HUD, the track menus, the Sources row model)
 mod aq;
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod b64; // standard base64 encode/decode, a leaf (keymanager sealed blobs, spki pin strings)

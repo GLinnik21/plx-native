@@ -177,7 +177,7 @@ something.
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
-  is in its doc comment) and `player_hud::sub_screen_rect` scales the whole display set into the
+  is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
@@ -204,7 +204,7 @@ something.
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
   for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
-  busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
+  busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
 - **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
   transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in

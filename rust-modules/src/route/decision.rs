@@ -2,7 +2,7 @@
 //! [`PlayerControl`], PMS/native I/O, and the encoder/scrobble/timeline machinery — everything
 //! [`super::plan`] is not. `PlaybackSession` is the main-thread projection used to build URLs/payloads;
 //! [`PLAYER_CONTROL`] is the synchronized authority for route ownership and route-changing
-//! intents. The player engine reads the URL/session through the accessors here; ui::player_hud
+//! intents. The player engine reads the URL/session through the accessors here; appkit::player_hud
 //! reads the HUD strings through title_cptr()/ctxline_cptr(). This file is exempt from the
 //! `wall` gate that `plan.rs` must pass — a network/adapter effect is allowed to read wall time —
 //! but as of this split it still contains none: the one wall-clock field this module owned
@@ -5329,7 +5329,7 @@ pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
 }
 
 /// What the player does at an episode's credits when a successor is queued — install-wide, like
-/// [`DIRECT_PLAY_MODE`]. Read by `ui::player_hud::slot` every frame and by `finish_playback` at
+/// [`DIRECT_PLAY_MODE`]. Read by `appkit::player_hud::slot` every frame and by `finish_playback` at
 /// the end of the stream.
 static NEXT_EPISODE_MODE: AtomicU8 = AtomicU8::new(0); // NextEpisodeMode::Countdown's index
 
@@ -5360,7 +5360,7 @@ pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
 }
 
 /// How far one Left/Right press jumps in the player and the trailer transport — install-wide,
-/// like [`NEXT_EPISODE_MODE`]. Read per press by `ui::player_hud::scrub_step_ns`.
+/// like [`NEXT_EPISODE_MODE`]. Read per press by `appkit::player_hud::scrub_step_ns`.
 static SKIP_INTERVAL: AtomicU8 = AtomicU8::new(1); // SkipInterval::Seconds10's index
 
 pub(crate) fn skip_interval() -> SkipInterval {
@@ -5477,7 +5477,7 @@ pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channe
 }
 
 /// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
-/// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
+/// playback — it is a preference, not session state — and because `appkit::more_menu` reads it to draw
 /// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
 ///
 /// Seeded to Original even before the boot gate restores the session: no call path may turn a
@@ -8448,7 +8448,7 @@ pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
 
 /// **Test-only session builder for the Audio tab's enhancement rows (issue #266 PR 4).** Every
 /// `PlaybackSession` field is private to this module by design (see `PlaybackSession::IDLE`'s own
-/// doc), so `ui::track_menu`'s tests — which live outside `route` and see only this module's
+/// doc), so `appkit::track_menu`'s tests — which live outside `route` and see only this module's
 /// `pub(crate)` surface — cannot build one field-by-field the way this module's own tests do.
 /// This is the one door: it drives every input `audio_enhancements_offered_live`/
 /// `displayed_audio_enhancements` read (I1-I7), registers a throwaway server carrying the given

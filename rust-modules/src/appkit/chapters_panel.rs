@@ -4,7 +4,7 @@
 //!
 //! Data comes from the PLAYING leaf (`metadata::playing_chapters`, loaded with `?includeChapters=1`
 //! on the same fetch the track store already makes), never from `metadata::current()` — the same
-//! identity rule `ui/track_menu.rs` and `screens/player/skip_pill.rs` state. Reading `current()` is what made
+//! identity rule `appkit/track_menu.rs` and `appkit/skip_pill.rs` state. Reading `current()` is what made
 //! the Chapters tab vanish for every episode started from a show detail page: `current()` is then
 //! the SHOW, and a show container carries no `Chapter[]`.
 #![allow(dead_code)]
@@ -197,6 +197,11 @@ fn n(meta: metadata::MetadataView<'_>) -> c_int {
 pub(crate) fn has_chapters(meta: metadata::MetadataView<'_>) -> bool {
     n(meta) > 0
 }
+/// how many chapters the PLAYING item has — what the owning screen reads from its host's metadata
+/// view and hands to [`ChaptersPart::count`], so this widget never names the host's trait
+pub(crate) fn chapter_count(meta: metadata::MetadataView<'_>) -> usize {
+    n(meta) as usize
+}
 
 fn scroll_target(sel: c_int) -> f32 {
     // pin the focused card to the 2nd slot (like the episode picker)
@@ -255,14 +260,18 @@ pub(crate) struct ChaptersPart<'a> {
     pub(crate) state: &'a ChaptersState,
     pub(crate) entry: EntryId,
     pub(crate) group: GroupId,
+    /// the playing leaf's chapter count for THIS query, read by the owner from its host's metadata
+    /// view ([`chapter_count`]) — passed in so the part is generic over any [`Host`], not over the
+    /// application's `MetadataLike` (which lives in `screens::registry`, a layer above this one)
+    pub(crate) count: usize,
 }
 
-impl<H: Host + crate::screens::registry::MetadataLike> Focusable<H> for ChaptersPart<'_>
+impl<H: Host> Focusable<H> for ChaptersPart<'_>
 where
     H::Elem: IndexElem,
 {
-    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        let nn = n(H::metadata(cx)) as usize;
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let nn = self.count;
         if nn == 0 {
             return;
         }
@@ -280,15 +289,15 @@ where
             elem: ElemKind::Card,
         });
     }
-    fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as usize) < n(H::metadata(cx)) as usize).then_some(self.group)
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < self.count).then_some(self.group)
     }
-    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
-        step_index(self.entry, key, dir, n(H::metadata(cx)) as usize)
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        step_index(self.entry, key, dir, self.count)
     }
-    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()? as usize;
-        if i >= n(H::metadata(cx)) as usize {
+        if i >= self.count {
             return None;
         }
         let rect = card_rect(i, self.state.scroll.pos);
@@ -299,8 +308,8 @@ where
             index: Some(i as u32),
         })
     }
-    fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        clamp_index(self.entry, want, n(H::metadata(cx)) as usize)
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        clamp_index(self.entry, want, self.count)
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         FocusKey {
@@ -310,7 +319,7 @@ where
     }
 }
 
-impl<H: Host + crate::screens::registry::MetadataLike> Part<H> for ChaptersPart<'_>
+impl<H: Host> Part<H> for ChaptersPart<'_>
 where
     H::Elem: IndexElem,
 {
@@ -322,7 +331,7 @@ where
         // space because `card_rect` already resolves the strip's own scroll offset, exactly as
         // `TablePart::draw` registers a table's already-absolute row rects.
         let p = Painter::root();
-        let nn = n(H::metadata(f.cx)) as usize;
+        let nn = self.count;
         for i in 0..nn {
             f.stop(
                 p,
@@ -345,18 +354,17 @@ where
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = AppFx;
-        type Msg = AppMsg;
+        type Fx = crate::ui::fixture::FixtureFx;
+        type Msg = crate::ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
         type Init = crate::ui::fixture::FixtureInit;
-        type Memory = PageMemory;
+        type Memory = ();
     }
 
     thread_local! {
@@ -366,12 +374,6 @@ mod focus_tests {
     fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
-    impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            test_store().view()
-        }
-    }
-
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
         let measure = crate::ui::fixture::FixtureMeasure;
         test(&Cx {
@@ -436,7 +438,7 @@ mod focus_tests {
             scroll: Spring::at(0.0),
             scale: Spring::at(1.0),
         };
-        let part = ChaptersPart { state: &st, entry: e, group: GroupId(0) };
+        let part = ChaptersPart { state: &st, entry: e, group: GroupId(0), count: chapter_count(test_store().view()) };
         with_cx(e, |cx| {
             let placed = <ChaptersPart as Focusable<HostFixture>>::place(&part, &0u32, cx, At::Drawn);
             if let Some(placed) = placed {

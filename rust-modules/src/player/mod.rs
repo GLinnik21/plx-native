@@ -1445,7 +1445,7 @@ pub(crate) fn seek_display_ns() -> i64 {
 /// heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
 /// intended position would let a seek that never lands read as playback that climbed.
 ///
-/// `ui/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
+/// `appkit/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
 /// live scrub preview between them, so its expression is a superset rather than a caller.
 pub(crate) fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
     let t = seek_display_ns();
@@ -1575,7 +1575,7 @@ pub(crate) fn request_subtitle(idx: i32) {
 /// Seeded to white, which is what every build before the preference drew.
 static SUBTITLE_TONE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-/// The selected tone. Read once a frame by the two subtitle draws (`ui::player_hud`) and by the
+/// The selected tone. Read once a frame by the two subtitle draws (`appkit::player_hud`) and by the
 /// track menu for its checkmark.
 pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
     crate::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
@@ -1649,16 +1649,16 @@ pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 60_000;
 /// The earliest a SIDECAR goes. Its whole file is in memory (`sidecar`), so an advance is exactly
 /// as servable as a delay.
 pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -60_000;
-/// The Timing capsule's step (plan `subtitle-menu-capsule` §4), read by `ui::timing_capsule` on
+/// The Timing capsule's step (plan `subtitle-menu-capsule` §4), read by `appkit::timing_capsule` on
 /// every LEFT/RIGHT `Down`; the Subtitles menu's own Timing row no longer steps anything itself,
-/// it only opens the capsule (`ui::track_menu::TrackOk::OpenTiming`).
+/// it only opens the capsule (`appkit::track_menu::TrackOk::OpenTiming`).
 pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
-/// The capsule's step once a held direction has admitted 8 repeats (`ui::timing_capsule::key`) —
+/// The capsule's step once a held direction has admitted 8 repeats (`appkit::timing_capsule::key`) —
 /// a faster walk across the wide sidecar range without losing the 100 ms precision near 0.
 pub(crate) const SUBTITLE_OFFSET_FAST_STEP_MS: i64 = 500;
 
 /// **The offset range for the selected subtitle, in milliseconds (`(earliest, latest)`)** — the
-/// ONE rule the Timing rows (their clamp and their limit dimming, `ui::track_menu`) and the
+/// ONE rule the Timing rows (their clamp and their limit dimming, `appkit::track_menu`) and the
 /// player's clamp ([`set_subtitle_offset`]) both call, so the menu can never offer a step the
 /// player refuses.
 ///

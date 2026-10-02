@@ -27,7 +27,6 @@ pub(crate) mod card_motion;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
-pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub(crate) mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;
@@ -54,7 +53,6 @@ pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it 
 pub mod form; // declared, ordered rows with stable keys: Form / FormTable (docs/settings-form.md)
 #[cfg(test)]
 mod form_tests;
-pub mod info_panel;
 #[cfg(test)]
 mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
@@ -74,11 +72,9 @@ pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region fo
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub(crate) mod page_stack; // the drill-in page stack Tracks and More share
 pub(crate) mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
-pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
-pub mod player_hud;
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
@@ -88,7 +84,6 @@ pub(crate) mod route_screen;
 pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
-pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod table;
 pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
 pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
@@ -98,10 +93,7 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub(crate) mod text_lift; // the animated focus treatment (lift + plate + shadow) for a block of prose that is a focus stop but not a card
 pub mod theme;
-pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)
-pub mod track_menu;
 pub(crate) mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
-pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 

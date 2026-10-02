@@ -105,7 +105,7 @@ fn the_last_pinned_value_dims_without_disabling_its_row_or_other_details() {
 #[test]
 fn the_separator_before_recheck_is_inert_and_recheck_is_the_last_focusable_row() {
     let (groups, rows) = two_sources();
-    let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::screens::registry::BAND);
+    let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::ui::table_screen::BAND_BASE);
     built.set(form(Level::Browse, &groups, &rows, Tail::Recheck), None);
     let last_library = built.index_of(&SrcTarget::Library(2)).expect("last library row");
     let recheck = built.index_of(&SrcTarget::Recheck).expect("recheck row");

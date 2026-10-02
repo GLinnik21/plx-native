@@ -635,9 +635,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and, since phase 9 (Player was the last), no legacy screens at all — every route mounts an owned
-  screen under `screens/`; `player_hud.rs`/`track_menu.rs`/`info_panel.rs`/`chapters_panel.rs`/
-  `up_next.rs`/`more_menu.rs` are drawing/state modules `screens::player` composes, the same
-  relationship `widgets.rs` has to other screens. **`rust-modules/src/ui/CLAUDE.md` is the
+  screen under `screens/`. The player's drawing/state modules (`appkit/player_hud.rs`,
+  `track_menu.rs`, `info_panel.rs`, `chapters_panel.rs`, `up_next.rs`, `more_menu.rs`,
+  `timing_capsule.rs`, `skip_pill.rs`) and the Sources row model (`appkit/source_list.rs`) live in
+  `rust-modules/src/appkit/`, the layer between `ui/` and `screens/` for widgets several screens
+  share — they name application types, so not `ui/`, and the `sibling` gate keeps them out of
+  `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -1846,7 +1849,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-nopass` for the PLEX PASS capsule line. Every arm but `jail` feeds the real
   `player::error_shape` (`jail` is the one `ErrorShape` `error_shape` never produces, so it calls
   the sibling `jail_error_shape` directly instead), and forces the STATE only at
-  `player_hud::busy` — never at `player::state()`, which the pump acts on),
+  `appkit::player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
   (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
   `solid:<deg>[:L*]`), drawn as page content so it is exactly what the tab track samples and what

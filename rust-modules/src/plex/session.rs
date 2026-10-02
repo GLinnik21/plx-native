@@ -1168,7 +1168,7 @@ impl SubtitleTone {
 /// The persisted subtitle text sizes, smallest first — install-wide like [`SubtitleTone`]: a
 /// legible caption size answers a fact about the PANEL and the couch distance from it, not about
 /// whoever is watching. Absence is `Medium`, which is the caption face every build before this
-/// preference drew (`ui::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
+/// preference drew (`appkit::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
 /// every other persisted ladder here.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubtitleSize {
@@ -1205,7 +1205,7 @@ impl SubtitleSize {
 
 /// The persisted subtitle vertical placements, lowest first — install-wide like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
-/// (`ui::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
+/// (`appkit::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
 /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
 /// (`docs/ass-subtitles.md`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]

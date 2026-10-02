@@ -6,7 +6,7 @@
 //! mounted and there is no route change — the player route never adopts this engine. ALL of the
 //! page's chrome fades to zero, the action row included, and the page draws a trailer transport
 //! in its place (`screens::detail::trailer`): the `Trailer` kicker over the item's title, the
-//! playbar and the state read-out, drawn from `ui::player_hud`'s own pieces. What a trailer does
+//! playbar and the state read-out, drawn from `appkit::player_hud`'s own pieces. What a trailer does
 //! NOT get is the rest of the HUD — no quality, subtitle, audio or Info control, no tabs and no
 //! track menus: a preview has no PlayQueue, no timeline reporter and no watch state, and a
 //! control that writes one has no business on it. OK and PLAYPAUSE pause and resume it

@@ -5,7 +5,7 @@
 //! transport in its place: the `Trailer` kicker over a title ([`transport_title`] — the item's
 //! own by default, the trailer extra's when THAT says something the kicker doesn't), the playbar,
 //! the clocks and the state read-out. Those are the player HUD's own pieces drawn through
-//! `ui::player_hud::{draw_scrim, draw_title, draw_playbar}`, so the two transports cannot drift;
+//! `appkit::player_hud::{draw_scrim, draw_title, draw_playbar}`, so the two transports cannot drift;
 //! what a trailer does NOT get is the rest of the HUD — no quality, subtitle, audio or Info
 //! control, no tabs and no track menus. A preview session has no PlayQueue, no timeline reporter
 //! and no watch state, and a control that writes one has no business on it.
@@ -15,7 +15,7 @@
 //! testable without driving the process-wide `player::preview` singleton or a live engine.
 
 use crate::ui::icons::Icon;
-use crate::ui::player_hud::{Knob, Playbar, TransportMark};
+use crate::appkit::player_hud::{Knob, Playbar, TransportMark};
 use crate::ui::widgets::KeyHint;
 use crate::ui::{consts, theme, Painter};
 use std::ffi::CString;
@@ -23,7 +23,7 @@ use std::ffi::CString;
 /// How long the trailer transport lingers after the key that raised it, and how long
 /// [`TransportMark::Play`] stands after a resume: the player HUD's own two constants, so the
 /// trailer's controls leave the screen — and its resume mark clears — on the same beat a film's do.
-use crate::ui::player_hud::{LINGER_MS, PLAY_MARK_MS};
+use crate::appkit::player_hud::{LINGER_MS, PLAY_MARK_MS};
 
 /// Which title the transport shows under the `Trailer` kicker: the FILM/SHOW title by default, so
 /// a trailer whose own PMS-scanned title is the boilerplate "Trailer" does not repeat the kicker
@@ -181,7 +181,7 @@ pub(super) struct Transport {
     // (`SCRUB_BASE`→`SCRUB_MAX`), and the release commits at once for a hold or arms a short
     // debounce for a tap — but not the same STATE TYPE: `ci/check-deps.sh`'s `sibling` gate
     // forbids this module from naming `crate::screens::player` at all. The tuning constants and
-    // the clamp formula ARE shared, from `ui::player_hud` (see that module's own doc for why).
+    // the clamp formula ARE shared, from `appkit::player_hud` (see that module's own doc for why).
     // `scrub_ns < 0` means no gesture is in progress; a caller reads it via [`Self::scrubbing`]
     // rather than the raw field, matching how `until_ms`/`revealed` are read through a method.
     scrub_dir: i32,        // -1 back / +1 forward / 0 = no scrub in progress
@@ -262,12 +262,12 @@ impl Transport {
         self.scrub_alive = now;
         if !self.scrub_hold {
             let step = if fwd {
-                crate::ui::player_hud::scrub_step_ns()
+                crate::appkit::player_hud::scrub_step_ns()
             } else {
-                -crate::ui::player_hud::scrub_step_ns()
+                -crate::appkit::player_hud::scrub_step_ns()
             };
             self.scrub_ns =
-                crate::ui::player_hud::scrub_clamp_target(self.scrub_ns.max(0) + step, dur_ns);
+                crate::appkit::player_hud::scrub_clamp_target(self.scrub_ns.max(0) + step, dur_ns);
         }
         self.scrub_dir = if fwd { 1 } else { -1 };
     }
@@ -295,20 +295,20 @@ impl Transport {
             return None;
         }
         let held = now.wrapping_sub(self.scrub_hold_since) as f32 / 1000.0;
-        let speed = (crate::ui::player_hud::SCRUB_BASE + crate::ui::player_hud::SCRUB_ACCEL * held)
-            .min(crate::ui::player_hud::SCRUB_MAX);
+        let speed = (crate::appkit::player_hud::SCRUB_BASE + crate::appkit::player_hud::SCRUB_ACCEL * held)
+            .min(crate::appkit::player_hud::SCRUB_MAX);
         let mut sdt = now.wrapping_sub(self.scrub_t) as f32 / 1000.0;
         if sdt > 0.1 {
             sdt = 0.1;
         }
         let was = self.scrub_ns;
-        self.scrub_ns = crate::ui::player_hud::scrub_clamp_target(
+        self.scrub_ns = crate::appkit::player_hud::scrub_clamp_target(
             was + (self.scrub_dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64,
             dur_ns,
         );
         self.scrub_t = now;
         self.reveal();
-        if now.wrapping_sub(self.scrub_alive) > crate::ui::player_hud::SCRUB_LOST_MS {
+        if now.wrapping_sub(self.scrub_alive) > crate::appkit::player_hud::SCRUB_LOST_MS {
             let target = self.scrub_ns;
             self.cancel_scrub();
             return Some(target);
@@ -332,7 +332,7 @@ impl Transport {
             // are deliberately left alone (not `cancel_scrub`): a same-direction tap arriving
             // before the debounce fires must see `scrub_dir != 0` and keep accumulating from the
             // preview already in flight, exactly like the HUD's own `key_scrub_release` tap arm.
-            self.scrub_commit_at = now.wrapping_add(crate::ui::player_hud::TAP_COMMIT_MS).max(1);
+            self.scrub_commit_at = now.wrapping_add(crate::appkit::player_hud::TAP_COMMIT_MS).max(1);
             None
         }
     }
@@ -417,12 +417,12 @@ impl Transport {
     /// own travel instead, exactly the `scrubbing`/`travel_ns` arm [`transport_mark`] carries for
     /// the player HUD's pointer drag.
     ///
-    /// [`transport_mark`]: crate::ui::player_hud::transport_mark
+    /// [`transport_mark`]: crate::appkit::player_hud::transport_mark
     pub(super) fn mark(&self, paused: bool, live_ns: i64) -> TransportMark {
         let scrubbing = self.scrubbing();
-        crate::ui::player_hud::transport_mark(
+        crate::appkit::player_hud::transport_mark(
             paused,
-            crate::ui::player_hud::Busy::None,
+            crate::appkit::player_hud::Busy::None,
             scrubbing,
             if scrubbing { self.scrub_ns } else { live_ns },
             live_ns,
@@ -452,19 +452,19 @@ impl Transport {
             return;
         }
         let p = p.alpha(self.alpha);
-        crate::ui::player_hud::draw_scrim(p);
+        crate::appkit::player_hud::draw_scrim(p);
         // `if let Ok`, not `.unwrap_or_default()` — the player HUD's own rule (5a221a54): a title
         // with an interior NUL skips the title block rather than drawing an empty line under the
         // kicker. The transport below it still draws; only the unprintable text is dropped.
         if let Ok(title) = CString::new(transport_title(film_title, extra_title)) {
-            crate::ui::player_hud::draw_title(
+            crate::appkit::player_hud::draw_title(
                 p,
-                crate::ui::player_hud::Kicker::Context(crate::i18n::msg::browse_detail_trailer_c().as_ptr()),
+                crate::appkit::player_hud::Kicker::Context(crate::i18n::msg::browse_detail_trailer_c().as_ptr()),
                 title.as_ptr(),
             );
         }
         let live_ns = crate::player::playpos_ns();
-        crate::ui::player_hud::draw_playbar(
+        crate::appkit::player_hud::draw_playbar(
             p,
             Playbar {
                 pos_ns: if self.scrubbing() { self.scrub_ns } else { live_ns },
@@ -589,7 +589,7 @@ mod tests {
 
     /// **Requirement 4's key-ladder half: a fresh LEFT/RIGHT hops the default step, and a plain tap
     /// (key-up with no auto-repeat ever arriving) does not commit at once** — it arms the
-    /// [`TAP_COMMIT_MS`](crate::ui::player_hud::TAP_COMMIT_MS) debounce instead, so a rapid burst
+    /// [`TAP_COMMIT_MS`](crate::appkit::player_hud::TAP_COMMIT_MS) debounce instead, so a rapid burst
     /// of taps coalesces into one seek rather than issuing a reload per press.
     #[test]
     fn a_fresh_press_hops_the_default_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
@@ -611,7 +611,7 @@ mod tests {
         assert!(t.scrubbing(), "the preview stays up while the debounce runs");
         assert_eq!(t.step_tap_commit(100), None, "the debounce has not elapsed yet");
 
-        let target = t.step_tap_commit(crate::ui::player_hud::TAP_COMMIT_MS);
+        let target = t.step_tap_commit(crate::appkit::player_hud::TAP_COMMIT_MS);
         assert_eq!(
             target,
             Some(live + 10_000_000_000),
@@ -628,7 +628,7 @@ mod tests {
         const S: i64 = 1_000_000_000;
         let (dur, live) = (200 * S, 100 * S);
         for interval in SkipInterval::LADDER {
-            let _i = crate::ui::player_hud::SkipIntervalGuard::set(interval);
+            let _i = crate::appkit::player_hud::SkipIntervalGuard::set(interval);
             let mut t = Transport::IDLE;
             t.scrub_fresh(true, 0, dur, live);
             assert_eq!(t.scrub_ns, live + interval.ns(), "{interval:?} forward");
@@ -688,7 +688,7 @@ mod tests {
         t.scrub_fresh(false, 0, dur, live);
         t.scrub_repeat(0);
         assert_eq!(t.step_scrub_hold(100, dur), None, "well inside the alive window");
-        let target = t.step_scrub_hold(100 + crate::ui::player_hud::SCRUB_LOST_MS + 1, dur);
+        let target = t.step_scrub_hold(100 + crate::appkit::player_hud::SCRUB_LOST_MS + 1, dur);
         assert!(target.is_some(), "no repeat for SCRUB_LOST_MS — the safety net commits");
         assert!(!t.scrubbing(), "committing ends the gesture");
     }

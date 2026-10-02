@@ -1,4 +1,4 @@
-//! **The one track-name parser**, shared by the in-player Subtitles menu (`ui::track_menu`) and
+//! **The one track-name parser**, shared by the in-player Subtitles menu (`appkit::track_menu`) and
 //! the Tracks information panel (`screens::tracks_panel`). Ported from the approved Claude Design
 //! mock's `parseTrackName` (`player.html:430-460`), which the design record settles as the
 //! reference for the language-grouped Subtitles panel (`docs/../subtitle-menu-capsule` plan §1).
@@ -11,7 +11,7 @@
 //!
 //! Pure: strings and flags in, [`SubLabel`] out. No `metadata::Stream`, no `ui::` type — so it is
 //! reachable from `screens::tracks_panel` (which never imports `ui::`) as well as
-//! `ui::track_menu` (which already names `crate::metadata`).
+//! `appkit::track_menu` (which already names `crate::metadata`).
 
 /// A track's kind, in the SINGLE priority a Subtitles-panel row cares about (rank, badge, and the
 /// fallback label a nameless multi-track row shows). The mock's rank is exactly this order:
@@ -307,7 +307,7 @@ pub(crate) fn flags(label: &SubLabel, forced: bool, sdh: bool) -> (bool, bool) {
     (forced || label.kind == Kind::Forced, sdh || label.kind == Kind::Sdh)
 }
 
-// ---- title merge (moved from `ui::track_menu::track_name`) ----------------------------------
+// ---- title merge (moved from `appkit::track_menu::track_name`) ----------------------------------
 
 /// **The one name a track row shows, from the two places a name can come from.**
 ///
@@ -395,7 +395,7 @@ pub(crate) fn region_detail(tag: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    // ---- the moved `track_name` cases (were `ui::track_menu::tests`) ------------------------
+    // ---- the moved `track_name` cases (were `appkit::track_menu::tests`) ------------------------
 
     #[test]
     fn an_mp4s_container_names_tell_apart_the_tracks_pms_reports_identically() {
@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn sub_sets_homealone_the_floor_case() {
         // nothing anywhere: no title, no flags — every track reads as an unmarked Full with an
-        // empty source, which is the fallback-label floor `ui::track_menu::in_lang_row` has to
+        // empty source, which is the fallback-label floor `appkit::track_menu::in_lang_row` has to
         // draw something for.
         let l = parse("", "", false, false);
         assert_eq!(l.source, "");

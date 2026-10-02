@@ -1385,7 +1385,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 
 /// `/tmp/plxnative-menupick=<tab>,<target>`: `target` is either an absolute `TableView` row
 /// number (the original contract), on the Audio tab a NAMED target — `"boost"`/`"loudness"` —
-/// resolved through the panel's own [`crate::ui::track_menu::TrackRow`] identities
+/// resolved through the panel's own [`crate::appkit::track_menu::TrackRow`] identities
 /// (`TrackMenuState::row_for_audio_target`), or on the Subtitles tab `"track:N"`, the N-th track in
 /// page order (root tracks, then those behind Other languages), committed by its own index
 /// (`TrackMenuState::sub_track_for_target` / `commit_sub_track`). A name survives a track-count change a hand-written
@@ -1446,7 +1446,7 @@ pub(crate) struct SubmenuOsc {
 /// What one tick of the drill-in oscillator does: seat the cursor on a row (if any), then press `key`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SubmenuStep {
-    seat: Option<crate::ui::track_menu::TrackRow>,
+    seat: Option<crate::appkit::track_menu::TrackRow>,
     key: Key,
     next: u8,
 }
@@ -1458,7 +1458,7 @@ struct SubmenuStep {
 /// dropped) pops a page or restarts the cycle rather than pressing blind, so it re-syncs instead
 /// of drifting. `Other languages` is skipped when the item has none.
 fn submenuosc_next(step: u8, tab: c_int, depth: usize, has_other: bool) -> SubmenuStep {
-    use crate::ui::track_menu::{StyleField, TrackRow};
+    use crate::appkit::track_menu::{StyleField, TrackRow};
     let press = |seat: Option<TrackRow>, key: Key, next: u8| SubmenuStep { seat, key, next };
     let left = Key::Left;
     let right = Key::Right;
@@ -1706,7 +1706,7 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     app.scenarios.subtiming.pending = Some(SubtimingPending { sid: stream_id, armed_at: fr.now });
     crate::app::playback::commit_track(
         &mut app.player.session,
-        crate::ui::track_menu::TrackCommit::Subtitle {
+        crate::appkit::track_menu::TrackCommit::Subtitle {
             render_ordinal,
             stream_id,
             sidecar_key: None,

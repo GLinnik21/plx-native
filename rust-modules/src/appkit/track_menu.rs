@@ -31,7 +31,7 @@
 //! hand-off, not a page); OK on it does not step anything here — it returns
 //! [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns into a hand-off: it
 //! dismisses this panel and presents the Timing capsule overlay (`OverlayKind::Timing`,
-//! `ui::timing_capsule`) in its place. The row is dim and inert while subtitles are Off (OK there
+//! `appkit::timing_capsule`) in its place. The row is dim and inert while subtitles are Off (OK there
 //! neither opens the capsule nor closes the panel), and Timing together with Style is omitted
 //! during an ordinary transcode, which burns captions into the picture where no client-side offset
 //! or style can reach. When the live route is instead this app's OWN Plex Pass audio-enhancement
@@ -275,7 +275,7 @@ type EnhState = (
 fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
     // the transport control row's own right edge — one number for the discs and both panels
-    let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+    let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
     // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
@@ -294,7 +294,7 @@ fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -
 
 /// The renderer the ACTIVE subtitle is drawn by — what decides whether the caption's Size and
 /// Position can reach it. Only the client's plain-text caption draw follows them
-/// (`ui::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
+/// (`appkit::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
 /// native ASS/SSA its authored layout. The subtitle INK tints all three, so Color is always live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubRenderer {
@@ -1649,7 +1649,7 @@ impl TrackMenuState {
 
 /// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
 /// over the ACTIVE tab's rows, built fresh by `screens::player::overlay::PlayerOverlayScreen`
-/// each frame from a `&TrackMenuState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`
+/// each frame from a `&TrackMenuState` — the same borrowed-view shape `appkit::more_menu::MoreMenuPart`
 /// and `ui::table_screen::TablePart` use for the other bare-`TableView` panels, so this popover
 /// answers the same [`Focusable`]/[`Part`] query protocol they do. LEFT/RIGHT are NOT a move
 /// within the group — LEFT pops a sub-page, else switches the whole row set to the other tab, and
@@ -1800,10 +1800,10 @@ pub(crate) fn subtitle_position_label(position: SubtitlePosition) -> &'static st
     }
 }
 
-/// An offset as localized signed seconds to the tenth (`ui::timing_capsule::offset_seconds_in`,
+/// An offset as localized signed seconds to the tenth (`appkit::timing_capsule::offset_seconds_in`,
 /// the one offset formatter).
 fn format_offset(ms: i64) -> String {
-    crate::ui::timing_capsule::offset_seconds_in(ms, true, crate::i18n::current())
+    crate::appkit::timing_capsule::offset_seconds_in(ms, true, crate::i18n::current())
 }
 
 // ---- section building ----
@@ -1995,7 +1995,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let pw = crate::ui::table::MENU_MAX_W;
     out.push((
         "track menu panel (widest)",
-        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+        Rect::new(crate::appkit::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
     ));
 }
 
@@ -3740,7 +3740,6 @@ mod enhancement_menu_tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     /// The focus element of the `i`-th Audio row, named by identity.
@@ -3751,12 +3750,12 @@ mod focus_tests {
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = AppFx;
-        type Msg = AppMsg;
+        type Fx = crate::ui::fixture::FixtureFx;
+        type Msg = crate::ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
         type Init = crate::ui::fixture::FixtureInit;
-        type Memory = PageMemory;
+        type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
@@ -3958,8 +3957,8 @@ mod localized_offset_tests {
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
-            assert_eq!(crate::ui::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
-            assert_eq!(crate::ui::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
+            assert_eq!(crate::appkit::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
+            assert_eq!(crate::appkit::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
         }
     }
 }
