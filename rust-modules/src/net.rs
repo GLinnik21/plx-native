@@ -80,8 +80,8 @@ crate::dynlib! {
     fn curl_slist_free_all(list: *mut curl_slist);
     // The four VARIADIC ones, and the `...` marks exactly what `curl.h` marks: the handle and the
     // option id are the only named parameters, and the value arrives through `va_arg`. Spelling
-    // that value's type after the ellipsis is what lets one C symbol be bound as three wrappers;
-    // moving it BEFORE the ellipsis would compile, run on the television, and hand libcurl a
+    // that value's type after the ellipsis is what lets one C symbol be bound as more than one
+    // wrapper; moving it BEFORE the ellipsis would compile, run on the television, and hand libcurl a
     // garbage pointer on Apple ARM64 (see `dynlib!`'s doc — it is a stack-vs-register convention
     // difference, and it took sign-in down inside `strlen`).
     fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, ..., v: *const c_void) -> c_int;
@@ -170,9 +170,11 @@ const CURLINFO_SSL_VERIFYRESULT: c_int = 0x20_000D;
 /// `CURLINFO_CERTINFO` (`CURLINFO_SLIST` = 0x400000, + 34) — a `struct curl_certinfo *` for the
 /// last connection, read by [`peer_leaf_pin`]. libcurl 7.19.1+. An info id on the already-bound
 /// [`curl_easy_getinfo_ptr`], the same C symbol as [`curl_easy_getinfo_long`] spelled with a
-/// pointer out-parameter. The list is filled once the handshake has passed (so a failed transfer
-/// has nothing to read) and only when [`CURLOPT_CERTINFO`] was set; a backend that does not
-/// support it leaves it empty, which reads as "no pin", never as an error.
+/// pointer out-parameter. The list is filled only when [`CURLOPT_CERTINFO`] was set; a backend
+/// that does not support it leaves it empty, which reads as "no pin", never as an error. A failed
+/// transfer is NOT guaranteed an empty list: libcurl 7.53.1 gathers the chain before it verifies
+/// the host name, so a host-mismatch failure leaves it filled. The `rc == 0` guard where
+/// [`peer_leaf_pin`] is called is what keeps such a chain from becoming a pin; do not remove it.
 const CURLINFO_CERTINFO: c_int = 0x40_0000 + 34;
 const CURL_GLOBAL_ALL: c_long = 3;
 const CURLVERSION_FIRST: c_int = 0;
@@ -727,8 +729,9 @@ pub(crate) fn request_result_evidence(
     resolve: Option<&str>,
     learn_pin: bool,
 ) -> Result<Resp, RequestFailure> {
-    // A host test that needs to drive the REAL discovery-probe path (`http::request_probe`, and
-    // through it `auth::get_identity`) against a loopback HTTPS server cannot make libcurl trust
+    // A host test that needs to drive the REAL discovery-probe path (`auth::get_identity`, and
+    // through it `http::request_probe` or `http::request_probe_learning_key`) against a loopback
+    // HTTPS server cannot make libcurl trust
     // that server's self-signed certificate any other way: this function is the one place every
     // such request enters (see `request_tls_evidence`'s `nowan` comment for the same observation
     // about the offline gate). `test_ca_bundle::get()` is compiled out entirely in a non-test
@@ -787,8 +790,9 @@ pub(crate) mod test_ca_bundle {
 }
 
 /// Real loopback PMS doubles for driving the discovery-probe race through the REAL curl/TLS
-/// stack (`auth::get_identity` → `http::request_probe` → `net::request_result_evidence`, unmodified) rather
-/// than a fake [`auth::ProbeDial`] closure. `test_ca_bundle` above is the other half: it is how
+/// stack (`auth::get_identity` → `http::request_probe` or `request_probe_learning_key` →
+/// `net::request_result_evidence`, unmodified) rather than a fake [`auth::ProbeDial`] closure.
+/// `test_ca_bundle` above is the other half: it is how
 /// curl is told to trust the certificate [`mint_cert`] mints here — the same PEM, so a real TLS
 /// handshake against [`spawn_dual_protocol`] genuinely verifies.
 // Not `pub(crate) mod` directly: `ci/check-deps.sh`'s `threads` gate only recognises a bare
@@ -813,6 +817,22 @@ mod loopback_pms {
         /// itself rather than parsed back out of the certificate — the independent half of a
         /// pin check (`spki::pin_from_spki_der`).
         pub(crate) spki_der: Vec<u8>,
+        /// Certificates the server sends AFTER the leaf (the issuing CA, for
+        /// [`TestCert::serving_chain`]); empty unless asked, which is the shape a minted self-signed
+        /// certificate has.
+        chain_tail: Vec<rustls::pki_types::CertificateDer<'static>>,
+        /// The issuing CA of a [`mint_ca_issued_cert`] leaf, kept so the chain can be served.
+        issuer_der: Option<rustls::pki_types::CertificateDer<'static>>,
+    }
+
+    impl TestCert {
+        /// This certificate served as the chain `[leaf, issuer]`, the way a real server sends its
+        /// leaf with the CA that signed it. Only a [`mint_ca_issued_cert`] has an issuer.
+        pub(crate) fn serving_chain(mut self) -> TestCert {
+            let issuer = self.issuer_der.clone().expect("only a CA-issued leaf has an issuer to serve");
+            self.chain_tail = vec![issuer];
+            self
+        }
     }
 
     /// Mint a self-signed cert whose SAN list is exactly `names`. rcgen tells a dotted IPv4
@@ -832,14 +852,16 @@ mod loopback_pms {
             key_der,
             pem,
             spki_der,
+            chain_tail: Vec::new(),
+            issuer_der: None,
         }
     }
 
     /// Mint a CA and a leaf it issues, the leaf valid exactly over `[not_before, not_after]`
     /// (`(year, month, day)`), the SAN list exactly `names`. `pem` is the **CA**: that is what a
-    /// client is told to trust, and the server presents only the leaf — the shape of a real
-    /// `*.plex.direct` certificate, and the only way to give a test a leaf whose validity window
-    /// excludes "now" (a wrong television clock) while the trust anchor stays valid.
+    /// client is told to trust, and the server presents only the leaf (the shape of a real
+    /// `*.plex.direct` certificate) unless [`TestCert::serving_chain`] is asked for — and the
+    /// only way to give a test a leaf whose validity window excludes "now" (a wrong television clock) while the trust anchor stays valid.
     pub(crate) fn mint_ca_issued_cert(
         names: &[&str],
         not_before: (i32, u8, u8),
@@ -870,6 +892,8 @@ mod loopback_pms {
             spki_der: rcgen::PublicKeyData::subject_public_key_info(&leaf_key),
             key_der: rustls::pki_types::PrivateKeyDer::from(leaf_key),
             pem: ca.pem(),
+            chain_tail: Vec::new(),
+            issuer_der: Some(ca.der().clone()),
         }
     }
 
@@ -882,7 +906,8 @@ mod loopback_pms {
 
     fn tls_config(cert: &TestCert) -> Arc<rustls::ServerConfig> {
         ring_provider_once();
-        let certs = vec![cert.cert_der.clone()];
+        let mut certs = vec![cert.cert_der.clone()];
+        certs.extend(cert.chain_tail.iter().cloned());
         let key = cert.key_der.clone_key();
         let cfg = rustls::ServerConfig::builder()
             .with_no_client_auth()

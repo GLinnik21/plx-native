@@ -47,7 +47,7 @@ In scope if the diff touches any of:
 |---|---|
 | `rust-modules/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
 | `rust-modules/src/ff.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
-| `rust-modules/src/net.rs` | the libcurl `dynlib!` block — three variadic wrappers over two C symbols, plus the candidate list |
+| `rust-modules/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
@@ -299,11 +299,11 @@ fn curl_easy_setopt_ptr = "curl_easy_setopt"(handle: *mut CURL, option: c_int, .
 
 That reads oddly and it is deliberate: `handle` and `option` are the only NAMED parameters in
 `curl.h`, everything else arrives through `va_arg`, and naming the trailing type is how one C
-symbol is bound as more than one wrapper. **Count them; do not quote a count.** `net.rs` holds
-THREE variadic wrappers over TWO C symbols — `curl_easy_setopt` twice (`_ptr`, `_long`) and
-`curl_easy_getinfo` once. docs/agent-reference.md, `dynlib!`'s own doc and `net.rs`'s own comment all say "one C
-symbol … three wrappers", which is the arithmetic of neither half; the number rotted in three
-places at once, and a finding that repeats it is a wrong finding.
+symbol is bound as more than one wrapper. **Count them; do not quote a count.** `net.rs` binds
+two C symbols through variadic wrappers — `curl_easy_setopt` twice (`_ptr`, `_long`) and
+`curl_easy_getinfo` twice (`_long`, `_ptr`). docs/agent-reference.md, `dynlib!`'s own doc and `net.rs`'s own comment
+say "bound as more than one wrapper" for that reason: a quoted count rotted in three places at
+once, and a finding that repeats one is a wrong finding.
 
 Moving that argument **before** the ellipsis is not a style choice — it selects a different
 **calling convention**, because **Apple's ARM64 ABI passes variadic arguments on the stack while

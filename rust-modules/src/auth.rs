@@ -2035,16 +2035,30 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// verdict can later say HOW each route failed ([`RouteOutcome::of_failure`]) instead of only that
 /// it did.
 ///
-/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
-/// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
+/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to the probe request
+/// exactly as `apply_candidate_activation` forwards one to
 /// `register_origin` — the same [`crate::plex::ResolvePin`], used one step earlier: at the DIAL
 /// that decides the winner, not only at the registration of one already decided.
+///
+/// **A pin is also what makes a probe a learning one** (issue #380): a candidate with a
+/// `ResolvePin` is dialled with [`crate::http::request_probe_learning_key`], which reads the
+/// peer's leaf key off the verified connection, and one without it with plain
+/// [`crate::http::request_probe`]. The pinned names (the dashed `*.plex.direct` ones) are the
+/// only origins the offline fallback of #378 can ever apply to, and a server also published at a
+/// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
+/// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
+/// is `Some` exactly when it held.
 fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
 ) -> ProbeReply {
-    match crate::http::request_probe_learning_key(
+    let probe = if pin.is_some() {
+        crate::http::request_probe_learning_key
+    } else {
+        crate::http::request_probe
+    };
+    match probe(
         origin,
         IDENTITY,
         crate::http::Method::Get,
@@ -2068,7 +2082,8 @@ fn get_identity(
 #[derive(Debug)]
 enum ProbeReply {
     /// `peer_pin` is the pin of the leaf certificate a strictly verified TLS connection presented
-    /// (`crate::http::Reply::peer_pin`); `None` over plaintext and on every test seam.
+    /// (`crate::http::Reply::peer_pin`); `None` over plaintext, for an origin without a
+    /// `ResolvePin` (see [`get_identity`]) and on every test seam.
     Answered { status: i32, body: Vec<u8>, peer_pin: Option<String> },
     Failed(Option<crate::net::RequestFailure>),
 }
@@ -2088,9 +2103,9 @@ impl ProbeReply {
     /// [`Self::grade`], and when the answer is accepted for `want_machine_id` over a verified
     /// connection, remember that machine's public key (issue #380, for the offline fallback of
     /// #378). Acceptance is [`classify`]'s: a 2xx whose `machineIdentifier` is the one asked for,
-    /// so a stranger answering at the address never teaches a key. A relay connection ends at
-    /// Plex's relay, not at the server, so whatever certificate it presents is not the server's
-    /// key and is never learned.
+    /// so a stranger answering at the address never teaches a key. Only a probe of a pinned
+    /// `plex.direct` origin carries a key at all ([`get_identity`]). A relay route is skipped as a
+    /// conservative choice: its certificate is not shown to be the server's.
     fn grade_learning(&self, want_machine_id: &str, location: probe::Location) -> (Outcome, RouteOutcome) {
         let graded = self.grade(want_machine_id);
         if let (Outcome::Reachable, Self::Answered { peer_pin: Some(pin), .. }) = (graded.0, self) {

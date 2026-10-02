@@ -1125,7 +1125,7 @@ fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Res
 
 /// **The real curl/TLS stack reaches the pinned HTTPS LAN candidate and never activates its
 /// plaintext twin.** Issue #95's shape, driven through the PRODUCTION dial
-/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result_evidence`) rather
+/// (`get_identity` → `crate::http::request_probe_learning_key` → `crate::net::request_result_evidence`) rather
 /// than a fake [`ProbeDial`] closure: a loopback double
 /// ([`crate::net::spawn_dual_protocol`]) answers the SAME `/identity` body over
 /// both a real TLS handshake (against a minted self-signed cert curl is told to trust via
@@ -3013,7 +3013,8 @@ fn a_verified_tls_answer_carries_the_leaf_pin_only_when_asked() {
 }
 
 /// The chain the host reports starts at the peer's OWN certificate: a leaf issued by a CA is
-/// pinned by the leaf's key, not the issuer's.
+/// pinned by the leaf's key, not the issuer's. The server sends `[leaf, CA]` (the way a real
+/// server does), so the order is what is being proved, not an accident of a one-element list.
 #[test]
 fn the_pin_is_the_leaf_of_a_ca_issued_chain_not_its_issuer() {
     let _serial = crate::testlock::serial();
@@ -3023,7 +3024,7 @@ fn the_pin_is_the_leaf_of_a_ca_issued_chain_not_its_issuer() {
         let (y, m, d) = crate::net::civil_date(now + days_from_now * 86_400);
         (y as i32, m as u8, d as u8)
     };
-    let cert = Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd(-30), ymd(30)));
+    let cert = Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd(-30), ymd(30)).serving_chain());
     let _ca = TestCaGuard::install(&cert.pem, "pin-ca-issued");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
     let resp = identity_request(port, "https", true).expect("a leaf chaining to the trusted CA verifies");
@@ -3083,20 +3084,38 @@ fn learned_pin(machine_id: &str) -> Option<String> {
     crate::plex::session::peek().server_key_pin(machine_id).map(str::to_owned)
 }
 
-/// One identity probe of a loopback server, graded the way the race grades it.
+/// The hash label of the `plex.direct` names these tests dial; plex.tv's is 32 hex digits.
+const LEARN_HASH: &str = "0123456789abcdef0123456789abcdef";
+
+/// The name plex.tv would mint for a LAN server at `127.0.0.1`: the only kind of origin that has a
+/// `ResolvePin`, and so the only kind the probe learns from.
+fn learn_host() -> String {
+    format!("127-0-0-1.{LEARN_HASH}.plex.direct")
+}
+
+/// One identity probe of a loopback server, graded the way the race grades it: `https` dials the
+/// `plex.direct` name through its `ResolvePin` (as `race_batch` and `probe_cached` build one),
+/// `http` the bare-address plaintext twin, which has none.
 fn probe_and_learn(scheme: &str, port: u16, machine_id: &str, location: probe::Location) -> Outcome {
-    let origin = Origin::parse(&format!("{scheme}://127.0.0.1:{port}")).unwrap();
-    get_identity(&origin, None, Duration::from_secs(5)).grade_learning(machine_id, location).0
+    let (origin, pin) = if scheme == "https" {
+        let origin = Origin::parse(&format!("https://{}:{port}", learn_host())).unwrap();
+        let pin = crate::plex::ResolvePin::for_origin(&origin, "127.0.0.1").expect("a dashed plex.direct name pins");
+        (origin, Some(pin))
+    } else {
+        (Origin::parse(&format!("{scheme}://127.0.0.1:{port}")).unwrap(), None)
+    };
+    get_identity(&origin, pin.as_ref(), Duration::from_secs(5)).grade_learning(machine_id, location).0
 }
 
 /// **The pin is learned when, and only when, the answer is accepted for the machine asked for over
-/// a strictly verified connection.** Every refusal below leaves the session without an entry.
+/// a strictly verified connection to a pinned `plex.direct` origin.** Every refusal below leaves
+/// the session without an entry.
 #[test]
 fn an_accepted_identity_over_verified_tls_is_remembered_and_nothing_else_is() {
     let _serial = crate::testlock::serial();
     if !curl_ready() { return; }
     let _session = crate::plex::session::TempSession::new("pin-learn-accept");
-    let cert = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let cert = Arc::new(crate::net::mint_cert(&[&learn_host(), "127.0.0.1"]));
     let _ca = TestCaGuard::install(&cert.pem, "pin-learn-accept");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m-real"));
     let want = crate::spki::pin_from_spki_der(&cert.spki_der);
@@ -3105,12 +3124,18 @@ fn an_accepted_identity_over_verified_tls_is_remembered_and_nothing_else_is() {
     assert_eq!(probe_and_learn("https", port, "m-other", probe::Location::Local), Outcome::WrongServer);
     assert_eq!(learned_pin("m-other"), None);
     assert_eq!(learned_pin("m-real"), None);
-    // Relay ends at Plex's relay, whatever certificate it presents.
+    // Relay ends at Plex's relay; skipping it is a conservative choice.
     assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Relay), Outcome::Reachable);
-    assert_eq!(learned_pin("m-real"), None, "a relay's certificate is not the server's");
+    assert_eq!(learned_pin("m-real"), None, "a relay route is never learned from");
     // Plaintext twin: reachable, but there is no certificate.
     assert_eq!(probe_and_learn("http", port, "m-real", probe::Location::Local), Outcome::Reachable);
     assert_eq!(learned_pin("m-real"), None);
+    // Verified HTTPS to an origin WITHOUT a pin (a custom host, a bare address): reachable, but
+    // not a name the offline fallback could ever apply to, so it teaches nothing.
+    let unpinned = Origin::parse(&format!("https://127.0.0.1:{port}")).unwrap();
+    let (outcome, _) = get_identity(&unpinned, None, Duration::from_secs(5)).grade_learning("m-real", probe::Location::Local);
+    assert_eq!(outcome, Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), None, "no ResolvePin, no key");
 
     // The accepted answer.
     assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Local), Outcome::Reachable);
@@ -3124,8 +3149,8 @@ fn an_identity_that_fails_verification_teaches_no_key() {
     if !curl_ready() { return; }
     let _session = crate::plex::session::TempSession::new("pin-learn-unverified");
     // The server's certificate is NOT in the trust store this request verifies against.
-    let trusted = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
-    let stranger = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let trusted = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    let stranger = Arc::new(crate::net::mint_cert(&[&learn_host()]));
     let _ca = TestCaGuard::install(&trusted.pem, "pin-learn-unverified");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&stranger), identity_json("m-real"));
     assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Local), Outcome::Unreachable);
@@ -3141,8 +3166,8 @@ fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
     if !curl_ready() { return; }
     let session = crate::plex::session::TempSession::new("pin-learn-replace");
     let file = session.path();
-    let first = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
-    let second = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let first = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    let second = Arc::new(crate::net::mint_cert(&[&learn_host()]));
     // One trusted certificate at a time: both are minted with the same subject, so a bundle holding
     // the two would let the first shadow the second by name.
     let ca_a = TestCaGuard::install(&first.pem, "pin-learn-replace-a");
@@ -3165,4 +3190,71 @@ fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
     let after = crate::plex::session::peek();
     assert_eq!(after.server_key_pins.len(), 1, "one entry per machine");
     assert_ne!(stamp(&file), before);
+}
+
+/// **One machine published at a `plex.direct` name AND at a custom host with its own certificate
+/// (a reverse proxy) keeps the `plex.direct` leaf's key, however the two answers interleave.**
+/// Both routes are dialled by the same race and both answer as the same machine over verified
+/// TLS; only the pinned one is a name the offline fallback can apply to, so only it may write. The
+/// custom route answers LAST here on purpose: it is the order in which an unconditional learner
+/// leaves the proxy's key stored.
+#[test]
+fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let _session = crate::plex::session::TempSession::new("pin-learn-flap");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let ymd = |days_from_now: i64| {
+        let (y, m, d) = crate::net::civil_date(now + days_from_now * 86_400);
+        (y as i32, m as u8, d as u8)
+    };
+    // Different subjects, so one bundle can trust both: a CA-issued leaf behind the plex.direct
+    // name, a self-signed certificate behind the proxy.
+    let direct = Arc::new(crate::net::mint_ca_issued_cert(&[&learn_host()], ymd(-30), ymd(30)).serving_chain());
+    let proxy = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let _ca = TestCaGuard::install(&format!("{}{}", direct.pem, proxy.pem), "pin-learn-flap");
+    let body = identity_json("flapmid");
+    let direct_port = crate::net::spawn_dual_protocol(Arc::clone(&direct), body.clone());
+    let proxy_port = crate::net::spawn_dual_protocol(Arc::clone(&proxy), body);
+    let resource = resource(&format!(
+        r#"{{"name":"flap","clientIdentifier":"flapmid","provides":"server","owned":true,
+            "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+            "accessToken":"tok-flap","connections":[
+              {{"protocol":"https","address":"127.0.0.1","port":{direct_port},
+               "uri":"https://{host}:{direct_port}","local":true,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"127.0.0.1","port":{proxy_port},
+               "uri":"https://127.0.0.1:{proxy_port}","local":true,"relay":false,"IPv6":false}}
+            ]}}"#,
+        host = learn_host()
+    ));
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+
+    let proxy_answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&proxy_answered);
+    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+        let is_proxy = origin.port() == i32::from(proxy_port);
+        if is_proxy {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        let reply = get_identity(origin, pin, budget);
+        if is_proxy {
+            seen.store(true, std::sync::atomic::Ordering::Release);
+        }
+        reply
+    });
+    let reach = probe_server_racing(&plan, dial, &threaded_spawn, test_policy(), &mut |_, _, _| {});
+    assert!(matches!(reach, Reach::At(..)), "both routes answer; one of them is reached");
+
+    // Let the proxy's worker finish, learning or not, before reading what the session kept.
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while !proxy_answered.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < give_up {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(proxy_answered.load(std::sync::atomic::Ordering::Acquire), "the proxy route was dialled");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        learned_pin("flapmid"),
+        Some(crate::spki::pin_from_spki_der(&direct.spki_der)),
+        "the pin is the plex.direct leaf's; the custom host's answer wrote nothing"
+    );
 }

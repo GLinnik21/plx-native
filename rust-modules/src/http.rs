@@ -251,9 +251,9 @@ pub(crate) fn request_probe(
 
 /// [`request_probe`] that also reads the peer's public key off a connection libcurl verified, into
 /// [`Reply::peer_pin`] (issue #380, for the offline fallback of #378). The identity probe is its
-/// only caller: reading the chain makes libcurl decode all of it, which no ordinary request should
-/// pay, and the key is only worth remembering when the same probe also learns WHICH machine
-/// answered. The rules for when a pin is present live on [`crate::net::Resp::peer_pin`]; over
+/// only caller, and only for a candidate that has a [`ResolvePin`] (`auth::get_identity`):
+/// reading the chain makes libcurl decode all of it, which no ordinary request should pay, and the
+/// key is only worth remembering when the same probe also learns WHICH machine answered. The rules for when a pin is present live on [`crate::net::Resp::peer_pin`]; over
 /// plaintext it is always `None`.
 pub(crate) fn request_probe_learning_key(
     origin: &Origin,
@@ -787,8 +787,9 @@ mod tests {
         });
     }
 
-    /// **`request_probe` — the discovery race's entry point — carries a pin the same way
-    /// [`request`] does over TLS, and structurally cannot over plaintext.** `auth::race_batch`
+    /// **`request_probe` — one of the two discovery-probe entry points; `auth::get_identity`
+    /// uses `request_probe_learning_key`, the same request that also reads the peer key, when it
+    /// holds a pin, and this one otherwise — carries a pin the same way [`request`] does over TLS, and structurally cannot over plaintext.** `auth::race_batch`
     /// builds a [`ResolvePin`] only for a TLS origin (`ResolvePin::for_origin` refuses anything
     /// else outright), and `request_with`'s `Scheme::Http` arm calls `plaintext(...)`, which has no
     /// `pin` parameter at all — there is no plumbing left for a foreign value to travel through even
