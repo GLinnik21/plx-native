@@ -23,6 +23,7 @@ fn reasons() -> Vec<(&'static str, String)> {
         ("insecure", msg::browse_auth_insecure().into()),
         ("no_access", msg::browse_auth_no_access(profile)),
         ("no_servers", msg::browse_auth_no_servers().into()),
+        ("no_servers_signed_in_as", msg::browse_auth_no_servers_signed_in_as("alexandra.konstantinopolskaya")),
         ("no_source_access", msg::browse_auth_no_source_access(profile)),
         ("offline_profile", msg::browse_auth_offline_profile().into()),
         ("plaintext_allowed", msg::browse_auth_plaintext_allowed().into()),
@@ -74,4 +75,17 @@ fn every_sign_in_reason_fits_the_read_out_slot_in_every_language() {
         }
     }
     assert!(out.is_empty(), "reasons the read-out would end in an ellipsis:\n  {}", out.join("\n  "));
+}
+
+/// **The failed read-out says who signed in only when it was told a name.** A name composes the
+/// two-line reason; no name, a blank one, or no measure-able name keeps the session's caption.
+#[test]
+fn the_failed_reason_names_the_account_or_keeps_the_caption() {
+    let _guard = language_on_this_thread_for_test(Preference::En);
+    let caption = msg::browse_auth_no_servers();
+    assert_eq!(super::failed_reason(caption, Some("alexandra"), &ShippedMeasure),
+        "Signed in as alexandra.\nThis Plex account has no server yet.");
+    for none in [None, Some(""), Some("  \n ")] {
+        assert_eq!(super::failed_reason(caption, none, &ShippedMeasure), caption, "{none:?}");
+    }
 }

@@ -1561,6 +1561,10 @@ check-python: check-localization
 	python3 ci/test_ci_split.py
 	@# No CI job may lack timeout-minutes, no `apt-get update` / `curl` may be unbounded (run 36904995113 hung 4 h 36 min).
 	python3 ci/test_ci_timeouts.py
+	@# The build-health budgets (ci/build-budgets.json): the checker against canned metadata, and the json schema.
+	python3 ci/test_build_budgets.py
+	@# tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
+	python3 tools/test_ci_durations.py
 	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 	python3 ci/test_test_fast.py
 	python3 ci/test_source_bundle.py

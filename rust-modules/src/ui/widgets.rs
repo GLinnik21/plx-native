@@ -3596,6 +3596,12 @@ pub struct StatusOverlay<'a> {
     pub scales: [f32; STATUS_ROW_MAX],
 }
 
+/// How far a `Failed` read-out's action row sits below the end of its reserved two-line reason
+/// slot, on top of [`space::LG`](theme::space::LG): one position for every reason, whatever its
+/// line count, so a two-line reason keeps air above the pills and a one-line one just keeps its
+/// empty second line. A `theme::space` rung.
+const REASON_ROW_DROP: f32 = theme::space::MD;
+
 /// The most controls one read-out row carries: a primary, a secondary and two `extra` slots.
 pub const STATUS_ROW_MAX: usize = 4;
 
@@ -3739,12 +3745,35 @@ impl<'a> StatusOverlay<'a> {
         let (sz, ink) = Self::reason_face(self.kind);
         TextView::new(r.to_str().unwrap_or(""), sz, ink).h(HAlign::Center).max_lines(2)
     }
+    /// **A reason with a deliberate line break** (`\n` in the message) as its lines: at most two,
+    /// each trimmed and non-empty. `None` for a reason without one, which keeps wrapping freely
+    /// inside the slot. A forced break is the message's own presentation (the sign-in failure's
+    /// "Signed in as …." over "This Plex account has no server yet."), so each line stands on a
+    /// row of its own and is never joined to its neighbour or wrapped onto a third. `TextView`
+    /// collapses `\n` like any whitespace, which is why the split happens here, the same way
+    /// `ui::qr` presents an address broken at a path separator.
+    fn reason_segments(r: &str) -> Option<Vec<&str>> {
+        if !r.contains('\n') {
+            return None;
+        }
+        Some(r.split('\n').map(str::trim).filter(|l| !l.is_empty()).take(2).collect())
+    }
+    /// One line of a forced-break reason: the reason's face, never wrapped, ellipsized if it is
+    /// still too wide (`auth::signed_in_reason`'s pre-fit makes that a net, not the plan).
+    fn reason_segment_view(&self, seg: &'a str) -> TextView<'a> {
+        let (sz, ink) = Self::reason_face(self.kind);
+        TextView::new(seg, sz, ink).h(HAlign::Center).max_lines(1)
+    }
     /// Whether `reason` would be cut short in a `Failed` read-out's two-line slot [`Self::REASON_W`]
     /// wide, measured through the slot's own view, with `headroom` of the width to spare.
     #[cfg(test)]
     pub(crate) fn failed_reason_truncates(reason: &core::ffi::CStr, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> bool {
         let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed);
-        o.reason_view(reason).with_measure(measure).truncates(Self::REASON_W * headroom)
+        let width = Self::REASON_W * headroom;
+        match Self::reason_segments(reason.to_str().unwrap_or("")) {
+            Some(lines) => lines.iter().any(|l| o.reason_segment_view(l).with_measure(measure).truncates(width)),
+            None => o.reason_view(reason).with_measure(measure).truncates(width),
+        }
     }
     /// The two-line slot's height from one measured line: one line pitch plus the last line's box.
     fn reason_slot_h(&self, line_h: f32) -> f32 {
@@ -3885,6 +3914,13 @@ impl<'a> StatusOverlay<'a> {
         self.bands_from_heights(measure.line_h(cap_sz), self.reason_h(measure.line_h(reason_sz)))
     }
 
+    /// How far the action row sits below the reserved slot's end plus `space::LG`
+    /// ([`REASON_ROW_DROP`]). Only a slotted reason moves it: a read-out without one, and the
+    /// `Working`/`Empty` kinds, stack exactly as they always did.
+    fn row_drop(&self) -> f32 {
+        if self.reason_slotted() && self.reason.is_some() { REASON_ROW_DROP } else { 0.0 }
+    }
+
     /// The reason band's height from one reason line: absent, one line, or the reserved slot.
     fn reason_h(&self, line_h: f32) -> f32 {
         match (self.reason, self.reason_slotted()) {
@@ -3911,7 +3947,7 @@ impl<'a> StatusOverlay<'a> {
             below = r.y + h;
             r
         });
-        let action_y = below + theme::space::LG;
+        let action_y = below + theme::space::LG + self.row_drop();
         StatusBands { cap, reason, action_y }
     }
 
@@ -4070,9 +4106,20 @@ impl<'a> StatusOverlay<'a> {
                 // Top-aligned in the slot: a one-line reason leaves the second line empty, and
                 // nothing below the slot moves either way.
                 let w = Self::REASON_W.min(band.w);
-                self.reason_view(r)
-                    .with_measure(measure)
-                    .draw(p, Rect::new(band.cx() - w * 0.5, band.y, w, band.h));
+                let x = band.cx() - w * 0.5;
+                match Self::reason_segments(r.to_str().unwrap_or("")) {
+                    Some(lines) => {
+                        let pitch = self.reason_view(c"").line_h();
+                        for (i, line) in lines.into_iter().enumerate() {
+                            self.reason_segment_view(line)
+                                .with_measure(measure)
+                                .draw(p, Rect::new(x, band.y + i as f32 * pitch, w, pitch));
+                        }
+                    }
+                    None => {
+                        self.reason_view(r).with_measure(measure).draw(p, Rect::new(x, band.y, w, band.h));
+                    }
+                }
             } else {
                 let (sz, ink) = Self::reason_face(self.kind);
                 Label::new(r.as_ptr(), sz, ink).h(HAlign::Center).draw(p, band);

@@ -112,7 +112,7 @@ fn fail(owner: &mut SessionMachine, context: IncidentContext) -> Vec<SessionFx> 
     let epoch = owner.state.epoch;
     observe(
         owner,
-        LoginProgress::Failed { epoch, message: "synthetic failure".into(), incident: context, plaintext: None },
+        LoginProgress::Failed { epoch, message: "synthetic failure".into(), incident: context, plaintext: None, account: None },
         true,
     )
 }
@@ -804,4 +804,89 @@ fn a_discarded_report_fails_and_can_be_sent_again() {
             assert_eq!(incident_effects(&effects), vec![(IncidentLane::OneOff, IncidentReport::Retained(pin_create()))]);
         }
     }
+}
+
+// ---- the no-server read-out's account name: screen-only data ----------------------------------
+
+fn no_servers_incident() -> IncidentContext {
+    IncidentContext {
+        occurred_at_ms: 3,
+        ..IncidentContext::new(
+            IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::NoServers), None)
+            .with_no_servers(crate::telemetry::incident::NoServersEvidence {
+                resources: crate::telemetry::incident::CountBucket::One,
+                trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
+            })
+    }
+}
+
+fn fail_naming(owner: &mut SessionMachine, message: &str, account: Option<&str>) -> Vec<SessionFx> {
+    let epoch = owner.state.epoch;
+    observe(owner, LoginProgress::Failed {
+        epoch, message: message.into(), incident: no_servers_incident(), plaintext: None,
+        account: account.map(str::to_owned),
+    }, true)
+}
+
+/// The publication carries the name for the no-server read-out and for nothing else: not for
+/// another reason, not after a later failure that has none.
+#[test]
+fn the_account_name_reaches_the_publication_only_for_the_no_servers_read_out() {
+    let no_servers = crate::i18n::msg::browse_auth_no_servers();
+    let mut owner = signing_in();
+    fail_naming(&mut owner, no_servers, Some("Zebediah Quux"));
+    assert_eq!(owner.read().0.account.as_deref(), Some("Zebediah Quux"));
+    assert_eq!(&*owner.read().0.error, no_servers);
+
+    let mut owner = signing_in();
+    fail_naming(&mut owner, "some other reason", Some("Zebediah Quux"));
+    assert_eq!(owner.read().0.account, None, "a name never sits under another reason");
+
+    let mut owner = signing_in();
+    fail_naming(&mut owner, no_servers, None);
+    assert_eq!(owner.read().0.account, None);
+}
+
+/// **Privacy: the name is UI state and nothing else.** After the failure that carries it, it is in
+/// no incident context, no report body, no queued effect, not in the serialized session state (a
+/// recording's initial state) and not in the observation digest.
+#[test]
+fn the_account_name_is_absent_from_every_report_effect_and_digest() {
+    const NAME: &str = "Zebediah-Quux-7741";
+    let mut owner = signing_in();
+    let effects = fail_naming(&mut owner, crate::i18n::msg::browse_auth_no_servers(), Some(NAME));
+    assert_eq!(owner.read().0.account.as_deref(), Some(NAME), "the screen does get it");
+
+    let offer = offer(&owner).expect("the failure is held as an incident");
+    let context = offer.readout_context().copied().expect("the read-out's context");
+    let mut seen = vec![
+        format!("{:?}", incident_effects(&effects)),
+        serde_json::to_string(&owner.state).unwrap(),
+        serde_json::to_string(&context).unwrap(),
+        format!("{context:?}"),
+    ];
+    for consent in [crate::telemetry::incident::ConsentKind::Standing,
+        crate::telemetry::incident::ConsentKind::OneOff] {
+        seen.push(crate::telemetry::incident::event_body("a", "b", Some(&"e".repeat(32)), context, consent)
+            .to_string());
+    }
+    for (i, text) in seen.iter().enumerate() {
+        assert!(!text.contains(NAME), "the account name leaked into sink {i}: {text}");
+    }
+
+    // The observation digest (what a recording hashes) is the same with and without the name.
+    let digest = |account: Option<&str>| {
+        let mut canon = crate::ui::machine::Canon::new();
+        crate::auth::observation::Observation::Login(LoginProgress::Failed {
+            epoch: 1, message: crate::i18n::msg::browse_auth_no_servers().into(),
+            incident: no_servers_incident(), plaintext: None, account: account.map(str::to_owned),
+        }).write(&mut canon);
+        canon.finish()
+    };
+    assert_eq!(digest(Some(NAME)), digest(None));
+    // …and a serialized observation does not carry it either.
+    let encoded = serde_json::to_string(&crate::auth::observation::Observation::Login(
+        LoginProgress::Failed { epoch: 1, message: String::new(), incident: no_servers_incident(),
+            plaintext: None, account: Some(NAME.into()) })).unwrap();
+    assert!(!encoded.contains(NAME), "{encoded}");
 }

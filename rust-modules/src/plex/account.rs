@@ -399,6 +399,19 @@ impl AccountClient {
         ), timeouts)
     }
 
+    /// GET /api/v2/user — the name plex.tv knows this account by, for the one read-out that says
+    /// who signed in ([`DISPLAY_NAME_TIMEOUTS`] bounds it). `None` for ANY failure or for an
+    /// answer with no usable name: the caller falls back to a caption that needs none. Needs no
+    /// [`UserRef`](super::session::UserRef) — unlike [`Self::audio_preferences`] it asserts nothing
+    /// about WHICH user answered, it only reads what the account token's owner is called.
+    ///
+    /// The name is personal data: this method logs no body and the caller keeps it in UI state only.
+    pub(crate) fn display_name_with(&self, timeouts: crate::net::Timeouts) -> Option<String> {
+        let dto: AccountDisplayName = self
+            .get_evidence_with(&format!("{}/api/v2/user", plex_tv()), timeouts).ok()?;
+        dto.chosen()
+    }
+
     // ---- Plex Home managed users ----
 
     /// GET /api/v2/home/users — the Home (managed) users for the account: the "who's watching"
@@ -668,13 +681,13 @@ mod evidence_tests {
     #[test]
     fn complete_response_policy_and_provider_decoding_are_unchanged() {
         let _serial = crate::testlock::serial();
-        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec() });
+        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None });
         note_response_contact(SWITCH, &malformed);
         assert!(plex_tv_recently_reachable());
         assert!(matches!(switch_response(SWITCH, malformed), Ok(SwitchOutcome::Unreachable)));
-        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec() })), Ok(SwitchOutcome::Switched(_))));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec() })), Ok(PinPoll::Pending)));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec() })), Ok(PinPoll::Authorized(_))));
+        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(SwitchOutcome::Switched(_))));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Pending)));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Authorized(_))));
         assert!(crate::net::global_init());
         for body in [br#"[{"provides":"server","connections":null}]"#.as_slice(), br#"{"users":[]}"#.as_slice()] {
             let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
@@ -1154,6 +1167,34 @@ fn de_soft_profile<'de, D: serde::Deserializer<'de>>(d: D)
 {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).ok())
+}
+
+/// How long the failure read-out may wait for [`AccountClient::display_name_with`]: 5 s whole
+/// request and connect, a short deadline of its own because [`crate::net::API`]'s 25 s would hold
+/// the "no server yet" screen back for a caption nicety (no shorter preset exists in `net`).
+pub(crate) const DISPLAY_NAME_TIMEOUTS: crate::net::Timeouts =
+    crate::net::Timeouts { connect_s: 5, total_s: 5, ..crate::net::API };
+
+/// `/api/v2/user`, read only for the names a person would call the account. A JSON `null` (which
+/// plex.tv sends for `username` and `email` on a managed user) and any non-string are `None`.
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct AccountDisplayName {
+    #[serde(deserialize_with = "de_soft_string")]
+    username: Option<String>,
+    #[serde(deserialize_with = "de_soft_string")]
+    title: Option<String>,
+    #[serde(deserialize_with = "de_soft_string")]
+    friendly_name: Option<String>,
+}
+impl AccountDisplayName {
+    /// `username`, else `title`, else `friendlyName` — the first that is not blank, trimmed, with
+    /// control characters dropped (an interior NUL would turn the whole reason into an empty one).
+    fn chosen(self) -> Option<String> {
+        [self.username, self.title, self.friendly_name].into_iter().flatten()
+            .map(|name| name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_owned())
+            .find(|name| !name.is_empty())
+    }
 }
 
 /// Narrow `/api/v2/user` DTO. Every field is soft because this optional fetch must never break
@@ -1933,4 +1974,37 @@ pub struct SwitchedUser {
     pub title: String,
     #[serde(rename = "authToken", alias = "authenticationToken", default)]
     pub auth_token: String,
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::AccountDisplayName;
+
+    fn chosen(body: &str) -> Option<String> {
+        serde_json::from_str::<AccountDisplayName>(body).ok()?.chosen()
+    }
+
+    #[test]
+    fn the_account_is_named_by_username_then_title_then_friendly_name() {
+        assert_eq!(chosen(r#"{"username":"alexandra","title":"T","friendlyName":"F"}"#).as_deref(),
+            Some("alexandra"));
+        assert_eq!(chosen(r#"{"username":null,"title":"T","friendlyName":"F"}"#).as_deref(), Some("T"));
+        assert_eq!(chosen(r#"{"username":"  ","title":"","friendlyName":" F "}"#).as_deref(), Some("F"));
+    }
+
+    #[test]
+    fn control_characters_are_dropped_before_the_blank_check() {
+        assert_eq!(chosen(r#"{"username":"al\u0000ex\u0007andra"}"#).as_deref(), Some("alexandra"));
+        assert_eq!(chosen(r#"{"username":"\u0000\u001f","title":"T"}"#).as_deref(), Some("T"),
+            "a name of only controls is blank");
+        assert_eq!(chosen(r#"{"username":"\u0000"}"#), None);
+    }
+
+    #[test]
+    fn an_answer_without_a_usable_name_names_nobody() {
+        for body in [r#"{}"#, r#"{"username":null,"title":null}"#, r#"{"username":7,"title":"  "}"#,
+            r#"{"id":1,"uuid":"u"}"#] {
+            assert_eq!(chosen(body), None, "{body}");
+        }
+    }
 }

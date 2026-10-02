@@ -1125,7 +1125,7 @@ fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Res
 
 /// **The real curl/TLS stack reaches the pinned HTTPS LAN candidate and never activates its
 /// plaintext twin.** Issue #95's shape, driven through the PRODUCTION dial
-/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result_evidence`) rather
+/// (`get_identity` → `crate::http::request_probe_learning_key` → `crate::net::request_result_evidence`) rather
 /// than a fake [`ProbeDial`] closure: a loopback double
 /// ([`crate::net::spawn_dual_protocol`]) answers the SAME `/identity` body over
 /// both a real TLS handshake (against a minted self-signed cert curl is told to trust via
@@ -1142,6 +1142,9 @@ fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_han
         eprintln!("curl unavailable on this host; skipping");
         return;
     }
+    // The verified probe remembers the server's key (issue #380): into a scratch session, never
+    // the developer's own.
+    let _session = crate::plex::session::TempSession::new("lan-race");
     let cert = std::sync::Arc::new(crate::net::mint_cert(&[
         "127-0-0-1.e2e95.plex.direct",
         "127.0.0.1",
@@ -1179,6 +1182,12 @@ fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_han
             activated_origin.base()
         );
     }
+    // The same race, through `race_batch`'s real worker, taught the session the LAN leaf's key.
+    assert_eq!(
+        learned_pin("e2e95mid"),
+        Some(crate::spki::pin_from_spki_der(&cert.spki_der)),
+        "a verified, accepted LAN answer is remembered"
+    );
 }
 
 /// **A valid certificate presented outside its validity window is logged as such, not as a stale
@@ -1219,6 +1228,7 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
         false,
         None,
         None,
+        false,
     );
     let Err(failure) = out else { panic!("an expired leaf must not verify") };
     assert_eq!(failure.curl_rc, Some(60), "peer verification failure");
@@ -1248,6 +1258,7 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
         eprintln!("curl unavailable on this host; skipping");
         return;
     }
+    let _session = crate::plex::session::TempSession::new("lan-roster");
     let cert = std::sync::Arc::new(crate::net::mint_cert(&[
         "127-0-0-1.e2e95.plex.direct",
         "127.0.0.1",
@@ -2452,6 +2463,95 @@ fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
     }
 }
 
+// ---- the no-server read-out names the account (production wiring) ----
+
+/// Sink that keeps the terminal observation, as the owner's FIFO would receive it.
+struct TerminalCapture(std::sync::Mutex<Vec<AuthProgress>>);
+impl owner::ObservationSink for TerminalCapture {
+    fn live(&self) -> bool { true }
+    fn progress(&self, _: AuthProgress) -> bool { true }
+    fn terminal(&self, progress: AuthProgress) -> bool {
+        self.0.lock().unwrap().push(progress);
+        true
+    }
+}
+
+/// `/resources` answering with accounts' devices, none of them a server.
+fn players_only() -> Vec<Resource> {
+    serde_json::from_str(
+        r#"[{"name":"phone","clientIdentifier":"cccc1","provides":"player","connections":[]}]"#,
+    ).unwrap()
+}
+
+/// What the screen is handed when the sign-in's last step ran with `user_call` as plex.tv's
+/// `/api/v2/user`: the failure's `message` and `account`, the call count, and the incident.
+fn no_servers_failure(user_call: impl FnOnce() -> Option<String>)
+    -> (String, Option<String>, usize, IncidentContext) {
+    let output = TerminalCapture(std::sync::Mutex::new(Vec::new()));
+    let ac = AccountClient::new("client", Some("authorized-token"));
+    let discovery = discover_and_store_with_resources(&ac, "client", 5, DiscoveryTrigger::Login,
+        &PlaintextAsk::undecided(), &output, |_, _| Ok(players_only()));
+    let (message, incident) = discovery_failure(&discovery).expect("no servers is a failure");
+    let mut calls = 0;
+    let account = no_servers_account_with(&discovery, &output, || { calls += 1; user_call() });
+    output_failed_naming(&output, 5, &message, incident, plaintext_offer(&discovery), account);
+    let terminal = output.0.lock().unwrap().pop().expect("the failure was published");
+    let AuthProgress::Login(LoginProgress::Failed { message, account, incident, .. }) = terminal
+    else { panic!("not a sign-in failure") };
+    (message, account, calls, incident)
+}
+
+/// **Regression: a sign-in that ends in "no server yet" names the account.** `/resources` answered
+/// with a list holding no server and `/api/v2/user` answered with a name: the failure that reaches
+/// the owner carries that name beside the plain caption. Every way the user call can come up empty
+/// — it failed or timed out (`None`), or named nobody — leaves exactly the nameless failure.
+#[test]
+fn a_no_servers_sign_in_hands_the_screen_the_account_name() {
+    let (message, account, calls, _) = no_servers_failure(|| Some("alexandra".to_owned()));
+    assert_eq!(message, crate::i18n::msg::browse_auth_no_servers(), "the caption stays the fallback");
+    assert_eq!(account.as_deref(), Some("alexandra"), "the account is named on the failure");
+    assert_eq!(calls, 1, "ONE user call");
+
+    let (message, account, calls, _) = no_servers_failure(|| None);
+    assert_eq!((message.as_str(), account, calls),
+        (crate::i18n::msg::browse_auth_no_servers(), None, 1),
+        "a failed, timed-out or nameless user call is today's failure, unchanged");
+}
+
+/// The user call is asked ONLY when discovery ended in no servers.
+#[test]
+fn the_account_name_is_fetched_only_for_a_no_servers_verdict() {
+    let output = TerminalCapture(std::sync::Mutex::new(Vec::new()));
+    let evidence = crate::telemetry::incident::NoServersEvidence {
+        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    for (verdict, asks) in [
+        (Discovery::NoServers(evidence), true),
+        (Discovery::Refused, false),
+        (Discovery::Cancelled, false),
+        (Discovery::ServersUnreachable { trigger: DiscoveryTrigger::Login }, false),
+        (Discovery::InsecureOnly(None), false),
+    ] {
+        let mut asked = false;
+        let account = no_servers_account_with(&verdict, &output, || { asked = true; Some("n".into()) });
+        assert_eq!(asked, asks, "only a no-servers verdict asks");
+        assert_eq!(account.is_some(), asks);
+    }
+    // Structure: both workers ask only inside the failure branch, after discovery, and a
+    // successful sign-in's tail never does.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    ).expect("auth.rs must be readable from its own test");
+    for name in ["rediscovery_worker_with_output", "login_worker_with_output"] {
+        let body = extract_fn_body(&src, name);
+        let discovered = body.find("discover_and_store(").expect("discovers");
+        let failure = body.find("discovery_failure(&discovery)").expect("grades the failure");
+        let asked = body.find("no_servers_account(&discovery").expect("asks for the account");
+        assert!(discovered < failure && failure < asked, "`{name}` asks outside the failure branch");
+        assert_eq!(body.matches("no_servers_account(").count(), 1);
+    }
+    assert!(!extract_fn_body(&src, "finish_sign_in").contains("display_name"));
+}
+
 // ---- PLX-NATIVE-10: consent-gated plaintext on the home network ----
 
 /// What answers the no-relay reporter's topology when the plaintext candidate is named by any
@@ -2767,6 +2867,91 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
     }
 }
 
+/// **The "no server yet" reason keeps its two lines for every name.** Line 1 is always the
+/// sentence naming the account and fits the reason column (it never wraps); a short name is left
+/// alone; a long one is shortened with an ellipsis and the sentence keeps its final period; line 2
+/// is always the plain no-server sentence; a blank name has no line 1 at all, so the caller says
+/// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
+#[test]
+fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
+    use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+    use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+    use crate::ui::machine::Measure;
+    use crate::ui::widgets::StatusOverlay;
+    let column = StatusOverlay::REASON_W * HEADROOM;
+    for language in [Preference::En, Preference::Es, Preference::Be] {
+        let _guard = language_on_this_thread_for_test(language);
+        let second = msg::browse_auth_no_servers();
+        for name in ["alexandra", "alexandra.konstantinopolskaya",
+            "alexandra.konstantinopolskaya.with.a.very.long.name.indeed",
+            "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА"] {
+            let reason = signed_in_reason(name, &ShippedMeasure).expect("a name gives a reason");
+            let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
+            assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
+            assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
+            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
+            assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
+            assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
+            if name == "alexandra" {
+                assert_eq!(reason, msg::browse_auth_no_servers_signed_in_as(name), "a short name is untouched");
+            }
+            if first.contains('\u{2026}') {
+                assert!(!first.ends_with("\u{2026}."), "{language:?} {name}: the ellipsis sits against the period: {first:?}");
+                let at = first.find('\u{2026}').unwrap();
+                assert!(at > 3 && first[at + 3..].chars().count() > 3, "{language:?} {name}: not cut in the middle: {first:?}");
+                assert!(name.chars().count() > 20, "{language:?} {name}: shortened without need");
+                assert!(!first.contains(name), "{language:?}: the full name survived");
+            } else {
+                assert!(first.contains(name), "{language:?} {name}: {first:?}");
+            }
+        }
+        // the long name really was cut, in the language that says the most around it
+        let cut = signed_in_reason("alexandra.konstantinopolskaya.with.a.very.long.name.indeed", &ShippedMeasure).unwrap();
+        assert!(cut.lines().next().unwrap().contains('\u{2026}'), "{language:?}: {cut:?}");
+        // Cut from the middle, both ends of the name kept, the period left alone.
+        if language == Preference::En {
+            assert_eq!(signed_in_reason("Maximilian.Wolfgang.Kowalczyk.MMWWMMWWMMWWMMWWAB", &ShippedMeasure).as_deref(),
+                Some("Signed in as Maximilian.Wolfgang.\u{2026}.MMWWMMWWMMWWMMWWAB.\nThis Plex account has no server yet."),
+                "a 48-character name is cut in the middle, not before the sentence's period");
+        }
+        assert_eq!(signed_in_reason("", &ShippedMeasure), None);
+        assert_eq!(signed_in_reason("  \n\t ", &ShippedMeasure), None);
+        // whitespace inside a name cannot break the first line
+        let spaced = signed_in_reason("Alex\nandra  K", &ShippedMeasure).unwrap();
+        assert_eq!(spaced.matches('\n').count(), 1, "{spaced:?}");
+    }
+}
+
+/// **A column too narrow for even the bare sentence names nobody.** The reason is `None`, so the
+/// caller shows `browse.auth.no_servers`, rather than the full unshortened name overflowing.
+#[test]
+fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
+    struct Wide;
+    impl crate::ui::machine::Measure for Wide {
+        fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    assert_eq!(signed_in_reason("alexandra", &Wide), None);
+}
+
+/// The user call is not made for a sink that is no longer live (the sign-in was cancelled).
+#[test]
+fn a_dead_sink_never_asks_for_the_account_name() {
+    struct Dead;
+    impl owner::ObservationSink for Dead {
+        fn live(&self) -> bool { false }
+        fn progress(&self, _: AuthProgress) -> bool { false }
+        fn terminal(&self, _: AuthProgress) -> bool { false }
+    }
+    let evidence = crate::telemetry::incident::NoServersEvidence {
+        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    let mut calls = 0;
+    let account = no_servers_account_with(&Discovery::NoServers(evidence), &Dead,
+        || { calls += 1; Some("n".to_owned()) });
+    assert_eq!((account, calls), (None, 0));
+}
+
 #[test]
 fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
     use crate::i18n::{LocaleContext, Preference};
@@ -2780,4 +2965,296 @@ fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules
             assert!(!text.contains("We tried"), "an English sentence fragment must never survive");
         }
     }
+}
+
+/// `request_result_evidence` against one loopback TLS answer, the way the identity probe makes it.
+fn identity_request(port: u16, scheme: &str, learn_pin: bool) -> Result<crate::net::Resp, crate::net::RequestFailure> {
+    crate::net::request_result_evidence(
+        &format!("{scheme}://127.0.0.1:{port}/identity"),
+        &[],
+        "GET",
+        None,
+        crate::net::API,
+        false,
+        None,
+        None,
+        learn_pin,
+    )
+}
+
+fn curl_ready() -> bool {
+    let ready = crate::net::global_init() && crate::net::available();
+    if !ready {
+        eprintln!("curl unavailable on this host; skipping");
+    }
+    ready
+}
+
+/// **Issue #380: a strictly verified TLS answer carries the pin of the served leaf, and only when
+/// the request asked.** Both halves of the expectation are independent of the code under test:
+/// the pin of the PEM the server serves, and the pin of the key pair the certificate was minted
+/// from (`TestCert::spki_der`). The host's libcurl (LibreSSL, 8.x) is not the television's
+/// (OpenSSL, 7.53.1); this test passing is the proof that the host reports `CERTINFO`, and a host
+/// that did not would fail here rather than skip.
+#[test]
+fn a_verified_tls_answer_carries_the_leaf_pin_only_when_asked() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = std::sync::Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let _ca = TestCaGuard::install(&cert.pem, "pin-learn");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+
+    let asked = identity_request(port, "https", true).expect("a trusted loopback leaf verifies");
+    assert_eq!(asked.peer_pin, crate::spki::pin_from_pem(&cert.pem), "the served leaf's pin");
+    assert_eq!(asked.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)), "the key pair's pin");
+
+    let not_asked = identity_request(port, "https", false).expect("verifies");
+    assert_eq!(not_asked.peer_pin, None, "an ordinary request pays for no chain and learns nothing");
+}
+
+/// The chain the host reports starts at the peer's OWN certificate: a leaf issued by a CA is
+/// pinned by the leaf's key, not the issuer's. The server sends `[leaf, CA]` (the way a real
+/// server does), so the order is what is being proved, not an accident of a one-element list.
+#[test]
+fn the_pin_is_the_leaf_of_a_ca_issued_chain_not_its_issuer() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let ymd = |days_from_now: i64| {
+        let (y, m, d) = crate::net::civil_date(now + days_from_now * 86_400);
+        (y as i32, m as u8, d as u8)
+    };
+    let cert = Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd(-30), ymd(30)).serving_chain());
+    let _ca = TestCaGuard::install(&cert.pem, "pin-ca-issued");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    let resp = identity_request(port, "https", true).expect("a leaf chaining to the trusted CA verifies");
+    assert_eq!(resp.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)));
+    assert_ne!(resp.peer_pin, crate::spki::pin_from_pem(&cert.pem), "not the CA's key");
+}
+
+#[test]
+fn plaintext_and_failed_verification_learn_no_pin() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let _ca = TestCaGuard::install(&cert.pem, "pin-none");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    // Plaintext: there is no certificate to read, whatever was asked.
+    let plain = identity_request(port, "http", true).expect("the twin answers in the clear");
+    assert_eq!(plain.peer_pin, None);
+
+    // Verification fails: the expired leaf of `an_expired_leaf_…`. No `Resp` exists to carry a pin,
+    // and the failure is the date check the next layer will care about.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let ymd = |ago_days: i64| {
+        let (y, m, d) = crate::net::civil_date(now - ago_days * 86_400);
+        (y as i32, m as u8, d as u8)
+    };
+    let expired = Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd(90), ymd(30)));
+    let _expired_ca = TestCaGuard::install(&expired.pem, "pin-expired");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&expired), identity_json("m"));
+    let failure = identity_request(port, "https", true).err().expect("an expired leaf must not verify");
+    assert_eq!(failure.curl_rc, Some(60));
+}
+
+/// Only the identity probe asks libcurl for the chain, and an ordinary control-plane request over
+/// the same strictly verified connection comes back with no pin at all.
+#[test]
+fn only_the_learning_probe_reads_the_peer_key() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let _ca = TestCaGuard::install(&cert.pem, "pin-http");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    let origin = Origin::parse(&format!("https://127.0.0.1:{port}")).unwrap();
+    let get = crate::http::Method::Get;
+    let hdr = [crate::http::ACCEPT_JSON];
+    let ordinary = crate::http::request(&origin, IDENTITY, get, &hdr, None).expect("answers");
+    assert_eq!(ordinary.peer_pin, None, "an ordinary request");
+    let plain_probe = crate::http::request_probe(&origin, IDENTITY, get, &hdr, 4096, 5, None).expect("answers");
+    assert_eq!(plain_probe.peer_pin, None, "a probe that did not ask");
+    let learning = crate::http::request_probe_learning_key(&origin, IDENTITY, get, &hdr, 4096, 5, None)
+        .expect("answers");
+    assert_eq!(learning.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)));
+}
+
+/// What the session remembers for `machine_id`, once the queued write has landed.
+fn learned_pin(machine_id: &str) -> Option<String> {
+    crate::storage_worker::drain_for_test();
+    crate::plex::session::peek().server_key_pin(machine_id).map(str::to_owned)
+}
+
+/// The hash label of the `plex.direct` names these tests dial; plex.tv's is 32 hex digits.
+const LEARN_HASH: &str = "0123456789abcdef0123456789abcdef";
+
+/// The name plex.tv would mint for a LAN server at `127.0.0.1`: the only kind of origin that has a
+/// `ResolvePin`, and so the only kind the probe learns from.
+fn learn_host() -> String {
+    format!("127-0-0-1.{LEARN_HASH}.plex.direct")
+}
+
+/// One identity probe of a loopback server, graded the way the race grades it: `https` dials the
+/// `plex.direct` name through its `ResolvePin` (as `race_batch` and `probe_cached` build one),
+/// `http` the bare-address plaintext twin, which has none.
+fn probe_and_learn(scheme: &str, port: u16, machine_id: &str, location: probe::Location) -> Outcome {
+    let (origin, pin) = if scheme == "https" {
+        let origin = Origin::parse(&format!("https://{}:{port}", learn_host())).unwrap();
+        let pin = crate::plex::ResolvePin::for_origin(&origin, "127.0.0.1").expect("a dashed plex.direct name pins");
+        (origin, Some(pin))
+    } else {
+        (Origin::parse(&format!("{scheme}://127.0.0.1:{port}")).unwrap(), None)
+    };
+    get_identity(&origin, pin.as_ref(), Duration::from_secs(5)).grade_learning(machine_id, location).0
+}
+
+/// **The pin is learned when, and only when, the answer is accepted for the machine asked for over
+/// a strictly verified connection to a pinned `plex.direct` origin.** Every refusal below leaves
+/// the session without an entry.
+#[test]
+fn an_accepted_identity_over_verified_tls_is_remembered_and_nothing_else_is() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let _session = crate::plex::session::TempSession::new("pin-learn-accept");
+    let cert = Arc::new(crate::net::mint_cert(&[&learn_host(), "127.0.0.1"]));
+    let _ca = TestCaGuard::install(&cert.pem, "pin-learn-accept");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m-real"));
+    let want = crate::spki::pin_from_spki_der(&cert.spki_der);
+
+    // A different machine answering at the address: WrongServer, and no key is anyone's.
+    assert_eq!(probe_and_learn("https", port, "m-other", probe::Location::Local), Outcome::WrongServer);
+    assert_eq!(learned_pin("m-other"), None);
+    assert_eq!(learned_pin("m-real"), None);
+    // Relay ends at Plex's relay; skipping it is a conservative choice.
+    assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Relay), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), None, "a relay route is never learned from");
+    // Plaintext twin: reachable, but there is no certificate.
+    assert_eq!(probe_and_learn("http", port, "m-real", probe::Location::Local), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), None);
+    // Verified HTTPS to an origin WITHOUT a pin (a custom host, a bare address): reachable, but
+    // not a name the offline fallback could ever apply to, so it teaches nothing.
+    let unpinned = Origin::parse(&format!("https://127.0.0.1:{port}")).unwrap();
+    let (outcome, _) = get_identity(&unpinned, None, Duration::from_secs(5)).grade_learning("m-real", probe::Location::Local);
+    assert_eq!(outcome, Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), None, "no ResolvePin, no key");
+
+    // The accepted answer.
+    assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Local), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), Some(want));
+    assert_eq!(learned_pin("m-other"), None);
+}
+
+#[test]
+fn an_identity_that_fails_verification_teaches_no_key() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let _session = crate::plex::session::TempSession::new("pin-learn-unverified");
+    // The server's certificate is NOT in the trust store this request verifies against.
+    let trusted = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    let stranger = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    let _ca = TestCaGuard::install(&trusted.pem, "pin-learn-unverified");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&stranger), identity_json("m-real"));
+    assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Local), Outcome::Unreachable);
+    assert_eq!(learned_pin("m-real"), None);
+}
+
+/// A new key replaces the old entry; the same key again writes nothing at all (the probe runs on
+/// every boot and every re-discovery).
+#[test]
+fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
+    use std::os::unix::fs::MetadataExt;
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let session = crate::plex::session::TempSession::new("pin-learn-replace");
+    let file = session.path();
+    let first = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    let second = Arc::new(crate::net::mint_cert(&[&learn_host()]));
+    // One trusted certificate at a time: both are minted with the same subject, so a bundle holding
+    // the two would let the first shadow the second by name.
+    let ca_a = TestCaGuard::install(&first.pem, "pin-learn-replace-a");
+    let port_a = crate::net::spawn_dual_protocol(Arc::clone(&first), identity_json("m-real"));
+    let port_b = crate::net::spawn_dual_protocol(Arc::clone(&second), identity_json("m-real"));
+
+    assert_eq!(probe_and_learn("https", port_a, "m-real", probe::Location::Local), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), Some(crate::spki::pin_from_spki_der(&first.spki_der)));
+
+    let stamp = |f: &std::path::Path| (std::fs::read(f).unwrap(), std::fs::metadata(f).unwrap().ino());
+    let before = stamp(&file);
+    assert_eq!(probe_and_learn("https", port_a, "m-real", probe::Location::Local), Outcome::Reachable);
+    crate::storage_worker::drain_for_test();
+    assert_eq!(stamp(&file), before, "the same key again must not rewrite the session file");
+
+    drop(ca_a);
+    let _ca_b = TestCaGuard::install(&second.pem, "pin-learn-replace-b");
+    assert_eq!(probe_and_learn("https", port_b, "m-real", probe::Location::Local), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), Some(crate::spki::pin_from_spki_der(&second.spki_der)));
+    let after = crate::plex::session::peek();
+    assert_eq!(after.server_key_pins.len(), 1, "one entry per machine");
+    assert_ne!(stamp(&file), before);
+}
+
+/// **One machine published at a `plex.direct` name AND at a custom host with its own certificate
+/// (a reverse proxy) keeps the `plex.direct` leaf's key, however the two answers interleave.**
+/// Both routes are dialled by the same race and both answer as the same machine over verified
+/// TLS; only the pinned one is a name the offline fallback can apply to, so only it may write. The
+/// custom route answers LAST here on purpose: it is the order in which an unconditional learner
+/// leaves the proxy's key stored.
+#[test]
+fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let _session = crate::plex::session::TempSession::new("pin-learn-flap");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let ymd = |days_from_now: i64| {
+        let (y, m, d) = crate::net::civil_date(now + days_from_now * 86_400);
+        (y as i32, m as u8, d as u8)
+    };
+    // Different subjects, so one bundle can trust both: a CA-issued leaf behind the plex.direct
+    // name, a self-signed certificate behind the proxy.
+    let direct = Arc::new(crate::net::mint_ca_issued_cert(&[&learn_host()], ymd(-30), ymd(30)).serving_chain());
+    let proxy = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
+    let _ca = TestCaGuard::install(&format!("{}{}", direct.pem, proxy.pem), "pin-learn-flap");
+    let body = identity_json("flapmid");
+    let direct_port = crate::net::spawn_dual_protocol(Arc::clone(&direct), body.clone());
+    let proxy_port = crate::net::spawn_dual_protocol(Arc::clone(&proxy), body);
+    let resource = resource(&format!(
+        r#"{{"name":"flap","clientIdentifier":"flapmid","provides":"server","owned":true,
+            "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+            "accessToken":"tok-flap","connections":[
+              {{"protocol":"https","address":"127.0.0.1","port":{direct_port},
+               "uri":"https://{host}:{direct_port}","local":true,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"127.0.0.1","port":{proxy_port},
+               "uri":"https://127.0.0.1:{proxy_port}","local":true,"relay":false,"IPv6":false}}
+            ]}}"#,
+        host = learn_host()
+    ));
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+
+    let proxy_answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&proxy_answered);
+    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+        let is_proxy = origin.port() == i32::from(proxy_port);
+        if is_proxy {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        let reply = get_identity(origin, pin, budget);
+        if is_proxy {
+            seen.store(true, std::sync::atomic::Ordering::Release);
+        }
+        reply
+    });
+    let reach = probe_server_racing(&plan, dial, &threaded_spawn, test_policy(), &mut |_, _, _| {});
+    assert!(matches!(reach, Reach::At(..)), "both routes answer; one of them is reached");
+
+    // Let the proxy's worker finish, learning or not, before reading what the session kept.
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while !proxy_answered.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < give_up {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(proxy_answered.load(std::sync::atomic::Ordering::Acquire), "the proxy route was dialled");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        learned_pin("flapmid"),
+        Some(crate::spki::pin_from_spki_der(&direct.spki_der)),
+        "the pin is the plex.direct leaf's; the custom host's answer wrote nothing"
+    );
 }

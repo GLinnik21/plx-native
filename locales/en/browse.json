@@ -677,6 +677,13 @@
     "value": "This Plex account has no server yet.",
     "description": "browse auth no_servers"
   },
+  "browse.auth.no_servers_signed_in_as": {
+    "value": "Signed in as {account}.\nThis Plex account has no server yet.",
+    "args": {
+      "account": "str"
+    },
+    "description": "Sign-in read-out reason when the account has no server: two sentences on two lines (the line break is deliberate and the read-out honours it); {account} is the signed-in account's name, shortened to fit the first line. Without a name the plain no_servers reason is used."
+  },
   "browse.auth.refused": {
     "value": "Your Plex server refused the connection — check its network access settings.",
     "description": "browse auth refused"

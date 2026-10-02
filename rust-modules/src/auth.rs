@@ -842,8 +842,16 @@ pub(crate) enum LoginProgress {
     /// class of the last network call and its counters, never `message`'s text.
     /// `plaintext` is the server the read-out may offer a consented plaintext connection to
     /// ([`PlaintextVerdict::offers`]) — screen-only; the incident carries closed codes alone.
+    ///
+    /// `account` is the name plex.tv gave the account that signed in and found no server, for the
+    /// read-out to say who signed in (`browse.auth.no_servers_signed_in_as`). Personal data:
+    /// screen-only like `plaintext`, `#[serde(skip)]` so no serialized copy carries it, left out of
+    /// the observation digest, and never part of `incident` or a log line. `message` is then
+    /// `browse.auth.no_servers`, the caption a screen shows when it has no name to say.
     Failed { epoch: u64, message: String, incident: crate::telemetry::incident::IncidentContext,
-        plaintext: Option<PlaintextVerdict> },
+        plaintext: Option<PlaintextVerdict>,
+        #[serde(skip)]
+        account: Option<String> },
     /// plex.tv stopped answering the polls of the code on screen (`Some`, once, when the run of
     /// unanswered polls reaches [`LINK_TROUBLE_AFTER`]) or answered again (`None`). Non-terminal:
     /// the wait goes on, and the owner raises a `LinkStalled` incident from the evidence.
@@ -922,7 +930,87 @@ pub(crate) fn synthetic_incident() -> IncidentContext {
 /// caption is for the person, the context is what an onboarding report may carry.
 fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
     incident: IncidentContext, plaintext: Option<PlaintextVerdict>) {
-    output.terminal(LoginProgress::Failed { epoch, message: message.into(), incident, plaintext }.into());
+    output_failed_naming(output, epoch, message, incident, plaintext, None);
+}
+
+/// [`output_failed`] for a failure that may also say which account signed in
+/// ([`LoginProgress::Failed::account`]).
+fn output_failed_naming(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
+    incident: IncidentContext, plaintext: Option<PlaintextVerdict>, account: Option<String>) {
+    output.terminal(LoginProgress::Failed {
+        epoch, message: message.into(), incident, plaintext, account }.into());
+}
+
+/// **Who signed in, when the answer is "no server yet"** — and only then. One `GET /api/v2/user`
+/// ([`crate::plex::account::DISPLAY_NAME_TIMEOUTS`], 5 s), made after discovery has already ended
+/// in [`Discovery::NoServers`]: a successful sign-in never asks, and nothing asks before discovery.
+/// `None` for every other verdict, for a call that failed or timed out, and for an answer with no
+/// usable name — the read-out then says `browse.auth.no_servers` and shows nothing of the miss
+/// (the failed call's status line is still logged, and no log line ever carries the account).
+///
+/// The name is personal data and goes nowhere but [`LoginProgress::Failed::account`]: it is not
+/// logged here, and the measuring that fits it on a line happens on the screen's thread
+/// ([`signed_in_reason`]), where the font is.
+fn no_servers_account(d: &Discovery, ac: &AccountClient, output: &dyn owner::ObservationSink)
+    -> Option<String> {
+    no_servers_account_with(d, output,
+        || ac.display_name_with(crate::plex::account::DISPLAY_NAME_TIMEOUTS))
+}
+
+/// [`no_servers_account`] with the user call injected, like `discover_and_store_with_resources`.
+fn no_servers_account_with(d: &Discovery, output: &dyn owner::ObservationSink,
+    user_call: impl FnOnce() -> Option<String>) -> Option<String> {
+    if !matches!(d, Discovery::NoServers(_)) || !output.live() {
+        return None;
+    }
+    user_call()
+}
+
+/// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
+/// (`browse.auth.no_servers_signed_in_as`: "Signed in as {account}." over "This Plex account has
+/// no server yet."), the break between them a `\n` the read-out honours
+/// (`StatusOverlay::reason_segments`).
+///
+/// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
+/// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
+/// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
+/// at the name's end would sit against that period as four dots. `None` for a blank name, or when the sentence
+/// leaves the name no room at all — the caller says `browse.auth.no_servers` instead, which needs
+/// no name.
+///
+/// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
+/// no font to ask, which is why this takes the capability rather than reading one.
+pub(crate) fn signed_in_reason(account: &str, measure: &dyn crate::ui::machine::Measure) -> Option<String> {
+    use crate::ui::widgets::StatusOverlay;
+    // A name is one run of text: a control character or a stray line break in it would cut the
+    // first line short of its sentence.
+    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    if account.is_empty() {
+        return None;
+    }
+    let sz = crate::ui::theme::size::BODY;
+    let message = |name: &str| crate::i18n::msg::browse_auth_no_servers_signed_in_as(name);
+    let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
+    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
+    let full = message(&account);
+    if first_line_w(&full) <= column {
+        return Some(full);
+    }
+    // The room the name has is the column less the sentence around it; shave a pixel at a time if
+    // the sum of the parts under-reads the whole (kerning across the name's edges).
+    let mut room = column - first_line_w(&message(""));
+    loop {
+        // No room for any of the name: the plain caption says it better than a bare ellipsis.
+        if room <= 0.0 {
+            return None;
+        }
+        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
+        let out = message(&name);
+        if first_line_w(&out) <= column {
+            return Some(out);
+        }
+        room -= 1.0;
+    }
 }
 
 /// The caption and the incident for a discovery that found nothing usable. One table for the
@@ -1024,7 +1112,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // that can show every sign-in cause's glyph without a network call or an account.
     if let Some(case) = crate::dev::scenarios::readout_case() {
         let (message, incident) = case.canned_login_failure();
-        return output_failed(output, epoch, &message, incident, None);
+        return output_failed_naming(output, epoch, &message, incident, None, case.canned_account());
     }
     let ac = AccountClient::new(&cid, None);
 
@@ -1081,7 +1169,8 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // outage.
     let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Login, ask, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
-        return output_failed(output, epoch, &message, incident, plaintext_offer(&discovery));
+        let account = no_servers_account(&discovery, &ac, output);
+        return output_failed_naming(output, epoch, &message, incident, plaintext_offer(&discovery), account);
     }
     let Discovery::Ok { server, sources } = discovery else { return };
     finish_sign_in(&ac, epoch, server, sources, output);
@@ -1284,7 +1373,8 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64, ask: &
     let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Rediscover, ask, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
         // The same caption AND the same incident as sign-in: this is the retry of that failure.
-        return output_failed(output, epoch, &message, incident, plaintext_offer(&discovery));
+        let account = no_servers_account(&discovery, &ac, output);
+        return output_failed_naming(output, epoch, &message, incident, plaintext_offer(&discovery), account);
     }
     if let Discovery::Ok { server, sources } = discovery {
         finish_sign_in(&ac, epoch, server, sources, output);
@@ -1945,16 +2035,30 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// verdict can later say HOW each route failed ([`RouteOutcome::of_failure`]) instead of only that
 /// it did.
 ///
-/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
-/// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
+/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to the probe request
+/// exactly as `apply_candidate_activation` forwards one to
 /// `register_origin` — the same [`crate::plex::ResolvePin`], used one step earlier: at the DIAL
 /// that decides the winner, not only at the registration of one already decided.
+///
+/// **A pin is also what makes a probe a learning one** (issue #380): a candidate with a
+/// `ResolvePin` is dialled with [`crate::http::request_probe_learning_key`], which reads the
+/// peer's leaf key off the verified connection, and one without it with plain
+/// [`crate::http::request_probe`]. The pinned names (the dashed `*.plex.direct` ones) are the
+/// only origins the offline fallback of #378 can ever apply to, and a server also published at a
+/// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
+/// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
+/// is `Some` exactly when it held.
 fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
 ) -> ProbeReply {
-    match crate::http::request_probe(
+    let probe = if pin.is_some() {
+        crate::http::request_probe_learning_key
+    } else {
+        crate::http::request_probe
+    };
+    match probe(
         origin,
         IDENTITY,
         crate::http::Method::Get,
@@ -1967,7 +2071,7 @@ fn get_identity(
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
         // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
         // that might happen to contain a plausible machine id.
-        Ok(r) => ProbeReply::Answered { status: r.status, body: r.body },
+        Ok(r) => ProbeReply::Answered { status: r.status, body: r.body, peer_pin: r.peer_pin },
         Err(failure) => ProbeReply::Failed(failure),
     }
 }
@@ -1977,7 +2081,10 @@ fn get_identity(
 /// what an insecure-only verdict names per route.
 #[derive(Debug)]
 enum ProbeReply {
-    Answered { status: i32, body: Vec<u8> },
+    /// `peer_pin` is the pin of the leaf certificate a strictly verified TLS connection presented
+    /// (`crate::http::Reply::peer_pin`); `None` over plaintext, for an origin without a
+    /// `ResolvePin` (see [`get_identity`]) and on every test seam.
+    Answered { status: i32, body: Vec<u8>, peer_pin: Option<String> },
     Failed(Option<crate::net::RequestFailure>),
 }
 
@@ -1985,12 +2092,28 @@ impl ProbeReply {
     /// The acceptance verdict ([`classify`]) and the route evidence for this reply.
     fn grade(&self, want_machine_id: &str) -> (Outcome, RouteOutcome) {
         match self {
-            Self::Answered { status, body } => {
+            Self::Answered { status, body, .. } => {
                 let outcome = classify(*status, body, want_machine_id);
                 (outcome, RouteOutcome::of_answer(*status, outcome))
             }
             Self::Failed(failure) => (Outcome::Unreachable, RouteOutcome::of_failure(*failure)),
         }
+    }
+
+    /// [`Self::grade`], and when the answer is accepted for `want_machine_id` over a verified
+    /// connection, remember that machine's public key (issue #380, for the offline fallback of
+    /// #378). Acceptance is [`classify`]'s: a 2xx whose `machineIdentifier` is the one asked for,
+    /// so a stranger answering at the address never teaches a key. Only a probe of a pinned
+    /// `plex.direct` origin carries a key at all ([`get_identity`]). A relay route is skipped as a
+    /// conservative choice: its certificate is not shown to be the server's.
+    fn grade_learning(&self, want_machine_id: &str, location: probe::Location) -> (Outcome, RouteOutcome) {
+        let graded = self.grade(want_machine_id);
+        if let (Outcome::Reachable, Self::Answered { peer_pin: Some(pin), .. }) = (graded.0, self) {
+            if location != probe::Location::Relay {
+                crate::plex::session::learn_server_key(want_machine_id, pin);
+            }
+        }
+        graded
     }
 }
 
@@ -1998,7 +2121,7 @@ impl ProbeReply {
 /// answered", with no evidence.
 impl From<(i32, Vec<u8>)> for ProbeReply {
     fn from((status, body): (i32, Vec<u8>)) -> Self {
-        if status == 0 { Self::Failed(None) } else { Self::Answered { status, body } }
+        if status == 0 { Self::Failed(None) } else { Self::Answered { status, body, peer_pin: None } }
     }
 }
 
@@ -2254,8 +2377,10 @@ fn race_batch(
         // belongs to a TLS name only) or an unmatched/undecodable label; the request then resolves
         // through DNS exactly as before.
         let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
+        let location = c.location;
         let job = Box::new(move || {
-            let (outcome, route) = dial(&origin, pin.as_ref(), budget).grade(&machine_id);
+            let (outcome, route) =
+                dial(&origin, pin.as_ref(), budget).grade_learning(&machine_id, location);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
             // this result is inert. If this claim wins and the worker is descheduled before send,
@@ -3986,7 +4111,8 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         } else {
             PROBE_DEADLINES.remote
         };
-        let (outcome, _) = get_identity(&origin, pin.as_ref(), budget).grade(&plan.machine_id);
+        let (outcome, _) = get_identity(&origin, pin.as_ref(), budget)
+            .grade_learning(&plan.machine_id, cached.tier.unwrap_or(probe::Location::Relay));
         let source = (outcome == Outcome::Reachable).then(|| {
             let mut fresh = cached.clone();
             fresh.token = resource.access_token.clone();

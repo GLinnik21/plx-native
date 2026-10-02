@@ -55,7 +55,8 @@ fn measured_status_action_uses_shared_button_width_height_and_reason_spacing() {
     let shifted = explained.action_frame_measured(&StatusMetrics).unwrap();
     // …and its reason is the design system's two-line BODY slot: one pitch plus one line box.
     let slot = theme::size::BODY as f32 * 1.32 + 40.0;
-    assert!((shifted.y - action.y - (theme::space::SM + slot)).abs() < 1e-3);
+    // …with the row's drop ([`REASON_ROW_DROP`]) under it.
+    assert!((shifted.y - action.y - (theme::space::SM + slot + explained.row_drop())).abs() < 1e-3);
     let bands = explained.bands_measured(&StatusMetrics);
     let drawn = explained.action_rect(
         Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, false, &StatusMetrics), &bands);
@@ -91,8 +92,8 @@ fn a_failed_status_verdict_is_never_the_danger_token() {
 
 /// A PAGE-placed Failed read-out hangs its verdict from `FULL_ANCHOR_TOP` (540, the player's
 /// glyph line) in screen space whatever frame the caller held, and stacks the reason and the row
-/// under it — the row `space::LG` under the reason's two-line slot, or under the verdict when there
-/// is no reason — centred on the panel. A bounded one and a Working one still centre in their
+/// under it — the row `space::LG` plus the fixed drop under the reason's two-line slot, or
+/// `space::LG` under the verdict when there is no reason — centred on the panel. A bounded one and a Working one still centre in their
 /// frame, and `.page()` leaves a Working or Empty read-out alone.
 #[test]
 fn a_full_frame_failed_readout_hangs_from_the_top_anchor() {
@@ -109,7 +110,8 @@ fn a_full_frame_failed_readout_hangs_from_the_top_anchor() {
             assert_eq!(bands.cap.y, StatusOverlay::FULL_ANCHOR_TOP);
             let copy_bottom = bands.reason.map_or(bands.cap.y + bands.cap.h, |r| r.y + r.h);
             let row = full.action_frame_measured(&StatusMetrics).unwrap();
-            assert_eq!(row.y, copy_bottom + theme::space::LG, "the row stacks under the copy");
+            let drop = if reason.is_some() { full.row_drop() } else { 0.0 };
+            assert_eq!(row.y, copy_bottom + theme::space::LG + drop, "the row stacks under the copy");
             assert_eq!(row.cx(), Rect::FULL.cx(), "centred on the panel, not the frame");
             rows.push((reason.is_some(), row.y));
         }
@@ -407,4 +409,32 @@ fn translated_glyph_hint_keeps_the_physical_arrow_and_catalog_punctuation() {
     assert_eq!(layout.post_x, key_cap_w(CapFace::Glyph(crate::ui::icons::Icon::ChevronUp), &measure));
     assert_eq!(hint.post.to_str().unwrap(), ", адкрыць");
     assert_eq!(layout.width, layout.post_x + measure.width_str(", адкрыць", theme::size::CAPTION, false));
+}
+
+/// **A reason with a `\n` is two forced lines, whatever the name in it weighs.** Line 1 is the
+/// text before the break and line 2 the text after, each its own row at the reason's pitch; the
+/// slot and therefore the row do not depend on the words. `TextView` alone would join them.
+#[test]
+fn a_forced_break_reason_is_split_into_at_most_two_lines() {
+    let two = "Signed in as alexandra.\nThis Plex account has no server yet.";
+    assert_eq!(
+        StatusOverlay::reason_segments(two),
+        Some(vec!["Signed in as alexandra.", "This Plex account has no server yet."])
+    );
+    assert_eq!(StatusOverlay::reason_segments("a\n\n b \nc"), Some(vec!["a", "b"]), "at most two, blanks dropped");
+    assert_eq!(StatusOverlay::reason_segments("one line"), None);
+}
+
+/// **The action row's one rule.** A `Failed` read-out with a reason puts its row [`REASON_ROW_DROP`]
+/// under the slot's end whether the reason is one line or two; a read-out with no reason, and a
+/// `Working` one, are untouched.
+#[test]
+fn a_failed_reason_drops_the_row_by_one_fixed_amount() {
+    let failed = || StatusOverlay::new(Rect::FULL, c"x", StatusKind::Failed).action(c"Retry");
+    for reason in [c"one line", c"Signed in as a.\nThis Plex account has no server yet."] {
+        assert_eq!(failed().reason(reason).row_drop(), REASON_ROW_DROP);
+    }
+    assert_eq!(failed().row_drop(), 0.0, "no reason, no drop");
+    let working = StatusOverlay::new(Rect::FULL, c"x", StatusKind::Working).reason(c"why").action(c"Retry");
+    assert_eq!(working.row_drop(), 0.0, "only a Failed read-out's slotted reason moves the row");
 }
