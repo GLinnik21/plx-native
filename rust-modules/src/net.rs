@@ -2269,7 +2269,8 @@ pub(crate) mod keypin {
         state().table.get(key).cloned()
     }
 
-    #[cfg(test)]
+    /// Also read by the `tls-selftest` dev trigger, which reports which mode answered.
+    #[cfg(any(test, feature = "devtriggers"))]
     pub(crate) fn is_latched(key: &str) -> bool {
         state().latched.contains_key(key)
     }

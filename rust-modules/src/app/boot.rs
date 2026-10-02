@@ -517,6 +517,10 @@ pub(crate) unsafe fn construct(
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
     let _ = crate::net::global_init();
+    // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
+    // no account (a no-op without the trigger; absent in shipping builds).
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::tls_selftest::arm_at_boot();
     // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
     // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines
     // up.** It was there first, and the end-to-end run showed why that was wrong: the worker
