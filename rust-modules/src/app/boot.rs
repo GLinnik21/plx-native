@@ -649,6 +649,10 @@ pub(crate) unsafe fn construct(
     // landing while round 1's first handshake is in flight would wipe it and the round be refused.
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::tls_selftest::arm_at_boot();
+    // dev: /tmp/plxnative-toast=<text> — asks the TV's notification service for a system toast,
+    // once plain and once as the app, and logs each full outcome (`toast-probe …`).
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::toast_probe::arm_at_boot();
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
