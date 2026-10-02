@@ -38,6 +38,8 @@ use serde_json::{json, Value};
 
 use super::machine::{Canon, LogicalState, Measure, Tick};
 mod strict_json;
+#[cfg(test)]
+mod measurements_tests; // `Measurements` over a memoizing native source (moved from `text.rs`, module-layers step L5)
 
 /// The record format's version. A recording from another schema is REFUSED, both printed.
 ///

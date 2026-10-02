@@ -24,6 +24,46 @@
 //! The HWCNT run's serialized wall duration is calibration metadata only. It is not reported as
 //! GPU time. GPU phase time comes from timer-query runs, while production p50/p95/worst-frame runs
 //! are collected separately with both profilers off.
+//!
+//! This file lived at `ui/profile.rs` and moved under `gfx` (module-layers step L5): `gfx` wraps
+//! its blur and glass passes in [`phase`] and reports each blur region through
+//! [`note_blur_config`], and the `gfx` layer may not name `ui`. `ui` re-exports it as
+//! `ui::profile`, so every screen still wraps its draw phases the same way. The one thing the
+//! profiler read FROM `ui` — the LOAD DIAL's live step — is published here instead
+//! ([`publish_dial`]), by the dial that owns the decision.
+// `ui/mod.rs` blankets its whole tree with this attribute, which is what kept the stub half of this
+// file (the entry points a build without `devtriggers` still calls) clear of dead-code findings.
+#![allow(dead_code)]
+
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+/// **The LOAD DIAL's live step index, PUBLISHED**: the dial (`ui::glassload`) owns the decision and
+/// writes this on every change; instruments read it freely. Every HWCNT phase record is tagged with
+/// it from inside an arbitrary draw closure with no borrow of the dial to ask through, and a cycled
+/// run that could not be split by step after the fact reports a mean over configurations that never
+/// occurred. -1 while the dial is disarmed.
+static DIAL_STEP: AtomicI32 = AtomicI32::new(-1);
+/// Whether anything in the dial is armed, published for the same readers and the same reason.
+static DIAL_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Publish the dial's two decisions (`ui::glassload::Dial::publish` is the only writer). There is
+/// exactly one `Dial` in the process, so the last one to change owns the publication.
+pub(crate) fn publish_dial(step: i32, armed: bool) {
+    DIAL_STEP.store(step, Ordering::Relaxed);
+    DIAL_ARMED.store(armed, Ordering::Relaxed);
+}
+
+/// The live dial step, or -1. Rides the heartbeat and every profiler record.
+#[inline]
+pub(crate) fn dial_step() -> i32 {
+    DIAL_STEP.load(Ordering::Relaxed)
+}
+
+/// Is anything in the dial armed? The published half of `Dial::armed`, for the same readers.
+#[inline]
+pub(crate) fn dial_armed() -> bool {
+    DIAL_ARMED.load(Ordering::Relaxed)
+}
 
 #[cfg(feature = "devtriggers")]
 mod imp {
@@ -454,7 +494,7 @@ mod imp {
                     // JSONL holding several configurations; without this the distributions cannot
                     // be separated after the fact, and a mean over the whole file names a value
                     // that never occurred (the `SPREAD=` lesson, one level up).
-                    crate::ui::glassload::step_index()
+                    super::dial_step()
                 );
                 let _ = write_words(raw, &before.words);
                 let _ = write!(raw, ",\"interval\":");
@@ -482,7 +522,7 @@ mod imp {
         // …or whenever the LOAD DIAL is armed. The region a leg actually blurred is the one thing
         // that cannot be recovered afterwards, and requiring a profiler to see it means it can only
         // be seen in runs whose frame rate the profiler has already changed.
-        if !enabled() && !crate::gpu_timer::enabled() && !crate::ui::glassload::armed() {
+        if !enabled() && !crate::gpu_timer::enabled() && !super::dial_armed() {
             return;
         }
         let config = format!(

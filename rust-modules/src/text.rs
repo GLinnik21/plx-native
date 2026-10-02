@@ -573,7 +573,7 @@ pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) ->
 
 /// Every rung of `theme::size` — the faces a page's layout is measured in.
 const WARM_SIZES: [c_int; 9] = {
-    use crate::ui::theme::size::*;
+    use crate::gfx::tokens::size::*;
     [HERO, DISPLAY, TITLE, HEADLINE, BODY, LABEL, CAPTION, MICRO, DIAGNOSTIC]
 };
 /// Printable ASCII: the glyphs nearly every string the product measures is made of.
@@ -1497,7 +1497,7 @@ impl crate::ui::machine::Measure for TtfMeasure {
 static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
 
 #[derive(Default)]
-struct MeasuredBounds {
+pub(crate) struct MeasuredBounds {
     entries: HashMap<u64, MeasuredBound>,
 }
 
@@ -1534,7 +1534,7 @@ impl MeasuredBounds {
     }
 
     #[cfg(test)]
-    fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
+    pub(crate) fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
         compute: impl FnOnce() -> (f32, bool)) -> f32 {
         self.bounds(text, sz, bold, || {
             let (width, complete) = compute();
@@ -1617,7 +1617,7 @@ pub(crate) fn fit_line_by<M: crate::ui::machine::Measure + ?Sized>(
 }
 
 #[derive(Default)]
-struct FittedLines {
+pub(crate) struct FittedLines {
     entries: HashMap<u64, FittedLine>,
 }
 
@@ -1634,7 +1634,7 @@ thread_local! {
 }
 
 impl FittedLines {
-    fn fit(&mut self, measure: &impl crate::ui::machine::Measure, s: &str,
+    pub(crate) fn fit(&mut self, measure: &impl crate::ui::machine::Measure, s: &str,
         budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
         let spec = (budget.to_bits(), sz, bold);
         let mut hash = DefaultHasher::new();
@@ -1732,41 +1732,6 @@ mod fitted_line_tests {
             cache.fit(&measure, text, budget, sz, bold);
             assert!(measure.0.get() > calls);
         }
-    }
-
-    #[test]
-    fn recording_and_replay_cannot_reuse_a_live_fitted_line() {
-        use crate::ui::rec::Measurements;
-        struct NativeMemo(CountMeasure, std::cell::RefCell<FittedLines>,
-            std::cell::RefCell<MeasuredBounds>);
-        impl Measure for NativeMemo {
-            fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
-                self.2.borrow_mut().width(s, sz, bold as c_int, || (self.0.width(s, sz, bold), true))
-            }
-            fn cap_h(&self, sz: i32) -> f32 { self.0.cap_h(sz) }
-            fn line_h(&self, sz: i32) -> f32 { self.0.line_h(sz) }
-            fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
-                self.1.borrow_mut().fit(self, s, budget, sz, bold)
-            }
-        }
-        let source = Box::leak(Box::new(NativeMemo(CountMeasure::default(), Default::default(), Default::default())));
-        let live = Measurements::Live(source);
-        let warm = live.fit_line("episode", 20.0, 1, false);
-        assert!(Rc::ptr_eq(&warm, &live.fit_line("episode", 20.0, 1, false)));
-        let record = Measurements::record(source);
-        let native_calls = source.0.0.get();
-        assert_eq!(warm, record.fit_line("episode", 20.0, 1, false));
-        assert_eq!(source.0.0.get(), native_calls, "recording queries must still use native cached metrics");
-        let metrics = record.drain().unwrap().into_iter().collect::<HashMap<_, _>>();
-        assert!(!metrics.is_empty(), "warm native memo must not hide recorded measurements");
-        let mut replay = Measurements::Pending(Cell::new(false));
-        replay.prepare(Some(&metrics));
-        assert_eq!(warm, replay.fit_line("episode", 20.0, 1, false));
-        assert!(replay.drain().is_ok());
-        let mut missing = Measurements::Pending(Cell::new(false));
-        missing.prepare(Some(&HashMap::new()));
-        missing.fit_line("episode", 20.0, 1, false);
-        assert!(missing.drain().is_err(), "warm native memo must not mask a replay miss");
     }
 
     #[test]
@@ -2016,7 +1981,7 @@ unsafe fn drawn_tex(
 struct Placed {
     tex: c_uint,
     /// The destination quad on screen, after the caller's zoom.
-    quad: crate::ui::Rect,
+    quad: crate::gfx::Rect,
     /// The texture's unzoomed width — the fade program's px→uv divisor.
     dw: f32,
     /// The layout width the caller gets back (independent of zoom).
@@ -2026,7 +1991,7 @@ struct Placed {
 impl Placed {
     /// Glyphs are 1:1 texel:pixel only unzoomed, so only then is the origin snapped (see
     /// `gfx::snap`); a zoomed run is meant to resample smoothly as it grows.
-    fn origin(&self, zoom: crate::ui::Zoom) -> (f32, f32) {
+    fn origin(&self, zoom: crate::gfx::Zoom) -> (f32, f32) {
         if zoom.is_none() {
             (crate::gfx::snap(self.quad.x), crate::gfx::snap(self.quad.y))
         } else {
@@ -2046,7 +2011,7 @@ unsafe fn place_text(
     sz: c_int,
     align: c_int,
     bold: c_int,
-    zoom: crate::ui::Zoom,
+    zoom: crate::gfx::Zoom,
 ) -> Result<Placed, f32> {
     if TEXT_OK == 0 || s.is_null() {
         return Err(0.0);
@@ -2066,7 +2031,7 @@ unsafe fn place_text(
         2 => x - dw,
         _ => x,
     };
-    let quad = zoom.map(crate::ui::Rect::new(dx, y, dw, dh));
+    let quad = zoom.map(crate::gfx::Rect::new(dx, y, dw, dh));
     if crate::gfx::culled(quad.x, quad.y, quad.w, quad.h)
         || gate(Class::Text, quad.x, quad.y, quad.w, quad.h)
     {
@@ -2085,7 +2050,7 @@ pub(crate) fn draw_text(
     col: *const f32,
     align: c_int,
     bold: c_int,
-    zoom: crate::ui::Zoom,
+    zoom: crate::gfx::Zoom,
 ) -> f32 {
     unsafe {
         let p = match place_text(s, x, y, sz, align, bold, zoom) {
@@ -2128,7 +2093,7 @@ pub(crate) fn draw_text_fade(
     hfade: Option<(f32, f32)>,
     vfade_top: Option<(f32, f32)>,
     vfade_bot: Option<(f32, f32)>,
-    zoom: crate::ui::Zoom,
+    zoom: crate::gfx::Zoom,
 ) -> f32 {
     unsafe {
         if TPROGF == 0 {
@@ -2396,8 +2361,8 @@ mod cache_policy_tests {
                 assert_eq!(glyphs, WARM_GLYPHS, "size {sz} bold {bold}: every printable ASCII glyph, once");
             }
         }
-        assert!(WARM_SIZES.contains(&crate::ui::theme::size::HERO));
-        assert!(WARM_SIZES.contains(&crate::ui::theme::size::DIAGNOSTIC));
+        assert!(WARM_SIZES.contains(&crate::gfx::tokens::size::HERO));
+        assert!(WARM_SIZES.contains(&crate::gfx::tokens::size::DIAGNOSTIC));
         reset_font_warm_for_test();
     }
 

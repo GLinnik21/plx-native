@@ -1866,7 +1866,7 @@ pub(super) fn finish_local_erasure(bridge: &super::bridge::Bridge,
         super::bridge::nav_root(pages, AppArg::Login);
     }
     super::bridge::dismiss_surfaces_now(pages);
-    crate::gfx::blur_invalidate();
+    crate::ui::popover::host::blur_invalidate();
 }
 
 /// The request-to-performer boundary for root navigation. The live loop and owned-screen
