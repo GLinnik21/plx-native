@@ -87,13 +87,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "main-thread block: storage helper transact")]
-    fn a_helper_call_inside_a_frame_is_rejected() {
-        let _frame = FrameScope::enter();
-        let _ = crate::storage::client::load();
-    }
-
-    #[test]
     fn nested_scopes_and_exceptions_restore_after_unwind() {
         let frame = FrameScope::enter();
         let _ = std::panic::catch_unwind(|| {

@@ -708,7 +708,8 @@ mod tests {
     /// question's panel. Measured with the device's whole-pixel advances.
     #[test]
     fn every_answer_fits_its_pill_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {

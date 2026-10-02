@@ -594,7 +594,7 @@ fn toggle_on_from_direct_queues_retranscode_then_remux_params() {
 /// whichever thread called it — in production, the per-frame pump thread. `FrameScope` marks a
 /// thread as that frame thread; `assert_may_block`, wired into `http::request_with` (the one PMS
 /// dispatch chokepoint), panics the instant PMS I/O happens inside a `FrameScope` without an
-/// explicit `allow_blocking` escape (see `task::blocking::tests::a_helper_call_inside_a_frame_is_rejected`
+/// explicit `allow_blocking` escape (see `storage::client::tests::a_helper_call_inside_a_frame_is_rejected`
 /// for the same mechanism guarding a storage call). If this call still ran `put_selection`/
 /// `/decision` inline, the `execute_retranscode_claim` call below would panic with "main-thread
 /// block: PMS HTTP" instead of returning `Pending`.

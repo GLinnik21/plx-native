@@ -3286,6 +3286,15 @@ mod recording_erasure_tests;
 #[cfg(test)]
 #[path = "consent_owner_tests.rs"]
 mod consent_owner_tests;
+#[cfg(test)]
+#[path = "session_worker_adapter_tests.rs"]
+mod session_worker_adapter_tests;
+#[cfg(test)]
+#[path = "session_erase_retry_tests.rs"]
+mod session_erase_retry_tests;
+#[cfg(test)]
+#[path = "session_roster_art_tests.rs"]
+mod session_roster_art_tests;
 
 #[cfg(test)]
 #[path = "session_controller_regression_tests.rs"]

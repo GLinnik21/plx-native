@@ -533,3 +533,22 @@ fn the_session_file_carries_no_subtitle_offset() {
         public.preferences
     );
 }
+
+// Moved from `i18n`'s tests: it grades `Session`'s `language` field, and `i18n` (a layer below
+// `plex`) cannot name `Session`.
+#[test]
+fn preferences_soft_parse_without_losing_the_session() {
+    use crate::i18n::Preference;
+    for raw in [
+        r#"{}"#,
+        r#"{"language":"future"}"#,
+        r#"{"language":42}"#,
+        r#"{"language":null}"#,
+    ] {
+        let s: crate::plex::session::Session = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.language, Preference::System);
+    }
+    let s: crate::plex::session::Session = serde_json::from_str(r#"{"language":"be"}"#).unwrap();
+    assert_eq!(s.language, Preference::Be);
+    assert_eq!(serde_json::to_value(&s).unwrap()["language"], "be");
+}

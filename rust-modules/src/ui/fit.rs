@@ -22,14 +22,16 @@ pub(crate) const ROW_PRIMARY_SHARE: f32 = 0.6;
 /// The margin a primary run is measured with before it reaches [`two_runs`]: a `Measure` models
 /// whole-pixel advances but not the device's kerning/hinting, so a run kept at exactly its measured
 /// width can still end in an ellipsis. This is the text-fit tests' 2% headroom
-/// (`fontcov::advances::HEADROOM`) plus a hair. It is not part of `two_runs` because the
+/// ([`HEADROOM`]) plus a hair. It is not part of `two_runs` because the
 /// header/accessory caller measures the drawn string directly.
 pub(crate) const HUG_MARGIN: f32 = 1.025;
 
-/// The share of a column a line may fill under the host measure (`fontcov::advances::HEADROOM`
-/// re-exports it): the measure models whole-pixel advances but not the device's kerning or
-/// hinting, so a popover panel is sized for `natural / HEADROOM` (`TableView::measured_width`)
-/// and the fit tests grade against the same figure.
+/// The share of a column a line may fill under the host measure
+/// (`fontcov::advances::ShippedMeasure`, which the fit tests name this constant beside): the
+/// measure models whole-pixel advances but not the device's kerning or hinting, so a line that
+/// clears its column by one pixel there (731 of 732 was a real Belarusian Settings candidate) is
+/// left no margin at all on the set. A popover panel is sized for `natural / HEADROOM`
+/// (`TableView::measured_width`) and the fit tests grade against the same figure.
 pub(crate) const HEADROOM: f32 = 0.98;
 
 /// Resolve a primary/secondary pair onto a `span`-wide line separated by `gap`, returning
