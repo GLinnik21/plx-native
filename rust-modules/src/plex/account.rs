@@ -852,8 +852,9 @@ fn pin_is_gone(status: u16) -> bool {
 
 /// Status + body → the typed DTO, with a LOG LINE for each of the two ways that fails.
 ///
-/// `net::perform` names its **transport** failures well (`net: curl rc=60 — peer
-/// certificate could not be verified (CA store too old?)`) and returns `Some(Resp)` for every
+/// `net::request_tls_evidence` names its **transport** failures well (`net: curl rc=60 — peer
+/// certificate has expired — the device clock may be wrong (…)`, worded by
+/// `net::tls_verify_why`) and returns `Some(Resp)` for every
 /// request that *completed*, whatever the server said in it. So the two failures that reach here
 /// arrive carrying no description of themselves: a status this client declines, and a 2xx body
 /// that will not deserialize. Both still leave by the same `None` — the callers' contract does not

@@ -154,6 +154,12 @@ const CURLOPT_RESOLVE: c_int = 10203;
 const CURLE_UNKNOWN_OPTION: c_int = 48;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
+/// `CURLINFO_SSL_VERIFYRESULT` (LONG + 13) — the X509 verify result of the peer certificate, as
+/// libcurl's TLS backend recorded it: `0` verified, otherwise OpenSSL's `X509_V_ERR_*` number
+/// (see [`tls_verify_why`]). An info id on the already-bound [`curl_easy_getinfo_long`], not a
+/// new symbol. Backends that never fill it leave `0`, so `0` after a verification failure means
+/// "not reported", not "fine".
+const CURLINFO_SSL_VERIFYRESULT: c_int = 0x20_000D;
 const CURL_GLOBAL_ALL: c_long = 3;
 const CURLVERSION_FIRST: c_int = 0;
 const CURL_VERSION_ASYNCHDNS: c_int = 1 << 7;
@@ -780,6 +786,43 @@ mod loopback_pms {
         }
     }
 
+    /// Mint a CA and a leaf it issues, the leaf valid exactly over `[not_before, not_after]`
+    /// (`(year, month, day)`), the SAN list exactly `names`. `pem` is the **CA**: that is what a
+    /// client is told to trust, and the server presents only the leaf — the shape of a real
+    /// `*.plex.direct` certificate, and the only way to give a test a leaf whose validity window
+    /// excludes "now" (a wrong television clock) while the trust anchor stays valid.
+    pub(crate) fn mint_ca_issued_cert(
+        names: &[&str],
+        not_before: (i32, u8, u8),
+        not_after: (i32, u8, u8),
+    ) -> TestCert {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+        let ca_key = KeyPair::generate().expect("ca key");
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("ca params");
+        // Distinct subjects: rcgen defaults both to the same CN, which makes OpenSSL read the leaf
+        // as self-signed ("error 18") and refuse to chain it to the CA.
+        ca_params.distinguished_name.push(rcgen::DnType::CommonName, "PlxNative test CA");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca = ca_params.self_signed(&ca_key).expect("ca cert");
+
+        let leaf_key = KeyPair::generate().expect("leaf key");
+        let mut leaf_params =
+            CertificateParams::new(names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .expect("leaf params");
+        leaf_params.distinguished_name.push(rcgen::DnType::CommonName, "plex.direct test leaf");
+        leaf_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        leaf_params.not_before = rcgen::date_time_ymd(not_before.0, not_before.1, not_before.2);
+        leaf_params.not_after = rcgen::date_time_ymd(not_after.0, not_after.1, not_after.2);
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).expect("leaf cert");
+        TestCert {
+            cert_der: leaf.der().clone(),
+            key_der: rustls::pki_types::PrivateKeyDer::from(leaf_key),
+            pem: ca.pem(),
+        }
+    }
+
     fn ring_provider_once() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
@@ -888,7 +931,7 @@ mod loopback_pms {
     }
 }
 #[cfg(test)]
-pub(crate) use loopback_pms::{dead_port, mint_cert, spawn_dual_protocol, spawn_plain_only};
+pub(crate) use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_plain_only};
 
 /// **How the peer is verified.** Three modes, and they are an enum rather than an
 /// `Option<&str>` for one reason: the pinned one turns CA verification OFF, so "pinned" and
@@ -1208,21 +1251,95 @@ fn request_tls_evidence(
             // its OpenSSL and its CA store — the library webosbrew's caniuse data singles out as
             // the one that varies most across firmwares. Collapsing every failure to None made a
             // stale CA bundle on a set nobody here owns indistinguishable from being offline: the
-            // QR sign-in simply never completes. These four are the ones that mean something
-            // different from "the network is down".
-            let why = match rc {
-                60 => "peer certificate could not be verified (CA store too old?)",
+            // QR sign-in simply never completes. These are the ones that mean something
+            // different from "the network is down". 60 and 51 are explained by the verify result
+            // ([`tls_verify_why`]), not blamed on the CA store: a wrong clock fails them too.
+            let why = tls_failure_reason(easy.0, rc).unwrap_or_else(|| match rc {
                 35 => "TLS handshake failed (protocol too new for this firmware?)",
                 77 => "CA bundle could not be read",
                 6 => "could not resolve host",
                 28 => "timed out",
                 90 => "certificate pin did not match (stale lab session?)",
                 _ => "transport error",
-            };
+            }.to_owned());
             crate::log(&format!("net: curl rc={rc} — {why}"));
         }
         finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
     }
+}
+
+/// Civil `(year, month, day)` of a Unix time in UTC — Howard Hinnant's `civil_from_days`, with
+/// Unix day zero shifted to the civil epoch. Pure, so a wrong-clock log line and the tests that mint
+/// a certificate relative to "now" share one calendar.
+pub(crate) fn civil_date(unix_secs: i64) -> (i64, u32, u32) {
+    let z = unix_secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    ((yoe + era * 400) + i64::from(month <= 2), month, day)
+}
+
+/// The year this device believes it is, from its wall clock. `None` only if the clock reads
+/// before 1970, which a log line cannot usefully say anything about.
+fn wall_clock_year() -> Option<i64> {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(civil_date(secs as i64).0)
+}
+
+/// The log sentence for a failed TLS peer verification, or `None` for a code that is not one.
+///
+/// `rc` is the `CURLcode`; `verify` is [`CURLINFO_SSL_VERIFYRESULT`] read off the same handle
+/// (`None` when libcurl would not say); `year` is [`wall_clock_year`]. Libcurl's 60 is one code
+/// for every reason a chain failed, and the log used to blame the CA store for all of them. A
+/// television cold-booted without internet has a wrong clock (GitHub discussion #351), which
+/// makes a perfectly valid certificate "expired" or "not yet valid" — and the year the device
+/// believes it is the evidence that confirms it. Closed vocabulary: no host, URL or certificate
+/// field is ever interpolated, only the numbers.
+///
+/// 51 is `CURLE_PEER_FAILED_VERIFICATION` on the television's 7.53.1: the name check, which
+/// OpenSSL records outside the verify result, so it is decided from the code alone. libcurl 7.62+
+/// retired 51 and reports a name mismatch as 60 with verify result 0 (the macOS host and newer
+/// firmwares), so that case says so rather than hide the likeliest cause.
+pub(crate) fn tls_verify_why(rc: c_int, verify: Option<c_long>, year: Option<i64>) -> Option<String> {
+    let clock = |what: &str| match year {
+        Some(y) => format!("{what} — the device clock may be wrong (it believes the year is {y})"),
+        None => format!("{what} — the device clock may be wrong"),
+    };
+    match (rc, verify) {
+        (51, _) => Some("certificate name does not match host".to_owned()),
+        (60, Some(9)) => Some(clock("peer certificate is not yet valid")),
+        (60, Some(10)) => Some(clock("peer certificate has expired")),
+        (60, Some(18 | 19)) => Some("peer certificate is self-signed".to_owned()),
+        (60, Some(20 | 21)) => {
+            Some("peer certificate issuer could not be verified (CA store too old?)".to_owned())
+        }
+        (60, Some(n)) if n != 0 => Some(format!("peer certificate could not be verified (X509 verify result {n})")),
+        (60, _) => Some(
+            "peer certificate could not be verified (no X509 verify result; on libcurl 7.62+ this is how a certificate name mismatch reads)"
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+/// [`tls_verify_why`] for a handle whose transfer just failed with `rc`: reads the verify result
+/// only for the two codes that can carry one, so every other failure costs no extra call.
+/// Shared by both TLS clients to the PMS — this module's control plane and `curlio`'s media
+/// plane — because both ride the same firmware OpenSSL and the same wrong clock.
+pub(crate) fn tls_failure_reason(easy: *mut CURL, rc: c_int) -> Option<String> {
+    if !matches!(rc, 51 | 60) {
+        return None;
+    }
+    let mut verify: c_long = 0;
+    // SAFETY: `easy` is a live handle the caller owns and has not yet cleaned up; the out pointer
+    // is a local `long`, which is what `CURLINFO_SSL_VERIFYRESULT` writes.
+    let got = !easy.is_null()
+        && unsafe { curl_easy_getinfo_long(easy, CURLINFO_SSL_VERIFYRESULT, &mut verify as *mut c_long) } == 0;
+    tls_verify_why(rc, got.then_some(verify), wall_clock_year())
 }
 
 /// Option-projected blocking HTTPS GET on the [`API`] deadlines.
@@ -1831,6 +1948,73 @@ mod request_tests {
             "plaintext may upgrade, but the inverse is forbidden"
         );
         assert_eq!(PUBLIC_MAX_REDIRECTS, 5);
+    }
+}
+
+#[cfg(test)]
+mod tls_verify_why_tests {
+    use super::*;
+
+    fn why(rc: c_int, verify: Option<c_long>) -> String {
+        tls_verify_why(rc, verify, Some(1970)).expect("a TLS verification code")
+    }
+
+    /// A wrong television clock is the cause GitHub discussion #351 found behind rc=60, and the
+    /// year the device believes it is is what lets a reporter's log confirm it.
+    #[test]
+    fn a_validity_window_failure_blames_the_clock_and_names_the_year() {
+        assert_eq!(
+            why(60, Some(9)),
+            "peer certificate is not yet valid — the device clock may be wrong (it believes the year is 1970)"
+        );
+        assert_eq!(
+            why(60, Some(10)),
+            "peer certificate has expired — the device clock may be wrong (it believes the year is 1970)"
+        );
+        assert_eq!(
+            tls_verify_why(60, Some(10), None).as_deref(),
+            Some("peer certificate has expired — the device clock may be wrong")
+        );
+    }
+
+    #[test]
+    fn only_a_missing_issuer_is_blamed_on_the_ca_store() {
+        for n in [20, 21] {
+            assert!(why(60, Some(n)).contains("CA store too old?"), "verify result {n}");
+        }
+        for n in [9, 10, 18, 19, 7, 0] {
+            assert!(!why(60, Some(n)).contains("CA store"), "verify result {n}");
+        }
+        assert!(!tls_verify_why(60, None, Some(2026)).unwrap().contains("CA store"));
+    }
+
+    #[test]
+    fn self_signed_name_mismatch_and_unknown_results_each_say_so() {
+        assert_eq!(why(60, Some(18)), "peer certificate is self-signed");
+        assert_eq!(why(60, Some(19)), "peer certificate is self-signed");
+        // 51 is decided by the code alone: OpenSSL keeps the name check out of the verify result.
+        assert_eq!(why(51, Some(0)), "certificate name does not match host");
+        assert_eq!(why(51, None), "certificate name does not match host");
+        assert_eq!(why(60, Some(7)), "peer certificate could not be verified (X509 verify result 7)");
+        // Zero after a failure and a getinfo that failed are both "the backend did not say"; on
+        // libcurl 7.62+ that is how a name mismatch arrives (51 was retired), so the line says so.
+        let unreported = "peer certificate could not be verified (no X509 verify result; on libcurl 7.62+ this is how a certificate name mismatch reads)";
+        assert_eq!(why(60, Some(0)), unreported);
+        assert_eq!(why(60, None), unreported);
+    }
+
+    #[test]
+    fn other_codes_are_not_this_functions_to_explain() {
+        for rc in [6, 7, 28, 35, 77, 90] {
+            assert_eq!(tls_verify_why(rc, Some(10), Some(2026)), None, "rc {rc}");
+        }
+    }
+
+    #[test]
+    fn civil_date_is_the_gregorian_calendar() {
+        assert_eq!(civil_date(0), (1970, 1, 1));
+        assert_eq!(civil_date(951_782_400), (2000, 2, 29));
+        assert_eq!(civil_date(-1), (1969, 12, 31));
     }
 }
 
