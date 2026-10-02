@@ -419,7 +419,7 @@ mod tests {
         let pin = crate::spki::pin_from_spki_der(&cert.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{pin}""#));
         assert!(keypin::holds(&run.key), "stated at construction");
-        let wipe = || crate::plex::session::project_server_keys(&crate::plex::session::Session::default());
+        let wipe = || crate::plex::session::project_server_keys(&crate::plex::session::Session::default(), false);
 
         // The projection lands before the first handshake: the control plane is refused, and the
         // line does not claim a pin the table no longer holds.

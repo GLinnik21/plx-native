@@ -2363,9 +2363,12 @@ fn same_visible_session(previous: &Cached, next: &Cached) -> bool {
 /// already covered. The other half of the binding is `servers::register_lazy`, which binds the
 /// server whose `ResolvePin` it installs. A signed-out session is empty, so sign-out empties the
 /// table. Called from [`replace_cache`] (every read, write and revocation) and by boot for a
-/// session it was handed rather than read.
-pub(crate) fn project_server_keys(session: &Session) {
-    let pins = session
+/// session it was handed rather than read. `signed_out` is [`key_projection`]'s statement that the
+/// session is over (signed out, cleared, revoked), which also ends what `net::keypin` published
+/// about the servers it knew; a live session that merely holds no key is NOT, and boot hands over
+/// a session that is live.
+pub(crate) fn project_server_keys(session: &Session, signed_out: bool) {
+    let pins: Vec<(String, String)> = session
         .server_key_pins
         .iter()
         .filter_map(|k| session.server_key_pin(&k.machine_id).map(|p| (k.machine_id.clone(), p.to_owned())))
@@ -2380,19 +2383,20 @@ pub(crate) fn project_server_keys(session: &Session) {
     for source in &session.sources {
         add(&source.machine_id, source.resolve_pin());
     }
-    crate::net::keypin::project(pins, &stored);
+    crate::net::keypin::project(pins, &stored, signed_out);
 }
 
-/// The session a cache value tells us about, for [`project_server_keys`]: a read or a write that
-/// proved the record, a signed-out record or none (empty), a local revocation (empty). A transient
-/// failure to read (`Locked`, `Blocked`) and `Unloaded` say nothing and leave the table alone.
-fn key_projection(value: &Cached) -> Option<std::sync::Arc<Session>> {
+/// The session a cache value tells us about, for [`project_server_keys`], and whether it is the end
+/// of one: a read or a write that proved the record (live), a signed-out record or none (empty,
+/// over), a local revocation (empty, over). A transient failure to read (`Locked`, `Blocked`) and
+/// `Unloaded` say nothing and leave the table alone.
+fn key_projection(value: &Cached) -> Option<(std::sync::Arc<Session>, bool)> {
     match value {
-        Cached::Revoked => Some(empty_session()),
+        Cached::Revoked => Some((empty_session(), true)),
         Cached::Unloaded => None,
         Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
-            ReadState::Ready { session, .. } => Some(session.clone()),
-            ReadState::Missing | ReadState::Cleared { .. } => Some(empty_session()),
+            ReadState::Ready { session, .. } => Some((session.clone(), false)),
+            ReadState::Missing | ReadState::Cleared { .. } => Some((empty_session(), true)),
             ReadState::Locked { .. } | ReadState::Blocked => None,
         },
     }
@@ -2417,7 +2421,7 @@ fn replace_cache(value: Cached, expected: Option<u64>, proven: bool) -> bool {
         CACHE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Under the cache lock, so two replacements project in the order they landed.
         // `net::keypin` takes its own lock and never calls back into this module.
-        if let Some(session) = &projection { project_server_keys(session); }
+        if let Some((session, signed_out)) = &projection { project_server_keys(session, *signed_out); }
         if changed { VISIBLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release); }
         return true;
     }
@@ -4605,6 +4609,34 @@ mod server_key_pin_tests {
 
     fn stored(machine: &str, pin: &str) -> Session {
         Session::default().with_server_key_pin(machine, pin).expect("a new entry")
+    }
+
+    /// `replace_cache` projects on every session read and write. A LIVE session that holds no
+    /// learned key and no stored resolve pin looks empty to the projection, but it is not a
+    /// sign-out: what `net::keypin` published about a bound host must survive it. A sign-out, a
+    /// cleared record and a local revocation end it.
+    #[test]
+    fn only_a_sign_out_ends_what_keypin_published_not_a_live_session_with_no_key() {
+        use crate::net::keypin;
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("session-signed-in.invalid", 32400);
+        let _scoped = keypin::Scoped::watch_machine("m-session-live", &key);
+        let live = || Cached::Settled(std::sync::Arc::new(ReadState::Ready {
+            session: std::sync::Arc::new(Session::default()), plaintext: false, retry_canonical: false,
+        }));
+        for (what, ended) in [
+            ("a cleared record", Cached::Settled(std::sync::Arc::new(ReadState::Cleared))),
+            ("a missing record", Cached::Settled(std::sync::Arc::new(ReadState::Missing))),
+            ("a local revocation", Cached::Revoked),
+        ] {
+            keypin::strict_failure(&key, 60, Some(10));
+            assert!(replace_cache(live(), None, true));
+            assert_eq!(keypin::blocked_for("m-session-live"), Some(keypin::Blocked::NoKey),
+                "a live session with no key is not a sign-out ({what})");
+            assert!(replace_cache(ended, None, true));
+            assert_eq!(keypin::blocked_for("m-session-live"), None, "{what} is a sign-out");
+        }
+        replace_cache(Cached::Unloaded, None, true);
     }
 
     #[test]

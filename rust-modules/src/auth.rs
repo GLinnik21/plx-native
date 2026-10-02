@@ -1595,6 +1595,7 @@ pub(crate) struct ProbeReply {
     pub(crate) peer_pin: Option<String>,
     /// What libcurl reported when nothing answered (`status` is `0`): the `CURLcode` the dev TLS
     /// self-test prints. `None` over plaintext and for a request refused before libcurl ran.
+    #[cfg_attr(not(feature = "devtriggers"), allow(dead_code))]
     pub(crate) failure: Option<crate::net::RequestFailure>,
 }
 

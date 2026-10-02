@@ -1579,7 +1579,7 @@ fn request_tls_evidence(
             // would have (the strict failure held), or, when key mode was the latched START, goes
             // strict after all.
             if let Some(key) = &key {
-                keypin::strict_established(key);
+                keypin::unlatch(key);
             }
             match held.take() {
                 Some(strict) => break (strict, keypin::Mode::Strict),
@@ -1602,6 +1602,10 @@ fn request_tls_evidence(
                     // attempt did, inside the time the caller allowed.
                     None => break (done, mode),
                 }
+            } else if done.rc != 0 {
+                // No key mode to retry in: what this failure says about the host is a fact the app
+                // can tell a viewer about (a date failure with no key), or ends one (anything else).
+                keypin::strict_failure(key, done.rc, done.verify);
             }
         }
         break (done, mode);
@@ -2084,6 +2088,15 @@ pub(crate) mod resolve {
 ///
 /// A request that ran in key mode never reports a [`Resp::peer_pin`]: that handshake was not
 /// strictly verified, and a key learned from it would be a stranger's remembered as the server's.
+///
+/// **Facts, and one toast.** Where each decision is already made this module also publishes what it
+/// means, for the app to poll by [`keypin::revision`] (`plex::grant`'s shape): [`keypin::engaged`]
+/// (key mode has engaged this run, with the year the device believed at the first time) and
+/// [`keypin::blocked_for`] ([`keypin::Blocked::NoKey`]: a date failure and no key held;
+/// [`keypin::Blocked::KeyChanged`]: rc 90), per host and asked per machine. A host's fact is its
+/// LATEST strict outcome: cleared by its strict or key-mode success or a pin change, and a
+/// [`keypin::Blocked::NoKey`] by a later strict failure that is not about the date. `app::clock_notice` turns the first engagement into the one system
+/// toast; the log lines remain the trace for everything else.
 pub(crate) mod keypin {
     use super::{
         c_int, c_long, curl_easy_setopt_long, curl_easy_setopt_ptr, peer_leaf_pin, tls_verify_why,
@@ -2092,6 +2105,7 @@ pub(crate) mod keypin {
     };
     use std::collections::HashMap;
     use std::ffi::{c_void, CStr};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -2108,6 +2122,11 @@ pub(crate) mod keypin {
     /// results that are about the date. They do not prove the date was the only problem.
     const X509_NOT_YET_VALID: c_long = 9;
     const X509_EXPIRED: c_long = 10;
+
+    /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
+    fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
+        rc == TLS_VERIFY_FAILED && matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED))
+    }
 
     /// How one attempt of a request recognises the peer.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2130,6 +2149,94 @@ pub(crate) mod keypin {
         table: HashMap<String, String>,
         /// `host:port` to the pin it is being served under and when that began.
         latched: HashMap<String, (String, Instant)>,
+        /// `host:port` to why key mode cannot help it right now ([`Blocked`]).
+        blocked: HashMap<String, Blocked>,
+        /// `host:port` to the year the device believed when key mode FIRST engaged for it, with
+        /// the order engagements happened in. Never cleared by a latch lapse, a success or a pin
+        /// change: it is a fact about this app run, not about the host's present state.
+        engaged: HashMap<String, (u64, Option<i64>)>,
+        /// The next engagement's place in [`State::engaged`]'s order.
+        engaged_seq: u64,
+    }
+
+    /// **Why key mode cannot help a host** — the facts the app reads to tell a viewer their server
+    /// is unreachable for a reason a clock explains. Published where each decision is already made
+    /// and never decided a second time.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) enum Blocked {
+        /// A strict attempt failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
+        /// date check was the first failure the chain walk met, not necessarily the only defect,
+        /// see the module's caveat) and the table holds no key for the host, so there was nothing
+        /// to recognise it by.
+        NoKey,
+        /// The host presented a different key than the remembered one (rc 90). Outranks
+        /// [`Blocked::NoKey`] (the variants are in ascending rank): a key was held and was wrong.
+        KeyChanged,
+    }
+
+    /// Bumped on every change to a fact, so a poller (the app's frame loop) compares one integer
+    /// instead of taking the lock. The `plex::grant::revision` shape.
+    static REVISION: AtomicU64 = AtomicU64::new(0);
+
+    /// The current revision of everything this module publishes ([`blocked_for`], [`engaged`]).
+    pub(crate) fn revision() -> u64 {
+        REVISION.load(Ordering::Acquire)
+    }
+
+    fn moved() {
+        REVISION.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Record `why` for `key`. A repeat of the same fact is not a change.
+    fn set_blocked(st: &mut State, key: &str, why: Blocked) {
+        if st.blocked.insert(key.to_owned(), why) != Some(why) {
+            moved();
+        }
+    }
+
+    fn clear_blocked(st: &mut State, key: &str) {
+        if st.blocked.remove(key).is_some() {
+            moved();
+        }
+    }
+
+    /// Why key mode cannot help the server `machine_id`, if it cannot: the facts of every
+    /// `host:port` bound to that machine (its LAN address and its plex.direct name are two), with
+    /// [`Blocked::KeyChanged`] outranking [`Blocked::NoKey`] when both stand. **Asked per machine**:
+    /// a read-out is about one server, and another server's expired certificate says nothing about
+    /// it. A machine nothing is bound to (and the empty id, which names none) has no fact.
+    #[allow(dead_code)] // The Home/Library read-out that reads it is not carried by this maintenance line; tests and `clockfact` use it.
+    pub(crate) fn blocked_for(machine_id: &str) -> Option<Blocked> {
+        let st = state();
+        let bound = st.bindings.iter().filter(|(m, _)| m == machine_id).map(|(_, hp)| hp.as_str());
+        // The dev `clockfact` plant is synthetic and belongs to no machine: it answers for all.
+        #[cfg(feature = "devtriggers")]
+        let bound = bound.chain([PLANTED_KEY]);
+        bound
+            .filter_map(|hp| st.blocked.get(hp).copied())
+            .max()
+    }
+
+    /// `Some(year)` once key mode has engaged for any host in this app run, carrying the year the
+    /// device believed at the FIRST engagement (`None` inside when it could not say). Survives the
+    /// latch lapsing and re-engaging, and a sign-out: it records what happened, and the once-per-run
+    /// toast it feeds owns its own flag.
+    pub(crate) fn engaged() -> Option<Option<i64>> {
+        state().engaged.values().min_by_key(|(seq, _)| *seq).map(|(_, year)| *year)
+    }
+
+    /// One host's facts, for tests that key their own host so parallel tests share nothing.
+    #[cfg(test)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) struct Facts {
+        pub(crate) blocked: Option<Blocked>,
+        pub(crate) engaged: Option<Option<i64>>,
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fact_for(key: &str) -> Facts {
+        let st = state();
+        Facts { blocked: st.blocked.get(key).copied(), engaged: st.engaged.get(key).map(|(_, year)| *year) }
     }
 
     fn state() -> MutexGuard<'static, State> {
@@ -2162,6 +2269,11 @@ pub(crate) mod keypin {
         }
         let bound: Vec<String> = st.bindings.iter().map(|(_, hp)| hp.clone()).collect();
         for hp in bound {
+            // A pin that changed, arrived or went changes what key mode can do for the host, so
+            // what was published about it is over. A projection that changes nothing clears nothing.
+            if st.table.get(&hp) != next.get(&hp) {
+                clear_blocked(st, &hp);
+            }
             match next.get(&hp) {
                 Some(pin) => {
                     if st.table.get(&hp) != Some(pin) {
@@ -2198,14 +2310,26 @@ pub(crate) mod keypin {
     /// The session → table projection, in one place (`plex::session::project_server_keys` is its
     /// only production caller). `machine_pins` REPLACES what was remembered; `stored` are the
     /// `(machine, host, port)` of every stored server that has a `ResolvePin`, bound here so a
-    /// boot that has not registered anything yet is already covered.
-    pub(crate) fn project(machine_pins: Vec<(String, String)>, stored: &[(String, String, i32)]) {
+    /// boot that has not registered anything yet is already covered. `signed_out` is the CALLER's
+    /// statement that the session is over (signed out, cleared or revoked) — never inferred from
+    /// the inputs being empty, because a live session that has learned no key and stores no resolve
+    /// pin looks exactly like that, and this runs on every session read and write.
+    pub(crate) fn project(machine_pins: Vec<(String, String)>, stored: &[(String, String, i32)], signed_out: bool) {
         let mut st = state();
         st.machine_pins = machine_pins.into_iter().collect();
         for (machine, host, port) in stored {
             add_binding(&mut st, machine, host, *port);
         }
         recompute(&mut st);
+        if signed_out {
+            // Sign-out: the table is empty and so is the session, so nothing published about a
+            // server this session knew still stands. A host that never held a key is not covered
+            // by the pin change above, hence this. [`State::engaged`] stays: it is history.
+            let bound: Vec<String> = st.bindings.iter().map(|(_, hp)| hp.clone()).collect();
+            for hp in bound {
+                clear_blocked(&mut st, &hp);
+            }
+        }
     }
 
     /// Put one machine's key in the table with no session behind it. **Not a production path**:
@@ -2218,6 +2342,41 @@ pub(crate) mod keypin {
         let mut st = state();
         st.machine_pins.insert(machine_id.to_owned(), pin.to_owned());
         recompute(&mut st);
+    }
+
+    /// What the dev `clockfact` trigger plants.
+    #[cfg(feature = "devtriggers")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Planted {
+        /// [`Blocked`], as if a bound server had just failed that way.
+        Blocked(Blocked),
+        /// Key mode engaged, the device believing `year`.
+        Engaged(Option<i64>),
+    }
+
+    /// The synthetic host a planted fact is filed under. Never bound, so no projection, pin change
+    /// or sign-out (all of which only touch BOUND hosts) can clear it, and no request can reach it.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) const PLANTED_KEY: &str = "clockfact.invalid:0";
+
+    /// **Not a production path.** Publish a fact for the simulator and the television with no
+    /// request behind it, so a read-out that reads [`blocked_for`] / [`engaged`] can be looked at. It
+    /// is SYNTHETIC: it bypasses the bound-hosts rule of [`strict_failure`] on purpose, files
+    /// the fact under [`PLANTED_KEY`], and states itself in the log.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn plant(fact: Planted) {
+        let mut st = state();
+        match fact {
+            Planted::Blocked(why) => set_blocked(&mut st, PLANTED_KEY, why),
+            Planted::Engaged(year) => {
+                let seq = st.engaged_seq;
+                st.engaged_seq += 1;
+                st.engaged.insert(PLANTED_KEY.to_owned(), (seq, year));
+                moved();
+            }
+        }
+        drop(st);
+        crate::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
     }
 
     /// The mode a request starts in: key mode while the host is latched and the latch is live,
@@ -2242,16 +2401,74 @@ pub(crate) mod keypin {
     /// handle's `CURLINFO_SSL_VERIFYRESULT`): key mode when libcurl said 60 with a date verify
     /// result and the table holds a key for `key`.
     pub(crate) fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
-        if rc != TLS_VERIFY_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
+        if !is_date_failure(rc, verify) {
             return None;
         }
         let pin = state().table.get(key)?.clone();
         Some(Mode::Key { pin, verify })
     }
 
-    /// A strict handshake completed: whatever latch stood for `key` is over.
+    /// A strict handshake completed: whatever latch stood for `key` is over, and so is whatever
+    /// was published about that host (and only that host: a plex.tv success says nothing of a PMS).
     pub(crate) fn strict_established(key: &str) {
+        let mut st = state();
+        st.latched.remove(key);
+        clear_blocked(&mut st, key);
+    }
+
+    /// Key mode is not being used for `key` after all (libcurl would not be put in it): its latch is
+    /// over, and nothing else is claimed — this is not a strict success.
+    pub(crate) fn unlatch(key: &str) {
         state().latched.remove(key);
+    }
+
+    /// A strict attempt failed and [`after_strict_failure`] found no key mode to retry in: record
+    /// what that says about `key`. **The fact is the host's LATEST strict outcome**, so this either
+    /// publishes or ends [`Blocked::NoKey`]:
+    ///
+    /// * the failure was about the DATE (libcurl 60, verify 9 or 10), `key` is a bound media server
+    ///   and the table holds no key for it — exactly [`after_strict_failure`]'s trigger minus the
+    ///   key — publishes it. A failure it would have answered with a key, a host that is no media
+    ///   server (plex.tv) and a host that already has a fact publish nothing new;
+    /// * any other failure (a refused connection, a timeout, an untrusted issuer, a name mismatch)
+    ///   ends it: the viewer fixed the clock and the server is unreachable for another reason, and
+    ///   *Try again* must not go on blaming a clock that is right.
+    ///
+    /// A [`Blocked::KeyChanged`] is NOT ended here: the host presented a different key than the
+    /// remembered one, and a later failure that says nothing about the key does not make it the
+    /// remembered one again. A pin change, or a success, does (`recompute`, [`strict_established`],
+    /// [`key_established`]). Quiet: the request's own failure log line already says it. Only ever
+    /// WRITES a fact; no TLS decision reads it.
+    pub(crate) fn strict_failure(key: &str, rc: c_int, verify: Option<c_long>) {
+        let mut st = state();
+        if !is_date_failure(rc, verify) {
+            if st.blocked.get(key) == Some(&Blocked::NoKey) {
+                clear_blocked(&mut st, key);
+            }
+            return;
+        }
+        // Only a registered media server: `bindings` is every `host:port` `servers::register_lazy`
+        // or the stored-session projection ties to a machine, whether or not it holds a key yet,
+        // so a server that never learned one is covered. plex.tv (and any other host) fails its
+        // date check on a wrong clock too, but key mode can never serve it and nothing clears the
+        // fact except its own success, so it would colour a read-out it did not cause.
+        if st.table.contains_key(key) || !st.bindings.iter().any(|(_, hp)| hp == key) {
+            return;
+        }
+        // A changed key outranks a missing one, and a host that has just lost its key cleared the
+        // changed-key fact with it (`recompute`), so only an absent fact is filled here.
+        if !st.blocked.contains_key(key) {
+            set_blocked(&mut st, key, Blocked::NoKey);
+        }
+    }
+
+    /// The media stack's rc 90 in key mode: the host presented a different key. Ends key mode for
+    /// the host exactly as [`unlatch`] does, and publishes [`Blocked::KeyChanged`]; the log line is
+    /// `curlio`'s own (`curl_why(90)`), so this adds none.
+    pub(crate) fn key_changed(key: &str) {
+        let mut st = state();
+        st.latched.remove(key);
+        set_blocked(&mut st, key, Blocked::KeyChanged);
     }
 
     /// A key-mode handshake completed under `pin`. Latches the host if it was not already (the
@@ -2262,28 +2479,50 @@ pub(crate) mod keypin {
 
     /// [`key_established`] at `now`, the clock seam [`begin_at`] shares.
     pub(super) fn key_established_at(key: &str, pin: &str, verify: Option<c_long>, now: Instant) {
-        let engaged = {
+        key_established_in(key, pin, verify, now, wall_clock_year);
+    }
+
+    /// [`key_established_at`] with the year the device believes it is, the seam the engaged fact's
+    /// year is tested through. Asked for only on the latch transition, not on every key-mode
+    /// handshake.
+    pub(super) fn key_established_in(
+        key: &str,
+        pin: &str,
+        verify: Option<c_long>,
+        now: Instant,
+        year: impl FnOnce() -> Option<i64>,
+    ) {
+        let mut told_year = None;
+        {
             let mut st = state();
+            // A key-mode handshake completed: whatever was published as blocking this host is over.
+            clear_blocked(&mut st, key);
             let live = st
                 .latched
                 .get(key)
                 .is_some_and(|(p, since)| p == pin && now.saturating_duration_since(*since) < LATCH);
             if !live && st.table.get(key).map(String::as_str) == Some(pin) {
                 st.latched.insert(key.to_owned(), (pin.to_owned(), now));
-                true
-            } else {
-                false
+                let year = year();
+                // The year of the FIRST engagement stands; a re-engagement after a lapse is not one.
+                if !st.engaged.contains_key(key) {
+                    let seq = st.engaged_seq;
+                    st.engaged_seq += 1;
+                    st.engaged.insert(key.to_owned(), (seq, year));
+                    moved();
+                }
+                told_year = Some(year);
             }
-        };
-        if engaged {
-            crate::log(&engaged_line(verify, wall_clock_year()));
+        }
+        if let Some(year) = told_year {
+            crate::log(&engaged_line(verify, year));
         }
     }
 
     /// Key mode answered with a different key than the remembered one: stop serving the host in
-    /// key mode and say why.
+    /// key mode, publish it ([`Blocked::KeyChanged`]) and say why.
     pub(super) fn key_refused(key: &str) {
-        state().latched.remove(key);
+        key_changed(key);
         crate::log("net: the server presented a different key than the remembered one — refusing");
     }
 
@@ -2357,7 +2596,20 @@ pub(crate) mod keypin {
         let mut st = state();
         if st.table.insert(key.to_owned(), pin.to_owned()).as_deref() != Some(pin) {
             st.latched.remove(key);
+            clear_blocked(&mut st, key);
         }
+    }
+
+    /// Forget every published fact (not the tables, bindings or latches). For a test that asserts
+    /// on a GLOBAL read ([`engaged`]) and so must not depend on what an earlier test engaged; the
+    /// per-host tests need none, they key their own host and ask for it by machine.
+    #[cfg(test)]
+    pub(crate) fn reset_facts_for_test() {
+        let mut st = state();
+        st.blocked.clear();
+        st.engaged.clear();
+        st.engaged_seq = 0;
+        moved();
     }
 
     #[cfg(test)]
@@ -2365,6 +2617,9 @@ pub(crate) mod keypin {
         let mut st = state();
         st.table.remove(key);
         st.latched.remove(key);
+        clear_blocked(&mut st, key);
+        st.engaged.remove(key);
+        st.bindings.retain(|(_, hp)| hp != key);
     }
 
     #[cfg(test)]
@@ -2394,6 +2649,23 @@ pub(crate) mod keypin {
         pub(crate) fn new(key: String, pin: &str) -> Self {
             set_for_test(&key, pin);
             Scoped(key)
+        }
+
+        /// Holds no key for `key`, but clears the facts a test published about it when it ends:
+        /// loopback ports are reused, and a stale fact would answer a later test's host.
+        pub(crate) fn watch(key: &str) -> Self {
+            // Bound to a synthetic machine, as a registered server is: facts are published only
+            // for bound hosts. [`forget_for_test`] unbinds it.
+            Self::watch_machine(&format!("watch:{key}"), key)
+        }
+
+        /// [`watch`](Self::watch) with the machine named, for a test whose screen asks about that
+        /// machine's server.
+        pub(crate) fn watch_machine(machine: &str, key: &str) -> Self {
+            if let Some((host, port)) = key.rsplit_once(':') {
+                add_binding(&mut state(), machine, host, port.parse().unwrap_or(0));
+            }
+            Scoped(key.to_owned())
         }
     }
 
@@ -2834,6 +3106,267 @@ mod keypin_latch_tests {
             Mode::Strict,
             "the interval runs from the FIRST success",
         );
+    }
+
+    // ---- The facts the app reads (`keypin::blocked_for`, `engaged`, `revision`). Every test keys its
+    // own host, so the suite's threads do not share a fact.
+
+    fn blocked_of(key: &str) -> Option<keypin::Blocked> {
+        keypin::fact_for(key).blocked
+    }
+
+    #[test]
+    fn a_date_failure_with_no_key_publishes_no_key_and_only_then() {
+        let _serial = crate::testlock::serial();
+        for (n, (rc, verify)) in [(60, Some(9)), (60, Some(10))].into_iter().enumerate() {
+            let key = keypin::key_of("fact-nokey.invalid", n as i32);
+            let _scoped = keypin::Scoped::watch(&key);
+            keypin::strict_failure(&key, rc, verify);
+            assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey), "rc {rc} verify {verify:?}");
+        }
+        for (n, (rc, verify)) in
+            [(51, Some(9)), (60, Some(20)), (60, Some(21)), (60, Some(18)), (60, Some(0)), (60, None), (28, Some(10))]
+                .into_iter()
+                .enumerate()
+        {
+            let key = keypin::key_of("fact-nokey-not.invalid", n as i32);
+            let _scoped = keypin::Scoped::watch(&key);
+            keypin::strict_failure(&key, rc, verify);
+            assert_eq!(blocked_of(&key), None, "rc {rc} verify {verify:?} is not a date failure");
+        }
+        // A key held for the host means key mode can help, so nothing is blocked.
+        let key = keypin::key_of("fact-nokey-held.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        keypin::strict_failure(&key, 60, Some(10));
+        assert_eq!(blocked_of(&key), None);
+    }
+
+    #[test]
+    fn a_date_failure_of_a_host_that_is_no_media_server_publishes_nothing() {
+        let _serial = crate::testlock::serial();
+        // plex.tv fails its date check on a wrong clock too, but it is not a server key mode could
+        // ever serve and nothing but a plex.tv success would clear the fact: it would colour a Home
+        // that failed for an unrelated reason.
+        let before = keypin::revision();
+        let tv = keypin::key_of("plex.tv", 443);
+        keypin::strict_failure(&tv, 60, Some(10));
+        assert_eq!(blocked_of(&tv), None);
+        assert_eq!(keypin::revision(), before, "an unbound host moves nothing the app reads");
+
+        // A server that has never learned a key IS covered, as the boot projection binds it from
+        // the stored session before any request is made.
+        let machine = "fact-bound-machine";
+        let key = keypin::key_of("fact-bound.invalid", 32400);
+        let _scoped = keypin::Scoped::watch(&key);
+        keypin::project(Vec::new(), &[(machine.into(), "fact-bound.invalid".into(), 32400)], false);
+        keypin::strict_failure(&key, 60, Some(10));
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey));
+        keypin::project(Vec::new(), &[], true);
+    }
+
+    /// The dev `clockfact` plant is read like any fact and survives what clears a bound host's
+    /// (a sign-out projection), since it belongs to no host a session could name.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_planted_fact_is_read_and_outlives_a_sign_out_projection() {
+        let _serial = crate::testlock::serial();
+        struct Forget;
+        impl Drop for Forget {
+            fn drop(&mut self) {
+                keypin::forget_for_test(keypin::PLANTED_KEY);
+            }
+        }
+        let _forget = Forget;
+        // `engaged()` below is a global read: start from no engagement an earlier test left.
+        keypin::reset_facts_for_test();
+        keypin::plant(keypin::Planted::Blocked(keypin::Blocked::NoKey));
+        assert_eq!(keypin::blocked_for("any-machine"), Some(keypin::Blocked::NoKey));
+        keypin::project(Vec::new(), &[], true);
+        assert_eq!(keypin::blocked_for("any-machine"), Some(keypin::Blocked::NoKey), "a projection touches bound hosts only");
+        keypin::plant(keypin::Planted::Blocked(keypin::Blocked::KeyChanged));
+        assert_eq!(keypin::blocked_for("any-machine"), Some(keypin::Blocked::KeyChanged));
+        keypin::plant(keypin::Planted::Engaged(Some(2019)));
+        assert_eq!(keypin::engaged(), Some(Some(2019)));
+    }
+
+    /// **Scenario A** (LAN-only cold boot, wrong clock, no key): NoKey stands, the viewer fixes the
+    /// clock, the server is now unreachable for another reason. The fact is the host's LATEST strict
+    /// outcome, so a strict failure that is not about the date ends it — and *Try again* no longer
+    /// blames a clock that is right.
+    #[test]
+    fn a_later_strict_failure_that_is_not_the_date_clears_no_key_and_not_a_changed_key() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("fact-later.invalid", 1);
+        let _scoped = keypin::Scoped::watch(&key);
+        for (rc, verify) in [(7, None), (28, None), (60, Some(20)), (60, Some(18)), (51, Some(9)), (60, None)] {
+            keypin::strict_failure(&key, 60, Some(10));
+            assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey));
+            let before = keypin::revision();
+            keypin::strict_failure(&key, rc, verify);
+            assert_eq!(blocked_of(&key), None, "rc {rc} verify {verify:?} is not the date: the clock is not the cause");
+            assert_ne!(keypin::revision(), before, "clearing a fact is a change a screen must see");
+        }
+        // Nothing to clear is not a change.
+        let before = keypin::revision();
+        keypin::strict_failure(&key, 7, None);
+        assert_eq!(keypin::revision(), before);
+
+        // A key that changed stays changed until a pin change or a success: an unrelated failure
+        // says nothing about the key the host presented.
+        keypin::key_changed(&key);
+        keypin::strict_failure(&key, 7, None);
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::KeyChanged));
+    }
+
+    /// **Scenario B**: a second bound server's NoKey must not colour a read-out about another
+    /// server. The fact is asked for BY MACHINE.
+    #[test]
+    fn a_fact_is_answered_for_the_machine_it_was_published_about_only() {
+        let _serial = crate::testlock::serial();
+        let (ka, kb) = (keypin::key_of("fact-scope-a.invalid", 1), keypin::key_of("fact-scope-b.invalid", 1));
+        let kb2 = keypin::key_of("fact-scope-b2.invalid", 1);
+        let _scoped = (
+            keypin::Scoped::watch_machine("m-scope-a", &ka),
+            keypin::Scoped::watch_machine("m-scope-b", &kb),
+            keypin::Scoped::watch_machine("m-scope-b", &kb2),
+        );
+        keypin::strict_failure(&kb, 60, Some(10));
+        assert_eq!(keypin::blocked_for("m-scope-b"), Some(keypin::Blocked::NoKey));
+        assert_eq!(keypin::blocked_for("m-scope-a"), None, "server B's expired certificate is not server A's clock");
+        assert_eq!(keypin::blocked_for("m-scope-unknown"), None);
+        assert_eq!(keypin::blocked_for(""), None);
+
+        // One machine, two addresses: the changed key outranks the missing one.
+        keypin::key_changed(&kb2);
+        assert_eq!(keypin::blocked_for("m-scope-b"), Some(keypin::Blocked::KeyChanged));
+        assert_eq!(keypin::blocked_for("m-scope-a"), None);
+    }
+
+    #[test]
+    fn a_changed_key_publishes_key_changed_and_outranks_no_key() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("fact-changed.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        keypin::key_refused(&key);
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::KeyChanged));
+
+        // The media stack's quiet publisher says the same and keeps the latch rule.
+        keypin::forget_for_test(&key);
+        let _scoped2 = keypin::Scoped::new(key.clone(), &pin());
+        let t0 = Instant::now();
+        keypin::key_established_at(&key, &pin(), Some(10), t0);
+        assert!(keypin::is_latched(&key));
+        keypin::key_changed(&key);
+        assert!(!keypin::is_latched(&key), "rc 90 still ends key mode for the host");
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::KeyChanged));
+    }
+
+    #[test]
+    fn a_success_or_a_pin_change_clears_that_host_only() {
+        let _serial = crate::testlock::serial();
+        let a = keypin::key_of("fact-clear-a.invalid", 1);
+        let b = keypin::key_of("fact-clear-b.invalid", 1);
+        let c = keypin::key_of("fact-clear-c.invalid", 1);
+        let (_a, _b, _c) = (keypin::Scoped::new(a.clone(), &pin()), keypin::Scoped::watch(&b), keypin::Scoped::new(c.clone(), &pin()));
+        keypin::key_changed(&a);
+        keypin::strict_failure(&b, 60, Some(10));
+        keypin::key_changed(&c);
+        assert_eq!((blocked_of(&a), blocked_of(&b), blocked_of(&c)), (
+            Some(keypin::Blocked::KeyChanged),
+            Some(keypin::Blocked::NoKey),
+            Some(keypin::Blocked::KeyChanged),
+        ));
+
+        keypin::strict_established(&a);
+        assert_eq!(blocked_of(&a), None, "a strict success clears its own host");
+        assert_eq!(blocked_of(&b), Some(keypin::Blocked::NoKey), "…and not another's");
+
+        keypin::key_established_at(&c, &pin(), Some(10), Instant::now());
+        assert_eq!(blocked_of(&c), None, "a key-mode success clears its host");
+
+        keypin::key_changed(&a);
+        keypin::set_for_test(&a, &crate::spki::pin_from_spki_der(&[8; 8]));
+        assert_eq!(blocked_of(&a), None, "a pin change clears it");
+        assert_eq!(blocked_of(&b), Some(keypin::Blocked::NoKey));
+    }
+
+    #[test]
+    fn a_pin_arriving_for_a_blocked_host_clears_no_key_and_a_projection_that_changes_nothing_does_not() {
+        let _serial = crate::testlock::serial();
+        let machine = "fact-project-machine";
+        let key = keypin::key_of("fact-project.invalid", 1);
+        let _scoped = keypin::Scoped::watch(&key);
+        keypin::project(Vec::new(), &[(machine.into(), "fact-project.invalid".into(), 1)], false);
+        keypin::strict_failure(&key, 60, Some(10));
+        let before = keypin::revision();
+        keypin::project(vec![("unrelated".into(), pin())], &[(machine.into(), "fact-project.invalid".into(), 1)], false);
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey), "still no key for this host");
+        assert_eq!(keypin::revision(), before, "nothing changed, nothing published");
+
+        keypin::project(vec![(machine.into(), pin())], &[(machine.into(), "fact-project.invalid".into(), 1)], false);
+        assert_eq!(blocked_of(&key), None, "a key arriving makes key mode able to help");
+
+        // Sign-out: an empty projection clears the facts of every bound host, including one that
+        // never had a key (no pin removal says so for it).
+        keypin::project(Vec::new(), &[], true);
+        assert_eq!(keypin::pin_for_test(&key), None);
+        keypin::strict_failure(&key, 60, Some(10));
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey));
+        keypin::project(Vec::new(), &[], true);
+        assert_eq!(blocked_of(&key), None, "sign-out ends what was blocked");
+    }
+
+    #[test]
+    fn the_engaged_year_is_the_first_one_and_survives_a_latch_lapse() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("fact-engaged.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        assert_eq!(keypin::fact_for(&key).engaged, None, "not engaged yet");
+        let t0 = Instant::now();
+        keypin::key_established_in(&key, &pin(), Some(10), t0, || Some(2020));
+        assert_eq!(keypin::fact_for(&key).engaged, Some(Some(2020)));
+
+        let t1 = t0 + keypin::LATCH + SECOND;
+        assert_eq!(keypin::begin_at(&key, t1), Mode::Strict, "the latch lapsed");
+        keypin::key_established_in(&key, &pin(), Some(10), t1, || Some(2031));
+        assert_eq!(keypin::fact_for(&key).engaged, Some(Some(2020)), "the first engagement is the fact");
+        assert!(keypin::engaged().is_some());
+    }
+
+    #[test]
+    fn an_engagement_with_no_known_year_records_none_inside() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("fact-engaged-noyear.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        keypin::key_established_in(&key, &pin(), None, Instant::now(), || None);
+        assert_eq!(keypin::fact_for(&key).engaged, Some(None));
+    }
+
+    #[test]
+    fn the_revision_moves_on_each_change_and_not_otherwise() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("fact-revision.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        let r0 = keypin::revision();
+        keypin::strict_failure(&key, 60, Some(21));
+        keypin::strict_failure(&key, 51, Some(10));
+        keypin::strict_established(&key);
+        assert_eq!(keypin::revision(), r0, "nothing was published or cleared");
+
+        keypin::key_changed(&key);
+        let r1 = keypin::revision();
+        assert!(r1 > r0, "a fact appeared");
+        keypin::key_changed(&key);
+        assert_eq!(keypin::revision(), r1, "the same fact again is not a change");
+        keypin::strict_established(&key);
+        let r2 = keypin::revision();
+        assert!(r2 > r1, "a fact cleared");
+
+        keypin::key_established_in(&key, &pin(), Some(10), Instant::now(), || Some(2020));
+        let r3 = keypin::revision();
+        assert!(r3 > r2, "engagement is a fact");
+        keypin::key_established_in(&key, &pin(), Some(10), Instant::now() + keypin::LATCH + SECOND, || Some(2021));
+        assert_eq!(keypin::revision(), r3, "a re-engagement after a lapse adds nothing");
     }
 }
 

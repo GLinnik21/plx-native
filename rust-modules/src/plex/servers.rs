@@ -1460,7 +1460,7 @@ mod tests {
         let key = crate::net::keypin::key_of(origin.host(), origin.port());
         let _scoped = crate::net::keypin::Scoped::new(key.clone(), "sha256//unused");
         crate::net::keypin::forget_for_test(&key);
-        crate::net::keypin::project(vec![("m-keys-bind".into(), key_pin.clone())], &[]);
+        crate::net::keypin::project(vec![("m-keys-bind".into(), key_pin.clone())], &[], false);
         assert_eq!(crate::net::keypin::pin_for_test(&key), None, "no host bound yet");
 
         let pin = ResolvePin::for_origin(&origin, "127.0.0.1").unwrap();
@@ -1472,7 +1472,7 @@ mod tests {
         let other = crate::net::keypin::key_of(plain.host(), plain.port());
         assert_eq!(crate::net::keypin::pin_for_test(&other), None, "no ResolvePin, no binding");
         crate::net::resolve::clear();
-        crate::net::keypin::project(Vec::new(), &[]);
+        crate::net::keypin::project(Vec::new(), &[], true);
     }
 
     /// A pin that arrives on an ALREADY registered origin (a legacy session file re-saved with its
