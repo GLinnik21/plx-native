@@ -19,8 +19,8 @@
 //! media plane. This module owns their shared process init, including the mutex callbacks required
 //! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
 //! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON
-//! with ONE bounded exception, [`keypin`] (issue #378): a request that failed ONLY on the
-//! certificate's dates (a television with no battery clock) is repeated once, recognising the
+//! with ONE bounded exception, [`keypin`] (issue #378): a request whose strict attempt failed with
+//! a date verify result (a television with no battery clock) is repeated once, recognising the
 //! server by the public key remembered for that exact host and port, with the name check still on.
 //! `NOSIGNAL` is set because we call from threads. Response bodies never carry into a log here.
 #![allow(non_camel_case_types)]
@@ -109,6 +109,11 @@ const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_NOSIGNAL: c_int = 99;
+/// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
+/// connection for this handle, and never leave this handle's connection in the cache. Read off
+/// `curl/curl.h`; both have existed since libcurl 7.7. Set only by [`keypin::apply`].
+const CURLOPT_FRESH_CONNECT: c_int = 74;
+const CURLOPT_FORBID_REUSE: c_int = 75;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_TIMEOUT: c_int = 13;
 const CURLOPT_TIMEOUT_MS: c_int = 155;
@@ -138,8 +143,8 @@ const CURLOPT_CUSTOMREQUEST: c_int = 10036;
 /// per session on a developer's Mac, so there is no CA to verify against and the pin is the whole
 /// of the endpoint's identity — a narrower trust root than the television's CA store, not a wider
 /// one. No private key is in this binary; a pin is a hash of a public key. [`keypin`] uses the
-/// same option for the remembered-key fallback (issue #378), on a CA-verified request whose only
-/// failure was the date; it never reuses the lab's `Tls::Pinned`.
+/// same option for the remembered-key fallback (issue #378), on a CA-verified request whose strict
+/// attempt failed with a date verify result; it never reuses the lab's `Tls::Pinned`.
 const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 
 /// `CURLOPT_CAINFO` (OBJECTPOINT + 65) — a path to a PEM bundle to verify the peer against,
@@ -1026,14 +1031,27 @@ mod loopback_pms {
     /// request cost, the body test reads what arrived. Answers `body` with `200`, or the tail of it
     /// with `206` and a `Content-Range` when the request carries `Range: bytes=N-`, so a
     /// [`crate::curlio::CurlSource`] can open, seek and reopen against it. One request per
-    /// connection (`Connection: close`).
+    /// connection (`Connection: close`); [`spawn_observed_keepalive`] is the persistent twin.
     pub(crate) fn spawn_observed(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
+        spawn_observed_conn(cert, body, false)
+    }
+
+    /// [`spawn_observed`] speaking persistent HTTP/1.1: every reply carries a `Content-Length` and
+    /// no `Connection: close`, and a connection serves requests until the client closes it. What a
+    /// real media server does, and the only double in which a libcurl connection cache can be seen
+    /// handing one connection to a second transfer.
+    pub(crate) fn spawn_observed_keepalive(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
+        spawn_observed_conn(cert, body, true)
+    }
+
+    fn spawn_observed_conn(cert: Arc<TestCert>, body: Vec<u8>, keep_alive: bool) -> Observed {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind observed listener");
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
+        let connection = if keep_alive { "" } else { "Connection: close\r\n" };
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
@@ -1042,34 +1060,45 @@ mod loopback_pms {
                 std::thread::spawn(move || {
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
                     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-                    let request = read_whole_request(&mut tls);
-                    if request.is_empty() {
-                        return;
-                    }
-                    let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
-                    let start = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("range: bytes="))
-                        .and_then(|v| v.split('-').next())
-                        .and_then(|v| v.trim().parse::<usize>().ok());
-                    log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                    let reply = match start {
-                        Some(at) if at < body.len() => {
-                            let tail = &body[at..];
-                            let mut out = format!(
-                                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\nConnection: close\r\n\r\n",
-                                tail.len(),
-                                body.len() - 1,
-                                body.len()
-                            )
-                            .into_bytes();
-                            out.extend_from_slice(tail);
-                            out
+                    loop {
+                        let request = read_whole_request(&mut tls);
+                        if request.is_empty() {
+                            return;
                         }
-                        _ => http_ok(&body),
-                    };
-                    let _ = tls.write_all(&reply);
-                    let _ = tls.flush();
+                        let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                        let start = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("range: bytes="))
+                            .and_then(|v| v.split('-').next())
+                            .and_then(|v| v.trim().parse::<usize>().ok());
+                        log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
+                        let reply = match start {
+                            Some(at) if at < body.len() => {
+                                let tail = &body[at..];
+                                let mut out = format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {at}-{}/{}\r\n{connection}\r\n",
+                                    tail.len(),
+                                    body.len() - 1,
+                                    body.len()
+                                )
+                                .into_bytes();
+                                out.extend_from_slice(tail);
+                                out
+                            }
+                            _ => {
+                                let mut out = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n",
+                                    body.len()
+                                )
+                                .into_bytes();
+                                out.extend_from_slice(&body);
+                                out
+                            }
+                        };
+                        if tls.write_all(&reply).is_err() || tls.flush().is_err() || !keep_alive {
+                            return;
+                        }
+                    }
                 });
             }
         });
@@ -1115,7 +1144,7 @@ mod loopback_pms {
     }
 }
 #[cfg(test)]
-pub(crate) use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_plain_only, TestCert};
+pub(crate) use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, TestCert};
 
 /// **How the peer is verified.** Three modes, and they are an enum rather than an
 /// `Option<&str>` for one reason: the pinned one turns CA verification OFF, so "pinned" and
@@ -1258,14 +1287,14 @@ fn request_tls_evidence(
         .then(|| keypin::key_of_url(url))
         .flatten();
     let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
-    // A strict attempt that failed on the date alone, kept while key mode is tried: if libcurl
+    // A strict attempt that failed with a date verify result, kept while key mode is tried: if libcurl
     // cannot even be put in key mode, the request fails as it would have.
     let mut held: Option<(Attempt, keypin::Mode)> = None;
     // **One attempt = one fresh easy handle, one fresh response sink, the same inputs.** A retry
     // therefore cannot inherit per-attempt state (a partly filled body buffer, a read offset, a
     // header list the first handle owned): a failed TLS handshake sent nothing, and the second
     // attempt starts from nothing too. `body` is referenced, never consumed.
-    let attempt = |mode: &keypin::Mode| -> Result<Attempt, RequestFailure> {
+    let attempt = |mode: &keypin::Mode, t: Timeouts| -> Result<Attempt, RequestFailure> {
         let strict = matches!(mode, keypin::Mode::Strict);
         let read_peer_pin = read_peer_pin && strict;
         let pin_c = match mode {
@@ -1510,8 +1539,12 @@ fn request_tls_evidence(
         }
     };
 
+    // The caller's whole-request budget is spent ONCE across the attempts: a key-mode retry gets
+    // what the failed strict handshake left, never a fresh full budget ([`remaining_budget`]).
+    let started = std::time::Instant::now();
+    let mut budget = t;
     let (done, final_mode) = loop {
-        let done = attempt(&mode)?;
+        let done = attempt(&mode, budget)?;
         if done.key_refused {
             // libcurl would not be put in key mode. Never relax anything: the request fails as it
             // would have (the strict failure held), or, when key mode was the latched START, goes
@@ -1529,9 +1562,17 @@ fn request_tls_evidence(
         }
         if let (keypin::Mode::Strict, Some(key)) = (&mode, &key) {
             if let Some(next) = keypin::after_strict_failure(key, done.rc, done.verify) {
-                held = Some((done, mode));
-                mode = next;
-                continue;
+                match remaining_budget(t, started.elapsed()) {
+                    Some(left) => {
+                        budget = left;
+                        held = Some((done, mode));
+                        mode = next;
+                        continue;
+                    }
+                    // Nothing is left to spend on the retry: the request fails as the strict
+                    // attempt did, inside the time the caller allowed.
+                    None => break (done, mode),
+                }
             }
         }
         break (done, mode);
@@ -1556,6 +1597,21 @@ fn request_tls_evidence(
     }
     finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
         .map(|resp| Resp { peer_pin, ..resp })
+}
+
+/// What is left of `t`'s whole-request deadline after `elapsed`, as a millisecond deadline, for a
+/// key-mode retry that follows a failed strict attempt: `None` when nothing is left (the caller
+/// returns the strict failure), `t` itself when the request has no whole-request deadline
+/// (`total_ms` and `total_s` both zero, the low-speed pair being the only bound).
+fn remaining_budget(t: Timeouts, elapsed: std::time::Duration) -> Option<Timeouts> {
+    let total_ms = match (t.total_ms, t.total_s) {
+        (ms, _) if ms > 0 => i128::from(ms),
+        (_, s) if s > 0 => i128::from(s) * 1000,
+        _ => return Some(t),
+    };
+    let left = total_ms - elapsed.as_millis() as i128;
+    // A millisecond deadline of 0 would mean "none" to libcurl; a retry with under 1 ms is not one.
+    (left >= 1).then(|| Timeouts { total_ms: left as c_long, ..t })
 }
 
 /// What one pass of [`request_tls_evidence`]'s attempt closure leaves behind. Plain data: the easy
@@ -1789,8 +1845,9 @@ pub(crate) fn post_pinned(
 ///
 /// The plan this was built to called for a new request mode on the grounds that [`post_pinned`]
 /// sets `SSL_VERIFYPEER=0`, so "Sentry and PostHog need the opposite". They do — and `request` has
-/// been that opposite since it was written: `VERIFYPEER=1`/`VERIFYHOST=2` unconditionally, dropped
-/// only inside the pinning branch. The premise was wrong, and the mode it asked for already
+/// been that opposite since it was written: `VERIFYPEER=1`/`VERIFYHOST=2` by default, lowered in
+/// exactly two places: the lab's pinning branch and [`keypin`]'s date-only retry, which needs a
+/// remembered key for the host and so never applies to a telemetry sink. The premise was wrong, and the mode it asked for already
 /// existed. Recording that rather than quietly building it, because "add a mode that is already
 /// the default" is the kind of finding that otherwise gets rediscovered.
 ///
@@ -1975,11 +2032,11 @@ pub(crate) mod resolve {
     }
 }
 
-/// **Key mode — recognising a server by its remembered key when the only thing wrong is the date.**
+/// **Key mode — recognising a server by its remembered key when the certificate fails its date check.**
 ///
 /// A television has no real-time clock. Cold-booted with no internet its clock is wrong, so the
 /// household server's perfectly valid `*.plex.direct` certificate fails libcurl's date check
-/// (`CURLE_PEER_FAILED_VERIFICATION`, 60, with `CURLINFO_SSL_VERIFYRESULT` 9 "not yet valid" or 10
+/// ([`TLS_VERIFY_FAILED`], 60, with `CURLINFO_SSL_VERIFYRESULT` 9 "not yet valid" or 10
 /// "expired") and the server one hop away is unreachable (issue #378). While online the identity
 /// probe remembers each server's leaf public key from a connection that passed STRICT
 /// verification ([`Resp::peer_pin`], `plex::session::learn_server_key`); this module is where that
@@ -1987,13 +2044,21 @@ pub(crate) mod resolve {
 ///
 /// **What is relaxed, when, and what still holds.** A request retries in key mode only when ALL of
 /// these hold ([`after_strict_failure`]): it ran in strict mode (a CA store, never [`Tls::Pinned`],
-/// never plaintext); libcurl said 60; the verify result was 9 or 10 and nothing else; and the
-/// table below holds a key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the
-/// remembered key and turns `CURLOPT_SSL_VERIFYPEER` off — which drops the chain and date check and
-/// nothing else: `CURLOPT_SSL_VERIFYHOST` stays 2 (the certificate must still be issued for the
-/// name in the URL), the key must still match (rc 90 otherwise), and [`apply`] makes the relaxation
-/// impossible without an accepted pin. An untrusted issuer (verify result 18-21), a name mismatch
-/// and every other failure are refused exactly as before even when a key is held.
+/// never plaintext); libcurl said 60; the verify result was 9 or 10; and the table below holds a
+/// key for that `host:port`. Key mode sets `CURLOPT_PINNEDPUBLICKEY` to the remembered key and
+/// turns `CURLOPT_SSL_VERIFYPEER` off — which drops the chain and date check: `CURLOPT_SSL_VERIFYHOST`
+/// stays 2 (the certificate must still be issued for the name in the URL), the key must still match
+/// (rc 90 otherwise), and [`apply`] makes the relaxation impossible without an accepted pin. A
+/// failure whose verify result is anything else (an untrusted issuer reported first, 18-21; a name
+/// mismatch) is refused exactly as before even when a key is held.
+///
+/// **What the trigger does NOT prove, stated plainly.** The security of key mode rests on the key
+/// pin plus the name check, not on the date being the only defect. (1) Verify result 9/10 does not
+/// show that the rest of the chain would have passed: OpenSSL stops at the first error it meets
+/// walking the chain, so a certificate that is expired AND untrusted reads as 10 too. (2) Key mode
+/// also engages for a genuinely expired certificate on a correct clock, because the trigger is the
+/// verify result and not a judgement about the clock. (3) The remembered key has no expiry: it lasts
+/// as long as the session that holds it.
 ///
 /// **Two tables, one lifetime rule.** The key table is keyed by lowercase `host:port`, beside
 /// [`resolve`]'s but with REPLACE semantics: it is a projection of the session's remembered keys
@@ -2008,8 +2073,8 @@ pub(crate) mod resolve {
 pub(crate) mod keypin {
     use super::{
         c_int, c_long, curl_easy_setopt_long, curl_easy_setopt_ptr, peer_leaf_pin, tls_verify_why,
-        wall_clock_year, CURL, CURLOPT_CERTINFO, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST,
-        CURLOPT_SSL_VERIFYPEER,
+        wall_clock_year, CURL, CURLOPT_CERTINFO, CURLOPT_FORBID_REUSE, CURLOPT_FRESH_CONNECT,
+        CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST, CURLOPT_SSL_VERIFYPEER,
     };
     use std::collections::HashMap;
     use std::ffi::{c_void, CStr};
@@ -2018,12 +2083,15 @@ pub(crate) mod keypin {
 
     /// How long a host stays in key mode after a fallback succeeded, on the monotonic clock.
     pub(crate) const LATCH: Duration = Duration::from_secs(10 * 60);
-    /// `CURLE_PEER_FAILED_VERIFICATION` on libcurl 7.62+ and for every certificate-chain failure.
-    const PEER_VERIFICATION_FAILED: c_int = 60;
+    /// libcurl's rc 60: the certificate chain or its dates were refused. Named
+    /// `CURLE_SSL_CACERT` below libcurl 7.62 (the television's 7.53.1) and
+    /// `CURLE_PEER_FAILED_VERIFICATION` from 7.62, where 51 stops meaning that; the number is what
+    /// is stable, so this name is version-neutral. The one definition, shared with `curlio`.
+    pub(crate) const TLS_VERIFY_FAILED: c_int = 60;
     /// `CURLE_SSL_PINNEDPUBKEYNOTMATCH`: the server presented a key other than the pinned one.
     pub(crate) const PIN_MISMATCH: c_int = 90;
     /// OpenSSL `X509_V_ERR_CERT_NOT_YET_VALID` and `X509_V_ERR_CERT_HAS_EXPIRED`: the two verify
-    /// results that are about the date and nothing else.
+    /// results that are about the date. They do not prove the date was the only problem.
     const X509_NOT_YET_VALID: c_long = 9;
     const X509_EXPIRED: c_long = 10;
 
@@ -2126,7 +2194,12 @@ pub(crate) mod keypin {
         recompute(&mut st);
     }
 
-    /// One machine's key was just learned: take it now rather than waiting for the write to land.
+    /// Put one machine's key in the table with no session behind it. **Not a production path**:
+    /// the session projection ([`project`]) is the table's only production writer, so a key can
+    /// neither outlive a sign-out nor be reverted by a projection that lands after it. The dev
+    /// `tls-selftest` trigger needs exactly this (it holds no session) and restates its key before
+    /// every round for the reason that [`project`] replaces it.
+    #[cfg(feature = "devtriggers")]
     pub(crate) fn note_machine_pin(machine_id: &str, pin: &str) {
         let mut st = state();
         st.machine_pins.insert(machine_id.to_owned(), pin.to_owned());
@@ -2139,6 +2212,7 @@ pub(crate) mod keypin {
         begin_at(key, Instant::now())
     }
 
+    /// [`begin`] at `now`: the latch is live while less than [`LATCH`] has passed since it began.
     pub(crate) fn begin_at(key: &str, now: Instant) -> Mode {
         let mut st = state();
         if let Some((pin, since)) = st.latched.get(key).cloned() {
@@ -2151,10 +2225,10 @@ pub(crate) mod keypin {
     }
 
     /// **The trigger, and only the trigger.** A strict attempt failed with `rc` and `verify` (the
-    /// handle's `CURLINFO_SSL_VERIFYRESULT`): key mode when it was the date and nothing else and
-    /// the table holds a key for `key`.
+    /// handle's `CURLINFO_SSL_VERIFYRESULT`): key mode when libcurl said 60 with a date verify
+    /// result and the table holds a key for `key`.
     pub(crate) fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
-        if rc != PEER_VERIFICATION_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
+        if rc != TLS_VERIFY_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
             return None;
         }
         let pin = state().table.get(key)?.clone();
@@ -2169,7 +2243,11 @@ pub(crate) mod keypin {
     /// A key-mode handshake completed under `pin`. Latches the host if it was not already (the
     /// timer is NOT slid by later successes) and says so once, on that transition.
     pub(crate) fn key_established(key: &str, pin: &str, verify: Option<c_long>) {
-        let now = Instant::now();
+        key_established_at(key, pin, verify, Instant::now());
+    }
+
+    /// [`key_established`] at `now`, the clock seam [`begin_at`] shares.
+    pub(crate) fn key_established_at(key: &str, pin: &str, verify: Option<c_long>, now: Instant) {
         let engaged = {
             let mut st = state();
             let live = st
@@ -2199,7 +2277,7 @@ pub(crate) mod keypin {
     /// carries the year the device believes it is, which is what lets a reader see a wrong clock.
     pub(crate) fn engaged_line(verify: Option<c_long>, year: Option<i64>) -> String {
         let why = match verify {
-            Some(_) => tls_verify_why(PEER_VERIFICATION_FAILED, verify, year),
+            Some(_) => tls_verify_why(TLS_VERIFY_FAILED, verify, year),
             None => None,
         }
         .unwrap_or_else(|| match year {
@@ -2217,6 +2295,16 @@ pub(crate) mod keypin {
     /// asked for so [`confirm`] can check the key itself too, in case a backend accepts the pin
     /// option and never enforces it.
     ///
+    /// **Every key-mode handle does its own handshake.** `CURLOPT_FRESH_CONNECT` and
+    /// `CURLOPT_FORBID_REUSE` are set before `VERIFYPEER` goes to 0, so the handle never takes a
+    /// cached connection and leaves none behind. A reused connection performs no handshake: there
+    /// would be no certificate for [`confirm`] to read (the open would be refused as a pin
+    /// mismatch), and the pin and the name would not have been checked for this request at all. It
+    /// also covers libcurl 7.53.1, where the pinned key is not part of the connection-reuse match,
+    /// so a key-mode handle could otherwise ride a connection set up under different rules. The cost
+    /// is one TLS handshake per key-mode request, accepted because key mode is a degraded state
+    /// (a wrong clock) that the first strict success ends.
+    ///
     /// # Safety
     /// `easy` is a live curl easy handle; `pin` outlives the transfer (libcurl 7.17+ copies it,
     /// but the caller holds it anyway).
@@ -2225,9 +2313,11 @@ pub(crate) mod keypin {
         if rc != 0 {
             return Err(rc);
         }
-        let rc = unsafe { curl_easy_setopt_long(easy, CURLOPT_CERTINFO, 1) };
-        if rc != 0 {
-            return Err(rc);
+        for option in [CURLOPT_CERTINFO, CURLOPT_FRESH_CONNECT, CURLOPT_FORBID_REUSE] {
+            let rc = unsafe { curl_easy_setopt_long(easy, option, 1) };
+            if rc != 0 {
+                return Err(rc);
+            }
         }
         let rc = unsafe { curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2) };
         if rc != 0 {
@@ -2674,6 +2764,87 @@ mod request_tests {
             "plaintext may upgrade, but the inverse is forbidden"
         );
         assert_eq!(PUBLIC_MAX_REDIRECTS, 5);
+    }
+}
+
+/// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
+/// success inside the interval does not slide it.
+#[cfg(test)]
+mod keypin_latch_tests {
+    use super::keypin::{self, Mode};
+    use std::time::{Duration, Instant};
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    fn pin() -> String {
+        crate::spki::pin_from_spki_der(&[7; 8])
+    }
+
+    fn is_key(mode: &Mode) -> bool {
+        matches!(mode, Mode::Key { .. })
+    }
+
+    #[test]
+    fn the_latch_lapses_after_its_interval_and_a_new_success_starts_a_fresh_one() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("latch-lapse.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        let t0 = Instant::now();
+        keypin::key_established_at(&key, &pin(), Some(10), t0);
+        assert!(keypin::is_latched(&key));
+        assert!(is_key(&keypin::begin_at(&key, t0 + keypin::LATCH - SECOND)), "live inside the interval");
+        assert_eq!(keypin::begin_at(&key, t0 + keypin::LATCH), Mode::Strict, "over at the interval");
+        assert!(!keypin::is_latched(&key), "a lapsed latch is dropped, not just ignored");
+
+        let t1 = t0 + keypin::LATCH + SECOND;
+        keypin::key_established_at(&key, &pin(), Some(10), t1);
+        assert!(is_key(&keypin::begin_at(&key, t1 + SECOND)), "a new success latches again");
+    }
+
+    #[test]
+    fn a_second_key_mode_success_inside_the_interval_does_not_extend_it() {
+        let _serial = crate::testlock::serial();
+        let key = keypin::key_of("latch-no-slide.invalid", 1);
+        let _scoped = keypin::Scoped::new(key.clone(), &pin());
+        let t0 = Instant::now();
+        keypin::key_established_at(&key, &pin(), Some(10), t0);
+        keypin::key_established_at(&key, &pin(), Some(10), t0 + keypin::LATCH - SECOND);
+        assert_eq!(
+            keypin::begin_at(&key, t0 + keypin::LATCH + SECOND),
+            Mode::Strict,
+            "the interval runs from the FIRST success",
+        );
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn timeouts(total_s: c_long, total_ms: c_long) -> Timeouts {
+        Timeouts { connect_s: 8, total_s, total_ms, low_speed_bps: 0, low_speed_s: 0 }
+    }
+
+    /// A key-mode retry spends what the failed strict attempt left of the caller's deadline, never a
+    /// fresh whole one. (A request test would need the strict handshake to take a known time, which
+    /// is a sleep; the arithmetic is what decides, so it is tested directly.)
+    #[test]
+    fn a_retry_gets_the_remaining_budget_and_none_when_nothing_remains() {
+        let left = remaining_budget(timeouts(0, 5000), Duration::from_millis(1200)).unwrap();
+        assert_eq!(left.total_ms, 3800);
+        assert_eq!((left.connect_s, left.total_s), (8, 0), "nothing else about the request changes");
+        let left = remaining_budget(timeouts(25, 0), Duration::from_millis(1500)).unwrap();
+        assert_eq!(left.total_ms, 23_500, "a whole-second budget becomes a millisecond one");
+        assert_eq!(remaining_budget(timeouts(0, 5000), Duration::from_millis(5000)), None);
+        assert_eq!(remaining_budget(timeouts(0, 5000), Duration::from_millis(5001)), None);
+        assert_eq!(remaining_budget(timeouts(25, 0), Duration::from_secs(60)), None);
+    }
+
+    #[test]
+    fn a_request_with_no_whole_deadline_keeps_none() {
+        let t = timeouts(0, 0);
+        assert_eq!(remaining_budget(t, Duration::from_secs(3600)), Some(t));
     }
 }
 

@@ -31,7 +31,12 @@ looking at:
   `diag::scrub::scrub_local` before the write. A line that reaches it carrying a credential, a Plex
   token, a `plex.direct` hostname, a household name or anything about what is being watched is a
   valid report — see [PRIVACY.md](PRIVACY.md) for the contract that is meant to hold.
-- **TLS.** Certificate verification is on for every HTTPS request (`net.rs`). Stable builds refuse
+- **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception: when
+  a Plex server's certificate fails only its validity-date check (the television has no
+  battery-backed clock) and a public key was remembered for that exact host and port from an
+  earlier fully verified connection, the request is repeated with the chain-and-date check
+  replaced by a pin on that key; the name check stays on. plex.tv, telemetry and any host with no
+  remembered key never take this path (`net.rs`, `net::keypin`). Stable builds refuse
   any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one
   consented exception: a server that answers only unencrypted at a numeric private address on the
   television's own network, where the person answered "Connect without encryption?" for that
@@ -43,8 +48,9 @@ looking at:
   it names, is in scope.
   Only an explicit developer-trigger build can otherwise allow the lab path, and it logs the
   exception without the URL.
-  Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
-  failure to *set* a security option results in a request going out anyway.
+  Anything that disables, downgrades or bypasses these rules is in scope — including a key-mode
+  request that accepts a different key or a wrong name; so is any path where a failure to *set* a
+  security option results in a request going out anyway.
 - **The session file.** `<id>-auth.json` holds one access token per server your account can reach.
   It is encrypted with the firmware's authenticated Key Manager where
   `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility

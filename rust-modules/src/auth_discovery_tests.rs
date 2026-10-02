@@ -3557,7 +3557,7 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
 }
 
 #[test]
-fn media_seeks_and_reopens_ride_the_latch_one_handshake_each() {
+fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
     let _serial = crate::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
@@ -3587,4 +3587,54 @@ fn media_seeks_and_reopens_ride_the_latch_one_handshake_each() {
     crate::net::keypin::set_for_test(&key, &leaf_pin(&other));
     assert!(!src.seek(2000), "the new pin is not the server's");
     assert!(!crate::net::keypin::is_latched(&key));
+}
+
+/// **A key-mode transfer never rides a kept-alive connection.** The source keeps its multi and
+/// connection cache across attempts, and a handle that reused a cached connection would perform no
+/// handshake, so there would be no certificate to confirm and the open would be refused as a pin
+/// mismatch — which every HLS segment after the first and every seek after a read to EOF would hit.
+/// The `Connection: close` double used above cannot see that, so this one keeps connections alive.
+#[test]
+fn media_key_mode_never_reuses_a_kept_alive_connection() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-keepalive");
+    let served = crate::net::spawn_observed_keepalive(Arc::clone(&cert), media_body());
+    let key = key_of_port(served.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let accepted = || served.accepted.load(std::sync::atomic::Ordering::Acquire);
+
+    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0).expect("first open");
+    assert_eq!(accepted(), 2, "the failed strict handshake and the key-mode one");
+    assert!(crate::net::keypin::is_latched(&key));
+
+    // Read to the end: the transfer completes cleanly, which is what leaves a connection in the
+    // cache for a following handle to find.
+    let mut all = Vec::new();
+    let mut buf = [0u8; 700];
+    loop {
+        let n = src.read(&mut buf);
+        assert!(n >= 0, "read failed with {n} after {} bytes", all.len());
+        if n == 0 {
+            break;
+        }
+        all.extend_from_slice(&buf[..n as usize]);
+    }
+    assert_eq!(all, media_body());
+
+    assert!(src.seek(1000), "a seek after a read to EOF must succeed in key mode");
+    assert_eq!(accepted(), 3, "its own handshake, not the cached connection");
+    assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
+
+    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
+        .expect("a reopen in key mode");
+    assert_eq!(accepted(), 4, "its own handshake, not the cached connection");
+    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
+
+    assert!(
+        crate::net::keypin::is_latched(&key),
+        "no pin-mismatch outcome: the host is still served in key mode"
+    );
+    assert_eq!(crate::net::keypin::pin_for_test(&key).as_deref(), Some(leaf_pin(&cert).as_str()));
 }

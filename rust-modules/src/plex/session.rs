@@ -2910,12 +2910,11 @@ pub(crate) fn learn_server_key(machine_id: &str, pin: &str) -> bool {
     if machine_id.is_empty() || peek().server_key_pin(machine_id) == Some(pin) {
         return false;
     }
-    // Take the key now: it is a fact about a connection this process just verified, and the table
-    // should not wait for the write to land (or survive a failed one). The write's own cache
-    // replacement projects the same key again.
-    if is_key_pin(pin) {
-        crate::net::keypin::note_machine_pin(machine_id, pin);
-    }
+    // The key reaches `net::keypin` ONLY through the queued write's own cache replacement
+    // ([`project_server_keys`], the table's single production writer). Key mode cannot be needed
+    // right after a strict success, and a direct write here would let an intervening
+    // `replace_cache` revert it until the write lands, and let a probe that finishes after
+    // sign-out repopulate the table that sign-out just emptied.
     let (machine_id, pin) = (machine_id.to_owned(), pin.to_owned());
     queue_update(move |cur| cur.with_server_key_pin(&machine_id, &pin))
 }
@@ -5667,8 +5666,8 @@ mod audio_enhancements_tests {
     }
 }
 
-/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. Nothing
-/// reads it yet (#378 will); these pin the storage contract so that reader can rely on it.
+/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. The reader
+/// is [`project_server_keys`] (issue #378); these pin the storage contract it relies on.
 #[cfg(test)]
 mod server_key_pin_tests {
     use super::*;
@@ -5827,8 +5826,9 @@ mod server_key_pin_tests {
         assert!(!crate::net::keypin::is_latched(&key), "…and ends key mode");
     }
 
-    /// A new or changed key reaches the table when `learn_server_key` records it, and a changed key
-    /// ends key mode for the host.
+    /// A new or changed key reaches the table when the write `learn_server_key` queued is applied
+    /// (the session projection is the table's only production writer), and a changed key ends key
+    /// mode for the host.
     #[test]
     fn learning_a_new_or_changed_key_updates_the_table_and_clears_the_latch() {
         let _serial = crate::testlock::serial();
@@ -5847,10 +5847,36 @@ mod server_key_pin_tests {
 
         crate::net::keypin::key_established(&key, &pin(1), Some(10));
         assert!(learn_server_key(machine, &pin(2)), "a different key is queued");
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "taken at once");
-        assert!(!crate::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
         crate::storage_worker::drain_for_test();
         let _ = peek();
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "and it stays once written");
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "the applied write projects it");
+        assert!(!crate::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
+    }
+
+    /// A probe that finishes after sign-out must not put its key back into the table sign-out just
+    /// emptied: nothing but the session projection writes the table, and a signed-out session
+    /// projects nothing.
+    #[test]
+    fn a_learn_that_completes_after_sign_out_leaves_the_table_empty() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("keys-learn-signout");
+        let (machine, port) = ("m-keys-learn-out", 41_003);
+        let key = table_key(port);
+        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
+        crate::net::keypin::forget_for_test(&key);
+        let mut stored = remembering(machine, port, &pin(1));
+        stored.account_token = "acct".into();
+        save(&stored);
+        let _ = load();
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
+
+        revoke_cached_session();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
+        let _ = learn_server_key(machine, &pin(2));
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
     }
 }

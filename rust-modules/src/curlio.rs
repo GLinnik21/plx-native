@@ -93,7 +93,7 @@
 //! `stop`), and a libcurl that answers `CURLE_UNKNOWN_OPTION` keeps resolving names itself.
 //!
 //! **TLS is strict, with one bounded exception (issue #378).** An open, reopen or seek whose strict
-//! handshake failed ONLY on the certificate's dates (a television with no battery clock) is
+//! handshake failed with a date verify result (a television with no battery clock) is
 //! repeated once on a fresh easy handle, recognising the server by the key `net::keypin` remembers
 //! for that exact host and port, name check still on; see `start_range_until`.
 //!
@@ -177,8 +177,7 @@ const CURLMSG_DONE: c_int = 1;
 const CURLM_OK: c_int = 0;
 const CURL_WAIT_POLLIN: i16 = 0x0001;
 const CURLE_OPERATION_TIMEDOUT: c_int = 28;
-/// `CURLE_PEER_FAILED_VERIFICATION`: the certificate chain or its dates were refused.
-const CURLE_PEER_FAILED_VERIFICATION: c_int = 60;
+use crate::net::keypin::TLS_VERIFY_FAILED;
 
 // curl.h option ids. STRINGPOINT/OBJECTPOINT/CBPOINT/SLISTPOINT = 10000, FUNCTIONPOINT = 20000,
 // LONG = 0 — read off `curl/curl.h` rather than remembered.
@@ -560,6 +559,11 @@ pub(crate) struct CurlSource {
     url: CString,
     ua: CString,
     range: Option<CString>,
+    /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
+    /// of that attempt like `range`: `keypin::apply`'s contract is that the string outlives the
+    /// transfer. Replaced by the next attempt, and not cleared by `stop`, so it can never be freed
+    /// under a handle libcurl may still reference.
+    key_pin: Option<CString>,
     /// The `CURLOPT_RESOLVE` entry for this URL's host, when `net::resolve` holds a pin for it —
     /// computed once at open, applied to every easy handle this source attaches (a seek is a fresh
     /// handle). The pinned name is a pure function of the host, so it cannot go stale mid-stream.
@@ -732,6 +736,7 @@ impl CurlSource {
             url: url_c,
             ua,
             range: None,
+            key_pin: None,
             resolve_entry,
             resolve: std::ptr::null_mut(),
             xfer: Box::new(Xfer::new()),
@@ -805,7 +810,7 @@ impl CurlSource {
     ///
     /// **Every open, reopen and seek enters here, which is why key mode (issue #378) lives here.**
     /// An attempt is one fresh easy handle ([`start_attempt`](Self::start_attempt)); a strict
-    /// attempt that failed on the certificate's dates alone, for a host `net::keypin` holds a key
+    /// attempt that failed with a date verify result, for a host `net::keypin` holds a key
     /// for, is followed by one more attempt recognising the server by that key. A failed handshake
     /// delivered nothing, and the next attempt begins by detaching the first's handle and
     /// resetting the transfer state, so nothing carries over. The shared decision and the option
@@ -836,7 +841,7 @@ impl CurlSource {
                     match held.take() {
                         Some((failure, why)) => {
                             crate::player::log(&format!(
-                                "curlio: transport failed rc={CURLE_PEER_FAILED_VERIFICATION} — {why}"
+                                "curlio: transport failed rc={TLS_VERIFY_FAILED} — {why}"
                             ));
                             return Err(failure);
                         }
@@ -959,10 +964,12 @@ impl CurlSource {
                     return Err(OpenErr::Local);
                 }
             }
-            // TLS verification ON, both halves — the certificate is issued for the `plex.direct`
-            // NAME, which is the entire reason an Origin is parsed from a URL and never rebuilt
-            // from an address (`plex/origin.rs`). Turning either of these off would make an
-            // https URL "work" against the wrong server.
+            // TLS verification ON, both halves, by default — the certificate is issued for the
+            // `plex.direct` NAME, which is the entire reason an Origin is parsed from a URL and
+            // never rebuilt from an address (`plex/origin.rs`). Turning either of these off would
+            // make an https URL "work" against the wrong server. Only the key-mode block below
+            // may lower `VERIFYPEER`, and only behind a key pin libcurl accepted
+            // (`keypin::apply`); `VERIFYHOST` is never lowered.
             require_setopt!(
                 crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 1),
                 "CURLOPT_SSL_VERIFYPEER"
@@ -984,11 +991,12 @@ impl CurlSource {
             // **Key mode** (`net::keypin`, issue #378): the remembered key in place of the
             // certificate's dates. `apply` sets the pin FIRST and relaxes `VERIFYPEER` only once
             // libcurl accepted it; a refusal leaves this handle exactly as strict as it was.
-            let key_pin = match mode {
+            // The pin string is held in `self` for the life of the attempt, as `range` is.
+            self.key_pin = match mode {
                 keypin::Mode::Key { pin, .. } => Some(CString::new(pin.as_str()).map_err(|_| OpenErr::Local)?),
                 keypin::Mode::Strict => None,
             };
-            if let Some(pin) = &key_pin {
+            if let Some(pin) = &self.key_pin {
                 if let Err(rc) = keypin::apply(easy, pin) {
                     crate::player::log(&format!(
                         "curlio: this libcurl refuses the key-mode options (rc={rc}) — the stream stays strict"
@@ -1105,7 +1113,7 @@ impl CurlSource {
             }
         }
         // Key mode's verdict on this handshake, BEFORE `validate` grades the response: a strict
-        // attempt that failed on the date alone retries in key mode, and what the attempt that
+        // attempt that failed with a date verify result retries in key mode, and what the attempt that
         // decides the open says about the host's mode is recorded. A handshake is established once
         // a response line arrived, whatever the HTTP status is.
         if let Some(key) = key {
@@ -1123,7 +1131,7 @@ impl CurlSource {
                 }
             }
             match mode {
-                keypin::Mode::Strict if self.done && self.failed && self.rc == CURLE_PEER_FAILED_VERIFICATION => {
+                keypin::Mode::Strict if self.done && self.failed && self.rc == TLS_VERIFY_FAILED => {
                     let verify = crate::net::verify_result(self.easy);
                     if let Some(next) = keypin::after_strict_failure(key, self.rc, verify) {
                         let why = crate::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
@@ -1910,7 +1918,7 @@ fn curl_why(rc: c_int) -> &'static str {
 enum Attempt {
     /// Headers are in and validated; the source is readable.
     Done,
-    /// A strict attempt failed on the certificate's dates alone and `net::keypin` holds a key for
+    /// A strict attempt failed with a date verify result and `net::keypin` holds a key for
     /// the host: try again in the given mode. Carries the failure (and its log phrase) to report
     /// should libcurl turn out not to support key mode.
     Retry(crate::net::keypin::Mode, OpenErr, String),

@@ -118,27 +118,37 @@ local data", which runs it first — leaves the stored record with no learned ke
 `session::learn_server_key` queues the write only when the pin changed.
 `Session::server_key_pin(machine_id)` is the accessor.
 
-**Key mode (issue #378): the remembered key stands in for the certificate's dates, and for nothing
-else.** The television has no battery clock, so a valid `*.plex.direct` certificate can read as
-expired (or not yet valid) before NTP has run, and the strict handshake then fails with rc 60 and
-`CURLINFO_SSL_VERIFYRESULT` 10 (expired) or 9 (not yet valid). When that is the ONLY failure, and
-`net::keypin` holds a remembered key for that exact `host:port`, the request is repeated once with
+**Key mode (issue #378): the remembered key stands in for the chain-and-date check.** The television
+has no battery clock, so a valid `*.plex.direct` certificate can read as expired (or not yet valid)
+before NTP has run, and the strict handshake then fails with rc 60 and `CURLINFO_SSL_VERIFYRESULT`
+10 (expired) or 9 (not yet valid). When that is the failure libcurl reported, and `net::keypin` holds
+a remembered key for that exact `host:port`, the request is repeated once with
 `CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
 What is relaxed is the chain-and-date check; what still holds is that the leaf's name matches the
 host dialled and that its public key hashes to the remembered one (a different key is rc 90, never
-served). Any other verification failure (untrusted issuer, wrong name, revoked, a valid leaf) never
-enters key mode, and neither does plex.tv, a host with no remembered key, or a plaintext URL.
-`net::keypin::apply` sets the pin FIRST and checks it: `VERIFYPEER` goes to 0 only after libcurl
-accepted the pin, so a libcurl that refuses the option leaves the request strict and failed, and
-`confirm` then compares the presented leaf's key itself (via `CERTINFO`) in case a TLS backend
-accepts the option and never enforces it. A key-mode answer is never learned from (`peer_pin` is
-never read), so key mode cannot rewrite what it is checking against.
+served). **The security of key mode rests on the key pin plus the name check, and on nothing the date
+check used to imply.** Three facts follow, and none of them is hidden: (1) verify result 9/10 does
+NOT prove the date was the only problem, because OpenSSL stops at the first error it meets walking
+the chain, so an untrusted issuer behind an expired leaf also reads as 10; (2) key mode engages for a
+genuinely expired certificate on a CORRECT clock too, since the trigger is the verify result and
+never a judgement about the clock; (3) the remembered key has no expiry of its own, it lasts as long
+as the session that holds it. A different verify result (untrusted issuer reported first, wrong name,
+revoked, a valid leaf) never enters key mode, and neither does plex.tv, a host with no remembered key,
+or a plaintext URL. `net::keypin::apply` sets the pin FIRST and checks it: `VERIFYPEER` goes to 0
+only after libcurl accepted the pin, so a libcurl that refuses the option leaves the request strict
+and failed, and `confirm` then compares the presented leaf's key itself (via `CERTINFO`) in case a TLS
+backend accepts the option and never enforces it. Every key-mode handle also sets
+`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`, so it always does its own handshake (a reused
+keep-alive connection has no certificate to confirm) at the price of one handshake per key-mode
+request. A key-mode answer is never learned from (`peer_pin` is never read), so key mode cannot
+rewrite what it is checking against.
 **One table, filled once:** `net::keypin` is process-wide, keyed by lowercase `host:port`, with
 replace semantics. `session::replace_cache` is the single choke point that projects the session
 into it (`session::project_server_keys`: each machine's key bound to the hosts of the stored
 `session.server` and `session.sources` that carry a `ResolvePin`); `servers::register_lazy` binds a
-machine registered at runtime; `session::learn_server_key` updates it when a key is learned or
-changes; sign-out empties it (revoked/missing/cleared sessions project nothing). Both stacks share
+machine registered at runtime; a key `session::learn_server_key` learns reaches the table only when its
+queued write is applied and projected (the projection is the table's only production writer);
+sign-out empties it (revoked/missing/cleared sessions project nothing). Both stacks share
 the decision and the option code: the control plane in `net::request_tls_evidence`, the media plane
 in `curlio::CurlSource::start_range_until`, which every open, reopen and seek goes through. After a
 key-mode success the host is LATCHED for 10 minutes on the monotonic clock (later requests skip the
