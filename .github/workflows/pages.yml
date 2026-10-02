@@ -56,6 +56,7 @@ jobs:
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
           mkdir -p _site/nightly
+          mkdir -p _site/ci
           mkdir -p _site/install
           mkdir -p _site/troubleshooting
 
@@ -67,6 +68,9 @@ jobs:
           cp site/robots.txt _site/robots.txt
           cp site/sitemap.xml _site/sitemap.xml
           cp site/404.html _site/404.html
+          # The live CI build-time chart: noindex, not in sitemap.xml, not linked from the landing
+          # page. It reads its data from the ci-metrics branch at runtime (ci-metrics.yml).
+          cp site/ci/index.html _site/ci/index.html
 
           cp site/media/feel-1080p60.av1.mp4 _site/media/feel-1080p60.av1.mp4
           cp site/media/feel-1080p60.h264.mp4 _site/media/feel-1080p60.h264.mp4
@@ -171,6 +175,7 @@ jobs:
               site / "install" / "index.html",
               site / "troubleshooting" / "index.html",
               site / "404.html",
+              site / "ci" / "index.html",
               site / "styles.css",
               site / "site.js",
           ]
