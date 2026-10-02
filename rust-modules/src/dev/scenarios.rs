@@ -41,6 +41,8 @@ use std::os::raw::c_int;
 pub(crate) mod bench;
 pub(crate) mod screenshot;
 #[cfg(feature = "devtriggers")]
+pub(crate) mod clock_fact;
+#[cfg(feature = "devtriggers")]
 pub(crate) mod poster_gate;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod tls_selftest;

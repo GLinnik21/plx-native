@@ -2210,8 +2210,6 @@ pub(crate) mod keypin {
 
     /// Why key mode cannot help ANY host right now, if it cannot: [`Blocked::KeyChanged`] outranks
     /// [`Blocked::NoKey`] when both stand.
-    // Read by the Home/Library read-out that follows; the tests read it until that lands.
-    #[allow(dead_code)]
     pub(crate) fn blocked() -> Option<Blocked> {
         let st = state();
         st.blocked
@@ -2343,6 +2341,41 @@ pub(crate) mod keypin {
         let mut st = state();
         st.machine_pins.insert(machine_id.to_owned(), pin.to_owned());
         recompute(&mut st);
+    }
+
+    /// What the dev `clockfact` trigger plants.
+    #[cfg(feature = "devtriggers")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Planted {
+        /// [`Blocked`], as if a bound server had just failed that way.
+        Blocked(Blocked),
+        /// Key mode engaged, the device believing `year`.
+        Engaged(Option<i64>),
+    }
+
+    /// The synthetic host a planted fact is filed under. Never bound, so no projection, pin change
+    /// or sign-out (all of which only touch BOUND hosts) can clear it, and no request can reach it.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) const PLANTED_KEY: &str = "clockfact.invalid:0";
+
+    /// **Not a production path.** Publish a fact for the simulator and the television with no
+    /// request behind it, so a read-out that reads [`blocked`] / [`engaged`] can be looked at. It
+    /// is SYNTHETIC: it bypasses the bound-hosts rule of [`strict_date_failure`] on purpose, files
+    /// the fact under [`PLANTED_KEY`], and states itself in the log.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn plant(fact: Planted) {
+        let mut st = state();
+        match fact {
+            Planted::Blocked(why) => set_blocked(&mut st, PLANTED_KEY, why),
+            Planted::Engaged(year) => {
+                let seq = st.engaged_seq;
+                st.engaged_seq += 1;
+                st.engaged.insert(PLANTED_KEY.to_owned(), (seq, year));
+                moved();
+            }
+        }
+        drop(st);
+        crate::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
     }
 
     /// The mode a request starts in: key mode while the host is latched and the latch is live,
@@ -3096,6 +3129,29 @@ mod keypin_latch_tests {
         keypin::strict_date_failure(&key, 60, Some(10));
         assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey));
         keypin::project(Vec::new(), &[]);
+    }
+
+    /// The dev `clockfact` plant is read like any fact and survives what clears a bound host's
+    /// (a sign-out projection), since it belongs to no host a session could name.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_planted_fact_is_read_and_outlives_a_sign_out_projection() {
+        let _serial = crate::testlock::serial();
+        struct Forget;
+        impl Drop for Forget {
+            fn drop(&mut self) {
+                keypin::forget_for_test(keypin::PLANTED_KEY);
+            }
+        }
+        let _forget = Forget;
+        keypin::plant(keypin::Planted::Blocked(keypin::Blocked::NoKey));
+        assert_eq!(keypin::blocked(), Some(keypin::Blocked::NoKey));
+        keypin::project(Vec::new(), &[]);
+        assert_eq!(keypin::blocked(), Some(keypin::Blocked::NoKey), "a projection touches bound hosts only");
+        keypin::plant(keypin::Planted::Blocked(keypin::Blocked::KeyChanged));
+        assert_eq!(keypin::blocked(), Some(keypin::Blocked::KeyChanged));
+        keypin::plant(keypin::Planted::Engaged(Some(2019)));
+        assert_eq!(keypin::engaged(), Some(Some(2019)));
     }
 
     #[test]

@@ -2046,5 +2046,13 @@
   "browse.clock.notice": {
     "value": "TV clock looks wrong. Connected by the remembered key.",
     "description": "Same toast as the year variant, for when the television's year is unknown. Keep it under 70 characters."
+  },
+  "browse.clock.no_key": {
+    "value": "This TV's clock looks wrong. Connect the TV to the internet once, then try again.",
+    "description": "Reason line under the failed Home or Library read-out when the Plex server's certificate failed its date check and the app holds no remembered key for that server, so a wrong television clock is the likely cause. Hedged on purpose (\"looks wrong\"): the app cannot know the clock is the cause. Sits in a slot that shows two lines of about 70 characters each; keep the whole sentence under 140 characters."
+  },
+  "browse.clock.key_changed": {
+    "value": "Your server's key has changed. Connect the TV to the internet once so the app can check it again.",
+    "description": "Reason line under the failed Home or Library read-out when the Plex server presented a different key than the one the app remembered, so the app will not trust it while the television's clock cannot be checked. Same two-line slot as the no-key line; keep the whole sentence under 140 characters."
   }
 }

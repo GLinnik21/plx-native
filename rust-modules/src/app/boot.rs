@@ -653,6 +653,11 @@ pub(crate) unsafe fn construct(
     // once plain and once as the app, and logs each full outcome (`toast-probe …`).
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::toast_probe::arm_at_boot();
+    // dev: /tmp/plxnative-clockfact=nokey|keychanged|engaged[:<year>] — plants a wrong-clock fact
+    // (`net::keypin`) so the Home/Library read-out and the toast can be looked at with no
+    // television. Armed after the projection above, whose sign-out arm only clears bound hosts.
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::clock_fact::arm_at_boot();
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
