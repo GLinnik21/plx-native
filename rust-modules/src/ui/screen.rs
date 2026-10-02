@@ -16,7 +16,7 @@ use std::ops::Deref;
 use super::frame::{Budget, RenderReport};
 use super::machine::{
     Cx, Effects, EntryId, FocusKey, GroupId, Host, InstanceId, Leave, LogicalState, Machine,
-    PartId, PressRead, Tick,
+    PartId, PressRead,
 };
 // The screen vocabulary the machine runtime itself names (`Host::Arg: ScreenArg`,
 // `Delivery::Screen(ScreenEvent)`, and `Enter`/`FocusTarget`/`By` through the event) is defined

@@ -6,6 +6,9 @@
 //! It is defined here, in `base`, and not in `ui`: the data layer may not name `ui` and `ui` may not
 //! name the data layer, and an `impl Tile for PmsMovie` in any third crate would be an orphan. A
 //! pure trait with no dependencies is what both sides can name; `ui::tile` re-exports it.
+// `title` and `poster` have no reader yet (the widgets read the mark facts); under `ui/` the trait
+// was covered by `ui/mod.rs`'s blanket `allow(dead_code)`, and moving it must not make it dead.
+#![allow(dead_code)]
 
 /// A shelf item as a tile sees it.
 pub trait Tile {

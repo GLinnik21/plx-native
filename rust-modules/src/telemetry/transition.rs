@@ -101,3 +101,35 @@ fn persist_forget_off_thread() {
     #[cfg(test)]
     crate::storage_worker::drain_for_test();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::newly_enables_errors;
+    use crate::telemetry::consent::{self, Consent};
+
+    #[test]
+    fn enabling_detection_uses_the_explicit_previous_decision() {
+        let stale_yes = Consent {
+            asked_version: consent::POLICY_VERSION.saturating_sub(1),
+            errors: true,
+            ..Consent::default()
+        };
+        let current_yes = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            usage: false,
+            install_id: None,
+            errors_id: Some("current".into()),
+            ..Default::default()
+        };
+        let current_no = Consent {
+            asked_version: consent::POLICY_VERSION,
+            ..Consent::default()
+        };
+
+        assert!(newly_enables_errors(&Consent::default(), &current_yes));
+        assert!(newly_enables_errors(&stale_yes, &current_yes));
+        assert!(!newly_enables_errors(&current_yes, &current_yes));
+        assert!(!newly_enables_errors(&current_yes, &current_no));
+    }
+}

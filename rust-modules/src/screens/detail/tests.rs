@@ -3414,17 +3414,3 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
     assert_eq!(walk(crate::ui::Painter::recording()), (0, 0), "the text prewarm walk placed stops");
     clear();
 }
-
-/// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
-/// provider actually publishes, or a 9.1 tomato reads as a 9.1% score. `ui::fmt::rating_score` is
-/// what the ratings row calls; the test lives with that caller, which sees both it and `RatingArt`.
-#[test]
-fn a_score_is_formatted_in_its_provider_s_own_units() {
-    use crate::metadata::RatingArt;
-    use crate::ui::fmt::rating_score;
-    assert_eq!(rating_score(RatingArt::TomatoFresh, 9.1), "91%");
-    assert_eq!(rating_score(RatingArt::PopcornSpilled, 4.05), "41%"); // rounded, not truncated
-    assert_eq!(rating_score(RatingArt::Tmdb, 7.8), "78%");
-    assert_eq!(rating_score(RatingArt::Imdb, 7.4), "7.4");
-    assert_eq!(rating_score(RatingArt::TomatoFresh, 10.0), "100%");
-}

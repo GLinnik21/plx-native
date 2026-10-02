@@ -365,6 +365,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
 /// not the data layer's to own.)
 #[test]
 fn a_landscape_tile_prefers_the_episodes_own_still() {
+    use crate::screens::registry::tile_facts;
     use crate::ui::widgets::still_key;
     let full = PmsMovie {
         still: "/still".into(),
@@ -372,7 +373,7 @@ fn a_landscape_tile_prefers_the_episodes_own_still() {
         thumb: "/poster".into(),
         ..Default::default()
     };
-    assert_eq!(still_key(&full), "/still");
+    assert_eq!(still_key(&tile_facts::of(&full)), "/still");
 
     // no still — an ordinary answer for a specials folder or an item mid-scan
     let no_still = PmsMovie {
@@ -381,7 +382,7 @@ fn a_landscape_tile_prefers_the_episodes_own_still() {
         ..Default::default()
     };
     assert_eq!(
-        still_key(&no_still),
+        still_key(&tile_facts::of(&no_still)),
         "/poster",
         "the show's own poster, cover-fitted in the same frame"
     );
@@ -391,7 +392,7 @@ fn a_landscape_tile_prefers_the_episodes_own_still() {
         art: "/art".into(),
         ..Default::default()
     };
-    assert_eq!(still_key(&bare), "/art");
+    assert_eq!(still_key(&tile_facts::of(&bare)), "/art");
 }
 
 /// **A PARSED episode draws its OWN still even when its show has no poster.** The parse half of
@@ -403,6 +404,7 @@ fn a_landscape_tile_prefers_the_episodes_own_still() {
 /// episode is the same picture" symptom the landscape row was built to end.
 #[test]
 fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
+    use crate::screens::registry::tile_facts;
     use crate::ui::widgets::still_key;
     let ep = |gp: &str| {
         let it = crate::plex::Metadata {
@@ -420,12 +422,12 @@ fn a_parsed_episode_draws_its_own_still_with_or_without_a_show_poster() {
 
     // the show HAS a poster: the poster substitution stands, and the still is kept beside it
     let with = ep("/show/poster");
-    assert_eq!(still_key(&with), "/ep/still");
+    assert_eq!(still_key(&tile_facts::of(&with)), "/ep/still");
 
     // …and with no show poster the still is STILL the episode's own frame, not the backdrop
     let without = ep("");
     assert_eq!(
-        still_key(&without),
+        still_key(&tile_facts::of(&without)),
         "/ep/still",
         "…and never the show's shared art, which is the same picture on every episode"
     );

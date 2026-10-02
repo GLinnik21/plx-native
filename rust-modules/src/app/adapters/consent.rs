@@ -314,26 +314,4 @@ mod tests {
         assert_eq!(held_before_forget, 1, "the unanswered sign-in event was not held");
         assert_eq!(after_forget, 0, "transition::forget left the held event queued");
     }
-
-    #[test]
-    fn enabling_detection_uses_the_explicit_previous_decision() {
-        let stale_yes = Consent {
-            asked_version: consent::POLICY_VERSION.saturating_sub(1),
-            errors: true,
-            ..Consent::default()
-        };
-        let current_yes = decision("current");
-        let current_no = Consent {
-            asked_version: consent::POLICY_VERSION,
-            ..Consent::default()
-        };
-
-        assert!(super::newly_enables_errors(
-            &Consent::default(),
-            &current_yes
-        ));
-        assert!(super::newly_enables_errors(&stale_yes, &current_yes));
-        assert!(!super::newly_enables_errors(&current_yes, &current_yes));
-        assert!(!super::newly_enables_errors(&current_yes, &current_no));
-    }
 }
