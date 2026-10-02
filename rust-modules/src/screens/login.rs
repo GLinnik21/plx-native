@@ -253,13 +253,59 @@ struct QrLayout {
 }
 
 /// **The failed read-out's reason.** The session's caption, except that a no-server failure which
-/// carries the account's name says who signed in instead ([`auth::signed_in_reason`], measured
+/// carries the account's name says who signed in instead ([`signed_in_reason`], measured
 /// with the live font here because the sign-in worker has none). A blank name — or none — keeps
 /// the caption, `browse.auth.no_servers`, which needs no name.
 fn failed_reason(error: &str, account: Option<&str>, measure: &dyn Measure) -> String {
     account
-        .and_then(|account| auth::signed_in_reason(account, measure))
+        .and_then(|account| signed_in_reason(account, measure))
         .unwrap_or_else(|| error.to_owned())
+}
+
+/// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
+/// (`browse.auth.no_servers_signed_in_as`: "Signed in as {account}." over "This Plex account has
+/// no server yet."), the break between them a `\n` the read-out honours
+/// (`StatusOverlay::reason_segments`).
+///
+/// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
+/// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
+/// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
+/// at the name's end would sit against that period as four dots. `None` for a blank name, or when the sentence
+/// leaves the name no room at all — the caller says `browse.auth.no_servers` instead, which needs
+/// no name.
+///
+/// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
+/// no font to ask, which is why this takes the capability rather than reading one.
+fn signed_in_reason(account: &str, measure: &dyn Measure) -> Option<String> {
+    // A name is one run of text: a control character or a stray line break in it would cut the
+    // first line short of its sentence.
+    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    if account.is_empty() {
+        return None;
+    }
+    let sz = theme::size::BODY;
+    let message = |name: &str| crate::i18n::msg::browse_auth_no_servers_signed_in_as(name);
+    let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
+    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
+    let full = message(&account);
+    if first_line_w(&full) <= column {
+        return Some(full);
+    }
+    // The room the name has is the column less the sentence around it; shave a pixel at a time if
+    // the sum of the parts under-reads the whole (kerning across the name's edges).
+    let mut room = column - first_line_w(&message(""));
+    loop {
+        // No room for any of the name: the plain caption says it better than a bare ellipsis.
+        if room <= 0.0 {
+            return None;
+        }
+        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
+        let out = message(&name);
+        if first_line_w(&out) <= column {
+            return Some(out);
+        }
+        room -= 1.0;
+    }
 }
 
 /// Preserve the QR status mark's existing radius; its dots are part of the measured gutter.

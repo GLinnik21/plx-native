@@ -3759,7 +3759,7 @@ impl<'a> StatusOverlay<'a> {
         Some(r.split('\n').map(str::trim).filter(|l| !l.is_empty()).take(2).collect())
     }
     /// One line of a forced-break reason: the reason's face, never wrapped, ellipsized if it is
-    /// still too wide (`auth::signed_in_reason`'s pre-fit makes that a net, not the plan).
+    /// still too wide (`screens::login`'s `signed_in_reason` pre-fit makes that a net, not the plan).
     fn reason_segment_view(&self, seg: &'a str) -> TextView<'a> {
         let (sz, ink) = Self::reason_face(self.kind);
         TextView::new(seg, sz, ink).h(HAlign::Center).max_lines(1)
