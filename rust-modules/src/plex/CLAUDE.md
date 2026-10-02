@@ -84,7 +84,7 @@ every unpinned name fail as a dead resolver would, which is how the case is repr
 **Since issue #95 the DISCOVERY PROBE is pinned too, not only the winning `Client`.**
 `auth::race_batch` builds a `ResolvePin` for each `https://…plex.direct` candidate from the same
 `Candidate::address` this module already carries, and hands it down through `auth::get_identity` to
-`http::request_probe`'s TLS arm — the identical mechanism `register_origin`/`install` use, run one
+`http::request_probe`'s (or `request_probe_learning_key`'s) TLS arm — the identical mechanism `register_origin`/`install` use, run one
 step earlier, at the DIAL that decides a winner rather than only after one is already decided. That
 is what turns a router's DNS-rebind protection (which answers every `*.plex.direct` name with
 NXDOMAIN, so the probe's own resolver never reaches the LAN candidate) from a permanent relay
@@ -99,11 +99,21 @@ online, over a connection libcurl verified in full (`Tls::Ca`, never the lab's p
 `CURLOPT_PINNEDPUBLICKEY` string `spki::pin_from_pem` makes of the chain's index-0 certificate, read
 through `CURLINFO_CERTINFO` (`net::peer_leaf_pin`) only when the request opts in
 (`http::request_probe_learning_key`; the option makes libcurl decode the whole chain, so no ordinary
-request pays). Plaintext, a failed verification, a mismatched `machineIdentifier` and a relay route
-(which ends at Plex's relay, not at the server) learn nothing. It lives in `Session::server_key_pins`, one entry per
+request pays). **Only an origin that has a `ResolvePin` opts in** — `auth::get_identity` picks
+`request_probe_learning_key` when it holds a pin and plain `http::request_probe` otherwise, the one
+place the rule is spelled. The dashed `*.plex.direct` names are the only origins the offline fallback
+can ever apply to, and a custom server-access URL behind a proxy with its own certificate would
+otherwise rewrite the machine's single entry on every discovery. Plaintext, a failed verification,
+a mismatched `machineIdentifier`, an origin without a pin and a relay route (skipped as a
+conservative choice) learn nothing. It lives in `Session::server_key_pins`, one entry per
 `machineIdentifier`, session-level like `plaintext_consent` (NOT in `ServerRef`/`SourceRef`/
-`ProfileCreds`, which are cloned per profile), soft-parsed, skipped while empty and gone with the
-credentials at sign-out; `session::learn_server_key` queues the write only when the pin changed.
+`ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
+**It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
+credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except the keys in
+`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins`), so sign-out — and "Delete all
+local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
+(`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`).
+`session::learn_server_key` queues the write only when the pin changed.
 `Session::server_key_pin(machine_id)` is the accessor, and **issue #378 (accept the remembered key when
 the only failure is the date) is its reader — that fallback does not exist yet**, so what is accepted
 on the wire is unchanged.

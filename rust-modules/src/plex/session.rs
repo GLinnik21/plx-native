@@ -665,8 +665,12 @@ pub struct Session {
     ///
     /// Session-level, not part of [`ServerRef`], [`SourceRef`] or [`ProfileCreds`]: those are
     /// cloned per profile, while a key is a fact about one machine seen from this television and
-    /// this account. Cleared with the credentials on sign-out, like [`Session::plaintext_consent`].
-    /// Skipped on write while empty, so a session that never learned one round-trips
+    /// this account. It sits in the PUBLIC preferences, so a pin write is a public-only edit with no
+    /// credential reseal; the price is that sign-out does not take it with the credentials by
+    /// itself. The native `Mutation::ClearTenure` retains public preferences whole EXCEPT the keys
+    /// in `storage::state::ACCOUNT_BOUND_PREFERENCES`, and this field's key is one: sign-out, and
+    /// so "Delete all local data" which follows it, leave the stored record with no learned key. The
+    /// legacy file store drops it with the file. Skipped on write while empty, so a session that never learned one round-trips
     /// byte-identical to what it wrote before. Soft-parsed: an unreadable entry costs that entry.
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub(crate) server_key_pins: Vec<ServerKeyPin>,
@@ -5697,10 +5701,12 @@ mod server_key_pin_tests {
         assert_eq!(two.server_key_pin("n"), Some(pin(3).as_str()));
     }
 
-    /// The probe runs often: learning queues nothing once the stored pin matches, and a sign-out
-    /// takes the entry with the credentials.
+    /// The probe runs often: learning queues nothing once the stored pin matches, and the legacy
+    /// file store's sign-out takes the entry with the file. (`TempSession` bypasses the canonical
+    /// store, so this does NOT cover the native one; `migration_tests::
+    /// helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none` does.)
     #[test]
-    fn learning_writes_a_change_once_and_sign_out_forgets_it() {
+    fn learning_writes_a_change_once_and_the_file_sign_out_forgets_it() {
         let _serial = crate::testlock::serial();
         let _session = test_support::TempSession::new("server-key-learn");
         save(&test_support::signed_in());
