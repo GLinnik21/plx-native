@@ -20,6 +20,7 @@ pub(crate) mod claim_hold;
 pub(crate) mod ass; // pinned libass worker and immutable rendered frames
 pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub(crate) mod engine;
+pub(crate) mod lifecycle;
 pub(crate) mod machine;
 pub(crate) mod preview;
 mod ffi;
@@ -109,6 +110,13 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 pub(crate) static SHARED: Shared = Shared::new();
 pub(crate) static TX: Transport = Transport::new();
 static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availability flag
+
+/// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
+/// samples the queues (`aq_bytes` takes each queue's pthread mutex, so nobody pays for a panel
+/// nobody is looking at). It is the player's because the pump reads it and `player` may not name
+/// `app`; `app::diagnostics` owns the panel and is the only writer (`toggle`/`open`/`close`).
+/// Off at boot, and never persisted.
+pub(crate) static DIAG_READOUT_ON: AtomicBool = AtomicBool::new(false);
 
 // Diagnostics-only Auto state. These codes cross the demux/UI thread boundary through atomics;
 // named constants keep the writer and the photograph formatter from growing separate vocabularies.

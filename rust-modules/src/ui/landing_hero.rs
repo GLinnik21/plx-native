@@ -9,6 +9,10 @@ pub(crate) const KNEE_Y: f32 = 0.65 * SCR_H;
 pub(crate) const MID_WEIGHT: f32 = 0.55;
 /// How much a bound preview multiplies the hero scrim curve. The shape stays the wedge, the
 /// bottom ramp and the feathered corner. 1.35 is the video-bound row the legibility table grades.
+///
+/// The player publishes the same number as `player::preview::PREVIEW_FIELD` (its `View::field` once
+/// a picture is up). `player` may not name `ui` and `ui` may not name `player`, so each owns a copy
+/// and `screens::detail`'s `preview_plane_tests` pin them equal.
 pub(crate) const PREVIEW_FIELD: f32 = 1.35;
 
 pub(crate) fn stack_top(title_h: f32, meta_h: f32, synopsis_h: f32) -> f32 {

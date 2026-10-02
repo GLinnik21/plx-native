@@ -296,12 +296,35 @@ pub(super) trait PlaybackResources {
         pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
 }
 
+/// The HUD's context line for a catalog movie, `"2019 · PG-13 · 2h 15m"` — what
+/// `route::request_play_movie` takes as its `ctx`. Formatted here rather than in `route` because
+/// the runtime is `ui::fmt`'s and `route` may not name `ui`.
+pub(crate) fn movie_ctx(m: &crate::pms::PmsMovie) -> String {
+    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
+    format!(
+        "{} \u{b7} {} \u{b7} {}",
+        m.year,
+        rating,
+        crate::ui::fmt::dur_short(m.dur_ns / 1_000_000)
+    )
+}
+
+/// Start the fetch of the Up Next tile's still, which `route::pump_play` asks for the moment the
+/// next episode's plan lands (installed once by [`boot`](super::boot::boot) through
+/// `route::install_up_next_still_warm`). `warm_tex_on`, not `resolve_tex_wh_on`: this wants the
+/// fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
+/// evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
+/// `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
+pub(crate) fn warm_up_next_still(sid: crate::plex::ServerId, thumb: &str) {
+    crate::ui::widgets::warm_tex_on(sid, thumb, 480, 270, 0);
+}
+
 pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
     fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
         meta: &mut crate::stores::metadata::MetadataStore, item: &crate::pms::PmsMovie) -> bool {
-        crate::route::request_play_movie(ps, meta, item)
+        crate::route::request_play_movie(ps, meta, item, &movie_ctx(item))
     }
     fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
         meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
@@ -393,14 +416,6 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     }
     set_paused(false);
     entering
-}
-
-/// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
-/// stay-paused variant. Written out four separate times in this file before it had a name.
-pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
-    if super::lifecycle::viewer_paused() {
-        set_transport_paused(pa, false);
-    }
 }
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
@@ -809,7 +824,8 @@ pub(crate) fn play_up_next(
     );
     close_player_overlays(pages);
     crate::player::stop_bufferfeed(ps, pa);
-    if !crate::route::request_play_up_next(ps, bridge.metadata_mut(), u) {
+    let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
+    if !crate::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
         return false;
     }
     // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD

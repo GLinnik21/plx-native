@@ -3903,6 +3903,18 @@ fn keyed_ground_over_plane(picture: bool, texture: u32, art_alpha: f32, ground_f
 mod preview_plane_tests {
     use super::{keyed_ground_over_plane, preview_punch_through};
 
+    /// `view.field` (the player's `PREVIEW_FIELD`) is what the hero scrim is multiplied by, and the
+    /// scrim curve's own bound is `ui::landing_hero::PREVIEW_FIELD`. Neither layer may name the
+    /// other, so this is the one place both are visible: a drift would clamp the strength the
+    /// player publishes (or leave headroom the legibility table never graded).
+    #[test]
+    fn the_players_preview_field_is_the_scrims_preview_field() {
+        assert_eq!(
+            crate::player::preview::PREVIEW_FIELD.to_bits(),
+            crate::ui::landing_hero::PREVIEW_FIELD.to_bits(),
+        );
+    }
+
     #[test]
     fn a_preview_picture_clears_through_to_the_plane() {
         assert!(

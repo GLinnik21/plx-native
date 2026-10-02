@@ -386,7 +386,7 @@ fn publish_diag(eng: &Engine, now: u32) {
     // no freshness — the loop order is pump → `Diagnostics::update` → `Diagnostics::draw`
     // (`app/run.rs`), so the frame the panel
     // is switched on has already republished.
-    if !crate::app::diagnostics::enabled() {
+    if !super::DIAG_READOUT_ON.load(Relaxed) {
         return;
     }
     let qv = eng.aq_video.as_ref().map_or(0, |q| {

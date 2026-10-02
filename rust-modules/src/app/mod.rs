@@ -88,7 +88,6 @@ use crate::ui::consts::{
 const SCR_W: c_int = crate::surface::LOGICAL_W as c_int;
 const SCR_H: c_int = crate::surface::LOGICAL_H as c_int;
 pub(crate) const COLS: c_int = 10;
-const RESUME_REWIND_NS: i64 = 5_000_000_000;
 
 // `SDL_webOSCursorVisibility` is declared apart from the rest because it exists ONLY in LG's
 // SDL fork. Naming it in the shared block would make the host simulator fail to link.
