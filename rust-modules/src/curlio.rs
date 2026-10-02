@@ -826,24 +826,24 @@ impl CurlSource {
         // Key mode is for a verified-https request only; a plaintext URL has no key.
         let key = keypin::key_of_url(self.url.to_str().unwrap_or_default());
         let mut mode = key.as_deref().map_or(keypin::Mode::Strict, keypin::begin);
-        // The strict failure to report if libcurl cannot be put in key mode after it.
-        let mut held: Option<(OpenErr, String)> = None;
+        // The strict failure's log phrase, kept in case libcurl cannot be put in key mode after it.
+        let mut held: Option<String> = None;
         loop {
             match self.start_attempt(at, range_end, deadline, checkpoint, &mode, key.as_deref())? {
                 Attempt::Done => return Ok(()),
-                Attempt::Retry(next, strict_failure, why) => {
-                    held = Some((strict_failure, why));
+                Attempt::Retry(next, why) => {
+                    held = Some(why);
                     mode = next;
                 }
                 Attempt::KeyRefused => {
                     // Nothing was relaxed. Key mode was either the latched start (drop the latch
                     // and go strict) or the retry (the request fails as it would have).
                     match held.take() {
-                        Some((failure, why)) => {
+                        Some(why) => {
                             crate::player::log(&format!(
                                 "curlio: transport failed rc={TLS_VERIFY_FAILED} — {why}"
                             ));
-                            return Err(failure);
+                            return Err(OpenErr::Transport(TLS_VERIFY_FAILED));
                         }
                         None => {
                             if let Some(key) = &key {
@@ -984,8 +984,7 @@ impl CurlSource {
             #[cfg(test)]
             if let Some(bundle) = crate::net::test_ca_bundle::get() {
                 if let Ok(c) = CString::new(bundle) {
-                    const CURLOPT_CAINFO: c_int = 10065;
-                    crate::net::curl_easy_setopt_ptr(easy, CURLOPT_CAINFO, c.as_ptr() as *const c_void);
+                    crate::net::curl_easy_setopt_ptr(easy, crate::net::CURLOPT_CAINFO, c.as_ptr() as *const c_void);
                 }
             }
             // **Key mode** (`net::keypin`, issue #378): the remembered key in place of the
@@ -1136,7 +1135,7 @@ impl CurlSource {
                     if let Some(next) = keypin::after_strict_failure(key, self.rc, verify) {
                         let why = crate::net::tls_failure_reason(self.easy, self.rc).unwrap_or_default();
                         self.stop();
-                        return Ok(Attempt::Retry(next, OpenErr::Transport(self.rc), why));
+                        return Ok(Attempt::Retry(next, why));
                     }
                 }
                 keypin::Mode::Strict if established => keypin::strict_established(key),
@@ -1919,9 +1918,9 @@ enum Attempt {
     /// Headers are in and validated; the source is readable.
     Done,
     /// A strict attempt failed with a date verify result and `net::keypin` holds a key for
-    /// the host: try again in the given mode. Carries the failure (and its log phrase) to report
-    /// should libcurl turn out not to support key mode.
-    Retry(crate::net::keypin::Mode, OpenErr, String),
+    /// the host: try again in the given mode. Carries the strict failure's log phrase, to report
+    /// with `OpenErr::Transport(TLS_VERIFY_FAILED)` should libcurl turn out not to support key mode.
+    Retry(crate::net::keypin::Mode, String),
     /// libcurl refused the key-mode options; the handle was discarded unrelaxed.
     KeyRefused,
 }

@@ -249,7 +249,8 @@ fn yes_no(b: bool) -> &'static str {
 /// The trigger's one entry point, called once from `app::boot` after libcurl is bound AND after the
 /// boot session projection (`session::project_server_keys`): that projection replaces the key table
 /// wholesale, and this run's pin is filed under a synthetic machine no session holds, so arming
-/// earlier let the projection wipe it under round 1's first handshake. A no-op without the trigger. The worker is detached and ends with its rounds.
+/// earlier would let the projection wipe it under round 1's first handshake. A no-op without the
+/// trigger. The worker is detached and ends with its rounds.
 pub(crate) fn arm_at_boot() {
     let Some(value) = crate::dev::read("tls-selftest") else { return };
     let cfg = match parse(&value) {
@@ -340,32 +341,9 @@ mod tests {
 
     // ---- one loopback round through the real transports ----------------------------------------
 
-    fn clock_ymd(days: i64) -> (i32, u8, u8) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        let (y, m, d) = crate::net::civil_date(now + days * 86_400);
-        (y as i32, m as u8, d as u8)
-    }
-
-    /// Trust the minted CA for the test's length, as the key-mode tests do.
-    struct Ca(std::path::PathBuf);
-    impl Ca {
-        fn install(pem: &str, tag: &str) -> Ca {
-            let path = std::env::temp_dir().join(format!("plxnative-selftest-ca-{tag}-{}.pem", std::process::id()));
-            std::fs::write(&path, pem).unwrap();
-            crate::net::test_ca_bundle::set(Some(&path.to_string_lossy()));
-            Ca(path)
-        }
-    }
-    impl Drop for Ca {
-        fn drop(&mut self) {
-            crate::net::test_ca_bundle::set(None);
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    fn serve(not_before: i64, not_after: i64, tag: &str) -> (Arc<crate::net::TestCert>, Ca, u16) {
-        let cert = Arc::new(crate::net::mint_ca_issued_cert(&[&host()], clock_ymd(not_before), clock_ymd(not_after)));
-        let ca = Ca::install(&cert.pem, tag);
+    fn serve(not_before: i64, not_after: i64, tag: &str) -> (Arc<crate::net::TestCert>, crate::net::TestCaGuard, u16) {
+        let cert = Arc::new(crate::net::mint_ca_issued_cert(&[&host()], crate::net::ymd_from_now(not_before), crate::net::ymd_from_now(not_after)));
+        let ca = crate::net::TestCaGuard::install(&cert.pem, tag);
         let body = br#"{"MediaContainer":{"machineIdentifier":"selftest"}}"#.to_vec();
         let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), body);
         (cert, ca, port)
@@ -426,8 +404,8 @@ mod tests {
         resolve::clear();
     }
 
-    /// The sequence behind the round-1 refusal seen on a television whose clock was already wrong
-    /// at launch: the table is stated, a session projection replaces it wholesale (this run's pin
+    /// The round-1 refusal sequence on a television whose clock is already wrong at launch: the
+    /// table is stated, a session projection replaces it wholesale (this run's pin
     /// is filed under a machine no session holds), and the handshake that follows finds no pin.
     /// Arming after the boot projection (`app::boot`) is what keeps this off the real boot; what
     /// the run itself guarantees is that a wipe costs one plane at most and is reported truthfully
