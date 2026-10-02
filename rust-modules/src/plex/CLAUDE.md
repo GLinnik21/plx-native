@@ -79,7 +79,9 @@ resource list, which an offline boot does not have). A pin is built ONLY when th
 encodes the stored `address` (v4 or the eight-group v6 spelling), so it is a pure function of the
 hostname; `register_origin`/`install` take it, the `Client` carries it for the control plane, and
 `net::resolve` holds an append-only table the media plane (`curlio`) consults by host and port.
-TLS validation is untouched: the name stays in the URL and in SNI. `/tmp/plxnative-nowan` makes
+TLS validation is untouched here: the name stays in the URL and in SNI. (The one relaxation the
+app has, issue #378's key mode below, is a separate and narrower rule about a wrong clock; a pin
+changes where an address comes from and nothing about what is trusted.) `/tmp/plxnative-nowan` makes
 every unpinned name fail as a dead resolver would, which is how the case is reproduced on a desk.
 **Since issue #95 the DISCOVERY PROBE is pinned too, not only the winning `Client`.**
 `auth::race_batch` builds a `ResolvePin` for each `https://…plex.direct` candidate from the same
@@ -92,7 +94,7 @@ detour into an ordinary pinned LAN HTTPS winner; the plaintext twin's own probe 
 pin belongs to a TLS name, never to a literal — and a candidate whose dashed label does not encode
 its `address` simply gets no pin and resolves through DNS exactly as before.
 
-**The probe also learns each server's leaf public key (issue #380); nothing reads it yet.** While
+**The probe also learns each server's leaf public key (issue #380); issue #378's key mode reads it.** While
 online, over a connection libcurl verified in full (`Tls::Ca`, never the lab's pinned mode), an
 `/identity` answer that `auth::classify` accepts for the machine asked for makes
 `ProbeReply::grade_learning` record that machine's pin — `sha256//<base64>`, the exact
@@ -114,9 +116,35 @@ credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except
 local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
 (`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`).
 `session::learn_server_key` queues the write only when the pin changed.
-`Session::server_key_pin(machine_id)` is the accessor, and **issue #378 (accept the remembered key when
-the only failure is the date) is its reader — that fallback does not exist yet**, so what is accepted
-on the wire is unchanged.
+`Session::server_key_pin(machine_id)` is the accessor.
+
+**Key mode (issue #378): the remembered key stands in for the certificate's dates, and for nothing
+else.** The television has no battery clock, so a valid `*.plex.direct` certificate can read as
+expired (or not yet valid) before NTP has run, and the strict handshake then fails with rc 60 and
+`CURLINFO_SSL_VERIFYRESULT` 10 (expired) or 9 (not yet valid). When that is the ONLY failure, and
+`net::keypin` holds a remembered key for that exact `host:port`, the request is repeated once with
+`CURLOPT_PINNEDPUBLICKEY` set to it, `CURLOPT_SSL_VERIFYPEER` 0 and `CURLOPT_SSL_VERIFYHOST` still 2.
+What is relaxed is the chain-and-date check; what still holds is that the leaf's name matches the
+host dialled and that its public key hashes to the remembered one (a different key is rc 90, never
+served). Any other verification failure (untrusted issuer, wrong name, revoked, a valid leaf) never
+enters key mode, and neither does plex.tv, a host with no remembered key, or a plaintext URL.
+`net::keypin::apply` sets the pin FIRST and checks it: `VERIFYPEER` goes to 0 only after libcurl
+accepted the pin, so a libcurl that refuses the option leaves the request strict and failed, and
+`confirm` then compares the presented leaf's key itself (via `CERTINFO`) in case a TLS backend
+accepts the option and never enforces it. A key-mode answer is never learned from (`peer_pin` is
+never read), so key mode cannot rewrite what it is checking against.
+**One table, filled once:** `net::keypin` is process-wide, keyed by lowercase `host:port`, with
+replace semantics. `session::replace_cache` is the single choke point that projects the session
+into it (`session::project_server_keys`: each machine's key bound to the hosts of the stored
+`session.server` and `session.sources` that carry a `ResolvePin`); `servers::register_lazy` binds a
+machine registered at runtime; `session::learn_server_key` updates it when a key is learned or
+changes; sign-out empties it (revoked/missing/cleared sessions project nothing). Both stacks share
+the decision and the option code: the control plane in `net::request_tls_evidence`, the media plane
+in `curlio::CurlSource::start_range_until`, which every open, reopen and seek goes through. After a
+key-mode success the host is LATCHED for 10 minutes on the monotonic clock (later requests skip the
+doomed strict handshake; the timer does not slide; a strict success or a changed pin clears it; rc 90
+in key mode clears it and is the failure). The log carries one line when a host first engages, with
+the year the device believes it is, and one for rc 90, and never a pin or a host:port.
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past

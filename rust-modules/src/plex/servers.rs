@@ -919,7 +919,9 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// `pin` is the origin's [`ResolvePin`] when the caller holds the address plex.tv advertised
 /// beside it (`ResolvePin::for_origin`), `None` otherwise. The registry records it on the
 /// published `Client` for the control plane and in `crate::net::resolve` for the media plane;
-/// that table is append-only, so a pin is never retracted — see its doc for why that is sound.
+/// that table is append-only, so a pin is never retracted — see its doc for why that is sound. The
+/// same registration binds the server's machine to that `host:port` in `crate::net::keypin`, which
+/// is how the key the session remembers for the machine reaches the host (issue #378).
 /// Captured bootstrap identity: same registry/refresh path, without a lazy session-file read.
 ///
 /// Carries connection facts to apply atomically (#95 step 8) — the dev-boot / captured-bootstrap
@@ -1084,6 +1086,12 @@ fn register_lazy(
         Some(c) if machine_id.is_empty() => c.machine_id(),
         _ => machine_id,
     };
+    // The same server's remembered key (issue #378), keyed on the same host and port the resolve
+    // table just recorded; a registration with no machine id yet (the boot primary) is covered by
+    // the stored-session projection instead.
+    if let Some(p) = pin {
+        crate::net::keypin::bind(grant_machine, p.host(), p.port());
+    }
     let credential_eligible = super::grant::allowed_for(policy, grant_machine, origin);
     let on_grant = super::grant::rests_on_grant(policy, grant_machine, origin);
     let admitted_token = if credential_eligible { token } else { "" };
@@ -1564,6 +1572,34 @@ mod tests {
         assert_eq!(client_for(pid).unwrap().resolve_pin(), None);
         assert_eq!(crate::net::resolve::lookup("10.0.0.7", 32400), None);
         crate::net::resolve::clear();
+    }
+
+    /// **Issue #378, the registry's half of the key table.** A registration that installs a server's
+    /// `ResolvePin` binds its machine to that `host:port` in `net::keypin`, so the key the session
+    /// remembers for the machine becomes the key for the host; a registration with no pin binds
+    /// nothing. (The session half — a stored server bound with no registration — is
+    /// `session::server_key_pin_tests`.)
+    #[test]
+    fn registering_a_pinned_server_gives_its_host_the_key_remembered_for_its_machine() {
+        let _g = fresh();
+        let key_pin = crate::spki::pin_from_spki_der(&[7; 8]);
+        let origin = Origin::parse("https://127-0-0-1.h4sh.plex.direct:41004").unwrap();
+        let key = crate::net::keypin::key_of(origin.host(), origin.port());
+        let _scoped = crate::net::keypin::Scoped::new(key.clone(), "sha256//unused");
+        crate::net::keypin::forget_for_test(&key);
+        crate::net::keypin::project(vec![("m-keys-bind".into(), key_pin.clone())], &[]);
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "no host bound yet");
+
+        let pin = ResolvePin::for_origin(&origin, "127.0.0.1").unwrap();
+        register_pinned_with_client_id("m-keys-bind", &origin, "tok", Some(&pin), "cid", ConnectionFacts::default());
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(key_pin));
+
+        let plain = Origin::parse("https://127-0-0-1.h4sh.plex.direct:41005").unwrap();
+        register_pinned_with_client_id("m-keys-bind-2", &plain, "tok", None, "cid", ConnectionFacts::default());
+        let other = crate::net::keypin::key_of(plain.host(), plain.port());
+        assert_eq!(crate::net::keypin::pin_for_test(&other), None, "no ResolvePin, no binding");
+        crate::net::resolve::clear();
+        crate::net::keypin::project(Vec::new(), &[]);
     }
 
     /// A pin that arrives on an ALREADY registered origin (a legacy session file re-saved with its

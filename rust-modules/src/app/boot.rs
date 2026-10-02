@@ -639,6 +639,9 @@ pub(crate) unsafe fn construct(
         Some(initial) => initial.session.persisted.clone(),
         None => crate::plex::session::load(),
     };
+    // The remembered server keys of the session this boot runs on, handed over before any request
+    // can leave: a captured session was never READ through the cache that projects them.
+    crate::plex::session::project_server_keys(&session);
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();

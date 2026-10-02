@@ -3258,3 +3258,333 @@ fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key()
         "the pin is the plex.direct leaf's; the custom host's answer wrote nothing"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Issue #378: a strictly verified request that fails ONLY on the certificate's dates is retried
+// recognising the server by its remembered key. Every certificate's dates are relative to NOW, and
+// every test keys the process-wide key table by its own loopback server's ephemeral port
+// (`net::keypin::Scoped`), so nothing leaks between the threads of the suite; each also holds
+// `testlock::serial()` because the CA override they all use is process-global.
+// ---------------------------------------------------------------------------------------------
+
+/// `(year, month, day)` of `days` from now (negative: the past).
+fn clock_ymd(days: i64) -> (i32, u8, u8) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let (y, m, d) = crate::net::civil_date(now + days * 86_400);
+    (y as i32, m as u8, d as u8)
+}
+
+fn expired_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
+    Arc::new(crate::net::mint_ca_issued_cert(names, clock_ymd(-90), clock_ymd(-30)))
+}
+
+fn not_yet_valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
+    Arc::new(crate::net::mint_ca_issued_cert(names, clock_ymd(30), clock_ymd(90)))
+}
+
+fn valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
+    Arc::new(crate::net::mint_ca_issued_cert(names, clock_ymd(-30), clock_ymd(30)))
+}
+
+fn key_of_port(port: u16) -> String {
+    crate::net::keypin::key_of("127.0.0.1", i32::from(port))
+}
+
+fn leaf_pin(cert: &crate::net::TestCert) -> String {
+    crate::spki::pin_from_spki_der(&cert.spki_der)
+}
+
+/// An expired leaf and the loopback server serving it, trusted through the test CA override.
+fn expired_server(tag: &str) -> (Arc<crate::net::TestCert>, TestCaGuard, u16) {
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let ca = TestCaGuard::install(&cert.pem, tag);
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    (cert, ca, port)
+}
+
+#[test]
+fn an_expired_leaf_is_served_when_its_remembered_key_is_known() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let (cert, _ca, port) = expired_server("clock-expired");
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&cert));
+    let resp = identity_request(port, "https", false).expect("the date alone must not refuse the server we know");
+    assert_eq!(resp.status, 200);
+}
+
+#[test]
+fn a_not_yet_valid_leaf_is_served_when_its_remembered_key_is_known() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = not_yet_valid_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-not-yet");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&cert));
+    let resp = identity_request(port, "https", false).expect("a leaf from the future, a clock in the past");
+    assert_eq!(resp.status, 200);
+}
+
+#[test]
+fn an_expired_leaf_whose_key_differs_from_the_remembered_one_is_refused_with_a_pin_mismatch() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let (_cert, _ca, port) = expired_server("clock-other-key");
+    let someone_else = crate::net::mint_cert(&["127.0.0.1"]);
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&someone_else));
+    let failure = identity_request(port, "https", false).err().expect("a stranger's key is not the server's");
+    assert_eq!(failure.curl_rc, Some(90));
+    assert!(!crate::net::keypin::is_latched(&key_of_port(port)), "a refusal never latches");
+}
+
+#[test]
+fn an_expired_leaf_for_another_name_is_refused_even_with_its_key_remembered() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    // The leaf is issued for a name that is not the one dialled: the host check stays ON in key
+    // mode, so remembering the key cannot make any certificate the server's for any name.
+    let cert = expired_leaf(&["not-this-name.example"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-wrong-name");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&cert));
+    let failure = identity_request(port, "https", false).err().expect("the name check still applies");
+    assert!(matches!(failure.curl_rc, Some(51 | 60)), "{failure:?}");
+    assert!(!crate::net::keypin::is_latched(&key_of_port(port)));
+}
+
+#[test]
+fn an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let (_cert, _ca, port) = expired_server("clock-no-key");
+    let failure = identity_request(port, "https", false).err().expect("nothing to recognise it by");
+    assert_eq!(failure.curl_rc, Some(60));
+}
+
+#[test]
+fn an_untrusted_issuer_is_refused_even_with_the_leafs_key_remembered() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    // Valid dates, but the CA this request trusts is not the one that issued the leaf: the date
+    // fallback is for dates only.
+    let served = valid_leaf(&["127.0.0.1"]);
+    let trusted = crate::net::mint_cert(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&trusted.pem, "clock-untrusted");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&served), identity_json("m"));
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&served));
+    let failure = identity_request(port, "https", false).err().expect("an untrusted issuer is not a date problem");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert!(!crate::net::keypin::is_latched(&key_of_port(port)));
+}
+
+#[test]
+fn a_valid_leaf_is_served_strictly_and_key_mode_is_never_engaged() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = valid_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-valid");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), identity_json("m"));
+    let key = key_of_port(served.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let resp = identity_request(served.port, "https", true).expect("verifies");
+    assert_eq!(resp.peer_pin, Some(leaf_pin(&cert)), "strict mode still learns");
+    assert!(!crate::net::keypin::is_latched(&key));
+    assert_eq!(served.accepted.load(std::sync::atomic::Ordering::Acquire), 1, "one handshake: no retry");
+}
+
+#[test]
+fn a_key_mode_answer_carries_no_peer_pin_and_teaches_nothing() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let (cert, ca, port) = expired_server("clock-no-learn");
+    let _key = crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(&cert));
+    let resp = identity_request(port, "https", true).expect("served by its key");
+    assert_eq!(resp.peer_pin, None, "that handshake was not strictly verified");
+    drop(ca);
+
+    // And through the real probe, which is the only thing that learns: the answer is accepted for
+    // the machine and still no key reaches the session.
+    let _session = crate::plex::session::TempSession::new("clock-no-learn");
+    let named = expired_leaf(&[&learn_host()]);
+    let _named_ca = TestCaGuard::install(&named.pem, "clock-no-learn-named");
+    let port = crate::net::spawn_dual_protocol(Arc::clone(&named), identity_json("m-real"));
+    let _named_key = crate::net::keypin::Scoped::new(
+        crate::net::keypin::key_of(&learn_host(), i32::from(port)), &leaf_pin(&named));
+    assert_eq!(probe_and_learn("https", port, "m-real", probe::Location::Local), Outcome::Reachable);
+    assert_eq!(learned_pin("m-real"), None, "a key-mode handshake never reaches learn_server_key");
+}
+
+#[test]
+fn after_a_fallback_succeeds_later_requests_make_one_handshake_until_the_pin_changes() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-latch");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), identity_json("m"));
+    let key = key_of_port(served.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let accepted = || served.accepted.load(std::sync::atomic::Ordering::Acquire);
+
+    identity_request(served.port, "https", false).expect("first: strict fails, key mode serves");
+    assert_eq!(accepted(), 2, "the failed strict handshake and the key-mode one");
+    assert!(crate::net::keypin::is_latched(&key));
+
+    identity_request(served.port, "https", false).expect("second: straight to key mode");
+    assert_eq!(accepted(), 3, "exactly one handshake");
+
+    // A pin change for the host clears the latch: the next request starts strict again.
+    let other = crate::net::mint_cert(&["127.0.0.1"]);
+    crate::net::keypin::set_for_test(&key, &leaf_pin(&other));
+    assert!(!crate::net::keypin::is_latched(&key));
+    let failure = identity_request(served.port, "https", false).err().expect("the new pin is not the server's");
+    assert_eq!(failure.curl_rc, Some(90));
+    assert_eq!(accepted(), 5, "strict first again, then key mode");
+}
+
+#[test]
+fn a_pin_mismatch_in_key_mode_clears_the_latch_and_is_the_failure() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-latch-mismatch");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), identity_json("m"));
+    let key = key_of_port(served.port);
+    // The latch stands on a key the server does not present (it rotated while we were latched).
+    let wrong = leaf_pin(&crate::net::mint_cert(&["127.0.0.1"]));
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &wrong);
+    crate::net::keypin::key_established(&key, &wrong, Some(10));
+    assert!(crate::net::keypin::is_latched(&key));
+    let failure = identity_request(served.port, "https", false).err().expect("the key changed");
+    assert_eq!(failure.curl_rc, Some(90));
+    assert_eq!(served.accepted.load(std::sync::atomic::Ordering::Acquire), 1, "latched: no strict attempt first");
+    assert!(!crate::net::keypin::is_latched(&key), "rc 90 ends key mode for the host");
+}
+
+#[test]
+fn a_post_body_survives_the_retry_once_and_intact() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-post");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), identity_json("m"));
+    let _key = crate::net::keypin::Scoped::new(key_of_port(served.port), &leaf_pin(&cert));
+    let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+    let resp = crate::net::request_result_evidence(
+        &format!("https://127.0.0.1:{}/hubs/search", served.port),
+        &["Content-Type: application/octet-stream".to_owned()],
+        "POST",
+        Some(&payload),
+        crate::net::API,
+        false,
+        None,
+        None,
+        false,
+    )
+    .expect("the retried POST is answered");
+    assert_eq!(resp.status, 200);
+    let seen = served.requests.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the strict handshake failed before anything was sent");
+    let request = &seen[0];
+    let head_end = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    assert!(request.starts_with(b"POST /hubs/search"), "{:?}", String::from_utf8_lossy(&request[..40]));
+    assert_eq!(&request[head_end..], &payload[..], "the body arrived once and intact");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issue #378, media plane: `curlio::CurlSource` opens, reopens and seeks the same way.
+// ---------------------------------------------------------------------------------------------
+
+fn media_body() -> Vec<u8> {
+    (0..5000u32).map(|i| (i % 253) as u8).collect()
+}
+
+fn media_url(port: u16) -> String {
+    format!("https://127.0.0.1:{port}/video.mkv")
+}
+
+fn read_n(src: &mut crate::curlio::CurlSource, n: usize) -> Vec<u8> {
+    let mut out = vec![0u8; n];
+    let mut got = 0;
+    while got < n {
+        let r = src.read(&mut out[got..]);
+        assert!(r > 0, "read returned {r} after {got} bytes");
+        got += r as usize;
+    }
+    out
+}
+
+#[test]
+fn a_media_open_on_an_expired_leaf_reads_bytes_when_its_remembered_key_is_known() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-open");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let _key = crate::net::keypin::Scoped::new(key_of_port(served.port), &leaf_pin(&cert));
+    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0)
+        .expect("the date alone must not refuse the server we know");
+    assert_eq!(src.status(), 200);
+    assert_eq!(read_n(&mut src, 64), media_body()[..64]);
+}
+
+#[test]
+fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_mismatch() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-mismatch");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let other = crate::net::mint_cert(&["127.0.0.1"]);
+    let key = key_of_port(served.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&other));
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
+        .err()
+        .expect("a stranger's key is not the server's");
+    assert_eq!(err, crate::curlio::OpenErr::Transport(90));
+    assert!(!crate::net::keypin::is_latched(&key));
+}
+
+#[test]
+fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-nokey");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
+        .err()
+        .expect("nothing to recognise it by");
+    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+}
+
+#[test]
+fn media_seeks_and_reopens_ride_the_latch_one_handshake_each() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "clock-media-latch");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let key = key_of_port(served.port);
+    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
+    let accepted = || served.accepted.load(std::sync::atomic::Ordering::Acquire);
+
+    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0).expect("first open");
+    assert_eq!(accepted(), 2, "the failed strict handshake and the key-mode one");
+    assert!(crate::net::keypin::is_latched(&key));
+    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
+
+    assert!(src.seek(1000), "a seek in key mode");
+    assert_eq!(accepted(), 3, "exactly one handshake");
+    assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
+
+    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
+        .expect("a reopen in key mode");
+    assert_eq!(accepted(), 4, "exactly one handshake");
+    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
+
+    // The remembered key stops being the server's: the next seek fails closed with rc 90 and the
+    // host is out of key mode.
+    let other = crate::net::mint_cert(&["127.0.0.1"]);
+    crate::net::keypin::set_for_test(&key, &leaf_pin(&other));
+    assert!(!src.seek(2000), "the new pin is not the server's");
+    assert!(!crate::net::keypin::is_latched(&key));
+}
