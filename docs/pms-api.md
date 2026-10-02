@@ -967,7 +967,7 @@ target even when the viewer's preference is on (M3, I5).
 `Applied` (M1/M2 AC3: the transcode happened and the source codec is in the profile's copy list),
 `Unverified` (M2 AAC: transcoded regardless, so honoring the ask cannot be told apart from ignoring
 it), `Refused` (the server declined the params outright, or the audio decision came back `copy`
-despite them). The player's Audio tab ("Boost dialog"/"Normalize loudness", `ui/track_menu.rs`)
+despite them). The player's Audio tab ("Boost dialog"/"Normalize loudness", `appkit/track_menu.rs`)
 and the diagnostics Audio-row suffix / `route_line`'s `enh=<word>` both read this outcome, never the
 bare ask.
 

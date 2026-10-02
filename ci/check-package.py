@@ -139,10 +139,10 @@ def nightly_stamp_date(stamp: str) -> "str | None":
     return m.group(1) if m else None
 
 
-# ---- the dev-trigger catalog, derived from dev.rs itself -----------------------------------------
+# ---- the dev-trigger catalog, derived from dev.rs and devtrig.rs themselves ----------------------
 #
-# #138 taught a RELEASE build to fold every `/tmp` trigger away at compile time (`dev::flag`/
-# `dev::read` are `false`/`None` without `devtriggers`, so the branches behind them vanish), and
+# #138 taught a RELEASE build to fold every `/tmp` trigger away at compile time (`devtrig::flag`/
+# `devtrig::read` are `false`/`None` without `devtriggers`, so the branches behind them vanish), and
 # gave `ci/check-package.py` ONE witness of that: `DEV_WITNESS = b"plxnative-noidle"`, a name
 # `dev.rs`'s own `DIAG` array carries as a full, literal `"plxnative-noidle"` string. That witness
 # proves DIAG-as-a-whole is gated — but it names only one member of it, and every OTHER
@@ -150,7 +150,7 @@ def nightly_stamp_date(stamp: str) -> "str | None":
 # still leak into a release binary with nothing here to notice. `dev_trigger_catalog` generalises
 # the single witness to the WHOLE vocabulary those two arrays actually declare:
 #
-#   * `CONTROLLED` — the bare names a controlled/recorded boot may carry (`dev.rs`'s own comment:
+#   * `CONTROLLED` — the bare names a controlled/recorded boot may carry (`devtrig.rs`'s own comment:
 #     "a full trigger name in the release binary is exactly what `ci/check-package.py` grades as
 #     'dev triggers compiled in'").
 #   * `DIAG` — already-prefixed full names, `#[cfg(any(feature = "devtriggers", test))]`-gated at
@@ -161,8 +161,8 @@ def nightly_stamp_date(stamp: str) -> "str | None":
 #
 # PARSED, not hand-copied: a literal Python list here would rot exactly the way `DEV_WITNESS` did —
 # silently, the day somebody renames or adds a trigger and does not think to update a second file.
-# Regexing the two array bodies out of the CURRENT `dev.rs` means this check is always grading the
-# vocabulary the source actually declares this commit, never a stale snapshot of it.
+# Regexing the two array bodies out of the CURRENT `dev.rs` and `devtrig.rs` means this check is
+# always grading the vocabulary the source actually declares this commit, never a stale snapshot.
 DEV_RS = ROOT / "rust-modules/src/dev.rs"
 # `CONTROLLED` moved with the trigger primitives (`flag`/`read`/`controlled_trigger`) to the base
 # layer, so the catalog's two arrays now live in two files: `DIAG` in `dev.rs`, `CONTROLLED` here.
@@ -233,7 +233,7 @@ def _catalog_name_in_binary(
 
 
 def parse_dev_trigger_catalog(dev_rs_text: str) -> "set[str]":
-    """Every full `plxnative-<name>` string `dev.rs`'s `CONTROLLED` and `DIAG` arrays declare,
+    """Every full `plxnative-<name>` string the `CONTROLLED` (devtrig.rs) and `DIAG` (dev.rs) arrays declare,
     parsed out of the given source text (a parameter, not a file read, so this can be pinned
     against a fixture independently of whatever `dev.rs` says today — see `_selftest`).
     """
@@ -446,16 +446,22 @@ const DIAG: [&str; 6] = [
     print(f"check-package: unconditional runtime sink allowlist "
           f"{len(unconditional_sinks) - len(missing_sinks)}/{len(unconditional_sinks)} correct")
 
-    # And a live sanity check against the REAL `dev.rs`: the catalog must not have gone empty (a
-    # regex that silently stopped matching would make the binary-grading check pass on EVERY
-    # release, vacuously — the exact failure `DEV_WITNESS` shipped as, generalised to a whole set
-    # instead of one string), and the historic witness must still be a member of it.
+    # And a live sanity check against the REAL `dev.rs` and `devtrig.rs`: the catalog must not have
+    # gone empty (a regex that silently stopped matching would make the binary-grading check pass
+    # on EVERY release, vacuously — the exact failure `DEV_WITNESS` shipped as, generalised to a
+    # whole set instead of one string), and the historic witness must still be a member of it. Each
+    # file is checked on its own: `noidle` is in BOTH arrays, so the witness alone would not notice
+    # one of the two regexes going blind.
     real_catalog = dev_trigger_catalog()
-    catalog_vacuous = not real_catalog or "plxnative-noidle" not in real_catalog
+    diag_part = parse_dev_trigger_catalog(DEV_RS.read_text())
+    controlled_part = parse_dev_trigger_catalog(DEVTRIG_RS.read_text())
+    catalog_vacuous = (not real_catalog or "plxnative-noidle" not in real_catalog
+                       or not diag_part or not controlled_part)
     if catalog_vacuous:
-        print(f"  FAIL — dev_trigger_catalog() against the real dev.rs is "
-              f"{sorted(real_catalog) or 'EMPTY'} (missing plxnative-noidle)")
-    print(f"check-package: dev_trigger_catalog() against the real dev.rs "
+        print(f"  FAIL — dev_trigger_catalog() against the real dev.rs/devtrig.rs is "
+              f"{sorted(real_catalog) or 'EMPTY'} (wants plxnative-noidle, and names from BOTH "
+              f"dev.rs's DIAG ({len(diag_part)}) and devtrig.rs's CONTROLLED ({len(controlled_part)}))")
+    print(f"check-package: dev_trigger_catalog() against the real dev.rs and devtrig.rs "
           f"{'is non-vacuous' if not catalog_vacuous else 'WENT VACUOUS'}")
 
     # `_catalog_name_in_binary` against the exact adjacency a real ARM release build produced
@@ -1187,7 +1193,7 @@ if binary.exists():
         # the next push instead of quietly grading the release leg against nothing forever.
         check(bool(dev_hits),
               "the packaged binary is the DEV build the stamp records — which is also what proves "
-              "dev.rs's CONTROLLED/DIAG catalog still witnesses the trigger surface"
+              "dev.rs's DIAG / devtrig.rs's CONTROLLED catalog still witnesses the trigger surface"
               + ("" if dev_hits else " (0 catalog names found in the bytes)"))
     else:
         print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")

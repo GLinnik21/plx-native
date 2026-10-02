@@ -231,7 +231,7 @@ the remote FIFO (`tv-session.sh key` / `click`).
 can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground),
 `plxnative-gohome` (which leg of the root press to force — armed AFTER the screen you want has
 settled, because arming it before the launch also makes the boot count as automated and moves which
-screen you land on), and `plxnative-signinfail` (`dev::scenarios::signinfail_spec` is re-read on
+screen you land on), and `plxnative-signinfail` (`auth::scripted::signinfail_spec` is re-read on
 every sign-in code request and every poll, so *Try again* keeps failing the same way until the file
 is removed).
 

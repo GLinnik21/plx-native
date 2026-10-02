@@ -1148,7 +1148,7 @@ def triggers_for_case(case, url_base=None):
             #
             # This was briefly a pipeline-only arm, on the theory that making the server tier write
             # its target would swap an app code path. That theory was WRONG and the app says so:
-            # `dev::read` returns Some("") for an empty file, and app.rs splits on ',', drops empty
+            # `devtrig::read` returns Some("") for an empty file, and app.rs splits on ',', drops empty
             # tokens, then does `if steps.is_empty() { steps.push("140") }` — so an empty file and
             # the content "140" converge to a byte-identical `steps == ["140"]` before any seek
             # logic runs. There is no second path to preserve. The app's empty-file default
@@ -4304,7 +4304,7 @@ def check_install(lines, cfg):
     the only witness, which is why its absence is also a refusal (see require_install).
 
     The un-caught failure is what makes this worth an abort. A RELEASE build reads no triggers at
-    all — `devtriggers` is compiled out, so `dev::read` is None at COMPILE time — which means the
+    all — `devtriggers` is compiled out, so `devtrig::read` is None at COMPILE time — which means the
     injected PMS token is ignored, the app has no session, and it parks on the who's-watching
     picker having played nothing. Every assertion then fails as "the line has not appeared YET",
     which `failed_for_good` deliberately never settles, so every case burns its full run_secs and

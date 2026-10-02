@@ -1346,12 +1346,13 @@ check-cargo:
 # `lab-diagnostics` type-check. No test binary is linked, so a runner needs no SDL/GL packages.
 check-cargo-lint: lint
 	@# The THIRD feature set, `lab-diagnostics`, TYPE-CHECKED. It is not in the default set
-	@# at all (that is what makes it unshippable by forgetting a flag), so nothing in the unit passes compiles a
-	@# line of `lab/` or of `ui/lab_toast.rs` — and until 2026-09-10 nothing anywhere did: not this
-	@# target, not .github/workflows/ci.yml, not the PostToolUse release hook. The configuration had
-	@# been BROKEN since phase 9 moved `player::diag` onto the session (`lab/snapshot.rs` still
-	@# called the old arity), and `ui/lab_toast.rs`'s two tests had never been compiled by anything,
-	@# which is why an orphaned `#[test]` attribute sat in `lab/snapshot.rs` unnoticed.
+	@# at all (that is what makes it unshippable by forgetting a flag), so nothing in the unit
+	@# passes compiles a line of `lab/` (its toast is `lab/toast.rs`) or of `labcfg/` — and until
+	@# 2026-09-10 nothing anywhere did: not this target, not .github/workflows/ci.yml, not the
+	@# PostToolUse release hook. The configuration had been BROKEN since phase 9 moved
+	@# `player::diag` onto the session (`lab/snapshot.rs` still called the old arity), and the
+	@# lab toast's two tests (then `ui/lab_toast.rs`) had never been compiled by anything, which is
+	@# why an orphaned `#[test]` attribute sat in `lab/snapshot.rs` unnoticed.
 	@# `--tests` rather than a bare `--lib` for exactly that second reason: a feature-gated module's
 	@# TEST code is the half no other gate here can see. `CARGO_INCREMENTAL=0` because a one-shot
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make

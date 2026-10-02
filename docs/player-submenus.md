@@ -5,7 +5,7 @@ Style pickers) and the table, form and clip primitives it stands on. Planned wit
 model reviewer over several rounds; this file keeps the decisions and their reasons.
 
 **Status:** PR 1 (table groundwork), the track menu on keyed forms (Settings form migration 5/5,
-#339: `ui::track_menu::TrackRow`) and PR 2 (the page stack in the Subtitles tab on that form: Style,
+#339: `appkit::track_menu::TrackRow`) and PR 2 (the page stack in the Subtitles tab on that form: Style,
 the Size / Position / Color pickers, nav keys, persistence, locks, the rebuild signature and replay
 state) and PR 3 (Other languages, the language pages, the image-subtitle badge) and PR 4 (the animated
 panel resize and page slide for Tracks and More, `ui::panel_motion`, plus the device frame-time
@@ -56,7 +56,7 @@ state, not panel state).
 
 ## Focus identity
 
-Each page declares rows with semantic ids, one alphabet for every page: `ui::track_menu::TrackRow`
+Each page declares rows with semantic ids, one alphabet for every page: `appkit::track_menu::TrackRow`
 (`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
 `Choice(field, rung)`, `OpenOther`, `OpenLang(lang)`). Selection and saved openers
 are stored by id. `RowKey` is a hand-assigned family base plus a STABLE ordinal (the track's index

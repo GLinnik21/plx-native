@@ -206,9 +206,9 @@ budget is declared in `appinfo.json`, which is why both caps exist rather than a
   mattered more when the code was unknown; it still matters, because the measurement is one remote
   on one firmware.
 * **A fallback that needs only the D-pad**, since a Cloud Test Lab virtual remote may not offer
-  colour keys at all: a new row in `ui::account_menu` (`Action::SendDiagnostics`, lab builds only) —
+  colour keys at all: a new row in `screens::account_menu` (`Action::SendDiagnostics`, lab builds only) —
   reachable by ordinary navigation on Home, and a `TableView` row is the idiom that module already
-  is. The player-side twin is a row in `ui::more_menu`, beside Stats for nerds.
+  is. The player-side twin is a row in `appkit::more_menu`, beside Stats for nerds.
 * `ui::consts::is_bound` must answer `true` for the lab key in a lab build, or pressing it also
   wakes the player HUD and aborts an armed click (`docs/remote-keys.md` §6 is that whole story).
 

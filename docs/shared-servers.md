@@ -726,7 +726,7 @@ Four places, all recorded so the next reader does not "fix" them back:
 
 ### The screen, and how to look at it
 
-`screens/onboard.rs` (`ui/onboard.rs` before phase 5b, 2026-09-07) mounts `ui::source_list` — the SAME row-model builder the Library toolbar's Sources
+`screens/onboard.rs` (`ui/onboard.rs` before phase 5b, 2026-09-07) mounts `appkit::source_list` — the SAME row-model builder the Library toolbar's Sources
 panel uses, extracted out of `ui/library.rs` for exactly this reason. It differs by two arguments,
 not by a second builder: every library rather than the browsed type's (`browse::all_source_rows` —
 there is no tab bar here to be scoped to), and no *Check for shared libraries* tail.

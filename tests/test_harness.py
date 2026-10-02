@@ -1660,7 +1660,7 @@ class PipelineTier(unittest.TestCase):
 
         `apply_triggers` now quotes arbitrary apostrophes too, so this is no longer the command's
         security boundary; the no-apostrophe property remains useful for copied case headers and
-        has a twin in rust-modules/src/dev.rs.
+        has a twin in rust-modules/src/player/playurl.rs (`the_harness_payload_carries_no_apostrophe`).
         """
         for c in self._pipeline_cases():
             files = run.triggers_for_case(c, url_base="http://192.0.2.10:8020")
