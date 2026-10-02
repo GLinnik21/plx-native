@@ -548,6 +548,27 @@ cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for p
 control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
+### Module-cycle ratchet (`ci/check-module-cycle.py`)
+
+The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app, but a few
+thin upward references (`ui` -> `screens`/`app`, `gfx`/`text` -> `ui`, `plex` -> `route`) close one
+strongly connected component of top-level modules that holds nearly all of the code. The gate does
+not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
+module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
+strings blanked; the docstring lists what it cannot see), compares the cycle's members with
+`ci/module-cycle-baseline.json`, and **fails** when a module outside the baseline lands on a cycle
+- a new upward `crate::x` reference, or a new top-level module that lands inside the cycle - printing
+the `file:line` references into and out of that module. A member leaving the cycle only prints a
+notice. It holds the cycle's *membership*, not its edges: a further upward reference between two
+modules already on the cycle (a sixth `ui` -> `screens`) does not fail it. It runs in `make check-python` (so CI's `host-python` job), tested by
+`ci/test_module_cycle.py`.
+
+To fix a failure, remove the new path back: move the shared type down a layer, pass the value in as
+an argument, or invert the dependency behind a trait or callback owned by the lower layer. When
+the growth is deliberate (or after the cycle shrank), run `ci/check-module-cycle.py --update-baseline`
+and commit the JSON with the change. `--report` prints the cycle, the heaviest mutual pairs and
+every thin back-edge with `file:line` (the work list for breaking it up); `--dot` emits graphviz.
+
 ## Key files
 
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
