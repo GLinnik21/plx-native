@@ -1181,6 +1181,63 @@ fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_han
     }
 }
 
+/// **A valid certificate presented outside its validity window is logged as such, not as a stale
+/// CA store.** GitHub discussion #351: a television cold-booted with no internet has a wrong clock,
+/// so the server's genuine `*.plex.direct` leaf fails libcurl's validity check (rc=60) and the log
+/// used to blame the CA bundle. The leaf here chains to a trusted CA and expired thirty days ago
+/// — dates are relative to now, so the test does not rot — and the real TLS stack must fail it and
+/// the event log must say why. The host's libcurl (LibreSSL, 8.x) is not the television's
+/// (OpenSSL, 7.53.1): when it does not report the X509 verify result at all, the line must still
+/// admit that rather than blame the CA store, and the test says which one it saw.
+#[test]
+fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
+    let _serial = crate::testlock::serial();
+    if !(crate::net::global_init() && crate::net::available()) {
+        eprintln!("curl unavailable on this host; skipping");
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after 1970")
+        .as_secs() as i64;
+    let ymd = |ago_days: i64| {
+        let (y, m, d) = crate::net::civil_date(now - ago_days * 86_400);
+        (y as i32, m as u8, d as u8)
+    };
+    let cert = std::sync::Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd(90), ymd(30)));
+    let _ca = TestCaGuard::install(&cert.pem, "expired-leaf");
+    let port = crate::net::spawn_dual_protocol(std::sync::Arc::clone(&cert), identity_json("expired"));
+
+    let log = crate::events_log();
+    let before = std::fs::metadata(&log).map_or(0, |m| m.len());
+    let out = crate::net::request_result_evidence(
+        &format!("https://127.0.0.1:{port}/identity"),
+        &[],
+        "GET",
+        None,
+        crate::net::API,
+        false,
+        None,
+        None,
+    );
+    let Err(failure) = out else { panic!("an expired leaf must not verify") };
+    assert_eq!(failure.curl_rc, Some(60), "peer verification failure");
+
+    let tail = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b[before as usize..]).into_owned());
+    let tail = tail.expect("event log readable");
+    let line = tail
+        .lines()
+        .find(|l| l.contains("net: curl rc=60"))
+        .unwrap_or_else(|| panic!("no rc=60 line in the log tail: {tail:?}"));
+    assert!(!line.contains("CA store"), "an expired leaf is not a CA problem: {line}");
+    if line.contains("has expired") {
+        assert!(line.contains("clock"), "the clock is the actionable part: {line}");
+    } else {
+        eprintln!("host libcurl did not report X509_V_ERR_CERT_HAS_EXPIRED: {line}");
+        assert!(line.contains("X509 verify result"), "an unexplained result prints its number: {line}");
+    }
+}
+
 /// **The whole-roster path persists the pinned `plex.direct` origin, never the plaintext
 /// twin, over the real dial.** Same fixture as the test above, through
 /// `resolve_roster_using` — what a boot actually stores is `SourceRef::origin_url`.
