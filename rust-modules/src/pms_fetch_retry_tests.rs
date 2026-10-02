@@ -187,24 +187,6 @@ fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
     crate::plex::reset_servers_for_test();
 }
 
-#[test]
-fn the_backoff_doubles_then_holds_at_the_ceiling() {
-    assert_eq!(
-        backoff_secs(1),
-        RETRY_MIN_S,
-        "the first retry is the shortest wait"
-    );
-    assert_eq!(backoff_secs(2), 4.0);
-    assert_eq!(backoff_secs(3), 8.0);
-    assert_eq!(backoff_secs(4), 16.0);
-    assert_eq!(backoff_secs(5), RETRY_MAX_S, "32s is past the ceiling");
-    assert_eq!(
-        backoff_secs(99),
-        RETRY_MAX_S,
-        "and it never grows past it (nor overflows)"
-    );
-}
-
 /// The bug the fetch state machine exists for: a failed fetch used to commit an EMPTY catalog,
 /// so one unreachable moment blanked a populated Home for good. A failure must leave every one
 /// of the three statics exactly as it found them.

@@ -3266,6 +3266,10 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 }
 
 #[cfg(test)]
+#[path = "plex_session_app_tests.rs"]
+mod plex_session_app_tests;
+
+#[cfg(test)]
 #[path = "session_protocol_tests.rs"]
 mod session_protocol_tests;
 

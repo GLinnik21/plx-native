@@ -95,6 +95,22 @@ pub(crate) fn install_panic_logger() {
     }));
 }
 
+/// **Hand `plex` the two answers it cannot name.** The Plex layer sits beneath `route` and
+/// `telemetry`, so what it needs from them reaches it as hooks installed here, once, first thing in
+/// [`enter_application`] — before the controlled/replay split and before anything can load the
+/// session:
+///
+/// * `plex::session::install_auto_quality_ready` — `route::auto_quality_ready`, the gate a fresh
+///   session record's default quality is seeded from (unset, `plex` reads `true`, the gate's value);
+/// * `plex::session::install_account_clear_cleanup` — `telemetry::cleanup_after_account_clear`, the
+///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
+///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
+pub(crate) fn install_plex_seams() {
+    crate::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    crate::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
+}
+
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
 /// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
 ///

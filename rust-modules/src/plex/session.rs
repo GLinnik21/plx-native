@@ -3219,6 +3219,19 @@ mod cache_timing_tests {
         fn drop(&mut self) { crate::ui::idle::reset_for_test(); }
     }
 
+    /// What a frame thread's landing step reads of the cache: whether the visible generation moved
+    /// since it last looked. The app's `Bridge::land_session_cache` compares the same counter and
+    /// invalidates the frame once per move; that half is graded beside `Bridge`
+    /// (`app::bridge::plex_session_app_tests`), so this layer's tests need no application type.
+    struct FrameCursor(u64);
+    impl FrameCursor {
+        fn new() -> Self { Self(visible_generation()) }
+        fn lands(&mut self) -> bool {
+            let seen = visible_generation();
+            std::mem::replace(&mut self.0, seen) != seen
+        }
+    }
+
     #[test]
     fn a_slow_production_peek_is_single_flight_and_lands_on_the_frame_step() {
         use std::sync::{atomic::{AtomicUsize, Ordering}, mpsc::{self, Receiver, Sender}};
@@ -3228,7 +3241,7 @@ mod cache_timing_tests {
         let _session = test_support::TempSession::new("slow-production-landing");
         let _idle = ResetIdle;
         { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
-        let mut bridge = crate::app::bridge::Bridge::for_test(|| 0);
+        let mut frame_step = FrameCursor::new();
         invalidate_for_test();
         let (started, entered) = mpsc::channel();
         let (release, held) = mpsc::channel();
@@ -3251,12 +3264,11 @@ mod cache_timing_tests {
         release.send(()).unwrap();
         crate::storage_worker::drain_for_test();
         assert!(!crate::ui::idle::should_present(0), "the worker only publishes data");
+        assert_eq!(crate::ui::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
         let _frame = crate::task::FrameScope::enter();
-        bridge.land_session_cache();
-        assert_eq!(crate::ui::idle::take_local_damage(), 1);
+        assert!(frame_step.lands(), "the frame step observes the published session");
         assert_eq!(peek().client_id, "cid-1");
-        bridge.land_session_cache();
-        assert_eq!(crate::ui::idle::take_local_damage(), 0);
+        assert!(!frame_step.lands(), "once");
     }
 
     #[test]
@@ -3279,31 +3291,6 @@ mod cache_timing_tests {
         crate::storage_worker::drain_for_test();
         assert!(edit.unwrap().wait_blocking().unwrap(), "the edit must survive admission backpressure");
         assert!(peek().auto_sign_in());
-    }
-
-    /// Issue #266: the audio-DSP preference round-trips through the player's one write door
-    /// (`player::set_audio_enhancements` -> retained worker job -> `session::set_audio_enhancements`)
-    /// and comes back through the boot-time restore, merged into the record rather than replacing
-    /// it. A record saved before the field existed loads as NONE.
-    #[test]
-    fn audio_enhancements_persist_and_restore() {
-        let _serial = crate::testlock::serial();
-        let _session = test_support::TempSession::new("audio-enhancements");
-        save(&test_support::signed_in());
-        assert_eq!(load().audio_enhancements(), crate::plex::AudioEnhancements::NONE, "absent field = NONE");
-
-        let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
-        crate::player::set_audio_enhancements(enh);
-        crate::storage_worker::drain_for_test();
-        let saved = load();
-        assert_eq!(saved.audio_enhancements(), enh);
-        assert_eq!(saved.client_id, test_support::signed_in().client_id, "merged, not replaced");
-
-        crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
-        crate::player::restore_audio_enhancements(saved.audio_enhancements());
-        assert_eq!(crate::player::audio_enhancements(), enh, "boot restores what was saved");
-        assert!(!set_audio_enhancements(enh), "an unchanged preference is not rewritten");
-        crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
     }
 
     #[test]
@@ -3337,30 +3324,6 @@ mod cache_timing_tests {
         let ticket = queue_update_ticket(|current| Some(current.with_auto_sign_in(true))).unwrap();
         assert!(ticket.wait_blocking().unwrap(), "unknown cache identity is not an account mismatch");
         assert!(peek().auto_sign_in());
-    }
-
-    #[test]
-    fn login_frames_never_wait_for_the_session_io_lock() {
-        let _serial = crate::testlock::serial();
-        let _session = test_support::TempSession::new("login-frame-storage-blocked");
-        let held = io();
-        reset_reads_for_test();
-        {
-            let _frame = crate::task::FrameScope::enter();
-            let started = std::time::Instant::now();
-            let mut bridge = crate::app::bridge::Bridge::for_test(|| 0);
-            let mut pages = crate::ui::dispatch::Dispatcher::new();
-            crate::app::bridge::nav_root(&mut pages, crate::screens::registry::AppArg::Login);
-            for ms in 0..30 {
-                crate::app::bridge::frame(&mut pages, &mut bridge,
-                    crate::ui::machine::Tick { ms: ms * 16, dt_us: 16_000 }, Vec::new());
-            }
-            assert!(matches!(pages.top_arg(), Some(crate::screens::registry::AppArg::Login)));
-            assert_eq!(reads_for_test(), 0, "login's Browse/Search captures may only peek");
-            assert!(started.elapsed() < std::time::Duration::from_millis(200));
-        }
-        drop(held);
-        drain_refresh_for_test();
     }
 
     #[test]
@@ -3450,19 +3413,19 @@ mod cache_timing_tests {
             let _io = io();
             install_locked(std::sync::Arc::new(ReadState::Blocked));
         }
-        let mut bridge = crate::app::bridge::Bridge::for_test(|| 0);
+        let mut frame_step = FrameCursor::new();
         crate::storage_worker::drain_for_test();
-        bridge.land_session_cache();
-        for (read, damage) in [
-            ((|| ReadState::Blocked) as fn() -> ReadState, 0),
-            ((|| ReadState::Locked { language: crate::i18n::Preference::System }) as fn() -> ReadState, 0),
+        frame_step.lands();
+        for (read, landed) in [
+            ((|| ReadState::Blocked) as fn() -> ReadState, false),
+            ((|| ReadState::Locked { language: crate::i18n::Preference::System }) as fn() -> ReadState, false),
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
-            }) as fn() -> ReadState, 1),
+            }) as fn() -> ReadState, true),
             // A different allocation and ReadState metadata, but the same served content.
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: true, retry_canonical: false,
-            }) as fn() -> ReadState, 0),
+            }) as fn() -> ReadState, false),
         ] {
             crate::ui::idle::reset_for_test();
             crate::ui::idle::note_present(10_000);
@@ -3474,10 +3437,9 @@ mod cache_timing_tests {
             assert!(!crate::ui::idle::should_present(10_001), "workers cannot wake the UI");
             assert_eq!(crate::ui::idle::take_local_damage(), 0);
             let _frame = crate::task::FrameScope::enter();
-            bridge.land_session_cache();
-            assert_eq!(crate::ui::idle::take_local_damage(), damage);
-            bridge.land_session_cache();
-            assert_eq!(crate::ui::idle::take_local_damage(), 0, "one invalidation per landing");
+            assert_eq!(frame_step.lands(), landed);
+            assert!(!frame_step.lands(), "one landing per change");
+            assert_eq!(crate::ui::idle::take_local_damage(), 0, "landing the cache raises no frame damage of its own");
         }
     }
 
@@ -3807,6 +3769,40 @@ fn seed_fresh_quality(s: &mut Session, persisted: bool, auto_ready: bool) {
     }
 }
 
+/// **Whether a fresh record is seeded with Auto quality** is `route::auto_quality_ready()`'s answer,
+/// and `route` sits above `plex`, so the app installs that function as a hook
+/// ([`install_auto_quality_ready`]; `app::boot::install_plex_seams`, first thing in
+/// `app::enter_application`, before the first [`load`]). Unset it reads `true` — what the gate has
+/// returned since the adaptive path was completed, and what every host test that loads the session
+/// without booting the app has always seen.
+static AUTO_QUALITY_READY: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// Install the Auto-quality gate [`prepare_load`] seeds a fresh record from. Once; later calls are
+/// ignored.
+pub(crate) fn install_auto_quality_ready(ready: fn() -> bool) {
+    let _ = AUTO_QUALITY_READY.set(ready);
+}
+
+fn auto_quality_ready() -> bool {
+    AUTO_QUALITY_READY.get().is_none_or(|ready| ready())
+}
+
+/// **The telemetry/consent legacy-file sweep that follows a durable canonical clear**
+/// ([`clear_for_erase`]'s ARM arm): `telemetry` owns the files and sits above `plex`, so the app
+/// installs its `cleanup_after_account_clear` as a hook ([`install_account_clear_cleanup`];
+/// `app::boot::install_plex_seams`). It answers whether every candidate was retired. Unset there is
+/// nothing registered to retire, which reads as retired, so the "could not be retired" branch is
+/// never taken without a sweep that failed. Compiled where the sweep is: ARM, not the simulator,
+/// not a test build.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+static ACCOUNT_CLEAR_CLEANUP: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// Install the sweep [`ACCOUNT_CLEAR_CLEANUP`] runs. Once; later calls are ignored.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn install_account_clear_cleanup(sweep: fn() -> bool) {
+    let _ = ACCOUNT_CLEAR_CLEANUP.set(sweep);
+}
+
 /// **Hand the scrubber this household's names**, so `crate::eventlog::log` can redact them without ever
 /// touching this module.
 ///
@@ -3998,7 +3994,7 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
             fresh
         }
     };
-    seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
+    seed_fresh_quality(&mut s, persisted, auto_quality_ready());
     let fresh = s.client_id.is_empty();
     if fresh {
         s.client_id = mint();
@@ -4878,7 +4874,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             // finding 7; ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear`,
             // called here in that release).
             #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-            if !crate::telemetry::cleanup_after_account_clear() {
+            if !ACCOUNT_CLEAR_CLEANUP.get().is_none_or(|sweep| sweep()) {
                 crate::eventlog::log(
                     "session: canonical clear is durable but a telemetry/consent legacy \
                      candidate could not be retired — it remains on disk and will be swept \
