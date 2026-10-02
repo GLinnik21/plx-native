@@ -884,7 +884,7 @@ pub(crate) fn busy(ps: &crate::route::PlaybackSession) -> Busy {
     // sampler, rather than in `player::state()`: the pump acts on that state, and a dev switch
     // that made the engine believe it had failed would be testing a different thing than the
     // screen. `busy_surface` stays pure and ungated, so what draws is still the real rule.
-    if crate::dev::flag("failtest") {
+    if crate::devtrig::flag("failtest") {
         return Busy::Readout(StatusKind::Failed, crate::player::error_caption(ps));
     }
     busy_surface(ps, crate::player::state(ps), crate::player::seen_frame())

@@ -369,7 +369,7 @@ Neither the TV harness nor the desktop simulator can type, so both would otherwi
 empty state.
 
 - **`/tmp/plxnative-search[=<query>]`** — boot straight into Search with the field already holding
-  `<query>`. Read once at boot in `app/boot.rs`, through `dev::read` like every other trigger; it
+  `<query>`. Read once at boot in `app/boot.rs`, through `devtrig::read` like every other trigger; it
   seeds `stores::search::SearchCmd::SetQuery` directly rather than driving a screen method.
 - **`/tmp/plxnative-searchosc`** — sweep the result shelves' focus down↔up perpetually: one step per
   350 ms, reversing every 3 s, the same cadence `homeosc` and `libosc` use so all three read the same

@@ -211,6 +211,30 @@ impl Rung {
     }
 }
 
+/// **Pin Auto's HLS ladder to one actuator, by request rate** — `plxnative-abrpin=<kbps>`.
+///
+/// Measurement-only, for step M4 of `docs/adaptive-playback-plan.md`: reading a settled reserve at
+/// a given rung means holding that rung for minutes, and nothing in the app could do that.
+/// `crate::dev::playback_quality_override` cannot serve, for two independent reasons — a non-Auto
+/// quality returns `None` from `route::hls_abr_control` before a controller is ever constructed,
+/// so it measures a different transport path entirely; and [`crate::plex::session::PlaybackQuality`]
+/// has no mid-1080p points, while the ladder this pins has eight of them.
+///
+/// The value is the actuator's REQUEST rate (`Rung::kbps`) — 320, 720, 2000, 4000, 6000, 8000,
+/// 10000, 12000, 14000, 16000, 18000, 20000, 22000 — because that is the number PMS is given and
+/// the one identity in the catalog that does not move when somebody re-measures the server.
+/// An unrecognised or empty value pins nothing, deliberately: a typo must leave Auto alone rather
+/// than silently park playback on the bottom rung for a whole measurement session.
+///
+/// Compiled out with `devtriggers`, so a release build cannot be pinned at all. A typed trigger
+/// (its value is a [`Rung`]), so it is parsed here, beside the one consumer, from the base-layer
+/// `crate::devtrig::read` rather than living with the primitives.
+pub(crate) fn abr_pin() -> Option<Rung> {
+    let raw = crate::devtrig::read("abrpin")?;
+    let kbps: u32 = raw.trim().parse().ok()?;
+    Rung::from_request_kbps(kbps)
+}
+
 /// What PMS actually attached to one fixed-HLS request.  This is deliberately not a [`Rung`]:
 /// the rung is the actuator sent on the decision request, while the master declaration and the
 /// decoded raster are the server's response.  PMS's mapping is item- and session-dependent and

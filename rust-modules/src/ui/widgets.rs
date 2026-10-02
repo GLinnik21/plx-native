@@ -127,7 +127,7 @@ pub(crate) fn panel_ground(
 fn panel_tint_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("paneltint")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("paneltint")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("panel: field tint swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -168,7 +168,7 @@ fn panel_frost() -> ([f32; 4], [f32; 4]) {
 fn material_sweep() -> Option<theme::Material> {
     static SEEN: std::sync::OnceLock<Option<theme::Material>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let m = theme::Material::parse(&crate::dev::read("material")?)?;
+        let m = theme::Material::parse(&crate::devtrig::read("material")?)?;
         crate::eventlog::log(&format!("glass: panel material swept to {m:?}"));
         Some(m)
     })
@@ -182,7 +182,7 @@ fn material_sweep() -> Option<theme::Material> {
 fn frost_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("panelfrost")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("panelfrost")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: panel frost swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -1770,7 +1770,7 @@ pub(crate) fn tracked_run(
     (bx - track - x).max(0.0)
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// **`/tmp/plxnative-tileglass` — an episode still's label band as a frosted MATERIAL instead
     /// of a black gradient.** An EXPERIMENT, default off, and it exists to be measured rather than
     /// to be shipped by whoever finds it.
@@ -5752,7 +5752,7 @@ fn track_lift(ground: [f32; 3], a: f32) -> f32 {
 fn lift_floor() -> f32 {
     static SEEN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let Some(v) = crate::dev::read("tracklift").and_then(|v| v.trim().parse::<f32>().ok())
+        let Some(v) = crate::devtrig::read("tracklift").and_then(|v| v.trim().parse::<f32>().ok())
         else {
             return theme::TAB_GLASS_LIFT_FLOOR;
         };
@@ -5876,18 +5876,18 @@ fn track_alpha_for(ground: [f32; 3]) -> f32 {
 /// also exactly the trade the reference makes, and the criticism it takes for it.
 /// The fixed-weight leg's density, read ONCE at boot like every other sweep here.
 ///
-/// It was `crate::dev::read("tabglassdim")` inline in [`tab_glass_stops`], i.e. a `read_to_string`
+/// It was `crate::devtrig::read("tabglassdim")` inline in [`tab_glass_stops`], i.e. a `read_to_string`
 /// of a `/tmp` path on **every drawn frame** of every screen that wears the bar — a syscall on the
 /// 60 fps path, in every dev and harness build, which is what the fps scenes measure.
 ///
-/// **No `#[cfg]` pair**, unlike the sweeps around it: `dev::read` is already `None` at COMPILE time
+/// **No `#[cfg]` pair**, unlike the sweeps around it: `devtrig::read` is already `None` at COMPILE time
 /// without the `devtriggers` feature, so a second gate here only re-derives what the one door
 /// guarantees — and a hand-written pair is how this file broke the `RELEASE=1` build once already,
 /// by swallowing a neighbour's attribute when a new function was spliced between them.
 fn tab_glass_dim_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("tabglassdim")?
+        let v = crate::devtrig::read("tabglassdim")?
             .trim()
             .parse::<f32>()
             .ok()?;
@@ -5904,7 +5904,7 @@ fn tab_glass_dim_sweep() -> Option<f32> {
 fn density_max_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("trackmax")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("trackmax")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: density ceiling swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -5959,7 +5959,7 @@ fn track_rim(density: f32) -> ([f32; 4], [f32; 4]) {
 fn rim_max_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("rimmax")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("rimmax")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: rim ceiling swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -6129,7 +6129,7 @@ fn tab_glass_on(track_w: f32) -> bool {
 }
 
 /// Trigger probes are latched; paint must not perform a filesystem stat per surface.
-use crate::dev::latched_flag;
+use crate::devtrig::latched_flag;
 
 latched_flag!(
     /// `/tmp/plxnative-flattabs` — the material off, for an A/B against the flat capsule.

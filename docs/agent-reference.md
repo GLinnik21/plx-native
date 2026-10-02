@@ -379,7 +379,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   every edit to a `rust-modules/src/**.rs`; it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
-  swallows a neighbour's attribute — `dev::latched_flag!` exists to avoid most of them.
+  swallows a neighbour's attribute — `devtrig::latched_flag!` exists to avoid most of them.
 - **`LAB=1`** adds a THIRD cargo feature, `lab-diagnostics` — the **Cloud Lab bridge** that gets
   logs off and app-level commands onto a television in **LG Cloud Test Lab**, where there is no
   ssh, no console, no stdout and no way to download a file, so the entire `/tmp` trigger surface
@@ -1727,19 +1727,19 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   tool here reports as "no line found", i.e. exactly like a total regression. Why any of it:
   **`docs/two-installs.md`**.
   **The catalog is the source, not this list** — get the real one with
-  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sed 's|.*/||'; grep -rhoE 'dev::(flag|read)\("[a-z0-9]+"' rust-modules/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
+  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sed 's|.*/||'; grep -rhoE 'devtrig::(flag|read)\("[a-z0-9]+"' rust-modules/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
   **Both halves are needed**: a path literal only ever appears in a COMMENT now, and four triggers
-  (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `dev::flag`/`dev::read` call, so
+  (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `devtrig::flag`/`devtrig::read` call, so
   the path grep alone silently under-reports. This line carried that grep alone and called it
   complete.
   **Since UI restructure phase 10 the ARMS live in `rust-modules/src/dev/scenarios.rs`, not
-  scattered through `app/{boot,run,content,mod}.rs`** — `dev.rs` stays the one door onto `/tmp`
-  itself, and the catalog command above is unaffected because every `dev::flag`/`dev::read` call
-  moved with its spelling unchanged.
-  **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
-  read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
-  builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
-  `dev::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
+  scattered through `app/{boot,run,content,mod}.rs`** — `rust-modules/src/devtrig.rs` is the one
+  door onto `/tmp` itself (a base-layer module; `dev.rs` keeps the application-layer half), and the
+  catalog command above names its `devtrig::flag`/`devtrig::read` calls.
+  **Every read goes through `rust-modules/src/devtrig.rs`, gated on the `devtriggers` cargo feature —
+  read that module's doc (and `dev.rs`'s) before adding a trigger, and never open a `/tmp` path
+  directly.** Default builds are unchanged; `RELEASE=1` drops the feature, and then
+  `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
   logs (`capture::init` is compiled out, so there is no listener on ANY port — a compile-time fact;
   device-verified on the stable install: no FIFO and nothing on `:8910`. This line used to assert
   the device measurement alone, which could only ever have probed the one port it knew about). The same feature gates `Remote::open` and

@@ -87,7 +87,7 @@
 //! was before; the two things instruments read with no borrow of the plan in hand — the live step
 //! index and whether anything is armed — are PUBLISHED snapshots the dial writes on change
 //! (spec §2.3). Every entry point is a no-op when the trigger is absent, and in a
-//! `--no-default-features` build `dev::read` is `None` at compile time, so nothing here can be
+//! `--no-default-features` build `devtrig::read` is `None` at compile time, so nothing here can be
 //! reached at all.
 
 use crate::ui::consts::{SCR_H, SCR_W};

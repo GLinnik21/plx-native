@@ -175,7 +175,7 @@ file is exempt from trigger detection and is replaced only when diagnostic statu
 **Two payloads do not carry the prefix, and that rewrite rule silently misses them:**
 `sample.h264` and `sample.h265`, the raw Annex-B samples the player feeds instead of streaming.
 They moved into the runtime root with everything else — `$(make -s print-rundir FLAVOR=…)/sample.h264`,
-not a shared `/tmp/sample.h264` — and they are read through `dev::read_sample`, which resolves via
+not a shared `/tmp/sample.h264` — and they are read through `devtrig::read_sample`, which resolves via
 `paths::in_runtime_dir` like every other dev read. A second consequence follows from the same
 missing prefix and is easy to want the other way round: `dev::any_trigger_present` matches on
 `plxnative-`, so **a sample does NOT mark the boot as automated** and does not suppress the
@@ -257,7 +257,7 @@ literals inside it are just where the stable install's root is.
 
 Two halves are needed and a single grep is the trap: a path literal now only ever appears in a
 COMMENT, and four triggers (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their
-`dev::flag`/`dev::read` call, so grepping paths alone silently under-reports the catalog.
+`devtrig::flag`/`devtrig::read` call, so grepping paths alone silently under-reports the catalog.
 
 Boot gate order, when you care which identity you land as: `plxnative-login` forces the QR
 screen → `plxnative-token` beats any stored session → a stored session (with the picker

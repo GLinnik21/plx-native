@@ -184,7 +184,7 @@ inside a bullet already claiming to be separate. It is written out in full below
   - the capture listener's file trigger (`plxnative-capture`) and the two profiler JSONLs;
   - the two local Annex-B sample payloads, `sample.h264` and `sample.h265` — the only runtime files
     that are *not* spelled `plxnative-*`, which is why they have their own door
-    (`dev::read_sample`). They took an absolute `/tmp` path until after the split landed, so they
+    (`devtrig::read_sample`). They took an absolute `/tmp` path until after the split landed, so they
     were the last two surfaces still pinned to a shared root while every other one had moved. Two
     installs reading one sample is harmless in itself; a rule with a hole in it is not, because it
     stops being checkable. They now live in the install's own root —

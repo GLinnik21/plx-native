@@ -178,7 +178,7 @@ import time
 # fail-open catch at the bottom turns a proven release break into exit 0. Measured 2026-08-23: with
 # a release-only `compile_error!` whose message carried an em-dash, the hook exited 0 saying
 # "internal error, allowing ('ascii' codec can't decode byte 0xe2 …)". Three separate readers had
-# to be fixed for one bug — cargo's output, the Makefile that `nightly()` parses, and the `dev.rs`
+# to be fixed for one bug — cargo's output, the Makefile that `nightly()` parses, and the `devtrig.rs`
 # that `has_latched_flag()` greps — because this repo's Makefile, sources and diagnostics are all
 # full of em-dashes, and each reader failed in turn as the previous one was corrected. The stream
 # reconfiguration below is the write half: an em-dash in the report itself would otherwise
@@ -355,9 +355,9 @@ def nightly(root):
 
 
 def has_latched_flag(root):
-    """Whether `dev::latched_flag!` is really in this tree — the message must not cite a ghost."""
+    """Whether `devtrig::latched_flag!` is really in this tree — the message must not cite a ghost."""
     try:
-        with open(os.path.join(root, "rust-modules", "src", "dev.rs"),
+        with open(os.path.join(root, "rust-modules", "src", "devtrig.rs"),
                   encoding="utf-8", errors="replace") as f:
             return "macro_rules! latched_flag" in f.read()
     except OSError:
@@ -453,9 +453,9 @@ def report(root, edited, diags, default_also_broken, toolchain):
             "that shape is what produced this class of break on 2026-08-21, when a function spliced\n"
             "in between an attribute and its `fn` swallowed the neighbour's gate (E0428, only under\n"
             "--no-default-features, 786/786 tests green). Most such pairs are unnecessary —\n"
-            "`dev::flag` is already compile-time `false` and `dev::read` `None` without the feature,\n"
-            "so a helper that only wraps them needs no cfg at all. Prefer `crate::dev::latched_flag!`\n"
-            "(rust-modules/src/dev.rs) over hand-rolling a pair.\n")
+            "`devtrig::flag` is already compile-time `false` and `devtrig::read` `None` without the feature,\n"
+            "so a helper that only wraps them needs no cfg at all. Prefer `crate::devtrig::latched_flag!`\n"
+            "(rust-modules/src/devtrig.rs) over hand-rolling a pair.\n")
     return msg
 
 

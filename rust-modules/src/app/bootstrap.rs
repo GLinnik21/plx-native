@@ -259,7 +259,7 @@ impl Initial {
             return Err("unsupported initial Settings input");
         }
         if self.settings.is_some()
-            != crate::dev::listed(&self.triggers, "settings") {
+            != crate::devtrig::listed(&self.triggers, "settings") {
             return Err("incoherent initial Settings input");
         }
         let content_triggers = ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"];
@@ -271,7 +271,7 @@ impl Initial {
             }
         }
         for name in content_triggers {
-            if self.content.is_some() != crate::dev::listed(&self.triggers, name) {
+            if self.content.is_some() != crate::devtrig::listed(&self.triggers, name) {
                 return Err("incoherent initial content input");
             }
         }
@@ -282,7 +282,7 @@ impl Initial {
                 return Err("initial seed mismatch"),
             _ => {}
         }
-        if !self.triggers.iter().all(|trigger| crate::dev::controlled_trigger(trigger)) {
+        if !self.triggers.iter().all(|trigger| crate::devtrig::controlled_trigger(trigger)) {
             return Err("unsupported initial developer input");
         }
         Ok(())

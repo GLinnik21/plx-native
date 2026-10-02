@@ -449,7 +449,7 @@ pub(crate) fn acb_init(mt: &MainThread) {
 
 /// The webOS 4.x half of [`acb_init`].
 fn acb_init_acb(mt: &MainThread) {
-    if let Some(s) = crate::dev::read("ptype") {
+    if let Some(s) = crate::devtrig::read("ptype") {
         if let Ok(p) = s.parse::<c_int>() {
             PTYPE.store(p, Ordering::Relaxed);
         }
@@ -620,7 +620,7 @@ fn fps_class(fps: f64) -> u32 {
 }
 
 fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkEnvelope {
-    if let Some(spec) = crate::dev::read("sinkmax") {
+    if let Some(spec) = crate::devtrig::read("sinkmax") {
         if let Some(env) = parse_sinkmax(&spec) {
             #[cfg(feature = "devtriggers")]
             log(&format!(
@@ -688,7 +688,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
     // misses regardless), and the pipeline timestamps by NEAREST-rounding on the 1001/24000 lattice
     // rather than passing ours through. This rational is the one input we hand it that could be
     // what it builds that lattice FROM, so it is the one remaining lever on our side.
-    if crate::dev::flag("nofps") {
+    if crate::devtrig::flag("nofps") {
         #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
     } else if let Some((num, den)) = fps_rational(crate::route::stream_fps(ps)) {
@@ -1040,7 +1040,7 @@ fn start_bufferfeed_inner(
         // through this same function and must re-apply it.
         //
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
-        match crate::dev::playurl() {
+        match crate::player::playurl::playurl() {
             Some(Ok(p)) => {
                 url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
@@ -1070,7 +1070,7 @@ fn start_bufferfeed_inner(
         }
     }
     if url.is_empty() {
-        if let Some(t) = crate::dev::read("url") {
+        if let Some(t) = crate::devtrig::read("url") {
             if !t.is_empty() {
                 url = t;
                 crate::route::set_url(ps, &url);
@@ -1080,7 +1080,7 @@ fn start_bufferfeed_inner(
     let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
-        if let Some(data) = crate::dev::read_sample("sample.h264") {
+        if let Some(data) = crate::devtrig::read_sample("sample.h264") {
             let au = bf_split(&data, 0x09);
             log(&format!(
                 "bf_split h264: {} AUs in {} bytes",
@@ -1096,7 +1096,7 @@ fn start_bufferfeed_inner(
                 next: 0,
                 loops: 0,
             }));
-        } else if let Some(data) = crate::dev::read_sample("sample.h265") {
+        } else if let Some(data) = crate::devtrig::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
             log(&format!(
@@ -1132,7 +1132,7 @@ fn start_bufferfeed_inner(
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-    let no_audio = crate::dev::flag("noaudio");
+    let no_audio = crate::devtrig::flag("noaudio");
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
@@ -1431,7 +1431,7 @@ fn start_bufferfeed_inner(
 /// revisit this validation, so publishing first turns a one-time refusal into a retry bypass.
 fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
-    play: &crate::dev::PlayUrl,
+    play: &crate::player::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
     if !crate::route::set_stream_declaration(
         ps,
@@ -2173,8 +2173,8 @@ fn pts_nudge_ns() -> i64 {
         return v;
     }
     // Latched at the first feed rather than read per AU: this is the hottest path in the app and
-    // the trigger surface is a filesystem open. Same shape as every other `dev::` read here.
-    let v = crate::dev::read("ptsnudge")
+    // the trigger surface is a filesystem open. Same shape as every other `devtrig::` read here.
+    let v = crate::devtrig::read("ptsnudge")
         .and_then(|s| s.trim().parse::<i64>().ok())
         .unwrap_or(DEFAULT);
     NUDGE.store(v, Ordering::Relaxed);
@@ -2960,12 +2960,12 @@ mod payload_tests {
     #[test]
     fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let play = crate::dev::PlayUrl {
+        let play = crate::player::playurl::PlayUrl {
             url: "http://192.0.2.1/refused-p5.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
             fps: 23.976,
-            dovi: crate::dev::PlayDovi {
+            dovi: crate::player::playurl::PlayDovi {
                 profile: 5,
                 bl_compat: 0,
                 el_present: false,

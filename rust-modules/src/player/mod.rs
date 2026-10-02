@@ -22,6 +22,7 @@ pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation
 pub(crate) mod engine;
 pub(crate) mod lifecycle;
 pub(crate) mod machine;
+pub(crate) mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub(crate) mod preview;
 mod ffi;
 mod pump;
@@ -65,11 +66,11 @@ use shared::{
 /// **It seeds the real store and stubs nothing else** — the same `SHARED.track_names` the demuxer
 /// writes, read back through the same `metadata::track_label::track_name` precedence. So a seeded
 /// screenshot verifies the ROW, honestly; what it cannot verify is the FFI read that fills the
-/// store on a television. Compiled out of a release build with every other trigger (`dev::read` is
+/// store on a television. Compiled out of a release build with every other trigger (`devtrig::read` is
 /// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
 /// file's.
 pub(crate) fn seed_dev_track_names() {
-    let Some(spec) = crate::dev::read("tracknames") else {
+    let Some(spec) = crate::devtrig::read("tracknames") else {
         return;
     };
     // The real subtitle names of a nine-track MP4 whose PMS record carries none — the file this
@@ -1096,7 +1097,7 @@ const FAILTEST_VERDICT: &str =
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
 fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
-    let arm = crate::dev::read("failtest")?;
+    let arm = crate::devtrig::read("failtest")?;
     let sub = playing_subscription(&ps);
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),
@@ -1127,7 +1128,17 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
 /// dev: the `policy` arm of `/tmp/plxnative-failtest` stands for a Force Direct Play session, so
 /// the action table sees the Force the arm's shape claims.
 fn failtest_forced() -> bool {
-    crate::dev::read("failtest").is_some_and(|a| a.trim() == "policy")
+    crate::devtrig::read("failtest").is_some_and(|a| a.trim() == "policy")
+}
+
+/// Publish the jail read-out fixture on the same session fact the owned confirmation reads.
+/// Only ordinary development scenarios call this; controlled replay never reads this trigger.
+/// It lives beside [`failtest_arm`], the other reader of `/tmp/plxnative-failtest`, because it
+/// only reads that trigger and writes a `PlaybackSession` field — nothing of the app's.
+pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
+    if crate::devtrig::read("failtest").is_some_and(|arm| arm.trim() == "jail") {
+        session.jail_load_blocked = true;
+    }
 }
 
 /// HUD caption for `PlaybackState::Error` (main thread).

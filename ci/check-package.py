@@ -164,6 +164,9 @@ def nightly_stamp_date(stamp: str) -> "str | None":
 # Regexing the two array bodies out of the CURRENT `dev.rs` means this check is always grading the
 # vocabulary the source actually declares this commit, never a stale snapshot of it.
 DEV_RS = ROOT / "rust-modules/src/dev.rs"
+# `CONTROLLED` moved with the trigger primitives (`flag`/`read`/`controlled_trigger`) to the base
+# layer, so the catalog's two arrays now live in two files: `DIAG` in `dev.rs`, `CONTROLLED` here.
+DEVTRIG_RS = ROOT / "rust-modules/src/devtrig.rs"
 
 # Names that are real `plxnative-*` bytes in every configuration ON PURPOSE, so a hit here is not a
 # leak — allowlisted once, with the reason, rather than excluded from the catalog silently.
@@ -245,10 +248,14 @@ def parse_dev_trigger_catalog(dev_rs_text: str) -> "set[str]":
 
 
 def dev_trigger_catalog() -> "set[str]":
-    """[`parse_dev_trigger_catalog`] against the real `dev.rs`, minus the release-legitimate
+    """[`parse_dev_trigger_catalog`] against the real `dev.rs` (`DIAG`) and `devtrig.rs`
+    (`CONTROLLED`), minus the release-legitimate
     allowlist — the set `ci/check-package.py` actually grades a packaged binary against.
     """
-    return parse_dev_trigger_catalog(DEV_RS.read_text()) - RELEASE_LEGITIMATE_TRIGGER_NAMES
+    return (
+        parse_dev_trigger_catalog(DEV_RS.read_text() + "\n" + DEVTRIG_RS.read_text())
+        - RELEASE_LEGITIMATE_TRIGGER_NAMES
+    )
 
 
 def _selftest() -> int:

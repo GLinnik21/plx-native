@@ -141,10 +141,10 @@ static CYC_N: AtomicU32 = AtomicU32::new(0);
 /// the crate's only listener, it binds `INADDR_ANY` and its hello handshake carries no credential
 /// of any kind, so anyone on the LAN who reached it would be served the app's own framebuffer —
 /// the signed-in profile name, the user's library. Arming it took nothing but the ability to
-/// create a file in a world-writable `/tmp`. The gate is `dev::read` below being compile-time
+/// create a file in a world-writable `/tmp`. The gate is `devtrig::read` below being compile-time
 /// `None` without the `devtriggers` feature, which makes the two `spawn`s unreachable.
 pub(crate) fn init() {
-    let Some(content) = crate::dev::read("capture") else {
+    let Some(content) = crate::devtrig::read("capture") else {
         return;
     };
     let port: u16 = content.parse().unwrap_or_else(|_| default_port());

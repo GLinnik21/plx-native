@@ -3026,7 +3026,7 @@ const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 fn blur_taps() -> [f32; 2] {
     static SEEN: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let Some(v) = crate::dev::read("blurtaps") else {
+        let Some(v) = crate::devtrig::read("blurtaps") else {
             return BLUR_TAPS;
         };
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
@@ -3306,7 +3306,7 @@ const STANDING_RIMCLEAR: f32 = 0.6;
 fn rimclear_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("rimclear")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("rimclear")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: rim scrim shed swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -3320,7 +3320,7 @@ fn rimclear_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("tracksharp")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("tracksharp")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: rim sharp source swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
@@ -3335,7 +3335,7 @@ fn sharp_sweep() -> Option<f32> {
 fn deep_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("paneldeep")?.trim().parse::<f32>().ok()?;
+        let v = crate::devtrig::read("paneldeep")?.trim().parse::<f32>().ok()?;
         crate::eventlog::log(&format!("glass: panel deep-sample radius swept to {v}"));
         Some(v.max(0.0))
     })
@@ -3537,7 +3537,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
     static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)>> =
         std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("tracklens")?;
+        let v = crate::devtrig::read("tracklens")?;
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>().ok());
         let (b, l, w) = (it.next()??, it.next()??, it.next()??);
         // The chamfer's two weights are OPTIONAL: three fields is the geometry alone, five adds the

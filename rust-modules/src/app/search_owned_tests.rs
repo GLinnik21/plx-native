@@ -759,7 +759,7 @@ fn owned_search_walks_the_shared_strip_to_the_chip_and_back_to_the_field() {
 /// now fails here. **What this still cannot see is the one line above it in
 /// that arm itself** (`if let Some(q) = super::read("search")`): driving the real trigger-FILE
 /// read needs a full `App`/SDL frame, which this suite does not construct (see `dev.rs`'s own
-/// tests for host coverage of `dev::read`'s file-reading half in isolation).
+/// tests for host coverage of `devtrig::read`'s file-reading half in isolation).
 ///
 /// The draft is `pub(crate)` to `screens::search` alone, so this cannot read it directly — the
 /// proof goes through the same observable the wheel/scroll tests already use: a query the draft

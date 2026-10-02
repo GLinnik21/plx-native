@@ -419,7 +419,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
         crate::paths::app_id(),
         crate::paths::flavour().unwrap_or("-"),
         crate::paths::runtime_dir().display(),
-        if crate::dev::ENABLED {
+        if crate::devtrig::ENABLED {
             "dev"
         } else {
             "release"

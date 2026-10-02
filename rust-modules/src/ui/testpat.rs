@@ -215,7 +215,7 @@ pub(crate) fn set(spec: &str) -> bool {
 /// Armed at boot from `/tmp/plxnative-testpat`. Called once, from the same place every other
 /// boot trigger is read.
 pub(crate) fn boot() {
-    if let Some(v) = crate::dev::read("testpat") {
+    if let Some(v) = crate::devtrig::read("testpat") {
         if !set(&v) {
             crate::eventlog::log(&format!("testpat: unrecognised spec {v:?} — ignored"));
         }

@@ -2160,7 +2160,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             // A host Load of 0 with the clock sink off is "no video path", not an
                             // admitted slot. Counting it spends the cycle and the later failure
                             // opens the breaker, so every later title is skipped.
-                            let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+                            let seam_absent = cfg!(feature = "hostsim") && !crate::devtrig::flag("clocksink");
                             if started && !seam_absent {
                                 crate::player::preview::note_admitted();
                             } else if crate::route::url(&app.player.session).is_empty() {

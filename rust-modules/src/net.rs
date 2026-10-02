@@ -1660,7 +1660,7 @@ pub fn https_get_public(url: &str) -> Option<Resp> {
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
 pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
-    let Some(nw) = crate::dev::no_wan() else {
+    let Some(nw) = crate::devtrig::no_wan() else {
         return false;
     };
     let bare = host
@@ -1753,7 +1753,7 @@ pub(crate) mod resolve {
                      names resolve through DNS",
                 );
             }
-            return if crate::dev::no_wan().is_some() { Err(()) } else { Ok(()) };
+            return if crate::devtrig::no_wan().is_some() { Err(()) } else { Ok(()) };
         }
         crate::eventlog::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
         Err(())

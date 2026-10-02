@@ -198,8 +198,8 @@ fn fetch_once(id: ServerId, c: &Client) {
     // capsule, the stats Server row) is otherwise unreachable on the only TV we own. It applies
     // to EVERY server, deliberately: it is a "what does a free server look like" switch, not a
     // per-server override. Checked here, once per fetch, rather than in `subscription()` — that
-    // accessor is on per-frame paths and `dev::flag` is a filesystem stat.
-    if crate::dev::flag("nopass") {
+    // accessor is on per-frame paths and `devtrig::flag` is a filesystem stat.
+    if crate::devtrig::flag("nopass") {
         #[cfg(feature = "devtriggers")]
         crate::eventlog::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
         sub = Subscription::No;

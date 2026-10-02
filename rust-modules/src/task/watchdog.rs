@@ -232,7 +232,7 @@ impl LoopWatch {
                 // fwcompat inventories export both symbols at GLIBC_2.4 across all releases:
                 // libpthread on older firmware, libc after the glibc pthread merge.
                 let main_thread = unsafe { libc::pthread_self() } as usize;
-                let log_only = crate::dev::guard_log_only();
+                let log_only = crate::devtrig::guard_log_only();
                 super::spawn("main-thread watchdog", move || observe_loop(main_thread, log_only)).is_some()
             };
             #[cfg(not(feature = "threadcheck"))]

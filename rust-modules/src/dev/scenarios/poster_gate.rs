@@ -207,7 +207,7 @@ impl Scene {
     fn arm(&mut self) {
         if self.checked { return; }
         self.checked = true;
-        self.mode = match crate::dev::read("postergate").as_deref().map(str::trim) {
+        self.mode = match crate::devtrig::read("postergate").as_deref().map(str::trim) {
             Some("settle") => Some(Mode::Settle), Some("eviction") => Some(Mode::Eviction), Some("dive") => Some(Mode::Dive), _ => None,
         };
         if let Some(mode) = self.mode {

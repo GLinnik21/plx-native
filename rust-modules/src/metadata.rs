@@ -674,7 +674,7 @@ impl DvPresentation {
     }
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-dvnonode` — after a supported route has frozen `Declare`, keep its Dolby
     /// Vision **direct play** but send **no** `DolbyHdrInfo` node. Diagnostic only: it is the
     /// explicitly logged exception to gate/payload agreement.
@@ -694,7 +694,7 @@ crate::dev::latched_flag!(
     pub(crate) fn dv_node_suppressed = "dvnonode";
 );
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-nodv` — **withhold the Dolby Vision declaration**, for a bisect. The
     /// polarity is inverted from what it was, and the inversion is the point.
     ///
@@ -1932,11 +1932,11 @@ pub(crate) fn trailer_now_playing(
 fn dev_source() -> Option<&'static str> {
     if crate::stores::tape::active() { return None; }
     // Function-local, not process-wide mutable state: one dev-trigger stat per process, kept off
-    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::dev::read`
+    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::devtrig::read`
     // is a `None`-returning stub, so a release build pays one cheap `get_or_init` for a value
     // that is always `None` — not worth a cfg to avoid.
     static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
+    SEEN.get_or_init(|| crate::devtrig::read("shared")).as_deref()
 }
 /// The host suite must not depend on what this dev Mac happens to have under `/tmp`: an armed
 /// `plxnative-shared` would outrank the registry and make every credit assertion here read the
@@ -3963,7 +3963,7 @@ fn pump_alt_sources_with_library(
 
 // ---- the headless stand-in ---------------------------------------------------------------------
 //
-// Reached through `dev::read`, so the whole of it is absent from a `RELEASE=1` build at compile
+// Reached through `devtrig::read`, so the whole of it is absent from a `RELEASE=1` build at compile
 // time along with the rest of the `/tmp` surface. The trigger literal is
 // `/tmp/plxnative-shared`, spelled here for the catalog grep in `docs/agent-reference.md`.
 
@@ -4025,7 +4025,7 @@ fn alt_pump_stand_in(state: &mut MetadataState, library: Option<&str>) -> bool {
 /// armed-but-EMPTY file means the same, because a copy list has to be attributed to somebody.
 #[cfg(not(test))]
 fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
-    let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;
+    let handle = crate::devtrig::read("shared").filter(|h| !h.is_empty())?;
     // The application supplies the retained owner publication on every production pump. A
     // compatibility caller with no directory cannot honestly name the library, so it cannot arm
     // this visual stand-in.
@@ -4076,7 +4076,7 @@ fn alt_stand_in_slot() -> Option<crate::plex::ServerId> {
         return Some(id); // a real second server is already registered — use it
     }
     let c = crate::plex::client_opt()?;
-    let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
+    let token = crate::devtrig::read("token").filter(|t| !t.is_empty())?;
     // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
     // one that resolves to whatever happens to be current.
     Some(crate::plex::register(

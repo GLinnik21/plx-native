@@ -1094,7 +1094,7 @@ impl LoginScreen {
                 _ => false,
             };
             if stale
-                && !crate::dev::scenarios::harness_driven()
+                && !harness_driven()
                 && self.report.last_resolve != Some((o.id, revision))
             {
                 self.report.last_resolve = Some((o.id, revision));
@@ -1860,6 +1860,37 @@ impl LoginScreen {
         self.qr_px = (0, 0);
         self.qr_tex_gen = live;
     }
+}
+
+/// Is a harness driving this boot? The onboarding offer is a modal question, and a scripted run
+/// (a test identity, a forced profile pick, a recording) must not stop on one. **Narrow on
+/// purpose**, where `dev::any_trigger_present` is broad: every other trigger — `plxnative-login`,
+/// `-nowan`, `-signinfail`, the consent state — is how the offer is PUT on screen for a capture,
+/// and a gate that saw them would hide the thing being captured. Read once.
+///
+/// It only reads trigger files, so it lives with its one caller rather than in `dev::scenarios`,
+/// which a screen may not name.
+fn harness_driven() -> bool {
+    if cfg!(test) { return false; }
+    static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DRIVEN.get_or_init(|| {
+        crate::devtrig::read("token").is_some_and(|t| !t.is_empty())
+            || crate::devtrig::read("pickuser").is_some()
+            || recorder_armed()
+    })
+}
+
+/// Is `plxnative-rec` armed (the recorder's mode value present and valid)? The same raw read
+/// `dev::scenarios::rec_trigger` makes for the controlled-boot preflight. Compiled out, not merely
+/// guarded, in a release build: a runtime check would leave the trigger name in the binary's bytes,
+/// where `ci/check-package.py` grades them.
+#[cfg(feature = "devtriggers")]
+fn recorder_armed() -> bool {
+    matches!(crate::ui::rec::mode_value(&crate::devtrig::path("rec")), Ok(Some(_)))
+}
+#[cfg(not(feature = "devtriggers"))]
+fn recorder_armed() -> bool {
+    false
 }
 
 impl LoginScreen {

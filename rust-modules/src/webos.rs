@@ -403,7 +403,7 @@ pub(crate) fn rtkmem_context() -> &'static str {
 pub(crate) fn go_home() {
     #[cfg(test)]
     HOME_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let forced = crate::dev::read("gohome");
+    let forced = crate::devtrig::read("gohome");
     let forced = forced.as_deref().map(str::trim).unwrap_or("");
     let mode = match forced {
         "sam" | "minimize" | "probe" => forced,

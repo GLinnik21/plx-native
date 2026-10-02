@@ -46,7 +46,7 @@ const FRAME_BYTES: usize = W * H * 4;
 fn armed() -> bool {
     static ONCE: OnceLock<bool> = OnceLock::new();
     *ONCE.get_or_init(|| {
-        let on = crate::dev::flag("simvideo");
+        let on = crate::devtrig::flag("simvideo");
         if on {
             crate::eventlog::log(
                 "simvideo: ARMED — video AUs are also decoded by a system ffmpeg and composited \
