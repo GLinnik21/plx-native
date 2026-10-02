@@ -47,6 +47,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   that ignores whitespace *within* a line, not one line split into three. Size a change by content
   (`git show <rev>:<path> | tr -d '[:space:]' | wc -c`, before and after); a near-zero delta means
   reflow. Then diff the symbol sets to find what actually moved.
+- **The module graph only points down.** `ci/module-layers.ini` declares the crates
+  `rust-modules/src` is being split into, and `ci/check-module-layers.py` (in `make check`) fails
+  on a reference that names a layer its own layer may not use, and on a module placed in no layer.
+  Fix the reference (`docs/module-layers.md` lists the moves, in order) instead of adding to
+  `ci/allow/layers.txt`, which only shrinks.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,

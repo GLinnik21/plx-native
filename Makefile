@@ -1488,6 +1488,12 @@ check-python: check-localization
 	@# The restructure's structure gates (spec §15.2): greps with counted allowlists under
 	@# ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
 	ci/check-deps.sh
+	@# The module-layer gate (docs/module-layers.md): every reference one module makes to another
+	@# must point DOWN the target crate graph in ci/module-layers.ini, or be one of the counted
+	@# migration entries in ci/allow/layers.txt, which only shrinks. This is what keeps the module
+	@# graph from growing new cycles while the crate split is under way. ~3 s, no cargo.
+	python3 ci/test_module_graph.py
+	python3 ci/check-module-layers.py
 	@# The statics gate (spec §0 done-criterion 1): static mut under ui/ and screens/ is zero except
 	@# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
 	@# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.

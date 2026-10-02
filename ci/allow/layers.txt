@@ -1,0 +1,238 @@
+# count: 231
+# The module-layer gate's MIGRATION list (ci/check-module-layers.py, docs/module-layers.md): one
+# entry per (file, member) where a file names a module in a layer its own layer may not use, as
+# `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
+# crate can be split along ci/module-layers.ini; the plan step says how. It only shrinks: a fixed
+# entry fails the gate as stale until removed (`ci/check-module-layers.py --prune` does that), and
+# a new upward reference fails it until the code is fixed — not until a line is added here.
+rust-modules/src/auth.rs	crate	L1 log core moves to base
+rust-modules/src/auth.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/auth.rs	text	L14 session-layer presentation moves to screens
+rust-modules/src/auth.rs	ui	L14 session-layer presentation moves to screens
+rust-modules/src/auth/owner.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth/owner.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth/owner/incident_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth_discovery_tests.rs	crate	L1 log core moves to base (cfg(test) only)
+rust-modules/src/auth_discovery_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth_session_worker_tests.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth_session_worker_tests.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/auth_session_worker_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/browse/browse_discovery_lifecycle_tests.rs	app	L11 data layer owns its seams (cfg(test) only)
+rust-modules/src/browse/browse_discovery_lifecycle_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/browse/mod.rs	crate	L1 log core moves to base
+rust-modules/src/browse/section_hubs.rs	crate	L1 log core moves to base
+rust-modules/src/browse/section_hubs.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/collection.rs	app	L11 data layer owns its seams
+rust-modules/src/curlio.rs	crate	L1 log core moves to base
+rust-modules/src/devcaps.rs	crate	L1 log core moves to base
+rust-modules/src/devcaps.rs	plex	L7 platform owns its own types
+rust-modules/src/diag/schema.rs	player	L9 telemetry owns its wire schema (cfg(test) only)
+rust-modules/src/diag/scrub.rs	crate	L1 log core moves to base
+rust-modules/src/dynlib.rs	crate	L1 log core moves to base
+rust-modules/src/egl.rs	crate	L1 log core moves to base
+rust-modules/src/egl.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/ff.rs	capture	L12 media owns its lifecycle seams
+rust-modules/src/ff.rs	crate	L1 log core moves to base
+rust-modules/src/ff.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/fontcov.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/fontcov.rs	ui::machine	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/gfx.rs	crate	L1 log core moves to base
+rust-modules/src/gfx.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/gfx.rs	ui	L5 gfx stops naming ui
+rust-modules/src/gpu_timer.rs	crate	L1 log core moves to base
+rust-modules/src/http.rs	crate	L1 log core moves to base
+rust-modules/src/i18n/mod.rs	crate	L1 log core moves to base
+rust-modules/src/i18n/tests.rs	auth	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/i18n/tests.rs	plex	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/img.rs	crate	L1 log core moves to base
+rust-modules/src/imgcache.rs	crate	L1 log core moves to base
+rust-modules/src/keymanager.rs	crate	L1 log core moves to base
+rust-modules/src/metadata.rs	app	L11 data layer owns its seams
+rust-modules/src/metadata.rs	crate	L1 log core moves to base
+rust-modules/src/metadata.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/metadata.rs	player	L11 data layer owns its seams
+rust-modules/src/metadata.rs	route	L11 data layer owns its seams
+rust-modules/src/metadata.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/metadata/record.rs	app	L11 data layer owns its seams
+rust-modules/src/metadata/sub_layout.rs	player	L11 data layer owns its seams
+rust-modules/src/metadata_detail_mailbox_tests.rs	app	L11 data layer owns its seams (cfg(test) only)
+rust-modules/src/metadata_season_mailbox_tests.rs	curlio	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/net.rs	crate	L1 log core moves to base
+rust-modules/src/net.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/net.rs	plex	L6 transport takes Plex values as parameters
+rust-modules/src/paths.rs	crate	L1 log core moves to base
+rust-modules/src/person.rs	app	L11 data layer owns its seams
+rust-modules/src/person.rs	crate	L1 log core moves to base
+rust-modules/src/person.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/person.rs	ui	L11 data layer owns its seams
+rust-modules/src/player/ass.rs	crate	L1 log core moves to base
+rust-modules/src/player/claim_hold.rs	app	L12 media owns its lifecycle seams (cfg(test) only)
+rust-modules/src/player/engine.rs	crate	L1 log core moves to base
+rust-modules/src/player/engine.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/ffi_host.rs	crate	L1 log core moves to base
+rust-modules/src/player/ffi_host.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/machine.rs	app	L12 media owns its lifecycle seams
+rust-modules/src/player/machine.rs	crate	L1 log core moves to base
+rust-modules/src/player/machine.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/player/mod.rs	crate	L1 log core moves to base
+rust-modules/src/player/mod.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/mod.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/player/preview.rs	app	L12 media owns its lifecycle seams
+rust-modules/src/player/preview.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/preview.rs	ui	L12 media owns its lifecycle seams
+rust-modules/src/player/pump.rs	app	L12 media owns its lifecycle seams
+rust-modules/src/player/pump.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/sim_video.rs	crate	L1 log core moves to base
+rust-modules/src/player/sim_video.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/player/threads.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/plex/account.rs	crate	L1 log core moves to base
+rust-modules/src/plex/account.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/plex/account/preferences.rs	pms	L8 plex stops naming upper layers
+rust-modules/src/plex/client.rs	crate	L1 log core moves to base
+rust-modules/src/plex/client.rs	pms	L8 plex stops naming upper layers
+rust-modules/src/plex/discover.rs	crate	L1 log core moves to base
+rust-modules/src/plex/grant.rs	crate	L1 log core moves to base
+rust-modules/src/plex/grant.rs	pms	L8 plex stops naming upper layers
+rust-modules/src/plex/grant.rs	stores	L8 plex stops naming upper layers
+rust-modules/src/plex/origin.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/plex/probe.rs	telemetry	L8 plex stops naming upper layers
+rust-modules/src/plex/serverinfo.rs	crate	L1 log core moves to base
+rust-modules/src/plex/serverinfo.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/plex/servers.rs	crate	L1 log core moves to base
+rust-modules/src/plex/session.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session.rs	crate	L1 log core moves to base
+rust-modules/src/plex/session.rs	player	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session.rs	route	L8 plex stops naming upper layers
+rust-modules/src/plex/session.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session.rs	telemetry	L8 plex stops naming upper layers
+rust-modules/src/plex/session.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session/async_persistence.rs	crate	L1 log core moves to base
+rust-modules/src/plex/session/persistence.rs	crate	L1 log core moves to base (cfg(test) only)
+rust-modules/src/plex/session_persistence_tests.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session_persistence_tests.rs	auth	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/plex/session_persistence_tests.rs	stores	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/pms.rs	crate	L1 log core moves to base
+rust-modules/src/pms.rs	ui	L11 data layer owns its seams
+rust-modules/src/pms_catalog_commit_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/route/decision.rs	crate	L1 log core moves to base
+rust-modules/src/route/decision.rs	ui	L12 media owns its lifecycle seams
+rust-modules/src/route/decision_audio_enhancement_tests.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/route/decision_audio_enhancement_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/screens/account_menu.rs	lab	L3 lab config/trigger key moves to platform
+rust-modules/src/screens/home/mod.rs	crate	L1 log core moves to base
+rust-modules/src/screens/home/mod.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/screens/login.rs	crate	L1 log core moves to base
+rust-modules/src/screens/login.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/screens/onboard.rs	crate	L1 log core moves to base
+rust-modules/src/screens/plaintext_question.rs	crate	L1 log core moves to base
+rust-modules/src/screens/player/mod.rs	crate	L1 log core moves to base
+rust-modules/src/screens/player/mod.rs	dev	L2 dev trigger primitives move to base (cfg(test) only)
+rust-modules/src/screens/settings.rs	crate	L1 log core moves to base
+rust-modules/src/search.rs	crate	L1 log core moves to base
+rust-modules/src/search.rs	screens	L11 data layer owns its seams
+rust-modules/src/search.rs	ui	L11 data layer owns its seams
+rust-modules/src/search/recents.rs	crate	L1 log core moves to base
+rust-modules/src/search_merge_ranking_tests.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/search_merge_ranking_tests.rs	ui	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/stream.rs	crate	L1 log core moves to base
+rust-modules/src/stream_redirect.rs	crate	L1 log core moves to base
+rust-modules/src/stream_redirect.rs	http	L6 transport takes Plex values as parameters
+rust-modules/src/stream_redirect.rs	plex	L6 transport takes Plex values as parameters
+rust-modules/src/stream_test_support.rs	http	L6 transport takes Plex values as parameters (cfg(test) only)
+rust-modules/src/stream_test_support.rs	plex	L6 transport takes Plex values as parameters (cfg(test) only)
+rust-modules/src/surface.rs	crate	L1 log core moves to base
+rust-modules/src/task.rs	crate	L1 log core moves to base
+rust-modules/src/task/blocking.rs	crate	L1 log core moves to base
+rust-modules/src/task/blocking.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/task/blocking.rs	storage	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/task/runtime_check.rs	crate	L1 log core moves to base
+rust-modules/src/task/watchdog.rs	crate	L1 log core moves to base
+rust-modules/src/task/watchdog.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/telemetry/crashreport.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/incident.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/incident.rs	ui	L9 telemetry owns its wire schema
+rust-modules/src/telemetry/mod.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/telemetry/mod.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/mod.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/telemetry/mod.rs	player	L9 telemetry owns its wire schema
+rust-modules/src/telemetry/native.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/persistence.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/playback.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/playback.rs	player	L9 telemetry owns its wire schema
+rust-modules/src/telemetry/posthog.rs	player	L9 telemetry owns its wire schema (cfg(test) only)
+rust-modules/src/telemetry/sender.rs	crate	L1 log core moves to base
+rust-modules/src/telemetry/spool.rs	crate	L1 log core moves to base
+rust-modules/src/text.rs	crate	L1 log core moves to base
+rust-modules/src/text.rs	ui	L5 gfx stops naming ui
+rust-modules/src/ui/card_row.rs	pms	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/chapters_panel.rs	metadata	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/chapters_panel.rs	player	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/chapters_panel.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/chapters_panel.rs	screens	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/chapters_panel.rs	stores	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/collection_tile.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/consts.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/consts.rs	lab	L3 lab config/trigger key moves to platform
+rust-modules/src/ui/consts.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/decision_alert.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/dispatch_return_tests.rs	app	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/dispatch_return_tests.rs	plex	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/dispatch_return_tests.rs	screens	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/dispatch_return_tests.rs	stores	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/fmt.rs	metadata	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/frame/budget.rs	crate	L1 log core moves to base
+rust-modules/src/ui/glassload.rs	crate	L1 log core moves to base
+rust-modules/src/ui/hero_logo.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/idle.rs	gfx	L4 machine runtime leaves ui
+rust-modules/src/ui/idle.rs	player	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/idle.rs	ui	L4 machine runtime leaves ui
+rust-modules/src/ui/info_panel.rs	metadata	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/info_panel.rs	plex	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/info_panel.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/info_panel.rs	screens	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/info_panel.rs	stores	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/lab_toast.rs	app	L3 lab config/trigger key moves to platform (cfg(test) only)
+rust-modules/src/ui/lab_toast.rs	lab	L3 lab config/trigger key moves to platform
+rust-modules/src/ui/machine.rs	text	L4 machine runtime leaves ui
+rust-modules/src/ui/machine.rs	ui	L4 machine runtime leaves ui
+rust-modules/src/ui/mod.rs	crate	L1 log core moves to base
+rust-modules/src/ui/more_menu.rs	app	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/more_menu.rs	lab	L3 lab config/trigger key moves to platform
+rust-modules/src/ui/more_menu.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/more_menu.rs	screens	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/overdraw.rs	crate	L1 log core moves to base
+rust-modules/src/ui/player_hud.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/ui/player_hud.rs	metadata	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/player_hud.rs	player	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/player_hud.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/player_hud.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/player_hud.rs	screens	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/profile.rs	crate	L1 log core moves to base
+rust-modules/src/ui/source_list.rs	browse	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/source_list.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/source_list.rs	screens	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/source_list_contract_tests.rs	screens	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/source_list_contract_tests.rs	stores	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/testpat.rs	crate	L1 log core moves to base
+rust-modules/src/ui/testpat.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/ui/timing_capsule.rs	player	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	diag	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	metadata	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	player	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/track_menu.rs	screens	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/track_menu.rs	stores	L10 player and Plex-aware widgets move to screens (cfg(test) only)
+rust-modules/src/ui/up_next.rs	route	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/widgets.rs	crate	L1 log core moves to base
+rust-modules/src/ui/widgets.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/ui/widgets.rs	plex	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/widgets.rs	pms	L10 player and Plex-aware widgets move to screens
+rust-modules/src/ui/widgets_art_crop_tests.rs	plex	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/ui/widgets_poster_mark_tests.rs	pms	L13 whole-app test moves up to the layer that owns it (cfg(test) only)
+rust-modules/src/viewstate.rs	crate	L1 log core moves to base
+rust-modules/src/webos.rs	crate	L1 log core moves to base
+rust-modules/src/webos.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/webos/caps.rs	crate	L1 log core moves to base
+rust-modules/src/webos/caps.rs	dev	L2 dev trigger primitives move to base
+rust-modules/src/webos/caps.rs	metadata	L7 platform owns its own types (cfg(test) only)

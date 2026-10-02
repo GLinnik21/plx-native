@@ -5771,6 +5771,9 @@ impl PersonOwnerGateFixture {
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
+        # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
+        # upward references that existed when the target crate graph was declared, 2026-10-02.
+        "layers.txt": 231,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,
