@@ -13,7 +13,7 @@
 //! hands this module text straight off the network, so the DER reader is bounds-checked end to
 //! end and answers `None` rather than panicking.
 
-use crate::keymanager::b64;
+use crate::b64;
 use crate::sha256::sha256;
 
 const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
