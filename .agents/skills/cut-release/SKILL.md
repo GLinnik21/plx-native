@@ -58,7 +58,8 @@ split-invocation mistake into a message *for the stable id* — see the next sec
 there: everywhere else `RELEASE=1` is still yours to remember.
 
 The one exception, and it is safe to lean on: a **pure query** — any of the
-`print-*` goals, and only those (`QUERY_GOALS` in the Makefile is the source; transcribing the list
+`print-*` goals, plus the other build-nothing goals (`SIDE_EFFECT_FREE` in the Makefile is the
+source: `QUERY_GOALS`, `release-guard`, `lab-guard`, `disk`, `build-bench*`; transcribing the list
 here is how it went one short the first time it was written) is exempted from that
 parse-time deletion, precisely so that asking the Makefile a question mid-release cannot discard the
 binary you are about to publish. Mixing a query with a real goal is not a query and does stamp.

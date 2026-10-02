@@ -182,7 +182,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
               print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
-              print-sentry-project
+              print-sentry-project print-bench-config
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -206,6 +206,13 @@ print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
+# What `tools/build-bench.py` needs to run the recipes' cargo invocations without restating their
+# flags: toolchain, target dirs, feature flags, RUSTFLAGS. Never the telemetry credentials -- the
+# `build-bench` recipe hands those over in the environment, exactly like `test-fast` does.
+print-bench-config:
+	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
+	  'RUST_FEATFLAGS=$(RUST_FEATFLAGS)' 'RUST_LIB=$(RUST_LIB)' 'RUST_ENV=$(RUST_ENV)' \
+	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'RELEASE=$(RELEASE)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -671,7 +678,7 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)$(if $(filt
 # SEE the refusal message the cut-release skill quotes. Without it, asking that question on a
 # different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
 # libraries — measured, by a reviewer, mid-review.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk build-bench build-bench-quick
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
@@ -1418,9 +1425,10 @@ check-cargo-unit-hostsim:
 # rounds: an edit-rebuild is ~10 s vs 31-32 s non-incremental, flat across leaf/mid/hub edits;
 # cold is 51.7 s vs 46.2 s; the tree is 2.7 GB (debug/incremental 2.0 GB) vs 1.0 GB. Lanes stay
 # non-incremental by default for the disk (see CARGO_INCREMENTAL above), so this is something you
-# ask for, not something `check` does: NOTHING else here references `$(TEST_FAST_TDIR)`, and it
-# is never a CI step. `T=route::` forwards a test-name filter. `tools/build-gc.sh --incremental`
-# (and `--lanes`) reclaim it: both glob `rust-modules/target*`. `tools/cargo-seed.py` handles only
+# ask for, not something `check` does: nothing in `check*`, `lint` or CI references `$(TEST_FAST_TDIR)`
+# (only this target and the `print-bench-config` query that feeds `make build-bench`).
+# `T=route::` forwards a test-name filter. `tools/build-gc.sh --incremental` (and `--lanes`)
+# reclaim it: both glob `rust-modules/target*`. `tools/cargo-seed.py` handles only
 # `target` and `target-release`, so it neither harvests nor seeds this dir. RELEASE=1 is refused:
 # that is the shipping feature set, which this host-unit loop does not exercise.
 TEST_FAST_TDIR = target-fast
@@ -1433,6 +1441,22 @@ test-fast:
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_NIGHTLY) test --lib $(if $(T),'$(T)')
+
+# `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
+# (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
+# table). `build-bench-quick` is no-op + leaf edit + sizes at one run. It runs the SAME cargo
+# invocations as the recipes above (toolchain, dirs, feature flags and RUSTFLAGS come from
+# `print-bench-config`; ci/test_build_bench.py pins the rest), under the same machine-wide lock as
+# `make check` so two builds never skew each other, and with the environment `test-fast` gives
+# cargo (telemetry words included -- they are compile-time inputs). It only edits-and-restores two
+# source files (restored in a finally) and never cleans a target dir.
+# Listed in SIDE_EFFECT_FREE: it builds none of the TV artifacts, so it must not reset the stamp.
+# RELEASE=1 is refused: the host test build is not the shipping feature set.
+.PHONY: build-bench build-bench-quick
+build-bench build-bench-quick:
+	@$(if $(RELEASE),echo "make $@: refused under RELEASE=1 -- it benchmarks the default-feature host build; RELEASE=1 is the shipping feature set." >&2; exit 1,:)
+	@python3 tools/check-lock.py -- env PLX_BENCH_VIA_MAKE=1 $(TELEMETRY_ENV) \
+	  python3 tools/build-bench.py $(if $(filter build-bench-quick,$@),--quick) $(ARGS)
 
 check-python: check-localization
 	python3 ci/test_ass_composite.py
@@ -1567,6 +1591,8 @@ check-python: check-localization
 	python3 tools/test_ci_durations.py
 	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 	python3 ci/test_test_fast.py
+	@# `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.
+	python3 ci/test_build_bench.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py

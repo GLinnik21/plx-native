@@ -173,6 +173,43 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` (add `--binary <path>` to grade
     a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
+- `make build-bench [ARGS='--runs 5 --json out.json']` / `make build-bench-quick` — the repeatable
+  local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
+  before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
+  min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
+  a machine-readable document (git sha, `rustc +nightly -V`, host, per-run load and swap). Rows:
+  a **no-op** host test build (`cargo test --lib --no-run`; it reports from cargo's JSON `fresh`
+  flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
+  `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
+  leaf file (`cbuf.rs`) and to a hub (`ui/mod.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
+  default `target`) and incremental (`CARGO_INCREMENTAL=1`, `target-fast`; skipped with a note when
+  that tree is absent unless `--cold`); the **unit suite** run on a warm tree with its `test
+  result:` counts; the **ARM staticlib** line after touching `lib.rs` plus the archive's size and
+  sha256 (skipped with a note when no ARM archive exists in this checkout, and it never starts the
+  FFmpeg build); and the **sizes** of `rust-modules/target*`. `build-bench-quick` is no-op + leaf
+  edit + sizes at one run; `ARGS='--only noop,leaf --runs 5'` selects any subset. The toolchain,
+  target dirs, feature flags and RUSTFLAGS come from `make -s print-bench-config` and the
+  environment is the one `make test-fast` gives cargo, so a bare invocation of the script (which
+  warns) is not comparable to a `make` one. It runs under the same machine-wide lock as `make check`
+  (so it waits behind one, and a `make check` waits behind it), refuses `RELEASE=1`, never touches
+  the TV and never cleans a target dir. It edits `cbuf.rs` and `ui/mod.rs` only while a row is being
+  timed, refuses to start if either has uncommitted changes, restores the original bytes in a
+  `finally` and verifies with `git diff --quiet` at the end (exit 3 if not); a cargo failure stops
+  the run, prints the table so far and exits 1. A first run in a fresh checkout includes an untimed
+  warm-up build per tree. **When to run it:** every PR that touches `Makefile`, `Cargo.toml`,
+  `Cargo.lock`, `build.rs`, `build_support/`, a `.cargo/config.toml`, `.github/workflows/`, or the
+  module layout (moving, splitting or merging files under `rust-modules/src/`) pastes the table from
+  `make build-bench` taken on the base commit and on the change, on the same machine in the same
+  sitting. **Reading noise:** before every run the script samples the 1-minute load average
+  (`uptime`) and swap (`sysctl vm.swapusage`) and prints `WARNING: <scenario> run N: load X > <cores>
+  cores` or `swap N% used` when load exceeds the core count or swap is over 90% full; this Mac is
+  shared with other sessions and its swap is often full, so such numbers are noisy. A warning does
+  not invalidate a before/after pair, but a delta inside the min-max spread is not a result; rerun
+  with a higher `--runs` when the box is quiet. Load sampled after the first round includes the
+  benchmark's own previous build, so a load warning from round 2 on is a hint, not a verdict.
+  `ci/test_build_bench.py` (a fake cargo, a scratch repository) pins the table and JSON shape, the
+  restore-on-failure and dirty-target refusal, the skips, and that the mirrored cargo subcommand
+  skeletons still equal the Makefile's recipes.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
