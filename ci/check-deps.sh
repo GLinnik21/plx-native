@@ -547,7 +547,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC"
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/appkit" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -602,7 +602,7 @@ while IFS= read -r f; do
 # ...over the files that name a mutator at all. The per-file pass only subtracts (a `#[cfg(test)] mod`
 # block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
 # that can produce a hit.
-done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/appkit" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
@@ -674,7 +674,7 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
   grep_code '(crate|super)::app::' "$SRC/screens" | sed 's/^/    /'
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
-gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
+gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui" "$SRC/appkit"
 # uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
 # `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
 # injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
@@ -788,7 +788,7 @@ gate_zero() {
     fail "$rule: $(echo "$hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
   fi
 }
-gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC/screens"
+gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC/appkit" "$SRC/screens"
 
 # hittest: the narrowed raw hit-tester call shape, zero in app/ once the player's HUD registers
 # its stops through DrawFrame::stop (D2) instead of app/run.rs testing raw coordinates against

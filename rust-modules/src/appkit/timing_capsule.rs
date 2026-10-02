@@ -1,5 +1,5 @@
 //! **The Subtitle Timing capsule**: the on-video "‹ Subtitles 0.3 s later ›" control the Subtitles
-//! panel's Timing row hands off to (`ui::track_menu::TrackOk::OpenTiming`,
+//! panel's Timing row hands off to (`appkit::track_menu::TrackOk::OpenTiming`,
 //! `screens::player::overlay::OverlayKind::Timing`, plan `subtitle-menu-capsule` §4). The design
 //! mock is `/tmp/dsplayer/player.ref.html`'s capsule variant (`grep capsule/shake/capsuleText`).
 //!

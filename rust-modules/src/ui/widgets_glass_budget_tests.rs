@@ -376,6 +376,7 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     }
     let mut files = Vec::new();
     walk(&root.join("ui"), &mut files);
+    walk(&root.join("appkit"), &mut files);
     walk(&root.join("screens"), &mut files);
     let mut offenders = Vec::new();
     for f in &files {

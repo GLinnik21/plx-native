@@ -137,7 +137,7 @@ const CACHE_CAP: usize = 64;
 ///
 /// The subtracted per-screen term is the larger of the two `RenderReport`s this file's own
 /// screens can produce: the login QR (`screens/login.rs`, 400×400×4 = 640,000 B) and the
-/// player's image-subtitle display set (`ui/player_hud.rs`'s `SubtitleBitmaps::bytes`). Neither
+/// player's image-subtitle display set (`appkit/player_hud.rs`'s `SubtitleBitmaps::bytes`). Neither
 /// screen owns a texture from THIS pool (a QR code and a subtitle bitmap are each their own GL
 /// resource, not a `ui::tex` key), but both count toward the SAME `RENDER_BYTES_MAX` ceiling this
 /// pool shares, so the pool's own budget has to leave them room. The subtitle bound is not a

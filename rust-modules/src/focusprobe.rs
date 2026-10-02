@@ -48,7 +48,7 @@
 //! Measured on the dev Mac at `opt-level = 2` (2026-08-15, 50k builds per screen, host accessors
 //! over empty stores): **39–223 ns** per frame on every screen except the player, where the line
 //! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
-//! single filesystem `stat`**, inside [`crate::ui::player_hud::transport_hidden`] →
+//! single filesystem `stat`**, inside [`crate::appkit::player_hud::transport_hidden`] →
 //! `player_hud::busy` → `dev::flag("failtest")`. The rest of the player's seventeen fields together
 //! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
 //! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
@@ -69,7 +69,7 @@ use std::ffi::c_int;
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
-use crate::ui::player_hud::ControlSlot;
+use crate::appkit::player_hud::ControlSlot;
 
 /// Which screen the frame ended on, as the probe dispatches on it.
 ///
@@ -305,7 +305,7 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
         hud.tab,
         slot,
         ctrl.items(),
-        b(crate::ui::player_hud::transport_hidden(ps))
+        b(crate::appkit::player_hud::transport_hidden(ps))
     );
     // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
     // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
@@ -318,7 +318,7 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
     let _ = write!(
         s,
         " haschap={}",
-        b(crate::ui::chapters_panel::has_chapters(meta))
+        b(crate::appkit::chapters_panel::has_chapters(meta))
     );
 }
 

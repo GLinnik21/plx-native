@@ -307,7 +307,7 @@ mod tests {
         rows: &[crate::browse::SrcRow],
         tail: Tail,
     ) -> (Vec<Section>, Vec<SrcTarget>) {
-        let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::screens::registry::BAND);
+        let mut built = FormTable::<SrcTarget, SrcTarget, Infallible>::new(crate::ui::table_screen::BAND_BASE);
         built.set(form(level, groups, rows, tail), None);
         let targets = (0..built.table.n_rows() as usize)
             .filter_map(|i| built.id_at(i).copied())

@@ -247,7 +247,7 @@ const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 
 /// The most caption lines [`draw_subtitle_message`] ever stacks (the rest of a longer cue is
 /// dropped), and the reason the Timing capsule's y is fixed rather than following the caption
-/// block (`ui::timing_capsule`, plan `subtitle-menu-capsule` §4): a live cue's line count changes
+/// block (`appkit::timing_capsule`, plan `subtitle-menu-capsule` §4): a live cue's line count changes
 /// frame to frame, and a capsule that tracked it would jump under a viewer's thumb mid-hold.
 const MAX_CAPTION_LINES: usize = 3;
 /// The vertical pitch of one caption line in [`draw_subtitle_message`] — its 36 px face plus
@@ -652,7 +652,7 @@ pub(crate) enum ControlSlot {
     /// the ordinary Subtitles + Audio pair
     Discs,
     /// a marker segment is under the playhead
-    Skip(crate::screens::player::skip_pill::Prompt),
+    Skip(crate::appkit::skip_pill::Prompt),
     /// …and the show has another episode queued, which outranks skipping the credits. Carries the
     /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
     UpNext(crate::metadata::Marker),
@@ -675,7 +675,7 @@ impl ControlSlot {
     /// would disarm the timer on the frame after it armed.
     pub(crate) fn primary_btn(self) -> c_int {
         match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::PRIMARY_BTN,
+            ControlSlot::UpNext(_) => crate::appkit::up_next::PRIMARY_BTN,
             _ => 0,
         }
     }
@@ -713,8 +713,8 @@ impl ControlSlot {
                 Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
             }
             ControlSlot::UpNext(_) => {
-                let l = crate::ui::up_next::layout_peek(row, measure);
-                if idx == crate::ui::up_next::BTN_NEXT { l.next } else { l.credits }
+                let l = crate::appkit::up_next::layout_peek(row, measure);
+                if idx == crate::appkit::up_next::BTN_NEXT { l.next } else { l.credits }
             }
         })
     }
@@ -734,7 +734,7 @@ impl ControlSlot {
 pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool, mode: crate::route::NextEpisodeMode) -> ControlSlot {
     match marker {
         Some(m) => {
-            let pr = crate::screens::player::skip_pill::prompt_for(m);
+            let pr = crate::appkit::skip_pill::prompt_for(m);
             if has_next && m.kind == crate::metadata::MarkerKind::Credits && m.final_seg {
                 match mode {
                     crate::route::NextEpisodeMode::Countdown => ControlSlot::UpNext(m),
@@ -1355,13 +1355,13 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
 // mark have been tried here and both were removed, for the same reason and by the same judgement:
 //
 //   * chapter-boundary ticks — the rail reads cleaner as one continuous bar. The chapter LIST is
-//     the affordance (`ui/chapters_panel.rs`, off `metadata::playing_chapters()`).
+//     the affordance (`appkit/chapters_panel.rs`, off `metadata::playing_chapters()`).
 //   * intro/credits segment bands — removed 2026-08-04. They were `RAIL_MARKER`, white at 0.42
 //     against a 0.20 track, so a credits band on a feature film was a bright unlabelled patch
 //     floating near the right end of an otherwise empty rail. Reviewed cold on a screenshot it
 //     read as a RENDERING ARTIFACT, not as information, which is a complete failure of the thing.
 //
-// Neither loses anything: the Skip Intro / Skip Credits pill (`screens/player/skip_pill.rs`) is driven from
+// Neither loses anything: the Skip Intro / Skip Credits pill (`appkit/skip_pill.rs`) is driven from
 // the very same `metadata::playing_markers()` and appears exactly when a marker is reachable, so
 // the band was decoration duplicating a control that already announces itself. Do not re-add
 // either as a "cheap win" — the marker data is already in memory, which is precisely what makes
@@ -1762,7 +1762,7 @@ pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn crate::ui::ma
 pub(crate) fn draw_hud(
     ps: &crate::route::PlaybackSession,
     row: &mut TransportRow,
-    up: &crate::ui::up_next::Countdown,
+    up: &crate::appkit::up_next::Countdown,
     slot: ControlSlot,
     busy: Busy,
     focus: i32,
@@ -1833,10 +1833,10 @@ pub(crate) fn draw_hud(
         // keypress activates are the same value, not two derivations of it.
         match slot {
             ControlSlot::UpNext(_) => {
-                crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
+                crate::appkit::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
             }
             ControlSlot::Skip(pr) => {
-                crate::screens::player::skip_pill::draw(row, p, pr, focus == 1, measure);
+                crate::appkit::skip_pill::draw(row, p, pr, focus == 1, measure);
             }
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
@@ -1858,7 +1858,7 @@ pub(crate) fn draw_hud(
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters(meta) {
+    let tabs: &[&str] = if crate::appkit::chapters_panel::has_chapters(meta) {
         &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()]
     } else {
         &[crate::i18n::msg::widgets_player_info()]
@@ -1968,7 +1968,7 @@ mod tests {
 
     use crate::metadata::{Marker, MarkerKind};
     use crate::route::NextEpisodeMode;
-    use crate::screens::player::skip_pill::SkipAction;
+    use crate::appkit::skip_pill::SkipAction;
 
     /// **The image-subtitle display set is a render, and it says how much of one** (§8.3 rule (c)):
     /// one texture per rect, the SOURCE pixels behind them, and nothing left claimed once the set
@@ -2146,7 +2146,7 @@ mod tests {
         // park the ring on Watch Credits, and `up_next::countdown_may_run` would then disarm the
         // countdown on the frame after it armed — a timer that visibly never runs.
         assert_eq!(up.items(), 2, "Watch Credits + Next Episode");
-        assert_eq!(up.primary_btn(), crate::ui::up_next::BTN_NEXT);
+        assert_eq!(up.primary_btn(), crate::appkit::up_next::BTN_NEXT);
         // …and WITHOUT (a show's last episode) it stays Skip Credits, which is the whole reason
         // both still exist
         assert!(matches!(

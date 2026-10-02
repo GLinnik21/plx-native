@@ -54,7 +54,7 @@ pub(crate) fn playpos() -> i64 {
 /// so anything that snapshots "where are we?" inside that window snapshots the position the user
 /// just left. The rule — an in-flight seek target wins, else the published position — was open-coded
 /// at each reader that remembered it (the scrub seed below; the HUD's frozen playhead in
-/// `ui/player_hud.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
+/// `appkit/player_hud.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
 /// `playpos()`, so backgrounding right after a seek stored the pre-seek spot and the foreground
 /// restore replayed from there — and teardown clears the pending target, so nothing self-corrected.
 /// Use this at every reader that means "where the user is"; keep the raw `playpos()` only where the
@@ -106,13 +106,13 @@ pub(crate) fn is_started() -> bool {
 
 /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
 /// the two paths can never come to disagree about what a row does.
-pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, bridge: &mut super::bridge::Bridge, a: crate::ui::more_menu::Action) {
+pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, bridge: &mut super::bridge::Bridge, a: crate::appkit::more_menu::Action) {
     match a {
-        crate::ui::more_menu::Action::ToggleStats => crate::app::diagnostics::toggle(),
+        crate::appkit::more_menu::Action::ToggleStats => crate::app::diagnostics::toggle(),
         // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
         // running stream. Not deferred either: `route::set_quality` re-asks the routing question
         // for the playback on screen and reloads only when the answer changed.
-        crate::ui::more_menu::Action::SetQuality(q) => {
+        crate::appkit::more_menu::Action::SetQuality(q) => {
             // A terminal Engine never reaches pump's pending-retranscode arm, and a `/decision`
             // refusal has no Engine at all.  Persist the pick first, then make a fresh playback
             // request at the same user-visible position.  Selecting the already-active rung is
@@ -127,8 +127,8 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
-        crate::ui::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
-        crate::ui::more_menu::Action::None => {}
+        crate::appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
+        crate::appkit::more_menu::Action::None => {}
     }
 }
 
@@ -484,13 +484,13 @@ pub(crate) unsafe fn commit_info_press(
 ///
 /// `route::commit_audio_selection`/`commit_subtitle_selection` take the playback session's `&mut`,
 /// which no screen has (§2.2) — the panel returns a
-/// [`TrackCommit`](crate::ui::track_menu::TrackCommit) and this is where it lands, from the
+/// [`TrackCommit`](crate::appkit::track_menu::TrackCommit) and this is where it lands, from the
 /// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike.
 pub(crate) fn commit_track(
     ps: &mut crate::route::PlaybackSession,
-    commit: crate::ui::track_menu::TrackCommit,
+    commit: crate::appkit::track_menu::TrackCommit,
 ) {
-    use crate::ui::track_menu::TrackCommit;
+    use crate::appkit::track_menu::TrackCommit;
     match commit {
         TrackCommit::Audio(audio) => crate::route::commit_audio_selection(ps, audio),
         TrackCommit::AudioEnhancement(a) => crate::player::request_audio_enhancement(ps, a),
@@ -722,14 +722,14 @@ pub(crate) fn finish_playback(
 pub(crate) fn activate_ctrl_row(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    slot: crate::ui::player_hud::ControlSlot,
+    slot: crate::appkit::player_hud::ControlSlot,
     refresh_hubs_at: &mut u32,
     btn: c_int,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
-    use crate::ui::player_hud::ControlSlot;
-    use crate::screens::player::skip_pill::SkipAction;
+    use crate::appkit::player_hud::ControlSlot;
+    use crate::appkit::skip_pill::SkipAction;
     match slot {
         // The row's two items, off the cursor the caller already parked (a click sets it
         // from the hit-test, a key press moved it). *Next Episode* starts the successor;
@@ -738,7 +738,7 @@ pub(crate) fn activate_ctrl_row(
         // than an absence, which on a countdown is the difference between choosing and
         // being caught out.
         ControlSlot::UpNext(_) => {
-            if btn == crate::ui::up_next::BTN_NEXT {
+            if btn == crate::appkit::up_next::BTN_NEXT {
                 play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge)
             } else {
                 if let Some(player) = super::bridge::player_mut(pages) {
@@ -929,17 +929,17 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 fn apply_info_action(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    action: crate::ui::info_panel::InfoAction,
+    action: crate::appkit::info_panel::InfoAction,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
     match action {
-        crate::ui::info_panel::InfoAction::FromBeginning => {
+        crate::appkit::info_panel::InfoAction::FromBeginning => {
             request_seek(0);
             resume_if_paused(pa);
         }
-        crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
+        crate::appkit::info_panel::InfoAction::GoToDetail(rk) => {
             // Leave playback through THE exit ritual, then override where it landed. This arm used
             // to hand-roll the exit — overlays + stop_bufferfeed — which is three quarters of
             // `exit_player` and silently dropped the other quarter: `route::cancel_play()` (a jump
@@ -967,7 +967,7 @@ fn apply_info_action(
                 ));
             }
         }
-        crate::ui::info_panel::InfoAction::None => {}
+        crate::appkit::info_panel::InfoAction::None => {}
     }
 }
 
@@ -990,7 +990,7 @@ fn apply_info_action(
 pub(crate) unsafe fn activate_player_row(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    ctrl: crate::ui::player_hud::ControlSlot,
+    ctrl: crate::appkit::player_hud::ControlSlot,
     now: u32,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
@@ -1014,7 +1014,7 @@ pub(crate) unsafe fn activate_player_row(
             pages,
             bridge,
         );
-    } else if btn == crate::ui::player_hud::BTN_MORE {
+    } else if btn == crate::appkit::player_hud::BTN_MORE {
         // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
         // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
         super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::More { quality: false });

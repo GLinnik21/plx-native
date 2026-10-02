@@ -183,7 +183,7 @@ fn two_owned_servers_with_the_same_library_title_draw_two_identical_pills() {
 /// A favourite whose source has gone `SourceState::Unreachable` stays counted and stays listed —
 /// `sync` (mod.rs) filters favourites on `sid.is_some()` and `pinned` only, never on the source's
 /// last dial. The pill itself carries no status cue for it (unlike the Sources overflow menu's
-/// header accessory, which leads with the state word: `ui/source_list.rs:150-173`'s `accessory`),
+/// header accessory, which leads with the state word: `appkit/source_list.rs:150-173`'s `accessory`),
 /// so a dead favourite reads on the strip exactly like a live one.
 #[test]
 fn an_unreachable_favourite_stays_in_the_selector() {

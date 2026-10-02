@@ -953,10 +953,9 @@ fn eac3_joc_to_ac3_release_immersive_false() {
         can_normalize_loudness: true,
         ..Default::default()
     };
-    crate::app::playback::commit_track(
-        &mut ps,
-        crate::ui::track_menu::TrackCommit::Audio(CarriedAudio::from_stream(&stream, 3)),
-    );
+    // `app::playback::commit_track`'s `TrackCommit::Audio` arm is exactly this call (that arm only
+    // forwards the frozen snapshot); route tests cannot name the app or the track menu above it.
+    commit_audio_selection(&mut ps, CarriedAudio::from_stream(&stream, 3));
     assert!(toggle(&mut ps, NONE));
     let (_, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));

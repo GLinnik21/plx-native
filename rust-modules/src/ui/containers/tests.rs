@@ -800,7 +800,7 @@ fn a_zero_tint_and_an_unlatched_field_are_the_flat_scrim_bit_for_bit() {
 fn no_surface_states_its_own_dim_weight() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    let mut dirs = vec![root.join("ui"), root.join("screens")];
+    let mut dirs = vec![root.join("ui"), root.join("appkit"), root.join("screens")];
     while let Some(dir) = dirs.pop() {
         for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
             let p = e.unwrap().path();

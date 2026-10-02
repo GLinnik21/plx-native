@@ -24,7 +24,7 @@ use crate::ui::route_screen::RouteLayout;
 use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use crate::ui::form::{FormTable, RowKey};
-use crate::ui::source_list::{self, Level, SrcTarget, Tail};
+use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
 use crate::ui::table_screen::{BandPart, Header, TableScreen};
 use crate::ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, View};

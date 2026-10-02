@@ -139,13 +139,13 @@ impl Scrub {
     /// bounds are written, shared by the key hop, the continuous ramp and the pointer drag — they
     /// were three copies of the same four lines in `app/run.rs` and `app/playback.rs`.
     ///
-    /// A thin call-through to `ui::player_hud::scrub_clamp_target` — the shared home for this
+    /// A thin call-through to `appkit::player_hud::scrub_clamp_target` — the shared home for this
     /// formula and the tuning constants below, since `screens::detail::trailer`'s own hold-to-scrub
     /// (the trailer transport's LEFT/RIGHT) wants the exact same bound and `ci/check-deps.sh`'s
     /// `sibling` gate forbids that module from naming `crate::screens::player` to reach it here.
     /// Every call site in this file is unchanged.
     pub(crate) fn clamp_target(ns: i64, duration_ns: i64) -> i64 {
-        crate::ui::player_hud::scrub_clamp_target(ns, duration_ns)
+        crate::appkit::player_hud::scrub_clamp_target(ns, duration_ns)
     }
 }
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
@@ -281,7 +281,7 @@ impl HudState {
     /// nothing carried that dismissal into the credits, and the Up Next tile was offered to a HUD
     /// that `draw_hud` was never called for. Being invisible it then lost its ring to the auto-hide
     /// re-park at the bottom of the same block, which the NEXT frame's steady-state cancel rule
-    /// (`crate::ui::up_next::countdown_may_run`) read as the user walking away — latching the
+    /// (`crate::appkit::up_next::countdown_may_run`) read as the user walking away — latching the
     /// countdown off for the whole segment. The tile appeared only if the HUD was raised by hand,
     /// with its auto-advance already dead: exactly as reported. A dismissal is a "not now" that any
     /// key the app BINDS clears (an unsupported one clears nothing — `note_global_press`); a
@@ -292,7 +292,7 @@ impl HudState {
     /// Parking is only ever from REST: a user who walked to the Subtitles disc or an Info tab keeps
     /// their spot (and for Up Next thereby declines the countdown — the same one rule, read as a
     /// steady state one block below). `primary` is the occupant's own
-    /// ([`crate::ui::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
+    /// ([`crate::appkit::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
     /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
     /// after it armed.
     pub(crate) fn raise_for_offer(&mut self, now: u32, primary: c_int) {
@@ -305,18 +305,18 @@ impl HudState {
     }
 }
 // scrub tuning: a press jumps scrub_step_ns() (the Skip interval); holding engages a continuous scrub ramping
-// SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second). Defined in `ui::player_hud` and
+// SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second). Defined in `appkit::player_hud` and
 // re-exported here — the trailer transport's own hold-to-scrub (`screens::detail::trailer`) wants
 // the identical feel and cannot name this module directly (`ci/check-deps.sh`'s `sibling` gate).
 // Long enough that a rapid tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
 // separate commit is a full reopen+prime on the engine, and back-to-back in-flight seeks are what
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels
 // immediate.
-pub(crate) use crate::ui::player_hud::{
+pub(crate) use crate::appkit::player_hud::{
     scrub_step_ns, SCRUB_ACCEL, SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, TAP_COMMIT_MS,
 };
 // HUD auto-hide: how long the HUD lingers after the input that raised it.
-pub(crate) const HUD_LINGER_MS: u32 = crate::ui::player_hud::LINGER_MS; // plain transport/nav input
+pub(crate) const HUD_LINGER_MS: u32 = crate::appkit::player_hud::LINGER_MS; // plain transport/nav input
 pub(crate) const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
 pub(crate) const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 
@@ -546,14 +546,14 @@ mod hud_visibility_tests {
             let now = 10_000u32;
             let mut hud = HudState::IDLE;
             hud.dismissed = true; // UP-hidden mid-episode, exactly as reported
-            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+            hud.raise_for_offer(now, crate::appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "an offer clears a hand dismissal");
             assert_eq!(
                 hud.nav.focus, 1,
                 "on the control row, so the auto-hide re-park leaves it"
             );
             assert!(
-                crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                crate::appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
                 "…and RESTING on the primary, which is what the next frame's cancel rule asks"
             );
         });
@@ -577,11 +577,11 @@ mod hud_visibility_tests {
                 },
                 ..HudState::IDLE
             };
-            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+            hud.raise_for_offer(now, crate::appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "the offer is still shown");
             assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
             assert!(
-                !crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                !crate::appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
                 "engaging the transport is not consent to be pulled into the next episode"
             );
         });

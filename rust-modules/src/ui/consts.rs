@@ -576,12 +576,12 @@ mod tests {
         // ---- the shared chrome, and the screens composed on it ------------------------------
         probe("widgets", &crate::ui::widgets::overscan_rects);
         probe("detail", &crate::ui::detail_layout::overscan_rects);
-        probe("player_hud", &crate::ui::player_hud::overscan_rects);
+        // The player HUD's, the Tracks panel's and the More menu's are graded beside them, in
+        // `appkit`'s own `no_player_panel_content_enters_the_safe_area_exclusion_zone`: the library
+        // cannot name the application widgets above it.
 
         // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
         probe("account_menu", &crate::screens::account_menu::overscan_rects);
-        probe("track_menu", &crate::ui::track_menu::overscan_rects);
-        probe("more_menu", &crate::ui::more_menu::overscan_rects);
         probe("stats", &crate::app::diagnostics::overscan_rects);
         drop(probe);
 

@@ -377,7 +377,7 @@ pub(crate) use crate::plex::session::{PlaybackQuality as Quality, DirectPlayMode
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
-/// cannot drift from what was drawn (`ui::more_menu`'s rule, and its bug).
+/// cannot drift from what was drawn (`appkit::more_menu`'s rule, and its bug).
 pub(crate) const QUALITY_LADDER: [Quality; 7] = [
     Quality::Auto,
     Quality::Original,
@@ -2346,7 +2346,7 @@ fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'
 ///
 /// PURE: takes the playing item's audio tracks explicitly instead of reaching into
 /// `metadata::playing()`. That matters twice over. (a) `playing()` (via `MetadataView`) hands out
-/// a `&'a PlayingItem` whose `Vec`s `ui/track_menu.rs` and `ui/info_panel.rs` hold slices into
+/// a `&'a PlayingItem` whose `Vec`s `appkit/track_menu.rs` and `appkit/info_panel.rs` hold slices into
 /// during playback — a worker replacing the store would drop those out from under the draw path,
 /// so the resolve must never touch it. (b) Being pure makes the selection ladder host-testable,
 /// which it has never been; see the tests at the foot of this file.

@@ -25,8 +25,8 @@
 //! only BACK at the root dismisses; its replay canon carries the page path like Tracks'.
 //!
 //! **The `Focusable` half is real now (restructure phase 12, D2).** Each panel's own
-//! `*Part` wrapper (`ui::track_menu::TrackMenuPart`, `ui::chapters_panel::ChaptersPart`,
-//! `ui::info_panel::InfoPanelPart`, `ui::more_menu::MoreMenuPart`) answers the Engine's query
+//! `*Part` wrapper (`appkit::track_menu::TrackMenuPart`, `appkit::chapters_panel::ChaptersPart`,
+//! `appkit::info_panel::InfoPanelPart`, `appkit::more_menu::MoreMenuPart`) answers the Engine's query
 //! protocol (§7.1) over that panel's real row geometry, and [`PlayerOverlayScreen::step`] no
 //! longer moves focus BY HAND: a direction falls through (`Handled::No`) to the engine's own
 //! `neighbour`/`EdgeRule` unless this panel's own cadence gate is still waiting
@@ -41,21 +41,21 @@ use std::borrow::Cow;
 use std::os::raw::c_int;
 
 use crate::screens::registry::{AppFx, AppLike, PlayerReq};
-use crate::ui::chapters_panel::ChaptersPart;
+use crate::appkit::chapters_panel::{chapter_count, ChaptersPart};
 use crate::ui::consts;
 use crate::ui::frame::Budget;
-use crate::ui::info_panel::InfoPanelPart;
+use crate::appkit::info_panel::InfoPanelPart;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };
-use crate::ui::more_menu::{MoreMenuPart, MoreOk};
+use crate::appkit::more_menu::{MoreMenuPart, MoreOk};
 use crate::ui::screen::{
     At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
 };
-use crate::ui::timing_capsule::{CapsuleOut, TimingCapsule};
-use crate::ui::track_menu::{TrackMenuPart, TrackOk};
+use crate::appkit::timing_capsule::{CapsuleOut, TimingCapsule};
+use crate::appkit::track_menu::{TrackMenuPart, TrackOk};
 
 use super::HudPolicy;
 use crate::ui::Rect;
@@ -68,7 +68,7 @@ use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 /// so without it a replay grades a panel opening and closing and nothing between.
 ///
 /// `sel` is the highlighted row's index for every panel but the track menu and More, whose own
-/// canons ([`crate::ui::track_menu::TrackMenuState::canon`], [`crate::ui::more_menu::MoreMenuState::canon`])
+/// canons ([`crate::appkit::track_menu::TrackMenuState::canon`], [`crate::appkit::more_menu::MoreMenuState::canon`])
 /// replace it: the track menu's `tab`, then for both the page-path depth, each pushed page's
 /// `{page,return_key}` and the selected row's KEY.
 pub(crate) const SHAPE: &str =
@@ -78,20 +78,20 @@ pub(crate) const SHAPE: &str =
 /// for the whole life of the entry — the identity `ScreenArg::same_instance` compares.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OverlayKind {
-    /// The audio/subtitle picker (`ui/track_menu.rs`). `tab` is the panel it opens on: the two
+    /// The audio/subtitle picker (`appkit/track_menu.rs`). `tab` is the panel it opens on: the two
     /// on-screen discs open it directly on theirs.
     Tracks { tab: c_int },
-    /// The now-playing Info card (`ui/info_panel.rs`).
+    /// The now-playing Info card (`appkit/info_panel.rs`).
     Info,
-    /// The chapter strip (`ui/chapters_panel.rs`).
+    /// The chapter strip (`appkit/chapters_panel.rs`).
     Chapters,
-    /// The `…` overflow popover (`ui/more_menu.rs`). `quality` opens it focused on the active
+    /// The `…` overflow popover (`appkit/more_menu.rs`). `quality` opens it focused on the active
     /// quality rung — the failure read-out's recovery path, which is also why this is the one
     /// overlay whose style `survives_failure`.
     More { quality: bool },
-    /// The on-video Subtitle Timing capsule (`ui/timing_capsule.rs`, plan `subtitle-menu-capsule`
+    /// The on-video Subtitle Timing capsule (`appkit/timing_capsule.rs`, plan `subtitle-menu-capsule`
     /// §4) — the Subtitles panel's Timing row hands off here
-    /// (`ui::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. The only
+    /// (`appkit::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. The only
     /// overlay whose [`Self::hud_policy`] is [`HudPolicy::Hidden`] — the capsule sits where the
     /// transport's caption band and scrubber would, so the two must never be up together.
     Timing,
@@ -218,10 +218,10 @@ impl LogicalState for PlayerOverlayArg {
 
 /// The panel itself — the state four modules kept in `static mut`s until phase 9.
 pub(crate) enum Panel {
-    Tracks(crate::ui::track_menu::TrackMenuState),
-    Info(crate::ui::info_panel::InfoPanelState),
-    Chapters(crate::ui::chapters_panel::ChaptersState),
-    More(crate::ui::more_menu::MoreMenuState),
+    Tracks(crate::appkit::track_menu::TrackMenuState),
+    Info(crate::appkit::info_panel::InfoPanelState),
+    Chapters(crate::appkit::chapters_panel::ChaptersState),
+    More(crate::appkit::more_menu::MoreMenuState),
     Timing(TimingCapsule),
 }
 
@@ -282,22 +282,22 @@ impl PlayerOverlayScreen {
     pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(crate::diag::spans::span("tmnew", || {
-                crate::ui::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
+                crate::appkit::track_menu::TrackMenuState::new(ps, meta, tab, subtitle_yours_langs(ps, meta))
             })),
-            OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
+            OverlayKind::Info => Panel::Info(crate::appkit::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
-                Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new(meta))
+                Panel::Chapters(crate::appkit::chapters_panel::ChaptersState::new(meta))
             }
             OverlayKind::More { quality: false } => {
-                Panel::More(crate::ui::more_menu::MoreMenuState::new(ps))
+                Panel::More(crate::appkit::more_menu::MoreMenuState::new(ps))
             }
             // Force Direct Play offers no Quality section, so there is no rung to land on: a
             // quality entry is the ordinary menu then (`more_menu::rows_for`).
             OverlayKind::More { quality: true } if crate::route::forced_direct_play(ps) => {
-                Panel::More(crate::ui::more_menu::MoreMenuState::new(ps))
+                Panel::More(crate::appkit::more_menu::MoreMenuState::new(ps))
             }
             OverlayKind::More { quality: true } => {
-                Panel::More(crate::ui::more_menu::MoreMenuState::new_quality(ps))
+                Panel::More(crate::appkit::more_menu::MoreMenuState::new_quality(ps))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = crate::player::subtitle_offset_range_ms();
@@ -354,7 +354,7 @@ impl PlayerOverlayScreen {
 
     /// Resolve `/tmp/plxnative-menupick`'s second field to an absolute row: a plain row number
     /// parses as itself (the original contract); the Audio tab's `"boost"`/`"loudness"` are tried
-    /// as NAMED targets through [`crate::ui::track_menu::TrackMenuState::row_for_audio_target`].
+    /// as NAMED targets through [`crate::appkit::track_menu::TrackMenuState::row_for_audio_target`].
     /// `None` when neither applies — an unparseable number, a name on the wrong tab, or an
     /// unrecognized name. The Subtitles tab's `"track:N"` is not a row at all (the track may sit
     /// on a page that is not showing): see [`Self::resolve_menupick_track`].
@@ -369,7 +369,7 @@ impl PlayerOverlayScreen {
     }
 
     /// Resolve a `"track:N"` target of `/tmp/plxnative-menupick` to the subtitle's index in the
-    /// item's list ([`crate::ui::track_menu::TrackMenuState::sub_track_for_target`]) — root tracks
+    /// item's list ([`crate::appkit::track_menu::TrackMenuState::sub_track_for_target`]) — root tracks
     /// first, then the ones behind Other languages. `None` for any other target.
     pub(crate) fn resolve_menupick_track(&self, target: &str) -> Option<usize> {
         match &self.panel {
@@ -401,14 +401,14 @@ impl PlayerOverlayScreen {
     /// `false` when the panel is not More or its root offers no Quality row (Force Direct Play).
     pub(crate) fn seat_more_quality(&mut self) -> bool {
         match &mut self.panel {
-            Panel::More(p) => p.focus_key(crate::ui::form::FormId::key(&crate::ui::more_menu::MoreRow::OpenQuality).0),
+            Panel::More(p) => p.focus_key(crate::ui::form::FormId::key(&crate::appkit::more_menu::MoreRow::OpenQuality).0),
             _ => false,
         }
     }
 
     /// `submenuosc`'s cursor seat: put the Tracks cursor on `row` so the next real RIGHT key
     /// enters it. `false` when this page has no such row.
-    pub(crate) fn seat_track_row(&mut self, row: crate::ui::track_menu::TrackRow) -> bool {
+    pub(crate) fn seat_track_row(&mut self, row: crate::appkit::track_menu::TrackRow) -> bool {
         match &mut self.panel {
             Panel::Tracks(p) => p.focus_id(row),
             _ => false,
@@ -416,13 +416,13 @@ impl PlayerOverlayScreen {
     }
 
     /// **The headless pick of a named subtitle track**: commit the track at `i` by its own index
-    /// ([`crate::ui::track_menu::TrackMenuState::commit_sub_track`]), whatever page its row is on.
+    /// ([`crate::appkit::track_menu::TrackMenuState::commit_sub_track`]), whatever page its row is on.
     /// Like [`Self::pick_track_row`] it leaves the panel on screen.
     pub(crate) fn pick_sub_track(
         &mut self,
         meta: crate::metadata::MetadataView<'_>,
         i: usize,
-    ) -> Option<crate::ui::track_menu::TrackCommit> {
+    ) -> Option<crate::appkit::track_menu::TrackCommit> {
         match &mut self.panel {
             Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
@@ -444,7 +444,7 @@ impl PlayerOverlayScreen {
         &mut self,
         meta: crate::metadata::MetadataView<'_>,
         row: c_int,
-    ) -> Option<crate::ui::track_menu::TrackCommit> {
+    ) -> Option<crate::appkit::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
             p.focus_row(row);
             return match p.on_ok(meta) {
@@ -464,7 +464,7 @@ impl PlayerOverlayScreen {
     pub(crate) fn info_press_action(
         &mut self,
         meta: crate::metadata::MetadataView<'_>,
-    ) -> Option<crate::ui::info_panel::InfoAction> {
+    ) -> Option<crate::appkit::info_panel::InfoAction> {
         match &mut self.panel {
             Panel::Info(p) => Some(p.on_ok(meta)),
             _ => None,
@@ -656,7 +656,7 @@ impl PlayerOverlayScreen {
         // reach `Machine::step`'s `Activate` arm either (the capsule has nothing for that
         // machinery to activate). The cadence is the SAME `RepeatGate` every other panel here
         // paces a held direction with — one admission rule, reused rather than a second copy of
-        // it living in `ui::timing_capsule`.
+        // it living in `appkit::timing_capsule`.
         if let Panel::Timing(cap) = &mut self.panel {
             match edge {
                 Edge::Down => self.repeat.rearm(now),
@@ -670,7 +670,7 @@ impl PlayerOverlayScreen {
                 Some(CapsuleOut::Step(v)) => {
                     Self::ask(
                         fx,
-                        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(v)),
+                        PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleOffset(v)),
                     );
                 }
                 // The transport stays down after the capsule leaves — not asked for here, since a
@@ -774,7 +774,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // §7.3 step 5: the owner's `step` is the only place that mutates in response to a
                 // move the engine made — write the new cursor back into whichever panel is open,
                 // and extend the transport's read time exactly as a hand-moved cursor used to.
-                // Tracks' element is a row KEY (`ui::track_menu::TrackRow`), the rest's an index.
+                // Tracks' element is a row KEY (`appkit::track_menu::TrackRow`), the rest's an index.
                 let i = to.elem as i32;
                 match &mut self.panel {
                     Panel::Tracks(p) => p.focus_key(to.elem),
@@ -863,7 +863,7 @@ impl PlayerOverlayScreen {
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(f.cx)) }.draw(f, Rect::FULL),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
             // Timing owns its own key ladder and never asks the engine for focus, so it has no
             // per-row geometry to register — `draw`, below, paints the capsule itself.
@@ -874,9 +874,9 @@ impl PlayerOverlayScreen {
 
 /// **Real per-row groups, delegated to whichever panel is ACTIVE** (restructure phase 12, D2 —
 /// see `screens/player/mod.rs`'s own `Focusable` impl for the sibling case). Each panel exposes
-/// its own row geometry through a `*Part` wrapper (`ui::track_menu::TrackMenuPart`,
-/// `ui::chapters_panel::ChaptersPart`, `ui::info_panel::InfoPanelPart`,
-/// `ui::more_menu::MoreMenuPart`), built fresh per query over a SHARED reference to the panel's
+/// its own row geometry through a `*Part` wrapper (`appkit::track_menu::TrackMenuPart`,
+/// `appkit::chapters_panel::ChaptersPart`, `appkit::info_panel::InfoPanelPart`,
+/// `appkit::more_menu::MoreMenuPart`), built fresh per query over a SHARED reference to the panel's
 /// own state — every method here is `&self`, and so is every method on this screen's own
 /// `Focusable` impl (§7.1: "the engine never mutates a screen"), which is why each wrapper's
 /// `state` field is `&'a StateType` rather than `&'a mut` (see each wrapper's own doc). This
@@ -887,7 +887,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.groups(cx, out),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
             // Timing declares no group at all — the capsule's own `key()` swallows every press
             // (`Handled::Yes`) before the engine's focus machinery ever sees one.
@@ -898,7 +898,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.group_of(key, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::Timing(_) => None,
         }
@@ -907,7 +907,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.neighbour(key, dir, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::Timing(_) => Step::Edge,
         }
@@ -916,7 +916,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.place(key, cx, at),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::Timing(_) => None,
         }
@@ -925,7 +925,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.reconcile(want, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::Timing(_) => want,
         }
@@ -934,7 +934,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP, count: chapter_count(H::metadata(cx)) }.seat(g, from, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
         }
@@ -970,7 +970,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
-        self.suppressed = crate::ui::player_hud::transport_hidden(H::session(cx))
+        self.suppressed = crate::appkit::player_hud::transport_hidden(H::session(cx))
             && !self.kind.survives_failure();
         // The first `update` is a frame behind the mount, so the root page's strings are queued
         // here for the open frame's drain instead (`TrackMenuState::warm_open`).
@@ -1005,7 +1005,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         // Stale content panels are gone with the transport when a playback has FAILED; the `…`
         // popover is the deliberate exception, because the read-out opened it as its own recovery
         // path (`OverlayKind::survives_failure`).
-        if crate::ui::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
+        if crate::appkit::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
             return;
         }
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
@@ -1018,7 +1018,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Chapters(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::More(p) => p.draw(appear, measure),
             // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
-            Panel::Timing(p) => p.draw(crate::ui::player_hud::CAPSULE_BOTTOM_Y, appear),
+            Panel::Timing(p) => p.draw(crate::appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
         }
         self.record_stops(f);
     }

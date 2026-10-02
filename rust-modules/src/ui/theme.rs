@@ -138,7 +138,7 @@ pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
 /// **The ink a control shows when it has reached a hard limit** — the Timing capsule's chevron on
-/// the side already at its range's edge (`ui::timing_capsule`, plan `subtitle-menu-capsule` §4,
+/// the side already at its range's edge (`appkit::timing_capsule`, plan `subtitle-menu-capsule` §4,
 /// `player.html`'s `leftInk`/`rightInk` at `.22`). A control-specific alpha, not a text rung: it
 /// answers "can this direction do anything right now", the same question `TEXT_TERTIARY` answers
 /// for words.
@@ -827,7 +827,7 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// "this bit is special", and the rail sits straight over moving video.
 // (RAIL_MARKER, white @ 0.42, was the intro/credits band on the scrubber. Removed 2026-08-04 with
 // the band itself — at twice the track's opacity it read as a rendering artifact rather than as
-// information. See the "the rail carries NO marks" note in ui/player_hud.rs.)
+// information. See the "the rail carries NO marks" note in appkit/player_hud.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen.dc.html`'s
 /// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"

@@ -41,7 +41,7 @@
 //! `docs/parity-gaps.md`'s standing decision is that this app has **no full-screen menu sheets** —
 //! the reference clients put playback quality in one and we do not. Quality drills in INSIDE the
 //! popover instead, on the same [`crate::ui::page_stack::PageStack`] the Subtitles tab of
-//! [`crate::ui::track_menu`] uses: BACK, LEFT and a click on the title band mean "up one page", and
+//! [`crate::appkit::track_menu`] uses: BACK, LEFT and a click on the title band mean "up one page", and
 //! only BACK on the root dismisses. Six rungs fit; when they stop fitting, the [`TableView`]
 //! scrolls, which is what it is for.
 //!
@@ -454,7 +454,7 @@ impl MoreMenuState {
     fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
-            let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+            let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
             let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
             let ph = self.panel_h();
             Rect::new(px, bottom - ph, pw, ph)
@@ -644,6 +644,23 @@ fn label(a: Action) -> std::borrow::Cow<'static, str> {
     }
 }
 
+/// Where the Stats for nerds switch reads its state. The read-out's flag is owned by
+/// `app::diagnostics`, whose caller names this menu's [`Action`]s, so the application registers a
+/// reader at boot ([`install_stats_reader`], from `app::enter_application`) instead of this
+/// module naming `app`. Unset it reads OFF, which is what the flag itself reads before anything has
+/// toggled it.
+static STATS_READER: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// Register the reader for the Stats for nerds switch. The first registration wins; the loop makes
+/// exactly one, before any screen exists.
+pub(crate) fn install_stats_reader(read: fn() -> bool) {
+    let _ = STATS_READER.set(read);
+}
+
+fn stats_on() -> bool {
+    STATS_READER.get().is_some_and(|read| read())
+}
+
 /// Whether the SWITCH a row names is currently on. It reaches the row as [`Row::toggle`] and so
 /// draws as the WORD `On`/`Off` at the trailing edge — never as a picker's leading checkmark, which
 /// means "the active one of several" and is what the Quality rung rows use instead. Two idioms, one
@@ -652,7 +669,7 @@ fn label(a: Action) -> std::borrow::Cow<'static, str> {
 /// promise of the leading mark an Options row deliberately does not draw.)
 fn is_on(a: Action) -> bool {
     match a {
-        Action::ToggleStats => crate::app::diagnostics::enabled(),
+        Action::ToggleStats => stats_on(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
         Action::SetQuality(_) | Action::SendDiagnostics | Action::None => false,
     }
@@ -705,7 +722,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let bottom = theme::layout::PLAYER_MENU_BOTTOM;
     out.push((
         "… overflow menu panel",
-        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
+        Rect::new(crate::appkit::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
     ));
 }
 
@@ -1209,18 +1226,17 @@ mod tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = AppFx;
-        type Msg = AppMsg;
+        type Fx = crate::ui::fixture::FixtureFx;
+        type Msg = crate::ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
         type Init = crate::ui::fixture::FixtureInit;
-        type Memory = PageMemory;
+        type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {

@@ -118,7 +118,7 @@ CAPTION 24 rung is the legibility floor at TV distance, and every extra size cos
 cache. A string that does not fit is rewritten or given a short key.
 
 **Known unchecked surfaces** (no `fit_report` covers them yet): action pills, crumbs and tabs in
-`app/chrome.rs`, the player HUD, `up_next`, chapters, and card-row names such as profile names.
+`app/chrome.rs`, the player HUD, `up_next`, chapters (all now under `../appkit/`), and card-row names such as profile names.
 Do not read their absence from a test as a pass.
 
 ## The architecture (restructure spec v4)
@@ -136,7 +136,8 @@ can follow.
 | layer | may name |
 |---|---|
 | `ui/` — the LIBRARY | `crate::{gfx,text,paths,task,i18n}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
-| `screens/` — the application's screens | `ui/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
+| `appkit/` — widgets several screens share (`player_hud`, `track_menu`, `more_menu`, `info_panel`, `up_next`, `chapters_panel`, `timing_capsule`, `skip_pill`, `source_list`) | `ui/`, `stores/`, `plex/` types, `player/`, `route/` — never `screens/` or `app/`. They are compositions of `ui/` components over application types; they cannot live under `screens/` because the `sibling` gate forbids one screen family naming another |
+| `screens/` — the application's screens | `ui/`, `appkit/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
 | `stores/` | data crates and `ui::machine` only — never `screens/` |
 | `app/` | everything |
 
@@ -248,7 +249,7 @@ presentation in a design pass.
 
 1. **Menus are popovers, never full-screen sheets.** A new menu — playback settings, a quality
    ladder, an item context menu, the play-queue list — is a `popover.rs` container over the live
-   screen with a `table.rs` `TableView` inside, anchored near its trigger, the way `track_menu.rs`
+   screen with a `table.rs` `TableView` inside, anchored near its trigger, the way `appkit/track_menu.rs`
    and the library sort/filter menus already work. Plex's full-screen modals were rejected by name.
    A menu never opens with its focus on a destructive action: tag such rows
    `Row::destructive(true)` and open the table with `TableView::open_sections`, whose
@@ -265,7 +266,7 @@ presentation in a design pass.
    paused, a seek spinner while the transport owns the busy signal, nothing at all while playing.
    Transport is driven by REMOTE KEYS, which must genuinely work. Any `<<` / `>>` added must be a
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
-   fourth entry in the HUD control row (`player_hud.rs`'s `BTN_N`, currently 3).
+   fourth entry in the HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
 
 4. **Failure read-outs are never red — the app does not scold.** A failed verdict is inked bold at
    `size::TITLE` in `theme::TEXT_SECONDARY`, per the design system's `StatusOverlay` contract.
@@ -425,7 +426,7 @@ information.
   now and it has a real `update`; what must never happen is routing the per-LAYER reveals through
   the cascade `p.alpha()`, which would fade the art and the wash as one object. The cascade still
   reaches the whole `Backdrop` from above, which is how `nav`'s page dip covers it),
-  `player_hud`'s `SCR_H`-offset geometry
+  `appkit::player_hud`'s `SCR_H`-offset geometry
   (shared with `app.rs` pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a
   `View` breaks a load-bearing contract.
 - **Clipping: prefer culling; use a scissor clip only for a hard-bounded panel.** Two spellings

@@ -60,7 +60,7 @@ pub(super) fn recorder_end_frame(
 /// (`Frame::begin`); every field is written by exactly one phase and read by the ones after it.
 pub(crate) struct Frame {
     /// The HUD's control slot for this frame, sampled once before input is read.
-    pub(crate) ctrl: crate::ui::player_hud::ControlSlot,
+    pub(crate) ctrl: crate::appkit::player_hud::ControlSlot,
     /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(crate) now: u32,
     /// Seconds since the previous frame's `now`, clamped to 50 ms (the animation timestep).
@@ -80,7 +80,7 @@ pub(crate) struct Frame {
 impl Frame {
     fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
         Frame {
-            ctrl: crate::ui::player_hud::slot(ps, meta),
+            ctrl: crate::appkit::player_hud::slot(ps, meta),
             now: 0,
             dt: 0.0,
             underlay_moving: false,
@@ -1574,7 +1574,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
                 player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
-            } else if crate::ui::player_hud::standin_left_the_ring(
+            } else if crate::appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,
                 player.hud.nav.focus == 1,
@@ -1617,7 +1617,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             let paused_now = paused();
             if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                 if player.up_next.armed() {
-                    if crate::ui::up_next::countdown_may_run(
+                    if crate::appkit::up_next::countdown_may_run(
                         bare,
                         player.hud.nav.focus == 1,
                         player.hud.nav.btn,
@@ -2292,7 +2292,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // `transport` is the other per-frame fact the instance cannot resolve for
                         // itself: the transport's MIDDLE is hidden behind an open Info card or
                         // Chapters strip, and which panel is up is the container's answer.
-                        let busy = crate::ui::player_hud::busy(&app.player.session);
+                        let busy = crate::appkit::player_hud::busy(&app.player.session);
                         let bare_middle = !matches!(
                             super::bridge::player_overlay_kind(&app.pages),
                             Some(crate::screens::player::overlay::OverlayKind::Info)
@@ -3324,9 +3324,9 @@ mod lifecycle_regression_tests {
         // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
         use crate::ui::{machine::{FocusKey, Tick}, screen::{Activate, Hover, Stop}, Rect};
         use crate::screens::registry::PlayerReq;
-        let key = FocusKey { elem: crate::ui::player_hud::ELEM_SCRUB,
+        let key = FocusKey { elem: crate::appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
-        let rect = crate::ui::player_hud::scrub_hit_rect();
+        let rect = crate::appkit::player_hud::scrub_hit_rect();
         app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
             hover: Hover::Ignore, activate: Activate::Direct }]);
         app.pages.input.hit.swap();
@@ -3341,7 +3341,7 @@ mod lifecycle_regression_tests {
                 assert!(page.scrub.drag);
                 assert!(page.scrub.ns > 0);
             } else {
-                let expected = (crate::ui::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
+                let expected = (crate::appkit::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
                 assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
             }
         }
@@ -3636,7 +3636,7 @@ mod lifecycle_regression_tests {
             frame(&mut self.app, 16);
             let player = super::super::bridge::player_mut(&mut self.app.pages).unwrap();
             player.up_next.tick(
-                crate::ui::player_hud::ControlSlot::UpNext(crate::metadata::Marker {
+                crate::appkit::player_hud::ControlSlot::UpNext(crate::metadata::Marker {
                     kind: crate::metadata::MarkerKind::Credits,
                     start_ms: 0,
                     end_ms: 60_000,
@@ -3645,7 +3645,7 @@ mod lifecycle_regression_tests {
                 20,
             );
             let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
-            fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
+            fr.now = 20 + crate::appkit::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
         }
@@ -4170,7 +4170,7 @@ mod lifecycle_regression_tests {
         let mut t = playing_inside_final_credits(&mut rig);
         let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         assert!(fr.ctrl.is_discs(), "inside the credits the row keeps the discs");
-        t += crate::ui::up_next::COUNTDOWN_MS;
+        t += crate::appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         let player = super::super::bridge::player(&rig.app.pages).unwrap();
         assert!(!player.up_next.expired(t), "no countdown was armed for the credits");
@@ -4199,11 +4199,11 @@ mod lifecycle_regression_tests {
         let mut t = playing_inside_final_credits(&mut rig);
         let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         assert!(
-            matches!(fr.ctrl, crate::ui::player_hud::ControlSlot::UpNext(_)),
+            matches!(fr.ctrl, crate::appkit::player_hud::ControlSlot::UpNext(_)),
             "inside the credits the tile takes over",
         );
         assert!(!crate::route::play_pending(), "the countdown is still running");
-        t += crate::ui::up_next::COUNTDOWN_MS;
+        t += crate::appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         assert!(crate::route::play_pending(), "the countdown requests the successor");
     }

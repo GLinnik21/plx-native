@@ -484,8 +484,8 @@ impl InfoPanelState {
 
 /// **The Engine-shaped view of this card** (restructure phase 12): one `Column` focus group over
 /// the two action buttons, built fresh by `screens::player::overlay::PlayerOverlayScreen` each
-/// frame from a `&InfoPanelState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`/
-/// `ui::track_menu::TrackMenuPart` use for the other player panels, so the card answers the same
+/// frame from a `&InfoPanelState` — the same borrowed-view shape `appkit::more_menu::MoreMenuPart`/
+/// `appkit::track_menu::TrackMenuPart` use for the other player panels, so the card answers the same
 /// [`Focusable`]/[`Part`] query protocol they do. DOWN off the last button is `EdgeRule::Screen` —
 /// re-delivered to the owning screen's own `step`, which drops focus back onto the HUD tabs; UP
 /// off the first is `Stop`, matching the old ladder's clamp.
@@ -1001,7 +1001,6 @@ mod tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     // TEST ONLY: a thread-confined store, so `set_current_for_test`/`apply` and the `view()`
@@ -1019,12 +1018,12 @@ mod focus_tests {
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
-        type Fx = AppFx;
-        type Msg = AppMsg;
+        type Fx = crate::ui::fixture::FixtureFx;
+        type Msg = crate::ui::fixture::FixtureMsg;
         type Elem = u32;
         type Views<'a> = ();
         type Init = crate::ui::fixture::FixtureInit;
-        type Memory = PageMemory;
+        type Memory = ();
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {

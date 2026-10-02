@@ -13,7 +13,7 @@
 //! timer are one object rather than a button beside a rail.
 //!
 //! **Two buttons, and they are deliberately not equals** (the design's own note): *Next Episode*
-//! takes the [`ctrl_slot`](crate::ui::player_hud::ctrl_slot) width — the floor that keeps the row
+//! takes the [`ctrl_slot`](crate::appkit::player_hud::ctrl_slot) width — the floor that keeps the row
 //! from visibly shrinking when it appears — while *Watch Credits* takes only its own label's, since
 //! a second full-width capsule would read as a pair of equals when one continues watching and the
 //! other does nothing at all. They are laid out in that spatial order, so LEFT reaches Watch
@@ -24,7 +24,7 @@
 //! is armed, so the timer is never running behind a hidden transport.
 //!
 //! **The row's cursor is not kept here.** It is `hud_nav.btn`, exactly as it is for the discs, so
-//! LEFT/RIGHT need no special case and [`ControlSlot::items`](crate::ui::player_hud::ControlSlot)
+//! LEFT/RIGHT need no special case and [`ControlSlot::items`](crate::appkit::player_hud::ControlSlot)
 //! answers for the clamp. This module owns the countdown and nothing else — which is also why the
 //! cancel rule lives at `app.rs`'s one frame block rather than being spread across the key arms.
 //!
@@ -76,9 +76,9 @@ pub(crate) struct Countdown {
 }
 
 /// Whether this owns the control row this frame. The precedence itself lives in ONE place —
-/// [`crate::ui::player_hud::slot_for`] — so this is just a read of the resolved slot.
-pub(crate) fn is_shown(slot: crate::ui::player_hud::ControlSlot) -> bool {
-    matches!(slot, crate::ui::player_hud::ControlSlot::UpNext(_))
+/// [`crate::appkit::player_hud::slot_for`] — so this is just a read of the resolved slot.
+pub(crate) fn is_shown(slot: crate::appkit::player_hud::ControlSlot) -> bool {
+    matches!(slot, crate::appkit::player_hud::ControlSlot::UpNext(_))
 }
 
 /// Per-frame tick: arm the countdown the moment the tile appears, and forget everything about it
@@ -87,7 +87,7 @@ pub(crate) fn is_shown(slot: crate::ui::player_hud::ControlSlot) -> bool {
 /// It arms on APPEARANCE, never on focus: the tile's whole promise is that it starts the next
 /// episode on its own. Focus only ever [`cancel`]s it.
 impl Countdown {
-pub(crate) fn tick(&mut self, slot: crate::ui::player_hud::ControlSlot, now: u32) {
+pub(crate) fn tick(&mut self, slot: crate::appkit::player_hud::ControlSlot, now: u32) {
     if !is_shown(slot) {
         // segment over (or the queue emptied): drop the deadline AND the cancel latch, so the
         // next episode's credits arm normally instead of inheriting this one's refusal
@@ -112,7 +112,7 @@ pub(crate) fn tick(&mut self, slot: crate::ui::player_hud::ControlSlot, now: u32
 /// `bare_transport` is the third way and the one that reads as an omission until it bites: an
 /// OVERLAY — a track menu, the Info card, the Chapters strip — is the only way of taking hold
 /// of the transport that never moves the focus ring. Worse,
-/// [`crate::ui::player_hud::draw_hud`] draws the control row only for the BARE transport, so with
+/// [`crate::appkit::player_hud::draw_hud`] draws the control row only for the BARE transport, so with
 /// the Info card open the tile is not on screen at all. Without this term a countdown that was
 /// already running when the card opened kept its clock behind a panel nobody could see it through
 /// and cut to the next episode out of nowhere — the same failure `HudState::raise_for_offer`
@@ -219,7 +219,7 @@ pub(crate) struct Layout {
 /// are one arrangement and the arrangement is host-testable. Measuring is the impure half and lives
 /// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
 pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
-    use crate::ui::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
+    use crate::appkit::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
     let next = Rect::new(CTRL_RIGHT - next_w, CTRL_Y, next_w, CTRL_H);
     let credits = Rect::new(next.x - PILL_GAP - credits_w, next.y, credits_w, next.h);
     let caption = Rect::new(
@@ -249,9 +249,9 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// deliberately NOT a second `ctrl_slot`, because that floor exists to hold the row's right edge
 /// steady, which is the primary's job, and two equal capsules would say the two choices are
 /// equivalent.
-pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot(row, crate::i18n::msg::widgets_next_episode(), measure).w,
+        crate::appkit::player_hud::ctrl_slot(row, crate::i18n::msg::widgets_next_episode(), measure).w,
         crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
@@ -260,9 +260,9 @@ pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dy
 /// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
 /// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
 /// one is how a stray click starts an episode the user did not ask for.
-pub(crate) fn layout_peek(row: &crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot_w(row, crate::i18n::msg::widgets_next_episode(), measure),
+        crate::appkit::player_hud::ctrl_slot_w(row, crate::i18n::msg::widgets_next_episode(), measure),
         crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
@@ -282,7 +282,7 @@ fn caption(u: &UpNext) -> String {
 
 pub(crate) fn draw(
     ps: &crate::route::PlaybackSession,
-    row: &mut crate::ui::player_hud::TransportRow,
+    row: &mut crate::appkit::player_hud::TransportRow,
     up: &Countdown,
     p: Painter,
     focused: bool,
@@ -420,7 +420,7 @@ mod tests {
         // little under it — which is the asymmetry the design is making a point of
         let l = layout_of(243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);
-        let right = crate::ui::player_hud::CTRL_RIGHT;
+        let right = crate::appkit::player_hud::CTRL_RIGHT;
         assert_eq!(n.x + n.w, right, "the primary holds the row's right edge");
         assert_eq!(t.x + t.w, right, "…and the still shares it");
         assert_eq!(

@@ -370,7 +370,7 @@ pub(crate) struct Dovi {
     /// **Why not a `String`:** this struct is `Copy` and rides `route::Session`, whose `IDLE` is a
     /// `const`; more to the point `route::playback_preview_of` reads a `Dovi` **on the detail
     /// page's per-frame draw path**, so a `String` field would put a heap allocation in a hot
-    /// frame — the same cost `ui::info_panel` refuses when it declines to clone `route::url()`.
+    /// frame — the same cost `appkit::info_panel` refuses when it declines to clone `route::url()`.
     /// A DV version is dotted-numeric by specification, so the decomposition is lossless for every
     /// shape the field can take; anything unparseable lands as `(0, 0)` and draws no row at all.
     pub(crate) version: (i64, i64),
