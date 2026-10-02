@@ -24,8 +24,8 @@ def stamp(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run(rid, hours=0, conclusion="success", event="push", title="Build: a thing (#1)"):
-    return {"id": rid, "conclusion": conclusion, "event": event, "display_title": title,
+def run(rid, hours=0, conclusion="success", event="push", title="Build: a thing (#1)", message=None):
+    return {"id": rid, "head_commit": {"message": message} if message else None, "conclusion": conclusion, "event": event, "display_title": title,
             "head_sha": f"{rid:040x}", "created_at": stamp(T0 + timedelta(hours=hours)),
             "run_started_at": stamp(T0 + timedelta(hours=hours, minutes=1))}
 
@@ -99,9 +99,51 @@ class HistoryTest(unittest.TestCase):
         _, doc, _ = go(fake)
         self.assertEqual(doc["ci"][0]["jobs"], {"ok": 61})
 
-    def test_title_is_cut_to_90_characters(self):
+    def test_title_is_cut_to_120_characters(self):
         _, doc, _ = go(Fake({"ci.yml": [[run(1, title="x" * 200)]], "simulators.yml": [[]]}))
-        self.assertEqual(len(doc["ci"][0]["title"]), 90)
+        self.assertEqual(len(doc["ci"][0]["title"]), 120)
+        self.assertIsNone(doc["ci"][0]["pr"])
+
+    def test_split_title_takes_the_last_pr_suffix_from_the_full_title(self):
+        self.assertEqual(h.split_title("Build: x (#329) (#343)"), ("Build: x (#329)", 343))
+        self.assertEqual(h.split_title("Build: x (#343)  "), ("Build: x", 343))
+        self.assertEqual(h.split_title("No number here"), ("No number here", None))
+        self.assertEqual(h.split_title("Mentions (#12) midway"), ("Mentions (#12) midway", None))
+        self.assertEqual(h.split_title(""), ("", None))
+        self.assertEqual(h.split_title(None), ("", None))
+
+    def test_a_long_title_keeps_its_pr_number(self):
+        long = "Build: " + "word " * 40 + "(#457)"
+        _, doc, _ = go(Fake({"ci.yml": [[run(1, title=long)]], "simulators.yml": [[]]}))
+        row = doc["ci"][0]
+        self.assertEqual(row["pr"], 457)
+        self.assertEqual(len(row["title"]), 120)
+        self.assertNotIn("(#457)", row["title"])
+
+    def test_a_cut_display_title_is_replaced_by_the_commit_subject(self):
+        cut = "Build: the app crate is an rlib; the ARM archive is asked for by the …"
+        full = "Build: the app crate is an rlib; the ARM archive is asked for by the lib (#321)"
+        self.assertEqual(h.subject(run(1, title=cut, message=full + "\n\nbody (#999)")), full)
+        self.assertEqual(h.subject(run(1, title=cut)), cut)
+        _, doc, _ = go(Fake({"ci.yml": [[run(1, title=cut, message=full)]], "simulators.yml": [[]]}))
+        self.assertEqual(doc["ci"][0]["pr"], 321)
+        self.assertNotIn("…", doc["ci"][0]["title"])
+
+    def test_full_refreshes_title_and_pr_of_stored_rows_without_refetching_jobs(self):
+        old = {"id": 1, "at": stamp(T0), "sha": "a" * 9, "title": "Build: cut ...", "jobs": {"keep": 1}}
+        pages = [[run(2, 2, title="Build: new (#9)"), run(1, 1, title="Build: whole title (#7)")]]
+        fake = Fake({"ci.yml": pages, "simulators.yml": [[]]})
+        _, doc, _ = go(fake, {"updated": "u", "sim": [], "ci": [old]}, extra=("--full",))
+        self.assertEqual(fake.job_calls(), [2])
+        first = doc["ci"][0]
+        self.assertEqual((first["title"], first["pr"], first["jobs"]), ("Build: whole title", 7, {"keep": 1}))
+        self.assertEqual(doc["ci"][1]["pr"], 9)
+
+    def test_incremental_pass_leaves_stored_titles_alone(self):
+        old = {"id": 1, "at": stamp(T0), "sha": "a" * 9, "title": "old", "jobs": {}}
+        fake = Fake({"ci.yml": [[run(1, 1, title="Build: whole title (#7)")]], "simulators.yml": [[]]})
+        _, doc, _ = go(fake, {"updated": "u", "sim": [], "ci": [old]})
+        self.assertEqual(doc["ci"][0], old)
 
     def test_incremental_fetches_jobs_only_for_new_runs_and_dedupes(self):
         existing = {"updated": "2026-10-01T00:00:00Z", "sim": [],
