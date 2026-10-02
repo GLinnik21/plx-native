@@ -2139,6 +2139,11 @@ pub(crate) mod keypin {
     const X509_NOT_YET_VALID: c_long = 9;
     const X509_EXPIRED: c_long = 10;
 
+    /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
+    fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
+        rc == TLS_VERIFY_FAILED && matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED))
+    }
+
     /// How one attempt of a request recognises the peer.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum Mode {
@@ -2173,7 +2178,7 @@ pub(crate) mod keypin {
     /// **Why key mode cannot help a host** — the facts the app reads to tell a viewer their server
     /// is unreachable for a reason a clock explains. Published where each decision is already made
     /// and never decided a second time.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub(crate) enum Blocked {
         /// A strict attempt failed on the certificate's DATES (libcurl 60, verify 9 or 10 — the
         /// date check was the first failure the chain walk met, not necessarily the only defect,
@@ -2181,7 +2186,7 @@ pub(crate) mod keypin {
         /// to recognise it by.
         NoKey,
         /// The host presented a different key than the remembered one (rc 90). Outranks
-        /// [`Blocked::NoKey`]: a key was held and was wrong.
+        /// [`Blocked::NoKey`] (the variants are in ascending rank): a key was held and was wrong.
         KeyChanged,
     }
 
@@ -2224,7 +2229,7 @@ pub(crate) mod keypin {
         let bound = bound.chain([PLANTED_KEY]);
         bound
             .filter_map(|hp| st.blocked.get(hp).copied())
-            .reduce(|a, b| if a == Blocked::KeyChanged || b == Blocked::KeyChanged { Blocked::KeyChanged } else { a })
+            .max()
     }
 
     /// `Some(year)` once key mode has engaged for any host in this app run, carrying the year the
@@ -2411,7 +2416,7 @@ pub(crate) mod keypin {
     /// handle's `CURLINFO_SSL_VERIFYRESULT`): key mode when libcurl said 60 with a date verify
     /// result and the table holds a key for `key`.
     pub(crate) fn after_strict_failure(key: &str, rc: c_int, verify: Option<c_long>) -> Option<Mode> {
-        if rc != TLS_VERIFY_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
+        if !is_date_failure(rc, verify) {
             return None;
         }
         let pin = state().table.get(key)?.clone();
@@ -2451,7 +2456,7 @@ pub(crate) mod keypin {
     /// WRITES a fact; no TLS decision reads it.
     pub(crate) fn strict_failure(key: &str, rc: c_int, verify: Option<c_long>) {
         let mut st = state();
-        if rc != TLS_VERIFY_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
+        if !is_date_failure(rc, verify) {
             if st.blocked.get(key) == Some(&Blocked::NoKey) {
                 clear_blocked(&mut st, key);
             }
@@ -2489,19 +2494,21 @@ pub(crate) mod keypin {
 
     /// [`key_established`] at `now`, the clock seam [`begin_at`] shares.
     pub(super) fn key_established_at(key: &str, pin: &str, verify: Option<c_long>, now: Instant) {
-        key_established_in(key, pin, verify, now, wall_clock_year());
+        key_established_in(key, pin, verify, now, wall_clock_year);
     }
 
     /// [`key_established_at`] with the year the device believes it is, the seam the engaged fact's
-    /// year is tested through.
+    /// year is tested through. Asked for only on the latch transition, not on every key-mode
+    /// handshake.
     pub(super) fn key_established_in(
         key: &str,
         pin: &str,
         verify: Option<c_long>,
         now: Instant,
-        year: Option<i64>,
+        year: impl FnOnce() -> Option<i64>,
     ) {
-        let engaged = {
+        let mut told_year = None;
+        {
             let mut st = state();
             // A key-mode handshake completed: whatever was published as blocking this host is over.
             clear_blocked(&mut st, key);
@@ -2511,6 +2518,7 @@ pub(crate) mod keypin {
                 .is_some_and(|(p, since)| p == pin && now.saturating_duration_since(*since) < LATCH);
             if !live && st.table.get(key).map(String::as_str) == Some(pin) {
                 st.latched.insert(key.to_owned(), (pin.to_owned(), now));
+                let year = year();
                 // The year of the FIRST engagement stands; a re-engagement after a lapse is not one.
                 if !st.engaged.contains_key(key) {
                     let seq = st.engaged_seq;
@@ -2518,12 +2526,10 @@ pub(crate) mod keypin {
                     st.engaged.insert(key.to_owned(), (seq, year));
                     moved();
                 }
-                true
-            } else {
-                false
+                told_year = Some(year);
             }
-        };
-        if engaged {
+        }
+        if let Some(year) = told_year {
             crate::log(&engaged_line(verify, year));
         }
     }
@@ -3332,12 +3338,12 @@ mod keypin_latch_tests {
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         assert_eq!(keypin::fact_for(&key).engaged, None, "not engaged yet");
         let t0 = Instant::now();
-        keypin::key_established_in(&key, &pin(), Some(10), t0, Some(2020));
+        keypin::key_established_in(&key, &pin(), Some(10), t0, || Some(2020));
         assert_eq!(keypin::fact_for(&key).engaged, Some(Some(2020)));
 
         let t1 = t0 + keypin::LATCH + SECOND;
         assert_eq!(keypin::begin_at(&key, t1), Mode::Strict, "the latch lapsed");
-        keypin::key_established_in(&key, &pin(), Some(10), t1, Some(2031));
+        keypin::key_established_in(&key, &pin(), Some(10), t1, || Some(2031));
         assert_eq!(keypin::fact_for(&key).engaged, Some(Some(2020)), "the first engagement is the fact");
         assert!(keypin::engaged().is_some());
     }
@@ -3347,7 +3353,7 @@ mod keypin_latch_tests {
         let _serial = crate::testlock::serial();
         let key = keypin::key_of("fact-engaged-noyear.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
-        keypin::key_established_in(&key, &pin(), None, Instant::now(), None);
+        keypin::key_established_in(&key, &pin(), None, Instant::now(), || None);
         assert_eq!(keypin::fact_for(&key).engaged, Some(None));
     }
 
@@ -3371,10 +3377,10 @@ mod keypin_latch_tests {
         let r2 = keypin::revision();
         assert!(r2 > r1, "a fact cleared");
 
-        keypin::key_established_in(&key, &pin(), Some(10), Instant::now(), Some(2020));
+        keypin::key_established_in(&key, &pin(), Some(10), Instant::now(), || Some(2020));
         let r3 = keypin::revision();
         assert!(r3 > r2, "engagement is a fact");
-        keypin::key_established_in(&key, &pin(), Some(10), Instant::now() + keypin::LATCH + SECOND, Some(2021));
+        keypin::key_established_in(&key, &pin(), Some(10), Instant::now() + keypin::LATCH + SECOND, || Some(2021));
         assert_eq!(keypin::revision(), r3, "a re-engagement after a lapse adds nothing");
     }
 }

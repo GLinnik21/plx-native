@@ -832,10 +832,8 @@ impl HomeScreen {
             self.snap.jump(0.0);
         }
         let current = crate::plex::client_for(crate::plex::current_server()).map(|c| c.machine_id());
-        if self.plaintext.refresh(current, Near::First) {
-            fx.invalidate(Provenance::Landing(fx.from()));
-        }
-        if self.clock.refresh(current) {
+        // `|` not `||`: both watches must re-read.
+        if self.plaintext.refresh(current, Near::First) | self.clock.refresh(current) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
         if self.plaintext_alert.is_open()

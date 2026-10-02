@@ -36,11 +36,11 @@ impl ClockWatch {
     /// Re-read the fact about `machine` (`None`: the read-out speaks about no known server, so no
     /// server's fact applies); `true` when what the read-out shows changed.
     pub(crate) fn refresh(&mut self, machine: Option<&str>) -> bool {
-        let key = (crate::net::keypin::revision(), machine.map(str::to_owned));
-        if self.seen.as_ref() == Some(&key) {
+        let rev = crate::net::keypin::revision();
+        if matches!(&self.seen, Some((r, m)) if *r == rev && m.as_deref() == machine) {
             return false;
         }
-        self.seen = Some(key);
+        self.seen = Some((rev, machine.map(str::to_owned)));
         // The empty id names no server: only a dev-planted fact answers it.
         let next = crate::net::keypin::blocked_for(machine.unwrap_or_default());
         std::mem::replace(&mut self.held, next) != next

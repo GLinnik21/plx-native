@@ -455,24 +455,9 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     crate::plex::reset_servers_for_test();
     let failed_sid = crate::plex::register_pinned_with_client_id("library-clock-machine",
         &crate::plex::Origin::http("192.168.1.51", 32400), "", None, "client", Default::default());
-    let owned = |owner: &str| {
-        let mut fixture = Fixture::new();
-        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, failed_sid,
-            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
-                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
-        fixture
-    };
-    // Whether the tick damaged the frame: a fact appearing or clearing under a static Failed
-    // read-out moves the action row, so it must.
-    let tick = |page: &mut LibraryScreen, fixture: &Fixture| {
-        let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
-        present.take(0);
-        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-        present.changed()
-    };
+    // `tick_damaged`: a fact appearing or clearing under a static Failed read-out moves the
+    // action row, so the tick must damage the frame.
+    let tick = tick_damaged;
     let read = |page: &LibraryScreen, fixture: &Fixture| {
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
@@ -484,7 +469,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         (shown, glyph, row, caption)
     };
     for owner in ["", "friend"] {
-        let fixture = owned(owner);
+        let fixture = Fixture::failed_source(failed_sid, owner);
         let mut page = fixture.screen();
         tick(&mut page, &fixture);
         let (shown, glyph, plain_row, caption) = read(&page, &fixture);
@@ -501,7 +486,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert_eq!(shown.as_deref(), Some(crate::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
         assert_eq!(clock_caption, caption, "the verdict is unchanged");
-        assert_eq!(row.y >= plain_row.y, true);
+        assert!(row.y >= plain_row.y);
         if owner.is_empty() {
             assert!(row.y > plain_row.y, "the reason moves the row");
         }
@@ -525,11 +510,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     use crate::plex::session::PlaintextChoice;
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
-    let mut fixture = Fixture::new();
-    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
-        crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
-            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let fixture = Fixture::failed_source(sid, "friend");
     let mut page = fixture.screen();
     let lan_key = keypin::key_of("192.168.1.50", 32400);
     let _lan = keypin::Scoped::watch_machine("lan-machine", &lan_key);
@@ -561,20 +542,9 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
     let _elsewhere = keypin::Scoped::watch_machine("library-elsewhere-machine", &elsewhere);
     let sid = crate::plex::register_pinned_with_client_id("library-here-machine",
         &crate::plex::Origin::http("192.168.1.52", 32400), "", None, "client", Default::default());
-    let mut fixture = Fixture::new();
-    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
-        crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
-            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let fixture = Fixture::failed_source(sid, "");
     let mut page = fixture.screen();
-    let tick = |page: &mut LibraryScreen| {
-        let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
-        present.take(0);
-        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-        present.changed()
-    };
+    let tick = |page: &mut LibraryScreen| tick_damaged(page, &fixture);
     let shown = |page: &LibraryScreen| {
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
@@ -1082,6 +1052,25 @@ impl Fixture {
         page.sync(&self.cx(None));
         page
     }
+    /// A source whose discovery failed, with no section address: the Failed read-out. `handle` is
+    /// the sharing owner's ("" for the viewer's own server).
+    fn failed_source(sid: crate::plex::ServerId, handle: &str) -> Self {
+        let mut fixture = Self::new();
+        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
+            crate::browse::SrcGroup { name: "Cinema server".into(), handle: handle.into(),
+                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        fixture
+    }
+}
+/// One Tick through the screen: whether it damaged the frame.
+fn tick_damaged(page: &mut LibraryScreen, fixture: &Fixture) -> bool {
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    present.take(0);
+    page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    present.changed()
 }
 fn deliver(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, event: ScreenEvent<HostFixture>) -> usize {
     let mut output = Vec::new();
