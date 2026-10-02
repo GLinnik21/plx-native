@@ -123,7 +123,8 @@ grep_code_owner() {
 # escaped character inside a string counts as one blanked character pair) and everything from an
 # unquoted `//` to end of line dropped. Used by gates (`frame`, `tmppath`) that must not fire on a
 # call SHAPE that only appears as message text or as a self-test's own expected-string literal —
-# `ui/idle.rs` compares against `app/run.rs`'s source as a string, which is exactly that shape.
+# a host test that compares against `app/run.rs`'s source as a string (the loop pins in `app/run.rs`
+# and `ui/fixture.rs`) is exactly that shape.
 # This is character-by-character rather than a same-line regex heuristic for the reason both those
 # gates' own comments give: a `//` or a `"` that is itself inside a string must not end the scan
 # early, and a multi-token call spelled across a `"..."` boundary must not be reassembled by luck.
@@ -802,12 +803,13 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # `rig_clear_opaque_region` (a one-line pass-through) rather than naming `crate::system::` itself,
 # which is what keeps this gate's text out of bridge.rs without splitting the `impl Rig<AppHost>
 # for Bridge` block (a trait's impl for a type is one syntactic unit; it carries two dozen other
-# methods beside these three). `ui/idle.rs`'s self-test spells two of the three call shapes as
-# STRING LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy
-# of the exact line it expects, which is data, not a call — so a hit inside a `"…"` literal is
-# stripped before matching (the same double-quote-depth tracking `tmppath` below uses), rather
-# than exempting the file by name: an actual call typed into idle.rs, outside a string, still
-# fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
+# methods beside these three). A self-test that spells two of the three call shapes as STRING
+# LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy of the
+# exact line it expects, which is data, not a call (`app/run.rs`'s own `video_plane_gate_tests`
+# today, `ui/idle.rs`'s before the machine layer left `ui/`) — must not trip this gate in any file
+# that is not exempt, so a hit inside a `"…"` literal is stripped before matching (the same
+# double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
+# actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
 frame_pat='crate::system::(ls2_pump|opaque_route|clear_opaque_region)\('
 frame_bad=0

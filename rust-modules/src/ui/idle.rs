@@ -208,6 +208,47 @@ static ENABLED: AtomicBool = AtomicBool::new(true);
 /// loop must never poke it, and nothing here re-derives it from the route.
 static VIDEO_PLANE: AtomicBool = AtomicBool::new(false);
 
+/// **Is the host page being served from the frame cache rather than rasterized?**
+///
+/// Armed for the length of the page draw underneath an open popover that holds a snapshot, and
+/// LIFTED around the popover's own drawing — `ui::popover::host` owns both edges. While it is on,
+/// every primitive in `gfx` refuses its quad, because the pixels it would produce are already on
+/// the framebuffer, one textured quad ago.
+///
+/// **It is a REFUSAL, not a skipped call tree**, and that is what makes it safe to apply to a page
+/// `gfx` knows nothing about: the page's draw code still runs, so its layout is still measured,
+/// its pointer hit rects are still recorded and its poster textures are still uploaded. Only the
+/// FILL is removed — which on this GPU is the whole of the cost. A detail page under an open track
+/// panel measured `draw≈75 ms` per presented frame, entirely in fragments, against a
+/// `drawmask=all` floor of 17 ms.
+///
+/// **It lives in this module because [`invalidate`] reads it**, and `gfx` (which draws against it)
+/// may name the machine layer but not the other way round: it was `gfx::PAGE_FROZEN`, and `gfx`
+/// re-exports [`page_frozen`] and [`set_page_frozen`] at their old paths. Written by the render
+/// thread only, like every other piece of draw state; an atomic because [`invalidate`] also runs
+/// on workers.
+static PAGE_FROZEN: AtomicBool = AtomicBool::new(false);
+
+/// Arm or lift the page freeze, returning the state that was in force.
+///
+/// Callers restore what they were handed rather than storing `false`, so a popover's lift NESTS
+/// inside the page pass instead of ending it — the page draw that follows the popover (another
+/// panel, another scrim) is still frozen.
+#[inline]
+pub(crate) fn set_page_frozen(on: bool) -> bool {
+    PAGE_FROZEN.swap(on, Relaxed)
+}
+
+/// Is the host page frozen right now?
+///
+/// Read by `gfx`'s primitives, and by [`invalidate`]: a decoration that reports damage from inside
+/// a draw which produced no pixels (a marquee, a spinner) must not keep re-dirtying the snapshot it
+/// is standing in.
+#[inline]
+pub(crate) fn page_frozen() -> bool {
+    PAGE_FROZEN.load(Relaxed)
+}
+
 /// Turn the gate off for this boot. Read once at startup from `/tmp/plxnative-noidle`.
 pub(crate) fn set_enabled(on: bool) {
     ENABLED.store(on, Relaxed);
@@ -335,7 +376,7 @@ pub(crate) fn note_jump(changed: bool) {
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators
 ///   `note_spring` cannot see
 ///
-/// **A report raised while the host page is FROZEN is dropped** ([`crate::gfx::page_frozen`]).
+/// **A report raised while the host page is FROZEN is dropped** ([`page_frozen`]).
 /// Two of the call sites above — the focused-title marquee and the spinner — report from inside a
 /// DRAW, and under an open popover that draw produces no pixels: the page is one cached quad.
 /// Honouring them would invalidate the very snapshot they were drawn from, i.e. a full page redraw
@@ -347,7 +388,7 @@ pub(crate) fn note_jump(changed: bool) {
 /// phase or from a worker, with the freeze off.
 #[inline]
 pub(crate) fn invalidate() {
-    if crate::gfx::page_frozen() {
+    if page_frozen() {
         return;
     }
     DIRTY.store(true, Relaxed);
@@ -658,12 +699,14 @@ pub(crate) fn last_change_ms() -> u32 {
 /// Record that a frame was presented. Deliberately does NOT clear the discrete flag — a report
 /// raised by the draw this call follows belongs to the NEXT frame, and [`should_present`] already
 /// consumed the one that justified this one.
+///
+/// The `devtriggers` poster-gate counters (`ui::card_motion_metrics::presented`) are fed from the
+/// loop's own call site, on the line after this one (`app::run`): this module is the machine layer
+/// and names nothing in `ui` but its own siblings.
 #[inline]
 pub(crate) fn note_present(now: u32) {
     LAST_PRESENT.store(now, Relaxed);
     PRESENTS.fetch_add(1, Relaxed);
-    #[cfg(feature = "devtriggers")]
-    super::card_motion_metrics::presented(now);
 }
 
 /// Presents since the last call — drained once a second into the heartbeat as `fps=`, which is the
@@ -690,109 +733,57 @@ mod tests {
         g
     }
 
-    /// **Spec §9, §4.4, §16 risk 10 — the whole-frame gate is turned off by the PLANE'S BIT, not
-    /// by the player route, and both of its edges are carried.**
-    ///
-    /// Three separate claims, because three separate things were wrong before phase 9.
+    /// **Spec §9, §4.4, §16 risk 10 — the whole-frame gate is turned off by the PLANE'S BIT, and
+    /// only by it.** This is the gate's half of the claim, graded against the bit's own door
+    /// ([`note`] with [`PresentEvent::VideoPlane`]); the half that needs the player — the bit is
+    /// published on its EDGES only, the false edge raises the damage that presents the unbind frame,
+    /// and the loop asks the compositor from the bit on every frame — is
+    /// `app::run::video_plane_gate_tests`, the one layer that owns a `Player` and the loop's source.
     ///
     /// 1. *Only while bound.* The term used to be `|| fr.player` at the call site, i.e. "the
     ///    player SCREEN is up" — true through the whole pre-bind spinner and the whole post-unbind
     ///    fade, when the compositor has an ordinary UI surface and nothing is slaved to it.
-    /// 2. *The false edge presents.* The frame the plane goes away on is very often one the gate
-    ///    would otherwise skip: the picture is gone and no spring is moving. If that frame is not
-    ///    presented, the surface keeps whatever the last video frame left and the opaque region is
-    ///    asserted for a plane that is no longer there (§3.3 step 9).
-    /// 3. *`opaque_route` is asked on every frame, from the bit.* Pinned from the loop's own source
-    ///    — this is the one consumer a unit test cannot drive, `run` needing a live SDL window.
-    ///
-    /// Observed RED (simulated — the fix changes the signatures the old code called, so the test
-    /// cannot be compiled against 88841d3e): restoring `should_present`'s pre-phase-9 body by
-    /// deleting the `|| VIDEO_PLANE.load(Relaxed)` term fails claim 1 at
-    /// "while the plane is bound every frame presents"; deleting the `!bound` `invalidate()` in
-    /// `Player::set_video_plane_bound` fails claim 2 at "the unbind frame presents"; and putting
-    /// `fr.player` back as `opaque_route`'s argument fails claim 3.
+    /// 2. *Lowering the bit is not damage.* The frame the plane goes away on is very often one the
+    ///    gate would otherwise skip, which is why the edge's writer raises damage with it; the gate
+    ///    itself adds no term for it (a second formula term feeding the gate is what risk 10 names).
     #[test]
-    fn the_present_gate_answers_true_only_while_the_plane_is_bound() {
+    fn the_present_gate_answers_true_only_while_the_plane_bit_is_set() {
+        use crate::ui::present::PresentEvent;
         let _g = fresh();
-        let mut player = crate::player::machine::Player::new();
-        assert!(!video_plane_bound(), "a fresh machine has no plane");
+        assert!(!video_plane_bound(), "a fresh gate has no plane");
 
         invalidate();
         assert!(should_present(0), "the damage just raised selects this frame");
         assert!(!should_present(16), "settled, inside the keepalive: nothing to send");
 
         // ---- the TRUE edge, and what it buys ----
-        player.set_video_plane_bound(true);
-        assert!(video_plane_bound(), "the machine's edge is the gate's only input");
+        note(PresentEvent::VideoPlane(true));
+        assert!(video_plane_bound(), "the bit's own door is the gate's only input");
         for t in [32u32, 48, 64, 80] {
             assert!(
                 should_present(t),
-                "while the plane is bound every frame presents, unconditionally — nothing about                  this frame moved",
+                "while the plane is bound every frame presents, unconditionally — nothing about \
+                 this frame moved",
             );
         }
-
-        // A LEVEL is not an edge. Writing the same value again must publish nothing: a second
-        // formula term feeding the gate is exactly what risk 10 names.
         let _ = take_local_damage();
-        player.set_video_plane_bound(true);
-        assert_eq!(
-            take_local_damage(),
-            0,
-            "re-asserting the same bit raised damage — the bit is published on EDGES only",
-        );
+        note(PresentEvent::VideoPlane(true));
+        assert_eq!(take_local_damage(), 0, "publishing the bit raises no damage of its own");
 
-        // ---- the FALSE edge, on a frame that would otherwise not present ----
-        // Nothing else has happened: no input, no landing, no spring, and the keepalive is not due
-        // (LAST_PRESENT is 0 and KEEPALIVE_MS is 2000). Without the edge's own report this frame
-        // is skipped, and the last video frame stays on the panel behind a stale opaque region.
-        player.set_video_plane_bound(false);
+        // ---- the FALSE edge: the bit alone buys nothing, the edge's own damage does ----
+        note(PresentEvent::VideoPlane(false));
         assert!(!video_plane_bound());
         assert!(
-            should_present(96),
-            "the unbind frame presents even though nothing else about it moved",
+            !should_present(96),
+            "lowering the bit adds no term to the gate — the unbind frame is the damage the edge's \
+             writer raises beside it",
         );
+        invalidate(); // what `Player::set_video_plane_bound(false)` raises on that edge
+        assert!(should_present(112), "the edge's damage presents the unbind frame");
         assert!(
-            !should_present(112),
+            !should_present(128),
             "…and the frame after it is an ordinary idle frame again, which is the whole point",
         );
-
-        // ---- claim 3: the loop asks the compositor on EVERY frame, from the bit ----
-        let src = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
-        )
-        .expect("read run.rs");
-        assert!(
-            !src.contains("crate::system::opaque_route(fr.player)"),
-            "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
-        );
-        // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
-        // present decision — spec §3.3 step 9 puts it AFTER, and since phase 11 so does the loop,
-        // because the render cache's upload step now runs on the PRESENTING side of that decision
-        // and this call has to follow it. The claim is that the call is never nested inside an
-        // `if fr.present` block: the false edge after an unbind may land on a frame the gate does
-        // not present, and nothing else in the loop would carry it. This assertion used to be
-        // `call < gate`, which was a proxy for that and stopped being one when the upload moved.
-        //
-        // D1 extracted the prepare window into `prepare_window(app, fr)` to get `run` under its
-        // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
-        // `prepare_window`'s own body depth (four spaces, never inside that function's one
-        // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
-        const CALL: &str = "    crate::system::opaque_route(app.player.video_plane_bound);";
-        assert_eq!(
-            src.lines().filter(|l| *l == CALL).count(),
-            1,
-            "`opaque_route` must be called exactly once, unnested — inside `if fr.present` it is \
-             lost on exactly the frames it matters on",
-        );
-        assert!(
-            src.lines().any(|l| l == "        prepare_window(app, fr);"),
-            "…and the window that holds it runs on every iteration, at the loop body's own depth",
-        );
-        let call = src.find(CALL.trim_start()).expect("the call");
-        let draw = src
-            .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
-            .expect("the loop's draw");
-        assert!(call < draw, "the compositor is told before the frame is drawn");
     }
 
     /// The host cache's question — did the PAGE change — answered by count: damage raised inside
@@ -935,17 +926,19 @@ mod tests {
 
     /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
     /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
+    /// This is the gate's half, through [`note_jump`] — the door `Spring::jump` reports by; the
+    /// guard on the `Spring` side (`self.pos != v || self.vel != 0.0`) is graded where `Spring`
+    /// lives, `ui::spring_tests`.
     #[test]
     fn a_jump_reports_only_when_it_changes_something() {
         let _g = fresh();
-        let mut s = crate::ui::Spring::at(1.0);
         note_present(10_000);
         frame_begin(1.0 / 60.0);
-        s.jump(1.0); // already there
+        note_jump(false); // already there
         assert!(!should_present(10_016));
 
         frame_begin(1.0 / 60.0);
-        s.jump(2.0); // teleported
+        note_jump(true); // teleported
         assert!(should_present(10_032));
     }
 

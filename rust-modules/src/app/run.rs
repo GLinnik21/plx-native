@@ -569,6 +569,11 @@ unsafe fn present_and_swap(
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
         crate::gfx::ground_probes_frame_end();
         crate::ui::idle::note_present(fr.now);
+        // The poster-gate scenes' frame counter, at the same post-swap seam as the present count
+        // above. It was called from inside `note_present`; `ui::idle` is the machine layer and
+        // no longer names `ui`'s metrics.
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::presented(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
             budget.finish();
@@ -4234,5 +4239,129 @@ mod lifecycle_regression_tests {
             rig.app.route().id(),
         );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+}
+
+#[cfg(test)]
+mod video_plane_gate_tests {
+    //! **The present gate's plane term, end to end.** It began in `ui::idle`'s tests and lives here
+    //! because it needs three things no lower layer owns together: a `Player` (the bit's one
+    //! writer), the gate (`ui::idle`, the machine layer) and this file's own source (the loop is
+    //! the one consumer a unit test cannot drive). The gate-only half stayed beside the gate:
+    //! `ui::idle`'s `the_present_gate_answers_true_only_while_the_plane_bit_is_set`.
+    use crate::ui::idle::{
+        invalidate, reset_for_test, should_present, take_local_damage, video_plane_bound,
+    };
+
+    /// **Spec §9, §4.4, §16 risk 10 — the whole-frame gate is turned off by the PLANE'S BIT, not
+    /// by the player route, and both of its edges are carried.**
+    ///
+    /// Three separate claims, because three separate things were wrong before phase 9.
+    ///
+    /// 1. *Only while bound.* The term used to be `|| fr.player` at the call site, i.e. "the
+    ///    player SCREEN is up" — true through the whole pre-bind spinner and the whole post-unbind
+    ///    fade, when the compositor has an ordinary UI surface and nothing is slaved to it.
+    /// 2. *The false edge presents.* The frame the plane goes away on is very often one the gate
+    ///    would otherwise skip: the picture is gone and no spring is moving. If that frame is not
+    ///    presented, the surface keeps whatever the last video frame left and the opaque region is
+    ///    asserted for a plane that is no longer there (§3.3 step 9).
+    /// 3. *`opaque_route` is asked on every frame, from the bit.* Pinned from the loop's own source
+    ///    — this is the one consumer a unit test cannot drive, `run` needing a live SDL window.
+    ///
+    /// Observed RED (simulated — the fix changes the signatures the old code called, so the test
+    /// cannot be compiled against 88841d3e): restoring `idle::should_present`'s pre-phase-9 body by
+    /// deleting the `|| VIDEO_PLANE.load(Relaxed)` term fails claim 1 at
+    /// "while the plane is bound every frame presents"; deleting the `!bound` `invalidate()` in
+    /// `Player::set_video_plane_bound` fails claim 2 at "the unbind frame presents"; and putting
+    /// `fr.player` back as `opaque_route`'s argument fails claim 3.
+    #[test]
+    fn the_present_gate_answers_true_only_while_the_plane_is_bound() {
+        let _g = crate::testlock::serial();
+        reset_for_test();
+        let mut player = crate::player::machine::Player::new();
+        assert!(!video_plane_bound(), "a fresh machine has no plane");
+
+        invalidate();
+        assert!(should_present(0), "the damage just raised selects this frame");
+        assert!(!should_present(16), "settled, inside the keepalive: nothing to send");
+
+        // ---- the TRUE edge, and what it buys ----
+        player.set_video_plane_bound(true);
+        assert!(video_plane_bound(), "the machine's edge is the gate's only input");
+        for t in [32u32, 48, 64, 80] {
+            assert!(
+                should_present(t),
+                "while the plane is bound every frame presents, unconditionally — nothing about                  this frame moved",
+            );
+        }
+
+        // A LEVEL is not an edge. Writing the same value again must publish nothing: a second
+        // formula term feeding the gate is exactly what risk 10 names.
+        let _ = take_local_damage();
+        player.set_video_plane_bound(true);
+        assert_eq!(
+            take_local_damage(),
+            0,
+            "re-asserting the same bit raised damage — the bit is published on EDGES only",
+        );
+
+        // ---- the FALSE edge, on a frame that would otherwise not present ----
+        // Nothing else has happened: no input, no landing, no spring, and the keepalive is not due
+        // (LAST_PRESENT is 0 and KEEPALIVE_MS is 2000). Without the edge's own report this frame
+        // is skipped, and the last video frame stays on the panel behind a stale opaque region.
+        player.set_video_plane_bound(false);
+        assert!(!video_plane_bound());
+        assert!(
+            should_present(96),
+            "the unbind frame presents even though nothing else about it moved",
+        );
+        assert!(
+            !should_present(112),
+            "…and the frame after it is an ordinary idle frame again, which is the whole point",
+        );
+
+        // ---- claim 3: the loop asks the compositor on EVERY frame, from the bit ----
+        let whole = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        // The loop's own text — everything above this module — so the strings this pin searches
+        // for are not found in the pin itself.
+        let src = whole
+            .split("#[cfg(test)]\nmod video_plane_gate_tests")
+            .next()
+            .expect("the loop's source");
+        assert!(
+            !src.contains("crate::system::opaque_route(fr.player)"),
+            "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
+        );
+        // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
+        // present decision — spec §3.3 step 9 puts it AFTER, and since phase 11 so does the loop,
+        // because the render cache's upload step now runs on the PRESENTING side of that decision
+        // and this call has to follow it. The claim is that the call is never nested inside an
+        // `if fr.present` block: the false edge after an unbind may land on a frame the gate does
+        // not present, and nothing else in the loop would carry it. This assertion used to be
+        // `call < gate`, which was a proxy for that and stopped being one when the upload moved.
+        //
+        // D1 extracted the prepare window into `prepare_window(app, fr)` to get `run` under its
+        // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
+        // `prepare_window`'s own body depth (four spaces, never inside that function's one
+        // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
+        const CALL: &str = "    crate::system::opaque_route(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`opaque_route` must be called exactly once, unnested — inside `if fr.present` it is \
+             lost on exactly the frames it matters on",
+        );
+        assert!(
+            src.lines().any(|l| l == "        prepare_window(app, fr);"),
+            "…and the window that holds it runs on every iteration, at the loop body's own depth",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src
+            .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
+            .expect("the loop's draw");
+        assert!(call < draw, "the compositor is told before the frame is drawn");
     }
 }

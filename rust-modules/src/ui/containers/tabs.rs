@@ -24,7 +24,7 @@
 //! `same_instance` by `id()` alone regardless of section — see `registry.rs`), so its own
 //! directional DOWN press into the grid was always `By::Dir` already. The fix is in the shared
 //! `SelectTab` mint path, not a TV Shows special case: it applies to every peer pill equally.
-//! See `screen.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the regression test
+//! See `machine.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the regression test
 //! `containers::tests::a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore`.
 
 use super::super::machine::{EntryId, GroupId, Host};
