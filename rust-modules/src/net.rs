@@ -2390,16 +2390,22 @@ pub(crate) mod keypin {
 
     /// A strict attempt failed and [`after_strict_failure`] found no key mode to retry in. Publish
     /// [`Blocked::NoKey`] when that is because the failure was about the DATE (libcurl 60, verify
-    /// 9 or 10) and the table holds no key for `key` — exactly [`after_strict_failure`]'s trigger
-    /// minus the key, so a failure it would have answered, or one a clock does not explain (an
-    /// untrusted issuer, a name mismatch), publishes nothing. Quiet: the request's own failure log
+    /// 9 or 10), `key` is a bound media server and the table holds no key for it — exactly
+    /// [`after_strict_failure`]'s trigger minus the key, so a failure it would have answered, one a
+    /// clock does not explain (an untrusted issuer, a name mismatch) or one of a host that is no
+    /// media server (plex.tv) publishes nothing. Quiet: the request's own failure log
     /// line already says it.
     pub(crate) fn strict_date_failure(key: &str, rc: c_int, verify: Option<c_long>) {
         if rc != TLS_VERIFY_FAILED || !matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED)) {
             return;
         }
         let mut st = state();
-        if st.table.contains_key(key) {
+        // Only a registered media server: `bindings` is every `host:port` `servers::register_lazy`
+        // or the stored-session projection ties to a machine, whether or not it holds a key yet,
+        // so a server that never learned one is covered. plex.tv (and any other host) fails its
+        // date check on a wrong clock too, but key mode can never serve it and nothing clears the
+        // fact except its own success, so it would colour a read-out it did not cause.
+        if st.table.contains_key(key) || !st.bindings.iter().any(|(_, hp)| hp == key) {
             return;
         }
         // A changed key outranks a missing one, and a host that has just lost its key cleared the
@@ -2553,6 +2559,7 @@ pub(crate) mod keypin {
         st.latched.remove(key);
         clear_blocked(&mut st, key);
         st.engaged.remove(key);
+        st.bindings.retain(|(_, hp)| hp != key);
     }
 
     #[cfg(test)]
@@ -2587,6 +2594,11 @@ pub(crate) mod keypin {
         /// Holds no key for `key`, but clears the facts a test published about it when it ends:
         /// loopback ports are reused, and a stale fact would answer a later test's host.
         pub(crate) fn watch(key: &str) -> Self {
+            // Bound to a synthetic machine, as a registered server is: facts are published only
+            // for bound hosts. [`forget_for_test`] unbinds it.
+            if let Some((host, port)) = key.rsplit_once(':') {
+                add_binding(&mut state(), &format!("watch:{key}"), host, port.parse().unwrap_or(0));
+            }
             Scoped(key.to_owned())
         }
     }
@@ -3061,6 +3073,29 @@ mod keypin_latch_tests {
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         keypin::strict_date_failure(&key, 60, Some(10));
         assert_eq!(blocked_of(&key), None);
+    }
+
+    #[test]
+    fn a_date_failure_of_a_host_that_is_no_media_server_publishes_nothing() {
+        let _serial = crate::testlock::serial();
+        // plex.tv fails its date check on a wrong clock too, but it is not a server key mode could
+        // ever serve and nothing but a plex.tv success would clear the fact: it would colour a Home
+        // that failed for an unrelated reason.
+        let before = keypin::blocked();
+        let tv = keypin::key_of("plex.tv", 443);
+        keypin::strict_date_failure(&tv, 60, Some(10));
+        assert_eq!(blocked_of(&tv), None);
+        assert_eq!(keypin::blocked(), before, "an unbound host moves nothing the app reads");
+
+        // A server that has never learned a key IS covered, as the boot projection binds it from
+        // the stored session before any request is made.
+        let machine = "fact-bound-machine";
+        let key = keypin::key_of("fact-bound.invalid", 32400);
+        let _scoped = keypin::Scoped::watch(&key);
+        keypin::project(Vec::new(), &[(machine.into(), "fact-bound.invalid".into(), 32400)]);
+        keypin::strict_date_failure(&key, 60, Some(10));
+        assert_eq!(blocked_of(&key), Some(keypin::Blocked::NoKey));
+        keypin::project(Vec::new(), &[]);
     }
 
     #[test]
