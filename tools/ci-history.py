@@ -8,13 +8,15 @@ This is the data behind the live chart at https://plxnative.com/ci/ (site/ci/ind
 the orphan `ci-metrics` branch; the page fetches that file from raw.githubusercontent.com.
 
 The file is `{"updated": ISO time, "ci": [row...], "sim": [row...]}`, each row
-`{"id", "at" (run_started_at), "sha" (9 chars), "title" (display_title, first 90 chars),
+`{"id", "at" (run_started_at), "sha" (9 chars), "title" (the commit subject without its
+trailing "(#N)", first 120 chars), "pr" (the N of that trailing "(#N)", the merge PR, or null),
 "jobs": {job name: seconds}}`, sorted by `at`. `ci` is ci.yml, `sim` is simulators.yml. Only runs
 with conclusion `success` and event `push` are kept, and only jobs that themselves succeeded.
 
 Incremental: `--in` is loaded first (a missing or empty file, e.g. /dev/null, starts empty, which
 backfills everything reachable by paging); runs are listed newest first and paging stops at the
-first page whose kept runs are all already present (`--full` pages to the end). Job timings are fetched for new runs only.
+first page whose kept runs are all already present (`--full` pages to the end, and also refreshes `title` and `pr` of rows already stored from the run
+listing, which carries the commit subject, so rows written before `pr` existed gain it). Job timings are fetched for new runs only.
 Idempotent: a second run with nothing new rewrites byte-identical output (`updated` only moves
 when a row is added), so the workflow can skip the commit.
 
@@ -28,6 +30,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -44,7 +47,8 @@ DEFAULT_REPO = _durations.DEFAULT_REPO
 
 # series key in the JSON -> workflow file
 WORKFLOWS = {"ci": "ci.yml", "sim": "simulators.yml"}
-TITLE_MAX = 90
+TITLE_MAX = 120
+PR_SUFFIX = re.compile(r"\s*\(#(\d+)\)\s*$")
 SHA_LEN = 9
 PER_PAGE = 100
 
@@ -71,8 +75,35 @@ def job_seconds(jobs: list[dict]) -> dict[str, int]:
     return out
 
 
-def new_runs(api, repo: str, workflow_file: str, known: set, max_pages: int, full: bool = False) -> list[dict]:
+def split_title(display_title: str) -> tuple[str, int | None]:
+    """(title, pr): the last trailing "(#N)" is the merge PR and moves out of the title, which is then cut.
+
+    Split before cutting: a long title would otherwise lose its "(#N)" to the cut.
+    "Build: x (#329) (#343)" -> ("Build: x (#329)", 343).
+    """
+    text = display_title or ""
+    m = PR_SUFFIX.search(text)
+    if m:
+        return text[:m.start()][:TITLE_MAX], int(m.group(1))
+    return text[:TITLE_MAX], None
+
+
+def subject(run: dict) -> str:
+    """The commit subject of a run: the first line of head_commit.message, else display_title.
+
+    The API cuts display_title at about 70 characters and ends it with an ellipsis, which drops the
+    trailing "(#N)" of a long squash-merge title before this tool ever sees it. The listing's
+    head_commit.message is whole, so it is the source and display_title only the fallback.
+    """
+    message = ((run.get("head_commit") or {}).get("message") or "").strip()
+    return message.splitlines()[0].strip() if message else (run.get("display_title") or "")
+
+
+def new_runs(api, repo: str, workflow_file: str, known: set, max_pages: int, full: bool = False,
+             listed: dict | None = None) -> list[dict]:
     """Kept runs not in `known`, newest first, stopping at the first page whose kept runs are all known.
+
+    `listed`, when given, is filled with every kept run seen, by id (known ones included).
 
     `full` keeps paging to the end (or `max_pages`) regardless. The listing is not a stable snapshot:
     the first live backfill saw the same run on two pages and missed 45 others, so a run can be
@@ -84,6 +115,8 @@ def new_runs(api, repo: str, workflow_file: str, known: set, max_pages: int, ful
         runs = api(f"repos/{repo}/actions/workflows/{workflow_file}/runs"
                    f"?branch=main&per_page={PER_PAGE}&page={page}").get("workflow_runs", [])
         kept = [r for r in runs if keep(r)]
+        if listed is not None:
+            listed.update((r["id"], r) for r in kept)
         fresh = [r for r in kept if r["id"] not in known]
         found += [r for r in fresh if r["id"] not in seen]
         seen.update(r["id"] for r in fresh)
@@ -94,9 +127,9 @@ def new_runs(api, repo: str, workflow_file: str, known: set, max_pages: int, ful
 
 def row_for(api, repo: str, run: dict) -> dict:
     jobs = api(f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100").get("jobs", [])
+    title, pr = split_title(subject(run))
     return {"id": run["id"], "at": run.get("run_started_at") or run["created_at"],
-            "sha": run["head_sha"][:SHA_LEN], "title": (run.get("display_title") or "")[:TITLE_MAX],
-            "jobs": job_seconds(jobs)}
+            "sha": run["head_sha"][:SHA_LEN], "title": title, "pr": pr, "jobs": job_seconds(jobs)}
 
 
 def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, full: bool = False) -> int:
@@ -104,7 +137,12 @@ def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, fu
     added = 0
     for key, wf in WORKFLOWS.items():
         known = {r["id"] for r in doc[key]}
-        fresh = new_runs(api, repo, wf, known, max_pages, full)
+        listed: dict = {}
+        fresh = new_runs(api, repo, wf, known, max_pages, full, listed)
+        if full:        # the listing carries display_title, so stored rows are refreshed without refetching jobs
+            for r in doc[key]:
+                if r["id"] in listed:
+                    r["title"], r["pr"] = split_title(subject(listed[r["id"]]))
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             rows = list(pool.map(lambda r: row_for(api, repo, r), fresh))
         unique = {r["id"]: r for r in doc[key] + rows}      # also heals duplicates an older file may hold
