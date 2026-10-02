@@ -490,8 +490,9 @@ pub struct Session {
     /// time a connection to it passed STRICT verification and its `/identity` named that machine.
     /// A television cold-booted with no internet has a wrong clock, so the server's own valid
     /// certificate fails its date check; the key it had is what lets the next layer tell "the
-    /// server I know" from a stranger. Nothing reads it yet — [`Session::server_key_pin`] is the
-    /// accessor, and #378 its reader.
+    /// server I know" from a stranger. [`Session::server_key_pin`] is the accessor and
+    /// [`project_server_keys`] its reader: `net::keypin` uses the key to recognise the server when
+    /// only the certificate's dates fail (issue #378).
     ///
     /// Session-level, not part of [`ServerRef`], [`SourceRef`] or [`ProfileCreds`]: those are
     /// cloned per profile, while a key is a fact about one machine seen from this television and
@@ -1726,8 +1727,7 @@ impl Session {
     }
 
     /// The pin remembered for `machine_id`, or `None` when none was learned (or the stored string
-    /// is not a pin). **Issue #378 is its reader**; nothing consults it yet, and what is accepted
-    /// on the wire is unchanged (see [`Session::server_key_pins`]).
+    /// is not a pin). Read by [`project_server_keys`], which hands it to `net::keypin` (issue #378).
     pub(crate) fn server_key_pin(&self, machine_id: &str) -> Option<&str> {
         self.server_key_pins
             .iter()
@@ -2194,6 +2194,11 @@ pub(crate) fn learn_server_key(machine_id: &str, pin: &str) -> bool {
     if machine_id.is_empty() || peek().server_key_pin(machine_id) == Some(pin) {
         return false;
     }
+    // The key reaches `net::keypin` ONLY through the queued write's own cache replacement
+    // ([`project_server_keys`], the table's single production writer). Key mode cannot be needed
+    // right after a strict success, and a direct write here would let an intervening
+    // `replace_cache` revert it until the write lands, and let a probe that finishes after
+    // sign-out repopulate the table that sign-out just emptied.
     let (machine_id, pin) = (machine_id.to_owned(), pin.to_owned());
     queue_update(move |cur| cur.with_server_key_pin(&machine_id, &pin))
 }
@@ -2352,7 +2357,49 @@ fn same_visible_session(previous: &Cached, next: &Cached) -> bool {
     }
 }
 
+/// **The session → `net::keypin` projection, spelled once** (issue #378). Replaces the table's
+/// remembered keys with `session`'s and binds every stored server that has a `ResolvePin` — the
+/// primary and the roster — to its `host:port`, so a boot that has not registered anything yet is
+/// already covered. The other half of the binding is `servers::register_lazy`, which binds the
+/// server whose `ResolvePin` it installs. A signed-out session is empty, so sign-out empties the
+/// table. Called from [`replace_cache`] (every read, write and revocation) and by boot for a
+/// session it was handed rather than read.
+pub(crate) fn project_server_keys(session: &Session) {
+    let pins = session
+        .server_key_pins
+        .iter()
+        .filter_map(|k| session.server_key_pin(&k.machine_id).map(|p| (k.machine_id.clone(), p.to_owned())))
+        .collect();
+    let mut stored: Vec<(String, String, i32)> = Vec::new();
+    let mut add = |machine: &str, pin: Option<super::origin::ResolvePin>| {
+        if let Some(pin) = pin {
+            stored.push((machine.to_owned(), pin.host().to_owned(), pin.port()));
+        }
+    };
+    add(&session.server.machine_id, session.server.resolve_pin());
+    for source in &session.sources {
+        add(&source.machine_id, source.resolve_pin());
+    }
+    crate::net::keypin::project(pins, &stored);
+}
+
+/// The session a cache value tells us about, for [`project_server_keys`]: a read or a write that
+/// proved the record, a signed-out record or none (empty), a local revocation (empty). A transient
+/// failure to read (`Locked`, `Blocked`) and `Unloaded` say nothing and leave the table alone.
+fn key_projection(value: &Cached) -> Option<std::sync::Arc<Session>> {
+    match value {
+        Cached::Revoked => Some(empty_session()),
+        Cached::Unloaded => None,
+        Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
+            ReadState::Ready { session, .. } => Some(session.clone()),
+            ReadState::Missing | ReadState::Cleared { .. } => Some(empty_session()),
+            ReadState::Locked { .. } | ReadState::Blocked => None,
+        },
+    }
+}
+
 fn replace_cache(value: Cached, expected: Option<u64>, proven: bool) -> bool {
+    let projection = key_projection(&value);
     loop {
         let (previous, generation) = {
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -2368,6 +2415,9 @@ fn replace_cache(value: Cached, expected: Option<u64>, proven: bool) -> bool {
         if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation { continue; }
         *cache = value;
         CACHE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Under the cache lock, so two replacements project in the order they landed.
+        // `net::keypin` takes its own lock and never calls back into this module.
+        if let Some(session) = &projection { project_server_keys(session); }
         if changed { VISIBLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release); }
         return true;
     }
@@ -4543,8 +4593,8 @@ mod migration_tests;
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub(crate) mod async_persistence;
 
-/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. Nothing
-/// reads it yet (#378 will); these pin the storage contract so that reader can rely on it.
+/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. The reader
+/// is [`project_server_keys`] (issue #378); these pin the storage contract it relies on.
 #[cfg(test)]
 mod server_key_pin_tests {
     use super::*;
@@ -4649,5 +4699,111 @@ mod server_key_pin_tests {
 
         clear();
         assert!(peek().server_key_pins.is_empty(), "cleared with the credentials");
+    }
+
+    // ---- Issue #378: the session → `net::keypin` projection. Each test uses its own machine id and
+    // its own port, so the process-wide key table never carries one test's entry into another's;
+    // all hold `testlock::serial()` (the session cache is a crate global too). ----
+
+    const HASH: &str = "0123456789abcdef0123456789abcdef";
+
+    fn plex_direct_origin(port: i32) -> String {
+        format!("https://127-0-0-1.{HASH}.plex.direct:{port}")
+    }
+
+    fn table_key(port: i32) -> String {
+        crate::net::keypin::key_of(&format!("127-0-0-1.{HASH}.plex.direct"), port)
+    }
+
+    /// A signed-in session whose primary server is the `plex.direct` origin of `machine` and which
+    /// remembers `pin` for it.
+    fn remembering(machine: &str, port: i32, pin: &str) -> Session {
+        let mut session = test_support::signed_in();
+        session.server = ServerRef {
+            machine_id: machine.into(),
+            address: "127.0.0.1".into(),
+            port: i64::from(port),
+            origin_url: plex_direct_origin(port),
+            ..Default::default()
+        };
+        session.with_server_key_pin(machine, pin).expect("a new entry")
+    }
+
+    /// Restoring a stored session fills the table WITHOUT any registration having happened (the
+    /// offline boot: the stored primary is what knows the host), and sign-out empties it — the
+    /// table and the latch that stood on it.
+    #[test]
+    fn a_restored_session_fills_the_key_table_and_sign_out_empties_it() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("keys-restore");
+        let (machine, port) = ("m-keys-restore", 41_001);
+        let key = table_key(port);
+        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
+        crate::net::keypin::forget_for_test(&key);
+        save(&remembering(machine, port, &pin(1)));
+        let _ = load();
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)), "stored server + stored key");
+
+        crate::net::keypin::key_established(&key, &pin(1), Some(10));
+        assert!(crate::net::keypin::is_latched(&key));
+        revoke_cached_session();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
+        assert!(!crate::net::keypin::is_latched(&key), "…and ends key mode");
+    }
+
+    /// A new or changed key reaches the table when the write `learn_server_key` queued is applied
+    /// (the session projection is the table's only production writer), and a changed key ends key
+    /// mode for the host.
+    #[test]
+    fn learning_a_new_or_changed_key_updates_the_table_and_clears_the_latch() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("keys-learn");
+        let (machine, port) = ("m-keys-learn", 41_002);
+        let key = table_key(port);
+        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
+        crate::net::keypin::forget_for_test(&key);
+        let mut stored = remembering(machine, port, &pin(1));
+        stored.account_token = "acct".into();
+        save(&stored);
+        let _ = load();
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
+
+        crate::net::keypin::key_established(&key, &pin(1), Some(10));
+        assert!(learn_server_key(machine, &pin(2)), "a different key is queued");
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "the applied write projects it");
+        assert!(!crate::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
+    }
+
+    /// A probe that finishes after sign-out must not put its key back into the table sign-out just
+    /// emptied: nothing but the session projection writes the table, and a signed-out session
+    /// projects nothing.
+    #[test]
+    fn a_learn_that_completes_after_sign_out_leaves_the_table_empty() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("keys-learn-signout");
+        let (machine, port) = ("m-keys-learn-out", 41_003);
+        let key = table_key(port);
+        let _scoped = crate::net::keypin::Scoped::new(key.clone(), &pin(9));
+        crate::net::keypin::forget_for_test(&key);
+        let mut stored = remembering(machine, port, &pin(1));
+        stored.account_token = "acct".into();
+        save(&stored);
+        let _ = load();
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
+
+        revoke_cached_session();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
+        let _ = learn_server_key(machine, &pin(2));
+        crate::storage_worker::drain_for_test();
+        let _ = peek();
+        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
     }
 }

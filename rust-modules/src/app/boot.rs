@@ -638,6 +638,16 @@ pub(crate) unsafe fn construct(
         Some(initial) => initial.session.persisted.clone(),
         None => crate::plex::session::load(),
     };
+    // The remembered server keys of the session this boot runs on, handed over before any request
+    // can leave: a captured session was never READ through the cache that projects them.
+    crate::plex::session::project_server_keys(&session);
+    // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
+    // no account (a no-op without the trigger; absent in shipping builds). Armed HERE, after the
+    // projection above, and not beside `global_init`: the projection replaces the key table
+    // wholesale, and the self-test's pin is filed under a machine no session holds, so a projection
+    // landing while round 1's first handshake was in flight wiped it and the round was refused.
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::tls_selftest::arm_at_boot();
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
     let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| crate::plex::session::ServerRef {
         address: host_s.clone(), port: i64::from(pms_port),

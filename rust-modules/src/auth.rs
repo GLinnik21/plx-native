@@ -1556,7 +1556,7 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// custom host behind a proxy with its own certificate would otherwise rewrite its one stored
 /// key on every discovery. This is the only place the rule is spelled: [`ProbeReply::peer_pin`]
 /// is `Some` exactly when it held.
-fn get_identity(
+pub(crate) fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
@@ -1579,8 +1579,8 @@ fn get_identity(
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
         // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
         // that might happen to contain a plausible machine id.
-        Some(r) => ProbeReply { status: r.status, body: r.body, peer_pin: r.peer_pin },
-        None => ProbeReply::from((0, Vec::new())),
+        Ok(r) => ProbeReply { status: r.status, body: r.body, peer_pin: r.peer_pin, failure: None },
+        Err(failure) => ProbeReply { status: 0, body: Vec::new(), peer_pin: None, failure },
     }
 }
 
@@ -1589,10 +1589,13 @@ fn get_identity(
 /// connection presented (`crate::http::Reply::peer_pin`). `peer_pin` is `None` over plaintext, for
 /// an origin without a `ResolvePin` (see [`get_identity`]) and on every test seam.
 #[derive(Debug)]
-struct ProbeReply {
-    status: i32,
-    body: Vec<u8>,
-    peer_pin: Option<String>,
+pub(crate) struct ProbeReply {
+    pub(crate) status: i32,
+    pub(crate) body: Vec<u8>,
+    pub(crate) peer_pin: Option<String>,
+    /// What libcurl reported when nothing answered (`status` is `0`): the `CURLcode` the dev TLS
+    /// self-test prints. `None` over plaintext and for a request refused before libcurl ran.
+    pub(crate) failure: Option<crate::net::RequestFailure>,
 }
 
 impl ProbeReply {
@@ -1622,7 +1625,7 @@ impl ProbeReply {
 /// answered".
 impl From<(i32, Vec<u8>)> for ProbeReply {
     fn from((status, body): (i32, Vec<u8>)) -> Self {
-        ProbeReply { status, body, peer_pin: None }
+        ProbeReply { status, body, peer_pin: None, failure: None }
     }
 }
 

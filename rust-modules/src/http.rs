@@ -112,14 +112,17 @@ pub(crate) struct Reply {
 pub(crate) enum RequestOutcome {
     Response(Reply),
     Deadline,
-    Transport,
+    /// Nothing answered. Carries libcurl's [`crate::net::RequestFailure`] when the TLS transport
+    /// ran and produced one; `None` from the plaintext transport and from a request refused
+    /// before any transport ran.
+    Transport(Option<crate::net::RequestFailure>),
 }
 
 impl RequestOutcome {
     fn response(self) -> Option<Reply> {
         match self {
             Self::Response(reply) => Some(reply),
-            Self::Deadline | Self::Transport => None,
+            Self::Deadline | Self::Transport(_) => None,
         }
     }
 }
@@ -238,7 +241,7 @@ pub(crate) fn request_probe(
     max_body: usize,
     timeout_s: i32,
     pin: Option<&ResolvePin>,
-) -> Option<Reply> {
+) -> Result<Reply, Option<crate::net::RequestFailure>> {
     probe(origin, path, method, headers, max_body, timeout_s, pin, false)
 }
 
@@ -257,7 +260,7 @@ pub(crate) fn request_probe_learning_key(
     max_body: usize,
     timeout_s: i32,
     pin: Option<&ResolvePin>,
-) -> Option<Reply> {
+) -> Result<Reply, Option<crate::net::RequestFailure>> {
     probe(origin, path, method, headers, max_body, timeout_s, pin, true)
 }
 
@@ -271,8 +274,8 @@ fn probe(
     timeout_s: i32,
     pin: Option<&ResolvePin>,
     learn_pin: bool,
-) -> Option<Reply> {
-    request_with(
+) -> Result<Reply, Option<crate::net::RequestFailure>> {
+    match request_with(
         origin,
         path,
         method,
@@ -283,8 +286,13 @@ fn probe(
             learn_pin,
         },
         pin,
-    )
-    .response()
+    ) {
+        RequestOutcome::Response(reply) => Ok(reply),
+        RequestOutcome::Transport(failure) => Err(failure),
+        // A probe carries no caller deadline (`BodyPolicy::Probe`), so this is unreachable; it is
+        // a failure without evidence rather than a panic if that ever changes.
+        RequestOutcome::Deadline => Err(None),
+    }
 }
 
 fn request_with(
@@ -296,7 +304,7 @@ fn request_with(
     pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
     if !credential_transport_allowed(origin, path, headers) {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     match origin.scheme() {
         // The plaintext arm dials the literal it is given; a pin belongs to a TLS NAME only.
@@ -386,10 +394,10 @@ fn plaintext(
         s
     };
     let Ok(host_c) = std::ffi::CString::new(origin.host()) else {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     };
     let Ok(path_c) = std::ffi::CString::new(path) else {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     };
     let extra_c = std::ffi::CString::new(extra).ok();
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
@@ -437,7 +445,7 @@ fn plaintext(
                 Err(crate::stream::HttpOpenError::Deadline) => {
                     return match owner {
                         DeadlineOwner::Caller => RequestOutcome::Deadline,
-                        DeadlineOwner::Liveness => RequestOutcome::Transport,
+                        DeadlineOwner::Liveness => RequestOutcome::Transport(None),
                     };
                 }
                 // `Stopped` cannot occur: this request has no checkpoint.
@@ -446,7 +454,7 @@ fn plaintext(
                     | crate::stream::HttpOpenError::Stopped
                     | crate::stream::HttpOpenError::Transport,
                 ) => {
-                    return RequestOutcome::Transport;
+                    return RequestOutcome::Transport(None);
                 }
             }
         }
@@ -523,10 +531,10 @@ fn plaintext(
                     deadline_failure = Some(if n == crate::stream::HTTP_READ_DEADLINE {
                         match read_deadline_owner.unwrap_or(DeadlineOwner::Caller) {
                             DeadlineOwner::Caller => RequestOutcome::Deadline,
-                            DeadlineOwner::Liveness => RequestOutcome::Transport,
+                            DeadlineOwner::Liveness => RequestOutcome::Transport(None),
                         }
                     } else {
-                        RequestOutcome::Transport
+                        RequestOutcome::Transport(None)
                     });
                 }
                 break;
@@ -558,21 +566,21 @@ fn plaintext(
     }
     if overflowed {
         crate::log("http: response exceeded body limit");
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     if matches!(body_policy, BodyPolicy::Deadline { .. })
         && opened == 0
         && content_length >= 0
         && (body.len() as i64) < content_length
     {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     // A status of 0 is not something a server sent — it is what `http_open`'s parser leaves when
     // the connection never produced an `HTTP/1.x NNN` line at all, i.e. a transport failure. It
     // must not reach a caller as a "response", because `classify` would read it as `Unreachable`
     // by luck rather than by decision, and `Reply::ok` would read it as a refusal.
     if status == 0 {
-        RequestOutcome::Transport
+        RequestOutcome::Transport(None)
     } else {
         RequestOutcome::Response(Reply { status, body, peer_pin: None })
     }
@@ -583,8 +591,9 @@ fn plaintext(
 /// The URL is `origin.base()` + `path`, so the authority is the one the origin PARSED — the
 /// `plex.direct` name a certificate is issued for, bracketed if it is a v6 literal — and never a
 /// pair reassembled from an address. `net` verifies peer and host (`SSL_VERIFYPEER` +
-/// `SSL_VERIFYHOST=2`), so a retained public or matched-LAN candidate must authenticate the name
-/// plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
+/// `SSL_VERIFYHOST=2`) — with one exception, `net::keypin`'s wrong-clock retry, which replaces the
+/// chain-and-date check with a pin on a remembered key and still checks the name — so a retained
+/// public or matched-LAN candidate must authenticate the name plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
 /// `probe::candidates`; validation could reject a stranger there, but could not refund its 8 s
 /// sequential connect setting (subject to the synchronous-resolver caveat in the module doc).
 ///
@@ -683,7 +692,7 @@ fn tls(
         Err(failure) if failure.cause == crate::net::RequestError::TimedOut && caller_owns_timeout => {
             RequestOutcome::Deadline
         }
-        Err(_) => RequestOutcome::Transport,
+        Err(failure) => RequestOutcome::Transport(Some(failure)),
     }
 }
 
@@ -788,7 +797,7 @@ mod tests {
             let tls_origin = Origin::parse(&format!("https://no-such-host.invalid:{port}")).unwrap();
             let pin = ResolvePin::for_test("no-such-host.invalid", port as i32, "127.0.0.1".parse().unwrap());
             assert!(
-                request_probe(&tls_origin, "/identity", Method::Get, &[], 4096, 1, Some(&pin)).is_none(),
+                request_probe(&tls_origin, "/identity", Method::Get, &[], 4096, 1, Some(&pin)).is_err(),
                 "TLS against a plaintext listener fails, as it must"
             );
             assert_eq!(
@@ -801,7 +810,7 @@ mod tests {
             let same_pin = ResolvePin::for_test("192.0.2.1", 32400, "127.0.0.1".parse().unwrap());
             assert!(
                 request_probe(&http_origin, "/identity", Method::Get, &[], 4096, 1, Some(&same_pin))
-                    .is_none(),
+                    .is_err(),
                 "the unrouted literal never answers, pin or no pin"
             );
             assert_eq!(
@@ -928,7 +937,7 @@ mod tests {
         });
 
         let origin = Origin::http("127.0.0.1", port as i32);
-        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1, None).is_none());
+        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1, None).is_err());
         server.join().expect("server");
     }
 
@@ -992,7 +1001,7 @@ mod tests {
         server.join().unwrap();
         cross(deadline);
 
-        assert!(matches!(outcome, RequestOutcome::Transport));
+        assert!(matches!(outcome, RequestOutcome::Transport(_)));
     }
 
     #[test]
