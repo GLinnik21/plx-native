@@ -3030,7 +3030,7 @@ fn install_write_locked(state: std::sync::Arc<ReadState>, authority: SaveAuthori
     }
 }
 
-fn cache_revoked() -> bool {
+pub(crate) fn cache_revoked() -> bool {
     matches!(*CACHE.lock().unwrap_or_else(|e| e.into_inner()), Cached::Revoked)
 }
 

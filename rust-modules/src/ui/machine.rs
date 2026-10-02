@@ -797,3 +797,66 @@ mod canon_tests {
         assert!(buf.iter().all(|s| s.from == MachineId::Nav));
     }
 }
+
+/// The screen argument a test hands a [`Host`] when the machine under test has no screen of its
+/// own: the session owner's tests, which sit in a layer above this one and so cannot stand on
+/// `ui::fixture`'s `FixtureArg` (that is the UI library's own rig and lives in `ui`).
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BareArg;
+
+#[cfg(test)]
+impl LogicalState for BareArg {
+    fn write(&self, c: &mut Canon) { c.u32(0); }
+    fn probe(&self, out: &mut String) { out.push_str("bare_arg"); }
+}
+
+#[cfg(test)]
+impl ScreenArg for BareArg {
+    fn chrome(&self) -> Chrome {
+        Chrome::None
+    }
+    fn id(&self) -> ScreenId {
+        ScreenId(0)
+    }
+    fn title(&self) -> Option<&str> {
+        None
+    }
+    fn same_instance(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// The text measure a test hands a [`Cx`] when the machine under test draws nothing: a half-em
+/// advance per UTF-8 byte, the answers `ui::fixture::FixtureMeasure` gives.
+#[cfg(test)]
+pub(crate) struct BareMeasure;
+
+#[cfg(test)]
+impl Measure for BareMeasure {
+    fn width(&self, s: &CStr, sz: i32, _bold: bool) -> f32 {
+        s.to_bytes().len() as f32 * sz as f32 * 0.5
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * 0.7
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * 1.2
+    }
+}
+
+/// The host-test text measure over the shipped faces' real advances. The type is `fontcov`'s (base)
+/// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
+/// the one place the orphan rule lets it sit once the layers are crates.
+#[cfg(test)]
+impl Measure for crate::fontcov::advances::ShippedMeasure {
+    fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+        crate::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * 0.73
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * 1.21
+    }
+}

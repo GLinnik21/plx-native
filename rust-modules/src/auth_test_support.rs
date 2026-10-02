@@ -174,7 +174,7 @@ pub(super) fn a_two_server_account() -> Vec<Resource> {
 /// assert about registration and re-keying runs through `SourceRef::origin`'s fallback.
 // ---- the offline profile seat, decided from the stored session alone ----
 
-pub(super) fn cached_session(protected_pin: Option<&str>) -> Session {
+pub(crate) fn cached_session(protected_pin: Option<&str>) -> Session {
     let mut s = Session {
         client_id: "cid".into(),
         account_token: "acct".into(),

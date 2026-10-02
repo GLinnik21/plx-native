@@ -2570,7 +2570,8 @@ mod tests {
     /// draw, measured with the device's advances, stays inside the read-out's width.
     #[test]
     fn every_failure_row_fits_the_screen_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, Preference};
         use crate::player::FailureAction as A;
         let rows: [&[A]; 3] = [
@@ -2599,7 +2600,8 @@ mod tests {
     /// Every Force verdict fits the read-out's two-line reason slot, in every shipped language.
     #[test]
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {

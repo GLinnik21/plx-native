@@ -518,8 +518,8 @@ mod tests {
     /// **Ending the tenure leaves neither identifier in the snapshot and no file on disk.** The
     /// snapshot is the half a producer on the render thread reads, so a report queued after the
     /// sign-out must find nothing to attach; the file is the half the next boot reads.
-    /// `auth::tests::signing_out_leaves_no_consent_and_no_identifier_for_the_next_account` grades
-    /// the same thing through the real sign-out tail.
+    /// `app::session_worker_adapter_tests::signing_out_leaves_no_consent_and_no_identifier_for_the_next_account`
+    /// grades the same thing through the real sign-out tail.
     #[test]
     fn forgetting_the_tenure_clears_both_identifiers_and_the_file() {
         /// The redirects and the snapshot, handed back on drop, so a failed assertion cannot leave

@@ -69,21 +69,6 @@ fn belarusian_library_count_messages_render_the_reviewed_forms() {
     }
 }
 #[test]
-fn preferences_soft_parse_without_losing_the_session() {
-    for raw in [
-        r#"{}"#,
-        r#"{"language":"future"}"#,
-        r#"{"language":42}"#,
-        r#"{"language":null}"#,
-    ] {
-        let s: crate::plex::session::Session = serde_json::from_str(raw).unwrap();
-        assert_eq!(s.language, Preference::System);
-    }
-    let s: crate::plex::session::Session = serde_json::from_str(r#"{"language":"be"}"#).unwrap();
-    assert_eq!(s.language, Preference::Be);
-    assert_eq!(serde_json::to_value(&s).unwrap()["language"], "be");
-}
-#[test]
 fn settings_replies_are_typed_and_refusals_do_not_look_like_success() {
     let s=parse_reply(r#"{"returnValue":true,"settings":{"localeInfo":{"locales":{"UI":"be_BY","FMT":"es-ES"},"clock":"12"}}}"#).unwrap();
     assert_eq!(s.ui.as_deref(), Some("be-BY"));
@@ -126,12 +111,4 @@ fn pseudo_locale_exercises_expansion_without_changing_arguments() {
     assert!(msg::core_system_default_in(&cx).len() > "System default".len());
     assert!(!msg::settings_language_contribute_body_in(&cx).contains("github.com"),
         "only the guide caption belongs to the translated catalog, never its address");
-}
-#[test]
-fn captured_language_changes_the_recorded_session_hash() {
-    use crate::ui::machine::LogicalState;
-    let a = crate::auth::SessionInit::captured(crate::plex::session::Session::default());
-    let mut b = a.clone();
-    b.persisted.language = Preference::Be;
-    assert_ne!(a.hash(), b.hash());
 }

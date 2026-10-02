@@ -1523,34 +1523,6 @@ fn p1_failed_signout_cannot_reopen_fallback_after_restart() {
 }
 
 #[test]
-fn p1_adapter_does_not_complete_an_erase_with_an_incomplete_sweep() {
-    let _serial = crate::testlock::serial();
-    let file = TempSession::new("p1-adapter-erase");
-    save(&signed_in());
-    let _permissions = RestorePermissions::set(&[
-        (file.file().parent().unwrap(), 0o500), (file.file().as_path(), 0o400),
-    ]);
-    let mt = unsafe { crate::task::MainThread::assume() };
-    let mut adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
-    let mut meta = crate::stores::metadata::MetadataStore::default();
-    assert!(adapter.begin_erase(1, false, &mut meta).is_none());
-    crate::storage_worker::drain_for_test();
-    assert!(adapter.take_erased(&mut meta).is_none(), "incomplete erase must remain retryable");
-    assert!(cache_revoked());
-    drop(_permissions);
-    struct ResetClock;
-    impl Drop for ResetClock { fn drop(&mut self) { crate::app::clock::set_replay(0); } }
-    let _clock = ResetClock;
-    crate::app::clock::set_replay(crate::app::clock::now().wrapping_add(1_000));
-    let completed = adapter.take_erased(&mut meta);
-    crate::storage_worker::drain_for_test();
-    let completed = completed.or_else(|| adapter.take_erased(&mut meta));
-    assert!(matches!(completed, Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
-        "the same pending erase completes only after a successful retry");
-    assert!(cache_revoked());
-}
-
-#[test]
 fn p1_authoritative_reads_retire_only_marked_files() {
     use persistence::CanonicalRead as C;
     let _serial = crate::testlock::serial();

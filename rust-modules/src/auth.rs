@@ -761,7 +761,7 @@ pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &
 pub(crate) struct ProfileDelta {
     server: ServerRef,
     sources: Vec<SourceRef>,
-    user: UserRef,
+    pub(crate) user: UserRef,
     cache: Option<ProfileCreds>,
 }
 
@@ -779,9 +779,9 @@ pub(crate) enum ProfileSwitchOutcomeProgress {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileSwitchProgress {
-    epoch: u64,
+    pub(crate) epoch: u64,
     expected: SessionIdentity,
-    outcome: ProfileSwitchOutcomeProgress,
+    pub(crate) outcome: ProfileSwitchOutcomeProgress,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1825,7 +1825,7 @@ struct PlexTvFailure {
 /// cannot say two different things about the same verdict (plan §4).
 ///
 /// The English catalog preserves the approved wording; translations retain its remedy.
-fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
+pub(crate) fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
@@ -1862,7 +1862,7 @@ pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: Readou
 
 // Explicit locale keeps the entire verdict testable without changing the process locale.
 // Each catalog sentence owns the server/owner grammar and the named action.
-fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
+pub(crate) fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
     locale: &crate::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
     use crate::i18n::msg;
     use std::borrow::Cow;
@@ -4137,7 +4137,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
 }
 
 /// Both the live resource executor and preserved worker-policy tests enter this same body.
-fn profile_switch_worker_with_output(
+pub(crate) fn profile_switch_worker_with_output(
     epoch: u64,
     expected: SessionIdentity,
     stored: Session,
@@ -4453,7 +4453,7 @@ fn settle_signin(active: &mut bool) -> bool {
 
 #[cfg(test)]
 #[path = "auth_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "auth_discovery_tests.rs"]

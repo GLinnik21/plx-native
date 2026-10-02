@@ -648,6 +648,15 @@ fn hex_128(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    // Moved from `task::blocking`'s tests: it names this module's `load`, which is a layer above
+    // `task`, so the test lives with the call it grades.
+    #[test]
+    #[should_panic(expected = "main-thread block: storage helper transact")]
+    fn a_helper_call_inside_a_frame_is_rejected() {
+        let _frame = crate::task::FrameScope::enter();
+        let _ = load();
+    }
+
     #[test]
     fn decoded_uncertain_reply_without_detail_is_not_a_wire_failure() {
         for response in [

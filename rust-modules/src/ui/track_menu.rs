@@ -3715,7 +3715,8 @@ mod enhancement_menu_tests {
     #[test]
     fn spanish_locked_note_wraps_within_the_subtitles_panel() {
         use crate::ui::machine::Measure;
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, Preference};
         let _g = crate::testlock::serial();
         let _guard = language_on_this_thread_for_test(Preference::Es);

@@ -1030,7 +1030,8 @@ mod tests {
     /// meta line beside the artwork. Measured with the device's whole-pixel advances.
     #[test]
     fn the_collection_pages_fixed_slots_fit_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         use crate::ui::machine::Measure;
         let m = ShippedMeasure;
