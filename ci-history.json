@@ -1,4 +1,4 @@
-{"updated":"2026-10-02T12:23:34Z",
+{"updated":"2026-10-02T12:28:48Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not coll\u2026","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71}},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76}},
@@ -264,7 +264,8 @@
 {"id":36948865051,"at":"2026-10-02T01:00:55Z","sha":"e6e38a992","title":"CI build health: cargo timings artifact, duration-trend tool and dete\u2026","jobs":{"cross-build (armv7) + artifact assertions":215,"host unit tests (default features)":275,"host python/shell/C gates":280,"host lint + type-checks":195,"host unit tests (hostsim)":246,"host checks (NOT a device gate)":3}},
 {"id":36952715331,"at":"2026-10-02T01:48:50Z","sha":"5fb02e981","title":"Move the base64 helper out of keymanager so spki stays off the module\u2026","jobs":{"cross-build (armv7) + artifact assertions":255,"host lint + type-checks":207,"host unit tests (default features)":311,"host unit tests (hostsim)":253,"host python/shell/C gates":304,"host checks (NOT a device gate)":3}},
 {"id":36954631143,"at":"2026-10-02T02:13:32Z","sha":"6ad7e614e","title":"Reach a server by its remembered key when a wrong clock fails its cer\u2026","jobs":{"cross-build (armv7) + artifact assertions":231,"host lint + type-checks":159,"host unit tests (default features)":311,"host python/shell/C gates":199,"host unit tests (hostsim)":206,"host checks (NOT a device gate)":3}},
-{"id":36956913711,"at":"2026-10-02T02:43:06Z","sha":"70742716a","title":"Simplify the wrong-clock key fallback: one eligibility predicate, no \u2026","jobs":{"host python/shell/C gates":294,"host lint + type-checks":201,"host unit tests (hostsim)":238,"host unit tests (default features)":314,"cross-build (armv7) + artifact assertions":230,"host checks (NOT a device gate)":4}}
+{"id":36956913711,"at":"2026-10-02T02:43:06Z","sha":"70742716a","title":"Simplify the wrong-clock key fallback: one eligibility predicate, no \u2026","jobs":{"host python/shell/C gates":294,"host lint + type-checks":201,"host unit tests (hostsim)":238,"host unit tests (default features)":314,"cross-build (armv7) + artifact assertions":230,"host checks (NOT a device gate)":4}},
+{"id":37006378319,"at":"2026-10-02T12:23:20Z","sha":"a9202f2aa","title":"CI: a live build-time chart at plxnative.com/ci, fed by a ci-metrics \u2026","jobs":{"host unit tests (default features)":311,"host lint + type-checks":217,"host python/shell/C gates":297,"cross-build (armv7) + artifact assertions":227,"host unit tests (hostsim)":208,"host checks (NOT a device gate)":4}}
 ],
 "sim":[
 {"id":34841379409,"at":"2026-09-14T12:03:51Z","sha":"6073ae00c","title":"Add Windows WSLg and Linux simulator support (#94)","jobs":{"Linux simulator build + launch":126,"macOS simulator build + launch":161,"Windows launcher syntax":19}},
