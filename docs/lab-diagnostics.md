@@ -169,7 +169,7 @@ by forgetting a flag.
 | file | what it owns |
 | --- | --- |
 | `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
-| `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
+| `labcfg/config.rs` | (a `platform` module, so `ui/` and `screens/` can ask `labcfg::is_trigger_key` and `labcfg::menu_row_enabled`) reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
 | `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
 | `eventlog/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
 | `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime. Pure and host-testable. |
@@ -330,7 +330,7 @@ which appears nowhere in this tree and is unbound.
   ssh.
 
 The default in `plxnative-lab start` is **489**, the measured BLUE. `406` survives only as a unit
-test's fixture in `lab/config.rs` — it was the original guess (the CEA-2014 / webOS web-runtime
+test's fixture in `labcfg/config.rs` — it was the original guess (the CEA-2014 / webOS web-runtime
 keycode for BLUE) and it was wrong, which is the whole lesson of this section.
 
 ## 8. Receiver — `tools/plxnative-lab`, python3 stdlib only

@@ -1,11 +1,13 @@
 //! The lab upload's read-out: **"Uploading diagnostics…" → "Diagnostics uploaded" or a reason**.
 //!
-//! Lab builds only (`crate::lab`), and it is the only thing this feature ever puts on screen. Its
-//! whole job is to answer, in a rented Cloud Test Lab hour with no console and no log, the one
-//! question a tester has after pressing the button: *did anything happen*. A silent trigger and a
-//! trigger that is not delivered at all look identical, and one of those is a bug in this feature
-//! while the other is the colour-button question (`docs/lab-diagnostics.md` §7) — so the read-out
-//! appears the moment the press is TAKEN, before the network is involved, and then changes.
+//! Lab builds only (`crate::lab`, which owns it — it was `ui/lab_toast.rs` until the UI library
+//! had to stop naming the lab's upload state), and it is the only thing this feature ever puts on
+//! screen. Its whole job is to answer, in a rented Cloud Test Lab hour with no console and no log,
+//! the one question a tester has after pressing the button: *did anything happen*. A silent
+//! trigger and a trigger that is not delivered at all look identical, and one of those is a bug in
+//! this feature while the other is the colour-button question (`docs/lab-diagnostics.md` §7) — so
+//! the read-out appears the moment the press is TAKEN, before the network is involved, and then
+//! changes.
 //!
 //! # Where it sits, and why not where the other read-out sits
 //!
@@ -18,7 +20,7 @@
 //! It takes NO KEYS: it is not a route, not a modal and has no dismiss. Every key keeps doing what
 //! it did, which matters when the upload is triggered from the playback failure read-out — the
 //! screen a tester most wants a snapshot of, and one whose own key arm swallows everything.
-use crate::lab::upload;
+use super::upload;
 use crate::ui::consts::{MARGIN_X, SCR_W};
 use crate::ui::label::Label;
 use crate::ui::{theme, Painter, Rect};
@@ -32,7 +34,7 @@ const TOP: f32 = 60.0;
 
 /// Where the diagnostics read-out ENDS, when it is on screen — the whole of what this module needs
 /// to know about it. A `Rect` rather than a handle on the panel: the read-out's state is an `App`
-/// field (`app.diagnostics`, phase 10) and `ui/` does not reach into the application for it.
+/// field (`app.diagnostics`, phase 10) and the loop hands this module the frame it needs.
 fn frame_for(stats: Option<Rect>) -> Rect {
     let y = match stats {
         Some(stats) => stats.y + stats.h + theme::space::SM,

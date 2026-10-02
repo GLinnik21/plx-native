@@ -20,7 +20,8 @@
 //! this is deliberately **at least once across crashes**, which is the only honest guarantee
 //! without writable durable state on the rented set.
 
-use super::{config, ControlCommand};
+use super::ControlCommand;
+use crate::labcfg::config;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -627,7 +627,7 @@ fn rows_for(forced: bool) -> Vec<Action> {
             .collect()
     };
     v.push(Action::ToggleStats);
-    if crate::lab::menu_row_enabled() {
+    if crate::labcfg::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
     }
     v
