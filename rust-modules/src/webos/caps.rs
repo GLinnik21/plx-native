@@ -434,22 +434,10 @@ mod tests {
 
     #[test]
     fn dv_caps_getters_are_frame_safe() {
-        crate::metadata::prewarm_dv_latches();
         let cache = DvCache::new();
         let frame = crate::task::FrameScope::enter();
         assert_eq!(cache.get().capability, DvCapability::Unknown);
         let _ = super::capability();
-        let dovi = crate::metadata::Dovi {
-            present: true,
-            profile: 8,
-            bl_compat: 1,
-            el_present: false,
-            ..crate::metadata::Dovi::NONE
-        };
-        assert_eq!(
-            dovi.presentation(true, DvCapability::Unknown, true),
-            crate::metadata::DvPresentation::NotDv,
-        );
         drop(frame);
     }
 

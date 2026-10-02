@@ -1,4 +1,5 @@
-//! `convert_streams`: a Dolby Vision record's survival across multiple video streams.
+//! `convert_streams`: a Dolby Vision record's survival across multiple video streams, and the
+//! frame-safety of reading the platform's Dolby Vision answer through the presentation decision.
 
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -49,4 +50,28 @@ fn a_part_with_no_dolby_vision_reports_no_record() {
     assert_eq!(dovi, Dovi::default());
     assert!(!dovi.base_layer_unusable());
     assert!(!hdr, "no DV and no PQ/HLG transfer is not HDR");
+}
+
+/// The platform's cached Dolby Vision answer and [`Dovi::presentation`] are readable inside a
+/// `FrameScope`, where any blocking call panics under `cfg(test)`. The platform half of this
+/// (the cache's own getters) is `webos::caps`'s `dv_caps_getters_are_frame_safe`; this half names
+/// `Dovi` and `DvPresentation`, so it lives with the type that owns them. Prewarming the
+/// diagnostic latches first mirrors boot, which resolves them outside the scope.
+#[test]
+fn dv_presentation_reads_are_frame_safe() {
+    prewarm_dv_latches();
+    let frame = crate::task::FrameScope::enter();
+    let _ = crate::webos::caps::capability();
+    let dovi = Dovi {
+        present: true,
+        profile: 8,
+        bl_compat: 1,
+        el_present: false,
+        ..Dovi::NONE
+    };
+    assert_eq!(
+        dovi.presentation(true, crate::webos::caps::DvCapability::Unknown, true),
+        DvPresentation::NotDv,
+    );
+    drop(frame);
 }

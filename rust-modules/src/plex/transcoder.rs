@@ -19,14 +19,12 @@ use super::models::MediaContainer;
 use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
 use super::probe::Location;
 
-/// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
-/// two-sided test — what our demuxer/payload path can feed, before asking whether this
-/// particular SoC can decode it. The live set is `devcaps::Caps::audio` (this list ∩ the
-/// device's own codec table), and the ONE-definition rule moved there with it: the
-/// Normal routing uses [`is_dp_audio_track`] for membership and channel bounds, shared with
-/// the device profile. Forced mode instead uses the implemented software feed formats and
-/// its separate profile, without conservative device bounds.
-pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
+// `DP_AUDIO_CODECS` — the AUDIO codec set the buffer-feed pipeline decodes — is defined in
+// `devcaps` (the platform layer intersects it with the device's own codec table) and re-exported
+// here, so the profile string below and `plex::DP_AUDIO_CODECS` keep naming it. The live set is
+// `devcaps::Caps::audio`; normal routing uses [`is_dp_audio_track`] for membership and channel
+// bounds, shared with the device profile.
+pub use crate::devcaps::DP_AUDIO_CODECS;
 pub fn is_dp_audio(codec: &str) -> bool {
     crate::devcaps::caps().audio_has(codec)
 }
