@@ -15,11 +15,12 @@
 //! authority, and the PMS token must never reach a third party. A `Range` is not a credential and
 //! rides every hop. Log lines carry an origin and a query-less path, never a query.
 //!
-//! **Every plaintext hop that would carry a credential asks the credential authority first**
-//! (`crate::http::credential_transport_allowed`, i.e. `plex::grant`) — the first request, every
-//! followed hop, and every reopen a seek makes. A plaintext media stream opened under a consented
-//! grant therefore stops at its next request once that grant is revoked: [`FollowError::Refused`],
-//! with nothing dialled.
+//! **Every plaintext hop that would carry a credential asks the credential authority first** — the
+//! first request, every followed hop, and every reopen a seek makes. The authority is the caller's:
+//! this transport names no Plex layer, so each [`Request`] carries it as a [`CredentialGate`] (the
+//! media callers pass `crate::http::credential_transport_allowed`, i.e. `plex::grant`). A plaintext
+//! media stream opened under a consented grant therefore stops at its next request once that grant
+//! is revoked: [`FollowError::Refused`], with nothing dialled.
 //!
 //! A caller whose contract confines it to one origin — HLS, whose playlists may only name
 //! children on the PMS origin (`crate::hls`) — sets [`Request::same_origin_only`], and a hop
@@ -37,7 +38,7 @@ use super::{
     CONNECT_TIMEOUT_MS, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS,
 };
 use crate::checkpoint::Checkpoint;
-use crate::plex::{Origin, Scheme};
+use crate::net::origin::{Origin, Scheme};
 
 /// Hops followed after the first request. The first request plus this many redirects is the most
 /// a media open will send before failing with [`FollowError::TooManyHops`] — the same bound
@@ -91,6 +92,13 @@ pub(crate) enum FollowError {
     BadLocation(c_int),
 }
 
+/// The credential authority, as the caller's own decision: may a request for `path` carrying
+/// `headers` (the `Name: value` lines of its credential block) go to this origin? Asked before every
+/// plaintext hop that would carry one, so a revoked grant stops the very next request. A plain
+/// function pointer, not a lookup: the transport takes the decision as a value and never names the
+/// layer that makes it.
+pub(crate) type CredentialGate = fn(&Origin, &str, &[&str]) -> bool;
+
 /// One media GET to be opened with redirects followed.
 pub(crate) struct Request<'a> {
     pub(crate) origin: &'a Origin,
@@ -104,6 +112,8 @@ pub(crate) struct Request<'a> {
     pub(crate) deadline: Option<Instant>,
     /// Refuse, undialled, any hop whose scheme+host+port differ from [`Self::origin`].
     pub(crate) same_origin_only: bool,
+    /// Asked before every plaintext hop that would carry a credential; see [`CredentialGate`].
+    pub(crate) credential_gate: CredentialGate,
 }
 
 /// Open `req` on `hs`, following plaintext redirects. See the module doc for the credential rule.
@@ -129,7 +139,7 @@ pub(crate) fn open_following(
                 extra.push_str(c);
             }
         }
-        if !crate::http::credential_transport_allowed(&cur.origin, &cur.path, &header_lines(&extra)) {
+        if !(req.credential_gate)(&cur.origin, &cur.path, &header_lines(&extra)) {
             crate::eventlog::log(&format!(
                 "stream: {}{} REFUSED: a credential may not travel to this plaintext origin",
                 cur.origin.log_form(),
@@ -393,6 +403,11 @@ mod tests {
         }
     }
 
+    /// A gate that admits everything: these tests grade where credentials go, not who may send them.
+    fn allow_all(_: &Origin, _: &str, _: &[&str]) -> bool {
+        true
+    }
+
     fn pms() -> Target {
         base(
             Scheme::Http,
@@ -515,9 +530,34 @@ mod tests {
             range_from: None,
             deadline: None,
             same_origin_only: false,
+            credential_gate: allow_all,
         };
         match open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint) {
             Ok(Opened::Tls(t)) => assert_eq!(t.url(), "https://127.0.0.1:1/x"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The credential gate is asked before anything is dialled, and its refusal ends the chain.
+    /// Port 1 has no listener, so a dial would have come back as `Open(Transport)` instead.
+    #[test]
+    fn a_refusing_credential_gate_stops_the_request_before_it_dials() {
+        fn refuse(_: &Origin, _: &str, _: &[&str]) -> bool {
+            false
+        }
+        let origin = Origin::http("127.0.0.1", 1);
+        let mut hs = super::super::http_stream_boxed();
+        let req = Request {
+            origin: &origin,
+            path: "/x",
+            credentials: Some("X-Plex-Token: secret\r\n"),
+            range_from: None,
+            deadline: None,
+            same_origin_only: false,
+            credential_gate: refuse,
+        };
+        match open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint) {
+            Err(FollowError::Refused) => {}
             other => panic!("{other:?}"),
         }
     }
@@ -566,6 +606,7 @@ mod tests {
             range_from: Some(7),
             deadline: None,
             same_origin_only: false,
+            credential_gate: allow_all,
         };
         let got = open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint);
         super::super::http_close(&mut *hs);

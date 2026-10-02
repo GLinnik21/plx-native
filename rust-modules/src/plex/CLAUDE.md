@@ -51,7 +51,8 @@ a `plex.direct` origin's host is a certificate NAME `IpVersion::of_host` cannot 
 which is why that used to read `unknown` on almost every real boot (issue #95's R3(a)).
 
 **A server's address is an `Origin` — scheme + host + port — and it is PARSED FROM A URL, never
-assembled from an address.** `origin.rs` is the type and the reasoning; the short version is that
+assembled from an address.** `net/origin.rs` is the type and the reasoning (it lives in the transport so the
+transport can read it; `plex/origin.rs` re-exports it and keeps `CredentialPolicy`); the short version is that
 plex.tv advertises a server's TLS origin as the `plex.direct` HOSTNAME (`Connection.uri`) while
 `Connection.address` stays the dotted quad behind it, and the certificate is issued for the name —
 so a control plane carrying only an address can never validate one, however much TLS is added

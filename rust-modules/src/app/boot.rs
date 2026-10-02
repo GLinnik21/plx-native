@@ -513,6 +513,9 @@ pub(crate) unsafe fn construct(
     crate::text::init_text();
     crate::gfx::init_image();
     crate::gfx::init_blur();
+    // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
+    // over before any request can be made, so the first one already carries it.
+    crate::net::set_user_agent(crate::plex::identity::user_agent());
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
