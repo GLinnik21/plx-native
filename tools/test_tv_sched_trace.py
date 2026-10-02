@@ -29,12 +29,15 @@ def write(path, text):
     path.write_text(text)
 
 
+CLOCK = "local"   # the trace_clock the fake set starts on, and what the script must restore
+
+
 class Rig:
     def __init__(self, root, entries):
         self.root = root
         self.t = root / "tracing"
         self.pidf = root / "pids"
-        write(self.t / "trace_clock", "[local] global counter mono\n")
+        write(self.t / "trace_clock", f"[{CLOCK}] global counter mono\n")
         write(self.t / "buffer_size_kb", "1408\n")
         write(self.t / "tracing_on", "1\n")
         write(self.t / "set_event", "")
@@ -57,11 +60,13 @@ class Rig:
         self.writer.stdin.write("\n".join(LINES) + "\n")
         self.writer.stdin.flush()
 
+    def env(self):
+        return dict(os.environ, TV_SCHED_TRACE_TEST="1", TV_SCHED_TRACE_TVSSH=str(self.root / "tv-ssh"),
+                    TV_SCHED_TRACE_T=str(self.t), TV_SCHED_TRACE_PIDF=str(self.pidf))
+
     def run(self, *args, timeout=60):
-        env = dict(os.environ, TV_SCHED_TRACE_TEST="1", TV_SCHED_TRACE_TVSSH=str(self.root / "tv-ssh"),
-                   TV_SCHED_TRACE_T=str(self.t), TV_SCHED_TRACE_PIDF=str(self.pidf))
         return subprocess.run(["bash", str(SCRIPT), *args, "--out", str(self.root / "out.gz")],
-                              env=env, capture_output=True, text=True, timeout=timeout)
+                              env=self.env(), capture_output=True, text=True, timeout=timeout)
 
     def close(self):
         os.killpg(self.writer.pid, signal.SIGKILL)
@@ -73,7 +78,7 @@ class Rig:
 
     def assert_restored(self, case):
         case.assertEqual(self.read("tracing_on"), "1")
-        case.assertEqual(self.read("trace_clock"), "[local] global counter mono".split()[0].strip("[]"))
+        case.assertEqual(self.read("trace_clock"), CLOCK)
         case.assertEqual(self.read("buffer_size_kb"), "1408")
         for ev in ("sched/sched_switch", "irq/irq_handler_entry", "raw_syscalls/sys_enter",
                    "raw_syscalls/sys_exit"):
@@ -83,9 +88,11 @@ class Rig:
         case.assertFalse(self.pidf.exists(), "reader pid file left behind")
         left = subprocess.run(["pgrep", "-f", str(self.t / "trace_pipe")], capture_output=True, text=True)
         # The test's own writer holds the fifo via `cat >`; a leftover READER is a `cat <path>` without `>`.
-        readers = [p for p in left.stdout.split() if "cat" in subprocess.run(
-            ["ps", "-o", "command=", "-p", p], capture_output=True, text=True).stdout and
-            ">" not in subprocess.run(["ps", "-o", "command=", "-p", p], capture_output=True, text=True).stdout]
+        readers = []
+        for p in left.stdout.split():
+            cmd = subprocess.run(["ps", "-o", "command=", "-p", p], capture_output=True, text=True).stdout
+            if "cat" in cmd and ">" not in cmd:
+                readers.append(p)
         case.assertEqual(readers, [], "a trace_pipe reader is still running")
 
 
@@ -117,17 +124,14 @@ class ReadBack(unittest.TestCase):
         self.assertIn("PARTIAL trace", r.stderr)
         with gzip.open(rig.root / "out.gz", "rt") as f:   # raises on a truncated stream
             got = f.read().splitlines()
-        self.assertGreater(len(got), 100)
         self.assertGreater(len(got), 150)
         self.assertEqual(got, LINES[:len(got)])
         rig.assert_restored(self)
 
     def test_interrupt_during_read_back_leaves_a_valid_gzip(self):
         rig = self.rig(5)
-        env = dict(os.environ, TV_SCHED_TRACE_TEST="1", TV_SCHED_TRACE_TVSSH=str(rig.root / "tv-ssh"),
-                   TV_SCHED_TRACE_T=str(rig.t), TV_SCHED_TRACE_PIDF=str(rig.pidf))
         p = subprocess.Popen(["bash", str(SCRIPT), "--secs", "1", "--out", str(rig.root / "out.gz")],
-                             env=env, stderr=subprocess.PIPE, text=True)
+                             env=rig.env(), stderr=subprocess.PIPE, text=True)
         deadline = time.time() + 30
         while time.time() < deadline and not rig.pidf.exists():
             time.sleep(0.2)

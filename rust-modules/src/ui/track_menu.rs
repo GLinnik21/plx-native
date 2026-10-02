@@ -1597,8 +1597,9 @@ impl TrackMenuState {
     /// TV `textx8:9.5` inside a 24.8–29.0 ms frame on the first switch to Audio (2026-10-01).
     /// Done once per menu, on a frame with no page slide, no resize and an empty queue, so it
     /// neither competes with the live page's own strings nor adds to the open frame. The work is
-    /// only building the form and recording it; the presenting side's drain uploads it, one
-    /// string a frame with no live strings queued ([`PanelMotion::prewarm_background_text`]).
+    /// only building the form and recording it; the presenting side's drain uploads it, in
+    /// the remainder of each frame's time budget after the live queue, at least one string
+    /// ([`PanelMotion::prewarm_background_text`]).
     /// Nothing waits on that queue, so a sub-page walked meanwhile only delays it; a closed menu
     /// drops it ([`Drop`]).
     fn warm_other_tab(

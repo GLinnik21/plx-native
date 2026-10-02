@@ -65,6 +65,11 @@ const VISIBLE: f32 = 0.01;
 /// and the parked queue stays for the next presenting frame.
 const PREWARM_BUDGET_US: u64 = 2_500;
 
+/// The least remainder of [`PREWARM_BUDGET_US`] that earns the parked queue a turn. The background
+/// drain always takes its first string, and one is 1-3 ms on the TV, so handing it a sliver (the
+/// live drain ending at 2.4 ms) would charge a whole string to a frame with nothing left.
+const BACKGROUND_MIN_US: u64 = 1_000;
+
 /// Stiffness of the card's top/left edges and of the pages' sideways travel (`gfx::spring`'s `k`;
 /// the table's own scroll uses 300). Critically damped, so nothing overshoots.
 const RECT_K: f32 = 300.0;
@@ -186,7 +191,7 @@ impl PanelMotion {
     /// **Rasterise what [`Self::prewarm_text`] queued**, then what
     /// [`Self::prewarm_background_text`] parked, for at most [`PREWARM_BUDGET_US`] by `now_us`
     /// (a microsecond clock; the product passes `diag::heartbeat::now_us`, tests a counted one).
-    /// The live queue goes first and the parked one only with budget left, so speculation yields
+    /// The live queue goes first and the parked one only with at least [`BACKGROUND_MIN_US`] left, so speculation yields
     /// to the page that is about to be drawn; the first string is always taken. Called from the
     /// PRESENTING side of the present decision (`app::run::prepare_window`, step 9's upload seam),
     /// never from `update`: this uploads GL textures, and §10 says a frame that does not present
@@ -201,10 +206,11 @@ impl PanelMotion {
         crate::diag::spans::span("warmdrain", || {
             let start = now_us();
             let mut done = crate::text::drain_prewarm(PREWARM_BUDGET_US, &mut now_us);
-            // Live strings left over mean the budget is spent: speculation waits its turn.
+            // Live strings left over mean the budget is spent, and so does too small a remainder:
+            // speculation waits its turn.
             if !crate::text::prewarm_pending() {
                 let left = PREWARM_BUDGET_US.saturating_sub(now_us().saturating_sub(start));
-                if left > 0 {
+                if left >= BACKGROUND_MIN_US {
                     done += crate::text::drain_background_prewarm(left, &mut now_us);
                 }
             }
@@ -450,6 +456,30 @@ mod tests {
             t
         });
         assert_eq!(done, 1, "the floor is one string per drain");
+        crate::text::reset_prewarm_for_test();
+    }
+
+    /// **A sliver of budget does not buy a parked string.** When the live drain ends just under the
+    /// line, the at-least-one-string floor would otherwise charge a whole background string
+    /// (1-3 ms on the TV) to a frame that has ~100 us left; the parked queue waits for a frame
+    /// with a real remainder, and drains alone when nothing live is queued.
+    #[test]
+    fn a_sliver_of_budget_left_by_the_live_queue_skips_the_background() {
+        let _g = crate::testlock::serial();
+        crate::text::reset_prewarm_for_test();
+        queue("bg-", 3);
+        crate::text::park_prewarm_as_background();
+        queue("live-", 1);
+        // 2.4 ms a string: the one live string leaves 100 us of the 2.5 ms budget.
+        let done = PanelMotion::drain_queued_text(|| crate::text::rasterised_for_test() * 2_400);
+        assert_eq!(done, 1, "the background took a string with 100 us left");
+        assert_eq!(resident("bg-", 3), 0);
+        assert!(crate::text::background_prewarm_pending(), "the parked queue stays for a later frame");
+        // Nothing live queued: the whole budget is the background's.
+        let done = PanelMotion::drain_queued_text(|| crate::text::rasterised_for_test() * 2_400);
+        // (2.4 ms is under the budget, so a second string is begun, and the third is not.)
+        assert_eq!(done, 2, "the background did not drain on an empty live queue");
+        assert_eq!(resident("bg-", 3), 2);
         crate::text::reset_prewarm_for_test();
     }
 }
