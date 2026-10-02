@@ -359,7 +359,7 @@ pub(crate) unsafe fn construct(
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
-        super::bootstrap::stores::init(initial, preflight.replay());
+        crate::stores::tape::init(initial.person_credits(), preflight.replay());
         initial.home.restore(&mt).map_err(|_| 1)?;
         crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }

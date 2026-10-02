@@ -164,7 +164,7 @@ impl CollectionState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut changed = self.refresh_if_client_changed(adapter);
         if self.retry_cd > 0 { self.retry_cd -= 1; }
-        let reply = crate::app::bootstrap::stores::take_store_landing(
+        let reply = crate::stores::tape::take_store_landing(
             gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch);
         if let Some(reply) = reply {
             crate::ui::idle::invalidate();
@@ -204,7 +204,7 @@ impl CollectionState {
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
             "sid":sid.raw(),"client":client.instance_gen(),"job":job});
-        let spawned = crate::app::bootstrap::stores::admit(request, || crate::task::spawn_small("collection", move || {
+        let spawned = crate::stores::tape::admit(request, || crate::task::spawn_small("collection", move || {
             let what = catch_unwind(|| run_job(client, sid, job)).unwrap_or(Landing::Transport);
             worker_adapter.land(generation, what);
         }));

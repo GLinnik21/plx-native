@@ -408,7 +408,7 @@ impl Bridge {
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
-        // made at `bootstrap::stores::init` before Stage B moved the Tracker onto this per-owner
+        // made at `stores::tape::init` before Stage B moved the Tracker onto this per-owner
         // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
         // `Bridge` can admit any detail request.
         stores.metadata.arm_detail_tracker(initial.content.is_some());

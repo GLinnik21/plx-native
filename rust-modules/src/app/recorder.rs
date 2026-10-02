@@ -438,7 +438,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             let envelope: ResultEnvelope = serde_json::from_value(value.clone()).map_err(|_| "invalid result envelope")?;
             let (store, req) = match envelope.payload["kind"].as_str() {
                 Some("content") if initial.content.is_some() => {
-                    let result = super::bootstrap::stores::validate_result(&envelope.payload)?;
+                    let result = crate::stores::tape::validate_result(&envelope.payload)?;
                     if envelope.payload["store"] == "metadata" {
                         detail.completion(&envelope.payload["data"])?;
                     }
@@ -469,7 +469,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
                 if initial.content.is_none() || effect["from"] != "Cache" || effect["e"] != "App" {
                     return Err("invalid content resource origin");
                 }
-                super::bootstrap::stores::validate_admission(&effect["payload"], initial.primary_client)?;
+                crate::stores::tape::validate_admission(&effect["payload"], initial.primary_client)?;
             }
             if effect["e"] == "Request" {
                 if effect["from"] != "Cache" { return Err("invalid admission origin"); }
@@ -691,11 +691,11 @@ impl Recplay {
                     .map(|v| v["payload"].clone()).collect(),
             )).unwrap_or_default()
         } else { Default::default() };
-        super::bootstrap::stores::begin(requests, results);
+        crate::stores::tape::begin(requests, results);
     }
     pub(crate) fn content_results(&mut self) {
-        for payload in super::bootstrap::stores::take_results() {
-            let (store, req) = match super::bootstrap::stores::validate_result(&payload) {
+        for payload in crate::stores::tape::take_results() {
+            let (store, req) = match crate::stores::tape::validate_result(&payload) {
                 Ok(v) => v, Err(e) => { self.refuse(e); return; }
             };
             let to = machine_name(crate::ui::machine::MachineId::Store(store.ord()));
@@ -713,7 +713,7 @@ impl Recplay {
         }
     }
     pub(crate) fn content_end(&mut self) {
-        let (requests, failure) = super::bootstrap::stores::finish();
+        let (requests, failure) = crate::stores::tape::finish();
         for request in requests { self.observe_effect("Cache", "App", request); }
         if let Some(reason) = failure { self.refuse(reason); }
     }

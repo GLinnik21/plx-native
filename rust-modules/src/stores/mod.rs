@@ -74,11 +74,14 @@ pub(crate) trait StoreEffectHost: crate::ui::machine::Host {
 }
 
 pub(crate) mod browse;
+mod content_arg;
+pub(crate) use content_arg::ContentArg;
 pub(crate) mod hubs;
 pub(crate) mod metadata;
 pub(crate) mod person;
 pub(crate) mod collection;
 pub(crate) mod search;
+pub(crate) mod tape;
 pub(crate) mod viewstate;
 
 /// Production store aggregate. All seven stores are physical owners here — Browse, Person and

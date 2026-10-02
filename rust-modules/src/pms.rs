@@ -2243,7 +2243,7 @@ mod multi_source_merge_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.
-impl crate::ui::tile::Tile for PmsMovie {
+impl crate::tile::Tile for PmsMovie {
     fn title(&self) -> &str {
         &self.title
     }

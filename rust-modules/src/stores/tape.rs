@@ -1,4 +1,6 @@
-//! Resource boundary for the controlled content domain.
+//! Resource boundary for the controlled content domain: the record/replay tape the Metadata,
+//! Person and Collection stores call through. It lives with the stores it serves (and names only
+//! data modules, `plex` and `ui::landgate`), so the data layer reaches no application module.
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -19,9 +21,10 @@ struct Tape {
 }
 thread_local! { static TAPE: RefCell<Tape> = RefCell::new(Tape::default()); }
 
-pub(crate) fn init(initial: &super::Initial, replay: bool) {
-    TAPE.with(|t| *t.borrow_mut() = Tape { active: true, replay,
-        credits: initial.content.as_ref().map(|v| v.personcredits), ..Default::default() });
+/// Arm the tape for a controlled run. `credits` is the booted Filmography credit count
+/// (`app::bootstrap::Initial::person_credits`), `None` when the boot carries no content domain.
+pub(crate) fn init(credits: Option<u32>, replay: bool) {
+    TAPE.with(|t| *t.borrow_mut() = Tape { active: true, replay, credits, ..Default::default() });
 }
 pub(crate) fn active() -> bool { TAPE.with(|t| t.borrow().active) }
 pub(crate) fn replaying() -> bool { TAPE.with(|t| t.borrow().active && t.borrow().replay) }
@@ -107,14 +110,14 @@ fn person_completion(t: &mut Tape, slot: u32, data: &Value) -> Result<(), &'stat
 /// tape answers ([`poll`]) and the landing is reported to the gate itself; otherwise the landing
 /// gate schedules the take. The one spelling of that choice for the Person and Collection stores.
 pub(crate) fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
-    gate: &crate::ui::landgate::Gate, id: crate::stores::StoreId, store: &str, slot: u32,
-    fetch: &crate::stores::Fetch<T>) -> Option<T> {
+    gate: &crate::ui::landgate::Gate, id: super::StoreId, store: &str, slot: u32,
+    fetch: &super::Fetch<T>) -> Option<T> {
     if active() {
         let reply = poll(store, slot, || fetch.take());
         if reply.is_some() { gate.landed(id.ord()); }
         reply
     } else {
-        crate::stores::take_landing(gate, id, || fetch.take())
+        super::take_landing(gate, id, || fetch.take())
     }
 }
 
@@ -192,7 +195,7 @@ pub(crate) fn fail(reason: &'static str) {
     if active() { TAPE.with(|t| t.borrow_mut().failure = Some(reason)); }
 }
 pub(crate) fn take_results() -> Vec<Value> { TAPE.with(|t| std::mem::take(&mut t.borrow_mut().results)) }
-pub(crate) fn validate_result(value: &Value) -> Result<(crate::stores::StoreId, u32), &'static str> {
+pub(crate) fn validate_result(value: &Value) -> Result<(super::StoreId, u32), &'static str> {
     let slot = value["slot"].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid content slot")?;
     if value.as_object().is_none_or(|o| o.len() != 4) || value["kind"] != "content" {
         return Err("invalid content result");
@@ -200,15 +203,15 @@ pub(crate) fn validate_result(value: &Value) -> Result<(crate::stores::StoreId, 
     let store = match value["store"].as_str() {
         Some("metadata") if slot == 0 => {
             crate::metadata::record::validate(&value["data"])?;
-            crate::stores::StoreId::Metadata
+            super::StoreId::Metadata
         }
         Some("person") => {
             crate::person::validate_record(slot, &value["data"])?;
-            crate::stores::StoreId::Person
+            super::StoreId::Person
         }
         Some("collection") => {
             crate::collection::validate_record(slot, &value["data"])?;
-            crate::stores::StoreId::Collection
+            super::StoreId::Collection
         }
         _ => return Err("unsupported content result"),
     };
@@ -291,8 +294,7 @@ mod tests {
                     "slot={slot}, kind={kind}");
             }
         }
-        let initial = super::super::Initial::synthetic_home(1, 32498, None).unwrap();
-        init(&initial, true);
+        init(None, true);
         let slot = last_local + 1;
         let request = json!({"store":"person","slot":slot,"gen":7,"arg":["person"],"guid":"guid"});
         let result = json!({"kind":"content","store":"person","slot":slot,
@@ -310,7 +312,6 @@ mod tests {
     #[test]
     fn p2_person_null_variant_mutation_cannot_be_graded() {
         let _guard = crate::testlock::serial();
-        let initial = super::super::Initial::synthetic_home(1, 32498, None).unwrap();
         let slot = (crate::plex::MAX_SERVERS * 3 + 1) as u32;
         let request = json!({"store":"person","slot":slot,"gen":7,"arg":["person"],"guid":"guid"});
         let admission = json!({"content_resource":true,"request":request,"admitted":true});
@@ -318,7 +319,7 @@ mod tests {
             ("Credits", 7, true, true), ("Roles", 7, true, false),
             ("Credits", 8, true, false), ("Credits", 7, false, false),
         ] {
-            init(&initial, true);
+            init(None, true);
             let mut answer = admission.clone();
             answer["admitted"] = json!(admitted);
             let data = json!({"gen":gen,"what":{kind:null}});

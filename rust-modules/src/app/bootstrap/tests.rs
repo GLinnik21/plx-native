@@ -1,6 +1,7 @@
 //! Controlled-bootstrap host boundaries. The production SDL boot/loop is additionally exercised
 //! by the fresh-root simulator artifact; these tests do not claim native rendering or network.
 use super::*;
+use crate::stores::tape;
 
 #[test]
 fn filmography_initial_requires_complete_typed_inputs() {
@@ -20,26 +21,26 @@ fn filmography_initial_requires_complete_typed_inputs() {
 fn content_resources_deny_execution_and_require_exact_admissions() {
     let _guard = crate::testlock::serial();
     let initial = Initial::synthetic_home(1, 32498, None).unwrap();
-    stores::init(&initial, true);
+    tape::init(initial.person_credits(), true);
     let request = serde_json::json!({"store":"metadata","sid":0,"rk":"1001","gen":1,"client":1});
     let admission = serde_json::json!({"content_resource":true,"request":request,"admitted":false});
-    stores::validate_admission(&admission, 1).unwrap();
-    stores::begin([admission.clone()].into(), Default::default());
-    assert!(!stores::admit(request.clone(), || panic!("replay executed a resource")));
-    assert_eq!(stores::finish(), (vec![admission.clone()], None));
+    tape::validate_admission(&admission, 1).unwrap();
+    tape::begin([admission.clone()].into(), Default::default());
+    assert!(!tape::admit(request.clone(), || panic!("replay executed a resource")));
+    assert_eq!(tape::finish(), (vec![admission.clone()], None));
     let mut accepted = admission.clone();
     accepted["admitted"] = serde_json::json!(true);
-    stores::begin([accepted.clone()].into(), Default::default());
-    assert!(stores::admit(request.clone(), || panic!("admitted replay executed a resource")));
-    assert!(stores::poll::<serde_json::Value>("person", 0,
+    tape::begin([accepted.clone()].into(), Default::default());
+    assert!(tape::admit(request.clone(), || panic!("admitted replay executed a resource")));
+    assert!(tape::poll::<serde_json::Value>("person", 0,
         || panic!("empty replay polled a live mailbox")).is_none());
-    assert_eq!(stores::finish(), (vec![accepted], None));
-    stores::begin([admission].into(), Default::default());
+    assert_eq!(tape::finish(), (vec![accepted], None));
+    tape::begin([admission].into(), Default::default());
     let mut wrong = request;
     wrong["rk"] = serde_json::json!("1002");
-    assert!(!stores::admit(wrong, || panic!("mismatched request executed")));
-    assert_eq!(stores::finish().1, Some("mismatched content resource admission"));
-    stores::reset_for_test();
+    assert!(!tape::admit(wrong, || panic!("mismatched request executed")));
+    assert_eq!(tape::finish().1, Some("mismatched content resource admission"));
+    tape::reset_for_test();
 }
 
 #[test]
@@ -194,7 +195,7 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     assert_eq!(controlled.controlled_failure(),Some("unrecorded client IO attempted"));
 }
 
-/// **Stage B regression, device-affecting.** Before `0d466527` (stage B), `stores::init` ended
+/// **Stage B regression, device-affecting.** Before `0d466527` (stage B), `tape::init` ended
 /// with `crate::metadata::record::reset(initial.content.is_some())`, arming the crate-global
 /// `Tracker` for controlled-content recording of detail terminals. Stage B deleted that line with
 /// the static and nothing armed the per-owner replacement in production, so a `Bridge` built by
@@ -213,11 +214,11 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
         detail: "show".into(), detailsec: 0, detailok: true,
         filmography: false, personcredits: 0, nowan: false,
     });
-    crate::app::bootstrap::stores::init(&initial, false);
+    crate::stores::tape::init(initial.person_credits(), false);
     crate::ui::landgate::arm_recording();
     let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
     let sid = crate::plex::ServerId::UNSET;
-    crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+    crate::stores::tape::begin(Default::default(), Default::default());
     let gen = crate::metadata::begin_detail_for_test(bridge.metadata_mut().adapter_ref(), sid, "show");
     {
         let store = bridge.metadata_mut();
@@ -225,13 +226,13 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
         crate::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
             Some(crate::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
     }
-    let results = crate::app::bootstrap::stores::take_results();
+    let results = crate::stores::tape::take_results();
     assert_eq!(results.len(), 1,
         "controlled_home must arm this Bridge's own MetadataStore Tracker from initial.content, \
-         or a controlled-content detail landing never reaches bootstrap::stores at all");
-    crate::app::bootstrap::stores::finish();
+         or a controlled-content detail landing never reaches stores::tape at all");
+    crate::stores::tape::finish();
     crate::ui::landgate::disarm();
-    crate::app::bootstrap::stores::reset_for_test();
+    crate::stores::tape::reset_for_test();
     crate::plex::reset_servers_for_test();
 }
 
@@ -408,6 +409,141 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     crate::plex::reset_servers_for_test();
 }
 
+/// Section/page/directory discovery's refusal -> backoff -> retry -> success, recorded through the real
+/// `ui::rec` writer and replayed from the parsed recording. It lives here, not in `browse`, because it
+/// drives `HomeIo` and the recording format: the data layer's own tests name neither.
+#[test]
+fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() {
+    let _serial = crate::testlock::serial();
+    // The one registered, current source the discovery runs against. This is the fixture
+    // `browse`'s own tests call `registered_source` (private to that module), minus its table.
+    struct ResetServers;
+    impl Drop for ResetServers {
+        fn drop(&mut self) { crate::plex::reset_servers_for_test(); }
+    }
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
+    assert!(crate::plex::set_current(sid));
+    let _cleanup = ResetServers;
+    let client = crate::plex::client_for(sid).unwrap();
+    let stores = crate::stores::Stores::default();
+    // Two independent executions start from this pre-request store value (the epoch a freshly
+    // reset table starts from). No worker is running: only the OS executor is substituted, below
+    // the real discovery policy.
+    let initial_epoch = stores.browse.borrow().table_epoch_for_test().wrapping_add(1);
+    let mt = unsafe { crate::task::MainThread::assume() };
+    let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
+    let mut states = Vec::new();
+    let mut successful_result = None;
+    let mut parsed: Option<crate::ui::rec::Recording> = None;
+    for replay in [false, true] {
+        // seed_sources is a reset fixture; restore the same pre-execution epoch on each
+        // independent run, never to cancel or bypass a guard during either history.
+        stores.browse.borrow_mut().prepare_discovery_replay_for_test(sid, initial_epoch);
+        let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+        let mut io = HomeIo {
+            replay,
+            preferences: Default::default(),
+            requests: Vec::new(),
+            admissions: Default::default(),
+            failure: None,
+            profile: publisher.snapshot(),
+        };
+        let mut attempts = 0;
+        let sink = crate::ui::rec::MemSink::default();
+        let bytes = sink.segments.clone();
+        let header = crate::ui::rec::Header::new(17, &crate::ui::press::Press::new());
+        let mut writer = crate::ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
+        for frame in 0..=602 {
+            if replay {
+                io.admissions = parsed.as_ref().unwrap().frames[frame]
+                    .effects
+                    .iter()
+                    .map(|effect| effect["payload"].clone())
+                    .collect();
+            }
+            io.discovery_owned_with(&stores, &mut |request| {
+                assert!(!replay, "replay must never execute live admission");
+                attempts += 1;
+                if attempts == 1 { return false; }
+                let descriptor = request.descriptor();
+                successful_result = Some(serde_json::json!({"kind":"discovery","version":1,
+                    "epoch":descriptor["epoch"],"source":descriptor["source"],"sid":descriptor["sid"],
+                    "client":descriptor["client"],"token_gen":descriptor["token_gen"],
+                    "name":"s00000001","what":{"Sections":[]}}));
+                true
+            });
+            if frame == 600 {
+                let result =
+                    crate::browse::record::decode(successful_result.clone().expect("retry admitted"), |id| {
+                        (id == client.instance_gen()).then_some(client)
+                    })
+                    .unwrap();
+                assert!(stores.browse.borrow_mut()
+                    .apply_discovery(&result, &io.preferences)
+                    .endpoints
+                    .iter()
+                    .next()
+                    .is_none());
+            }
+            let requests: std::collections::VecDeque<_> =
+                std::mem::take(&mut io.requests).into();
+            let state = stores.browse.borrow().discovery_policy_for_test();
+            assert!(
+                io.failure.is_none() && io.admissions.is_empty(),
+                "frame={frame} replay={replay} failure={:?} pending={}",
+                io.failure,
+                io.admissions.len()
+            );
+            if replay {
+                assert_eq!(
+                    requests, transcript[frame],
+                    "request/answer identity and frame must match"
+                );
+                assert_eq!(
+                    state, states[frame],
+                    "refusal/retry policy must match normal execution"
+                );
+            } else {
+                writer.tick(
+                    frame as u64,
+                    crate::ui::machine::Tick {
+                        ms: frame as u32 * 16,
+                        dt_us: 16_000,
+                    },
+                );
+                for request in &requests {
+                    writer.effect_payload(frame as u64, "Cache", "Request", request.clone());
+                }
+                writer.flush_frame().unwrap();
+                transcript.push(requests);
+                states.push(state);
+            }
+        }
+        assert!(
+            stores.browse.borrow().discovery_policy_for_test().2,
+            "admitted retry delivers its real result"
+        );
+        assert_eq!(attempts, if replay { 0 } else { 2 });
+        writer.finish().unwrap();
+        if !replay {
+            let bytes = bytes.borrow();
+            parsed = Some(
+                crate::ui::rec::Recording::parse(
+                    &header.to_json().to_string(),
+                    &bytes.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                    17,
+                )
+                .unwrap(),
+            );
+        }
+    }
+    assert_eq!(transcript[0][0]["admitted"], serde_json::json!(false));
+    assert!(transcript[1..600]
+        .iter()
+        .all(std::collections::VecDeque::is_empty));
+    assert_eq!(transcript[600][0]["admitted"], serde_json::json!(true));
+}
 #[test]
 fn admission_replay_requires_full_request_identity_and_boolean_outcome() {
     let _serial = crate::testlock::serial();

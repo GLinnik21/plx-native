@@ -1433,6 +1433,15 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     assert_eq!(crate::ui::card_row::MAX_ROW_ITEMS, 24);
 }
 
+/// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
+/// that draws them owns `ui::card_row::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
+/// `ui` cannot name the data layer, so there are two constants for one number and this is the only
+/// place that sees both.
+#[test]
+fn the_data_shelf_cap_is_the_card_rows_capacity() {
+    assert_eq!(crate::pms::MAX_SHELF_ITEMS, crate::ui::card_row::MAX_ROW_ITEMS);
+}
+
 #[test]
 fn paint_only_backdrop_and_spinner_state_do_not_change_the_canonical_hash() {
     let mut a = HomeScreen::new(EntryId(7), InstanceId(9));
