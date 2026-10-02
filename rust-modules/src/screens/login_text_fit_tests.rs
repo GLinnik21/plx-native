@@ -89,3 +89,68 @@ fn the_failed_reason_names_the_account_or_keeps_the_caption() {
         assert_eq!(super::failed_reason(caption, none, &ShippedMeasure), caption, "{none:?}");
     }
 }
+
+/// **The "no server yet" reason keeps its two lines for every name.** Line 1 is always the
+/// sentence naming the account and fits the reason column (it never wraps); a short name is left
+/// alone; a long one is shortened with an ellipsis and the sentence keeps its final period; line 2
+/// is always the plain no-server sentence; a blank name has no line 1 at all, so the caller says
+/// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
+#[test]
+fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
+    use crate::ui::machine::Measure;
+    let column = StatusOverlay::REASON_W * HEADROOM;
+    for language in [Preference::En, Preference::Es, Preference::Be] {
+        let _guard = language_on_this_thread_for_test(language);
+        let second = msg::browse_auth_no_servers();
+        for name in ["alexandra", "alexandra.konstantinopolskaya",
+            "alexandra.konstantinopolskaya.with.a.very.long.name.indeed",
+            "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА"] {
+            let reason = super::signed_in_reason(name, &ShippedMeasure).expect("a name gives a reason");
+            let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
+            assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
+            assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
+            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
+            assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
+            assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
+            if name == "alexandra" {
+                assert_eq!(reason, msg::browse_auth_no_servers_signed_in_as(name), "a short name is untouched");
+            }
+            if first.contains('\u{2026}') {
+                assert!(!first.ends_with("\u{2026}."), "{language:?} {name}: the ellipsis sits against the period: {first:?}");
+                let at = first.find('\u{2026}').unwrap();
+                assert!(at > 3 && first[at + 3..].chars().count() > 3, "{language:?} {name}: not cut in the middle: {first:?}");
+                assert!(name.chars().count() > 20, "{language:?} {name}: shortened without need");
+                assert!(!first.contains(name), "{language:?}: the full name survived");
+            } else {
+                assert!(first.contains(name), "{language:?} {name}: {first:?}");
+            }
+        }
+        // the long name really was cut, in the language that says the most around it
+        let cut = super::signed_in_reason("alexandra.konstantinopolskaya.with.a.very.long.name.indeed", &ShippedMeasure).unwrap();
+        assert!(cut.lines().next().unwrap().contains('\u{2026}'), "{language:?}: {cut:?}");
+        // Cut from the middle, both ends of the name kept, the period left alone.
+        if language == Preference::En {
+            assert_eq!(super::signed_in_reason("Maximilian.Wolfgang.Kowalczyk.MMWWMMWWMMWWMMWWAB", &ShippedMeasure).as_deref(),
+                Some("Signed in as Maximilian.Wolfgang.\u{2026}.MMWWMMWWMMWWMMWWAB.\nThis Plex account has no server yet."),
+                "a 48-character name is cut in the middle, not before the sentence's period");
+        }
+        assert_eq!(super::signed_in_reason("", &ShippedMeasure), None);
+        assert_eq!(super::signed_in_reason("  \n\t ", &ShippedMeasure), None);
+        // whitespace inside a name cannot break the first line
+        let spaced = super::signed_in_reason("Alex\nandra  K", &ShippedMeasure).unwrap();
+        assert_eq!(spaced.matches('\n').count(), 1, "{spaced:?}");
+    }
+}
+
+/// **A column too narrow for even the bare sentence names nobody.** The reason is `None`, so the
+/// caller shows `browse.auth.no_servers`, rather than the full unshortened name overflowing.
+#[test]
+fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
+    struct Wide;
+    impl crate::ui::machine::Measure for Wide {
+        fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    assert_eq!(super::signed_in_reason("alexandra", &Wide), None);
+}
