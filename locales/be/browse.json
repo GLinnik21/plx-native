@@ -187,6 +187,7 @@
   "browse.diagnostics.stalled": "{state} (завісла на {seconds} с)",
   "browse.auth.timeout": "Час чакання ўваходу скончыўся — паспрабуйце зноў.",
   "browse.auth.no_servers": "У гэтага ўліковага запісу Plex пакуль няма сервера.",
+  "browse.auth.no_servers_signed_in_as": "Вы ўвайшлі як {account}.\nУ гэтага ўліковага запісу Plex пакуль няма сервера.",
   "browse.auth.refused": "Ваш сервер Plex адхіліў злучэнне — праверце яго налады сеткавага доступу.",
   "browse.auth.unreachable": "Не ўдалося злучыцца ні з адным серверам Plex — праверце злучэнне.",
   "browse.auth.plex_unreachable": "Не ўдалося злучыцца з Plex. Праверце злучэнне з інтэрнэтам. Для ўваходу патрэбны інтэрнэт.",

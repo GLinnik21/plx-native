@@ -226,8 +226,8 @@ pub(crate) fn pickuser_index() -> Option<usize> {
 /// for the read-out glyph work's own visual verification (spec "1A"), with NO network call and no
 /// account touched: paired with `plxnative-login` (which already forces `BootTo::Login` with no
 /// session), `login_worker_with_output` reads this ONCE at the top of the worker thread and, for
-/// every case named here, skips straight to `auth::output_failed` with a canned caption and
-/// [`crate::telemetry::incident::IncidentContext`] instead of minting a PIN or discovering
+/// every case named here, skips straight to `auth::output_failed_naming` with a canned caption,
+/// [`crate::telemetry::incident::IncidentContext`] and (`discovery_no_servers` only) a canned account name instead of minting a PIN or discovering
 /// anything — the exact same terminal path a real failure reaches, so `LoginScreen`'s `Phase::
 /// Error` draw, `readout_kind` and `readout_glyph` are exercised UNMODIFIED. Every value below is
 /// the one `auth::discovery_failure`'s table would have built for the same cause; see that
@@ -271,9 +271,22 @@ pub(crate) fn readout_case() -> Option<ReadoutCase> {
     })
 }
 
+/// The mock account the canned `discovery_no_servers` read-out says it signed in as, unless
+/// `/tmp/plxnative-readout-account=<name>` names another (an empty file shows the nameless
+/// `browse.auth.no_servers` fallback). A canned name, never a real account's.
+const MOCK_ACCOUNT: &str = "alexandra";
+
 impl ReadoutCase {
+    /// The account name the canned failure carries to the screen (`LoginProgress::Failed::account`),
+    /// the way a real no-server sign-in does: composed and measured there, not here. Only
+    /// `discovery_no_servers` has one.
+    pub(crate) fn canned_account(self) -> Option<String> {
+        if self != Self::DiscoveryNoServers { return None; }
+        Some(crate::dev::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
+            .filter(|name| !name.trim().is_empty())
+    }
     /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
-    /// `login_worker_with_output` feeds `output_failed` in place of the real network calls — see
+    /// `login_worker_with_output` feeds `output_failed_naming` (with [`Self::canned_account`]) in place of the real network calls — see
     /// [`readout_case`]'s doc.
     pub(crate) fn canned_login_failure(
         self,

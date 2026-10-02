@@ -1164,7 +1164,7 @@ mod tests {
 
     fn key(epoch: u64) -> SessionWorkKey { SessionWorkKey { epoch, op: SessionOp::Login } }
     fn failed(epoch: u64) -> AuthProgress {
-        LoginProgress::Failed { epoch, message: "Synthetic failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()
+        LoginProgress::Failed { epoch, message: "Synthetic failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None }.into()
     }
 
     /// Stage B bridge wiring, exercised against the REAL disk writer (not the fixture arm, which

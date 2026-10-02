@@ -746,6 +746,14 @@ pub(crate) struct SessionInit {
     /// failure whose server is eligible; cleared by every other ending and by a new attempt.
     #[serde(default)]
     pub plaintext: Option<super::PlaintextVerdict>,
+    /// **The name plex.tv gave the account that just signed in to find no server** — for the one
+    /// read-out that says who signed in (`browse.auth.no_servers_signed_in_as`), composed and
+    /// measured by the screen. Personal data, so UI state ONLY: never serialized (a recording's
+    /// initial state must not carry it), never hashed into [`Canon`] (it would reach a replay
+    /// digest), never logged, never part of an incident. Set by a failed sign-in that carries one,
+    /// cleared by every other ending and by a new attempt; read through [`Self::readout_account`].
+    #[serde(skip)]
+    pub signin_account: Option<String>,
     /// The identity plex.tv REFUSED a roster to while nothing was cached to switch from — the
     /// verdict behind [`roster_refused`]'s read-out, kept so the account menu stops offering
     /// *Change profile* into that dead end ([`SessionSnapshot::switch_refused`]). Keyed by the
@@ -783,6 +791,12 @@ impl SessionInit {
 
     /// [`SessionSnapshot::switch_refused`]: the identity a roster was refused to (with nothing
     /// cached) is still the one in use.
+    /// The account name the failure read-out may print: only on the no-server read-out itself, so
+    /// a name left by an earlier failure can never sit under another reason.
+    fn readout_account(&self) -> Option<&str> {
+        self.signin_account.as_deref().filter(|_| self.phase == Phase::Error
+            && self.error == crate::i18n::msg::browse_auth_no_servers())
+    }
     fn switch_refused(&self) -> bool {
         self.switch_refused_for.as_ref().is_some_and(|id| id.matches(&self.persisted))
     }
@@ -807,7 +821,8 @@ impl SessionInit {
             unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
-            link_trouble: false, discovery_retry: None, plaintext: None, switch_refused_for: None }
+            link_trouble: false, discovery_retry: None, plaintext: None, signin_account: None,
+            switch_refused_for: None }
     }
 
     pub fn captured_boot(saved: PersistedSession, primary: Option<crate::plex::session::ServerRef>,
@@ -1083,6 +1098,9 @@ pub(crate) struct SessionSnapshot {
     /// The failure read-out's plaintext offer — see [`SessionInit::plaintext`]. The screen reads
     /// the server's name and owner from it; nothing here leaves the device.
     pub plaintext: Option<super::PlaintextVerdict>,
+    /// Who signed in, for the no-server read-out alone — see [`SessionInit::signin_account`]. The
+    /// screen composes and measures the sentence; nothing here leaves the device.
+    pub account: Option<Arc<str>>,
     /// **Switching profiles is known to be unavailable for the identity in use** — its roster
     /// was refused with nothing cached (plex.tv's verdict, or a dev-token session that has no
     /// account to ask with). The account menu hides *Change profile* on it; no verdict
@@ -1147,6 +1165,7 @@ impl SessionSnapshot {
             && self.incident == state.incident && self.link_trouble == state.link_trouble
             && self.discovery_retry == state.discovery_retry
             && self.plaintext == state.plaintext
+            && self.account.as_deref() == state.readout_account()
             && self.switch_refused == state.switch_refused()
             && self.readout_back_resumes == (state.roster_readout_up() && state.roster_dead_end()
                 && state.dead_end_resumes())
@@ -1181,6 +1200,7 @@ impl SessionSnapshot {
             persistence_warning: state.persistence_warning, incident: state.incident.clone(),
             link_trouble: state.link_trouble, discovery_retry: state.discovery_retry,
             plaintext: state.plaintext.clone(),
+            account: state.readout_account().map(Arc::from),
             switch_refused: state.switch_refused(),
             readout_back_resumes: state.roster_readout_up() && state.roster_dead_end()
                 && state.dead_end_resumes() }
@@ -2429,6 +2449,7 @@ impl SessionMachine {
         self.state.signin_active = true;
         self.state.link_trouble = false;
         self.state.plaintext = None;
+        self.state.signin_account = None;
         if fresh_attempt { emit(SessionFx::Coordinator(CoordinatorAction::SignInStarted)); }
         let op = if discovery { SessionOp::Rediscover } else { SessionOp::Login };
         let req = self.allocate(op, None).expect("request exhaustion checked before transition");
@@ -2518,6 +2539,7 @@ impl SessionMachine {
         self.state.error = message.to_owned();
         self.state.phase = Phase::Error;
         self.state.plaintext = None;
+        self.state.signin_account = None;
         self.state.persistence_warning = None;
         self.state.held_handoff = None;
         self.state.persistence_warning_answered = false;
@@ -2629,9 +2651,10 @@ impl SessionMachine {
                             self.raise_incident(IncidentFlow::SignIn, *context);
                         }
                     }
-                    LoginProgress::Failed { message, incident, plaintext, .. } => {
+                    LoginProgress::Failed { message, incident, plaintext, account, .. } => {
                         self.fail_login(message, Some(*incident), emit);
                         self.state.plaintext = plaintext.clone();
+                        self.state.signin_account = account.clone();
                     }
                     LoginProgress::SignedIn { .. } => unreachable!(),
                 }
@@ -4029,7 +4052,7 @@ mod tests {
         assert!(owner.apply_qr_observation(&authorized, &mut |_| {}));
         assert!(owner.state.pending[&req].expected.matches(&owner.state.persisted));
         let failed = qr_event(&owner, req, 2, super::super::LoginProgress::Failed {
-            epoch, message: "synthetic discovery failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None
+            epoch, message: "synthetic discovery failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
         }, true);
         assert!(owner.apply_qr_observation(&failed, &mut |_| {}));
         let retained = owner.publication();
@@ -4066,7 +4089,7 @@ mod tests {
             };
             let failed = qr_event(&owner, req, 2, super::super::LoginProgress::Failed {
                 epoch, message: super::super::insecure_only_copy(Some(&verdict)).into_owned(),
-                incident: crate::auth::synthetic_incident(), plaintext: Some(verdict),
+                incident: crate::auth::synthetic_incident(), plaintext: Some(verdict), account: None,
             }, true);
             assert!(owner.apply_qr_observation(&failed, &mut |_| {}));
             assert_eq!(owner.read().0.plaintext.as_ref().map(|v| v.machine_id.as_str()), Some("lan-machine"));
@@ -4243,7 +4266,7 @@ mod tests {
             if seated { pending.phase = StreamPhase::ProfileSeated; }
             // Wrong inner epoch; the outer header still identifies this admitted terminal.
             let record = qr_event(&owner, req, 1, super::super::LoginProgress::Failed {
-                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident(), plaintext: None
+                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
             }, true);
             step(&mut owner, SessionEvent::Result(record));
             assert!(owner.state.pending.is_empty());
@@ -4264,7 +4287,7 @@ mod tests {
             if captured { pending.capture = Some(CaptureIntent::Login); }
             else { pending.last_arrival = Some(2); }
             let record = qr_event(&owner, req, 1, super::super::LoginProgress::Failed {
-                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident(), plaintext: None
+                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
             }, true);
             let before = owner.snapshot_init().hash();
             step(&mut owner, SessionEvent::Result(record));

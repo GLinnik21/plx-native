@@ -444,7 +444,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
 /// from `StatusOverlay::FULL_ANCHOR_TOP` exactly where Home's failed hub read-out puts its own
 /// (`screens/home`'s `status_overlay`: the full frame, `.page()`, *Try again*, no reason); its own
 /// server's read-out carries no reason, so its *Try again* is Home's too, word for word, while a
-/// borrowed source's reason stacks the row one reason slot lower, on the same column.
+/// borrowed source's reason stacks the row lower by the reason slot and the read-out's drop, on the same column.
 #[test]
 fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     use crate::ui::widgets::{StatusKind, StatusOverlay};

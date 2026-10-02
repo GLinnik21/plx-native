@@ -1856,6 +1856,34 @@ pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) 
         + "\u{2026}"
 }
 
+/// [`elide_by`] that cuts from the MIDDLE: the start and the end of `s` survive around one `…`
+/// (the longer half on the start when the kept count is odd), for text whose END matters or has
+/// other text right behind it — a name followed by its sentence's period reads
+/// "Maximilian…czyk." rather than the four dots of "Maximilian….". `s` unchanged when it fits (or
+/// the budget is not positive).
+pub(crate) fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> String {
+    if budget <= 0.0 || measure(s) <= budget {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    // `keep` characters survive: the first ceil(keep/2) and the last floor(keep/2).
+    let cut = |keep: usize| {
+        let head: String = chars[..keep.div_ceil(2)].iter().collect();
+        let tail: String = chars[chars.len() - keep / 2..].iter().collect();
+        format!("{}\u{2026}{}", head.trim_end(), tail.trim_start())
+    };
+    let (mut lo, mut hi) = (0usize, chars.len().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if measure(&cut(mid)) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
+}
+
 #[cfg(test)]
 mod supplied_elide_tests {
     #[test]
@@ -1866,6 +1894,20 @@ mod supplied_elide_tests {
         assert_eq!(super::elide_by("short", 8.0, false, width), "short");
         assert_eq!(super::elide_by("short", 0.0, false, width), "short");
         assert_eq!(super::elide_by("short", 8.0, true, width), "short…");
+    }
+
+    #[test]
+    fn middle_elision_keeps_both_ends_within_the_budget() {
+        let width = |s: &str| s.chars().count() as f32;
+        assert_eq!(super::elide_middle_by("abcdefghij", 6.0, width), "abc…ij");
+        assert_eq!(super::elide_middle_by("abcdefghij", 5.0, width), "ab…ij");
+        assert_eq!(super::elide_middle_by("абвгдежз", 5.0, width), "аб…жз");
+        assert_eq!(super::elide_middle_by("a🙂bcdefg", 4.0, width), "a🙂…g");
+        assert_eq!(super::elide_middle_by("short", 8.0, width), "short");
+        assert_eq!(super::elide_middle_by("short", 0.0, width), "short");
+        assert_eq!(super::elide_middle_by("abcdefghij", 1.0, width), "…");
+        // a space beside the cut is not kept hanging against the ellipsis
+        assert_eq!(super::elide_middle_by("ab cd ef gh", 6.0, width), "ab…gh");
     }
 }
 

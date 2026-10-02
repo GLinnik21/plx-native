@@ -2452,6 +2452,95 @@ fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
     }
 }
 
+// ---- the no-server read-out names the account (production wiring) ----
+
+/// Sink that keeps the terminal observation, as the owner's FIFO would receive it.
+struct TerminalCapture(std::sync::Mutex<Vec<AuthProgress>>);
+impl owner::ObservationSink for TerminalCapture {
+    fn live(&self) -> bool { true }
+    fn progress(&self, _: AuthProgress) -> bool { true }
+    fn terminal(&self, progress: AuthProgress) -> bool {
+        self.0.lock().unwrap().push(progress);
+        true
+    }
+}
+
+/// `/resources` answering with accounts' devices, none of them a server.
+fn players_only() -> Vec<Resource> {
+    serde_json::from_str(
+        r#"[{"name":"phone","clientIdentifier":"cccc1","provides":"player","connections":[]}]"#,
+    ).unwrap()
+}
+
+/// What the screen is handed when the sign-in's last step ran with `user_call` as plex.tv's
+/// `/api/v2/user`: the failure's `message` and `account`, the call count, and the incident.
+fn no_servers_failure(user_call: impl FnOnce() -> Option<String>)
+    -> (String, Option<String>, usize, IncidentContext) {
+    let output = TerminalCapture(std::sync::Mutex::new(Vec::new()));
+    let ac = AccountClient::new("client", Some("authorized-token"));
+    let discovery = discover_and_store_with_resources(&ac, "client", 5, DiscoveryTrigger::Login,
+        &PlaintextAsk::undecided(), &output, |_, _| Ok(players_only()));
+    let (message, incident) = discovery_failure(&discovery).expect("no servers is a failure");
+    let mut calls = 0;
+    let account = no_servers_account_with(&discovery, &output, || { calls += 1; user_call() });
+    output_failed_naming(&output, 5, &message, incident, plaintext_offer(&discovery), account);
+    let terminal = output.0.lock().unwrap().pop().expect("the failure was published");
+    let AuthProgress::Login(LoginProgress::Failed { message, account, incident, .. }) = terminal
+    else { panic!("not a sign-in failure") };
+    (message, account, calls, incident)
+}
+
+/// **Regression: a sign-in that ends in "no server yet" names the account.** `/resources` answered
+/// with a list holding no server and `/api/v2/user` answered with a name: the failure that reaches
+/// the owner carries that name beside the plain caption. Every way the user call can come up empty
+/// — it failed or timed out (`None`), or named nobody — leaves exactly the nameless failure.
+#[test]
+fn a_no_servers_sign_in_hands_the_screen_the_account_name() {
+    let (message, account, calls, _) = no_servers_failure(|| Some("alexandra".to_owned()));
+    assert_eq!(message, crate::i18n::msg::browse_auth_no_servers(), "the caption stays the fallback");
+    assert_eq!(account.as_deref(), Some("alexandra"), "the account is named on the failure");
+    assert_eq!(calls, 1, "ONE user call");
+
+    let (message, account, calls, _) = no_servers_failure(|| None);
+    assert_eq!((message.as_str(), account, calls),
+        (crate::i18n::msg::browse_auth_no_servers(), None, 1),
+        "a failed, timed-out or nameless user call is today's failure, unchanged");
+}
+
+/// The user call is asked ONLY when discovery ended in no servers.
+#[test]
+fn the_account_name_is_fetched_only_for_a_no_servers_verdict() {
+    let output = TerminalCapture(std::sync::Mutex::new(Vec::new()));
+    let evidence = crate::telemetry::incident::NoServersEvidence {
+        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    for (verdict, asks) in [
+        (Discovery::NoServers(evidence), true),
+        (Discovery::Refused, false),
+        (Discovery::Cancelled, false),
+        (Discovery::ServersUnreachable { trigger: DiscoveryTrigger::Login }, false),
+        (Discovery::InsecureOnly(None), false),
+    ] {
+        let mut asked = false;
+        let account = no_servers_account_with(&verdict, &output, || { asked = true; Some("n".into()) });
+        assert_eq!(asked, asks, "only a no-servers verdict asks");
+        assert_eq!(account.is_some(), asks);
+    }
+    // Structure: both workers ask only inside the failure branch, after discovery, and a
+    // successful sign-in's tail never does.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    ).expect("auth.rs must be readable from its own test");
+    for name in ["rediscovery_worker_with_output", "login_worker_with_output"] {
+        let body = extract_fn_body(&src, name);
+        let discovered = body.find("discover_and_store(").expect("discovers");
+        let failure = body.find("discovery_failure(&discovery)").expect("grades the failure");
+        let asked = body.find("no_servers_account(&discovery").expect("asks for the account");
+        assert!(discovered < failure && failure < asked, "`{name}` asks outside the failure branch");
+        assert_eq!(body.matches("no_servers_account(").count(), 1);
+    }
+    assert!(!extract_fn_body(&src, "finish_sign_in").contains("display_name"));
+}
+
 // ---- PLX-NATIVE-10: consent-gated plaintext on the home network ----
 
 /// What answers the no-relay reporter's topology when the plaintext candidate is named by any
@@ -2765,6 +2854,91 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
             }
         }
     }
+}
+
+/// **The "no server yet" reason keeps its two lines for every name.** Line 1 is always the
+/// sentence naming the account and fits the reason column (it never wraps); a short name is left
+/// alone; a long one is shortened with an ellipsis and the sentence keeps its final period; line 2
+/// is always the plain no-server sentence; a blank name has no line 1 at all, so the caller says
+/// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
+#[test]
+fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
+    use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+    use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+    use crate::ui::machine::Measure;
+    use crate::ui::widgets::StatusOverlay;
+    let column = StatusOverlay::REASON_W * HEADROOM;
+    for language in [Preference::En, Preference::Es, Preference::Be] {
+        let _guard = language_on_this_thread_for_test(language);
+        let second = msg::browse_auth_no_servers();
+        for name in ["alexandra", "alexandra.konstantinopolskaya",
+            "alexandra.konstantinopolskaya.with.a.very.long.name.indeed",
+            "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА"] {
+            let reason = signed_in_reason(name, &ShippedMeasure).expect("a name gives a reason");
+            let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
+            assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
+            assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
+            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
+            assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
+            assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
+            if name == "alexandra" {
+                assert_eq!(reason, msg::browse_auth_no_servers_signed_in_as(name), "a short name is untouched");
+            }
+            if first.contains('\u{2026}') {
+                assert!(!first.ends_with("\u{2026}."), "{language:?} {name}: the ellipsis sits against the period: {first:?}");
+                let at = first.find('\u{2026}').unwrap();
+                assert!(at > 3 && first[at + 3..].chars().count() > 3, "{language:?} {name}: not cut in the middle: {first:?}");
+                assert!(name.chars().count() > 20, "{language:?} {name}: shortened without need");
+                assert!(!first.contains(name), "{language:?}: the full name survived");
+            } else {
+                assert!(first.contains(name), "{language:?} {name}: {first:?}");
+            }
+        }
+        // the long name really was cut, in the language that says the most around it
+        let cut = signed_in_reason("alexandra.konstantinopolskaya.with.a.very.long.name.indeed", &ShippedMeasure).unwrap();
+        assert!(cut.lines().next().unwrap().contains('\u{2026}'), "{language:?}: {cut:?}");
+        // Cut from the middle, both ends of the name kept, the period left alone.
+        if language == Preference::En {
+            assert_eq!(signed_in_reason("Maximilian.Wolfgang.Kowalczyk.MMWWMMWWMMWWMMWWAB", &ShippedMeasure).as_deref(),
+                Some("Signed in as Maximilian.Wolfgang.\u{2026}.MMWWMMWWMMWWMMWWAB.\nThis Plex account has no server yet."),
+                "a 48-character name is cut in the middle, not before the sentence's period");
+        }
+        assert_eq!(signed_in_reason("", &ShippedMeasure), None);
+        assert_eq!(signed_in_reason("  \n\t ", &ShippedMeasure), None);
+        // whitespace inside a name cannot break the first line
+        let spaced = signed_in_reason("Alex\nandra  K", &ShippedMeasure).unwrap();
+        assert_eq!(spaced.matches('\n').count(), 1, "{spaced:?}");
+    }
+}
+
+/// **A column too narrow for even the bare sentence names nobody.** The reason is `None`, so the
+/// caller shows `browse.auth.no_servers`, rather than the full unshortened name overflowing.
+#[test]
+fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
+    struct Wide;
+    impl crate::ui::machine::Measure for Wide {
+        fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    assert_eq!(signed_in_reason("alexandra", &Wide), None);
+}
+
+/// The user call is not made for a sink that is no longer live (the sign-in was cancelled).
+#[test]
+fn a_dead_sink_never_asks_for_the_account_name() {
+    struct Dead;
+    impl owner::ObservationSink for Dead {
+        fn live(&self) -> bool { false }
+        fn progress(&self, _: AuthProgress) -> bool { false }
+        fn terminal(&self, _: AuthProgress) -> bool { false }
+    }
+    let evidence = crate::telemetry::incident::NoServersEvidence {
+        resources: crate::telemetry::incident::CountBucket::One, trigger: DiscoveryTrigger::Login };
+    let mut calls = 0;
+    let account = no_servers_account_with(&Discovery::NoServers(evidence), &Dead,
+        || { calls += 1; Some("n".to_owned()) });
+    assert_eq!((account, calls), (None, 0));
 }
 
 #[test]
