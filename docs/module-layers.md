@@ -2,14 +2,14 @@
 
 Status: target graph declared and gated 2026-10-02, and all fourteen migration steps (L1 to L14)
 are done: 0 of the 231 baseline entries remain, so no layer names a layer it may not use. That is
-not yet "extractable": 129 `cfg(test)` items are still named from another layer's tests, which a
+not yet "extractable": 134 `cfg(test)` items are still named from another layer's tests, which a
 split hides from them, and the gate does not check impl coherence. Both are below ("Then the
 split"), and so is the split itself. Step L15, declared after them, fences the webOS code off
 behind a port, so that another TV OS can be a second port. It is open, and it does not hold up the
 split.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
-`ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, and its 42 entries now are
+`ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, and its 44 entries now are
 L15's. Run `ci/check-module-layers.py --report` for current numbers. The graph findings and the
 migration table's figures are the baseline, before L1; the target-graph table is measured after
 L14.
@@ -216,16 +216,16 @@ landed differently from its plan the row says what actually moved. L15 is open.
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume reducer and the transport-pause contract are `player::lifecycle` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
-| **L15** the webOS port | 42 / 201 | Everything outside `[port webos]` reaches the television through interfaces in `platform` that the port fills at boot. The engine, pump and threads drive a platform video sink instead of `player::ffi`'s Starfish verbs, and `plex_run` moves into the port. The next section has the list. |
+| **L15** the webOS port | 44 / 205 | Everything outside `[port webos]` reaches the television through interfaces in `platform` that the port fills at boot. The engine, pump and threads drive a platform video sink instead of `player::ffi`'s Starfish verbs, and `plex_run` moves into the port. The next section has the list. |
 
 ### L15: the webOS port
 
 L1 to L14 gave the crate a direction, but webOS is still spread through it. The four modules that
 exist only because the target is webOS (`webos`, `keymanager`, `system` and `player::ffi`) are
-named from 27 production files in 8 layers, from `platform` up to `app`, so supporting another
+named from 29 production files in 8 layers, from `platform` up to `app`, so supporting another
 television OS would mean edits in all of them. `[port webos]` fences them off: the gate fails on a
-new reference from outside, and the ones that were there when the port was declared are L15's 42
-entries, 201 references of which 91 are in production code. The port's members stay in their
+new reference from outside, and the ones that were there when the port was declared are L15's 44
+entries, 205 references of which 95 are in production code. The port's members stay in their
 layers, so none of this holds up the split.
 
 Each entry becomes an interface in `platform` that the port fills at boot, by passing the value in
@@ -242,6 +242,7 @@ or by installing a hook:
 | locale | `webos::ls2` | `i18n` |
 | window, surface, video plane and bus pump | `webos::bind_window`, `system` | `app::boot`, `app::run`, `app/mod.rs` |
 | home key | `webos::{go_home, poll_home, take_root_press, release_root_press}` | `app::input`, `app::run`, `app::adapters::session`, `app::lifecycle`'s tests |
+| system toast | `webos::toast` | `app::clock_notice`, `dev::scenarios::toast_probe` |
 
 The video sink is the hard one. `engine`, `pump` and `threads` already carry no platform `cfg` of
 their own: `player::ffi` swaps its declarations for `ffi_host.rs` under `hostsim`, and the wrappers
@@ -277,8 +278,8 @@ already a separate crate there.
 `--report` ends with an "extractable as a crate" list. A layer is ready when neither it nor anything
 it uses has entries left (L15's port entries do not count), **and** no other layer's tests name a
 `cfg(test)` item of it or of a layer below it. Since L14 the first half holds for every layer and
-the second for none: `--report` lists 129 such items (8 in `base`, 11 `machine`, 13 `platform`, 8
-`gfx`, 5 `net`, 21 `plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4
+the second for none: `--report` lists 134 such items (8 in `base`, 11 `machine`, 13 `platform`, 8
+`gfx`, 10 `net`, 21 `plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4
 `screens`). The gate cannot see either remaining hazard on its own, because it checks names, not
 `cfg(test)`-ness of the item named or impl coherence. Extract bottom-up: `base`, then `machine`,
 `platform`, and so on. Each extraction:

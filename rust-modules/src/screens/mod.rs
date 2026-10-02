@@ -30,6 +30,7 @@ pub(crate) mod family;
 pub(crate) mod legal;
 pub(crate) mod login;
 pub(crate) mod onboard;
+pub(crate) mod clock_readout;
 pub(crate) mod plaintext_question;
 pub(crate) mod player;
 pub(crate) mod profiles;

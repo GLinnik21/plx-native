@@ -1596,6 +1596,8 @@ check-python: check-localization
 	python3 ci/test_build_budgets.py
 	@# tools/ci-durations.py (CI duration trends) against canned `gh api` output; no network.
 	python3 tools/test_ci_durations.py
+	@# tools/ci-history.py (the live chart's data: incremental merge, filtering, paging stop) against a fake `gh api`; no network.
+	python3 tools/test_ci_history.py
 	@# `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 	python3 ci/test_test_fast.py
 	@# `make build-bench`: table/JSON shape, edit-and-restore, refusals, skips and the Makefile wiring, against a fake cargo.

@@ -620,8 +620,9 @@ fn plaintext(
 /// The URL is `origin.base()` + `path`, so the authority is the one the origin PARSED — the
 /// `plex.direct` name a certificate is issued for, bracketed if it is a v6 literal — and never a
 /// pair reassembled from an address. `net` verifies peer and host (`SSL_VERIFYPEER` +
-/// `SSL_VERIFYHOST=2`), so a retained public or matched-LAN candidate must authenticate the name
-/// plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
+/// `SSL_VERIFYHOST=2`) — with one exception, `net::keypin`'s wrong-clock retry, which replaces the
+/// chain-and-date check with a pin on a remembered key and still checks the name — so a retained
+/// public or matched-LAN candidate must authenticate the name plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
 /// `probe::candidates`; validation could reject a stranger there, but could not refund its 8 s
 /// sequential connect setting (subject to the synchronous-resolver caveat in the module doc).
 ///

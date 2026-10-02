@@ -293,13 +293,124 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
     let measure = crate::ui::fixture::FixtureMeasure;
     let no_offer = OfferWatch::default();
-    let overlay = status_overlay(snapshot.view(), &no_offer).unwrap();
+    let overlay = status_overlay(snapshot.view(), &no_offer, &ClockWatch::default()).unwrap();
     let verdict = overlay.verdict_band_measured(&measure);
     assert_eq!(verdict.y, StatusOverlay::FULL_ANCHOR_TOP);
     let drawn = overlay.action_frame_measured(&measure).unwrap();
     assert_eq!(drawn.y, verdict.y + verdict.h + crate::ui::theme::space::LG);
     let hit = screen(snapshot.view()).hero_button_rect(snapshot.view(), 0, &measure).unwrap();
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
+}
+
+/// **A failed Home says why a wrong clock is the likely cause** — the clock glyph over the verdict
+/// and a reason line in the reserved slot, only while key mode cannot help (`net::keypin::blocked`).
+/// No fact is byte-for-byte today's read-out; only a Failed read-out takes the reason; an offered
+/// plaintext server's reason outranks it; and the hit rect is the pill the SAME frame draws, the
+/// reason having moved the action row.
+#[test]
+fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
+    use crate::net::keypin::{self, Blocked};
+    use crate::ui::icons::Icon;
+    let _guard = crate::testlock::serial();
+    crate::plex::grant::reset_for_test();
+    let key = keypin::key_of("home-clock.invalid", 32400);
+    let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
+    let _current = current_server_for_test("home-clock-machine");
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let measure = FixtureMeasure;
+
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let plain = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!((plain.reason, plain.glyph, plain.action), (None, Some(Icon::ServerBadgeMinus), Some(c"Try again")));
+    let plain_row = plain.action_frame_measured(&measure).unwrap();
+    let plain_caption = plain.caption.to_owned();
+
+    keypin::strict_failure(&key, 60, Some(10));
+    let before_tick = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!(before_tick.reason, None, "the held fact does not change between ticks");
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!(overlay.reason, Some(crate::i18n::msg::browse_clock_no_key_c()));
+    assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ClockBadgeAlert), Some(c"Try again")));
+    assert_eq!(overlay.caption, plain_caption.as_c_str(), "the verdict is unchanged");
+    let drawn = overlay.action_frame_measured(&measure).unwrap();
+    assert!(drawn.y > plain_row.y, "the reason moves the action row");
+    let hit = s.hero_button_rect(view, 0, &measure).unwrap();
+    assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h], "the hit rect is the drawn pill");
+
+    keypin::key_changed(&key);
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!(s.clock.blocked(), Some(Blocked::KeyChanged));
+    assert_eq!(overlay.reason, Some(crate::i18n::msg::browse_clock_key_changed_c()));
+
+    // A read-out that has not failed takes no reason, whatever the fact says.
+    for hub_state in [crate::pms::HubState::Loading, crate::pms::HubState::Ready] {
+        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = crate::pms::hubs_snapshot(&state);
+        let overlay = status_overlay(snapshot.view(), &s.plaintext, &s.clock).unwrap();
+        assert_eq!((overlay.reason, overlay.glyph), (None, None), "{hub_state:?}");
+    }
+
+    // The plaintext offer's reason (and its glyph) win: its own cause is the one the person can act on.
+    let verdict = crate::plex::grant::PlaintextVerdict {
+        machine_id: "lan-machine".into(), name: "Home".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible,
+        choice: crate::plex::session::PlaintextChoice::Undecided,
+    };
+    crate::plex::grant::offered(crate::plex::grant::scope(), verdict.clone());
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    let offer = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
+    assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
+    assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ServerBadgeMinus), Some(plaintext_question::connect())));
+    crate::plex::grant::reset_for_test();
+}
+
+/// Make `machine` the current server (the one a failed Home speaks about) for a test, and put the
+/// registry back when it ends.
+fn current_server_for_test(machine: &str) -> impl Drop {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_pinned_with_client_id(machine, &crate::plex::Origin::http("192.168.1.53", 32400),
+        "", None, "client", Default::default());
+    assert!(crate::plex::set_current(sid) || crate::plex::current_server() == sid, "the test server is current");
+    Reset
+}
+
+/// **A fact about ANOTHER server does not colour a failed Home** (scenario B): Home asks
+/// `net::keypin::blocked_for` about the current server only.
+#[test]
+fn a_failed_home_ignores_a_clock_fact_about_another_server() {
+    use crate::net::keypin;
+    let _guard = crate::testlock::serial();
+    crate::plex::grant::reset_for_test();
+    let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
+    let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
+    let _current = current_server_for_test("home-here-machine");
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+
+    keypin::strict_failure(&elsewhere, 60, Some(10));
+    keypin::key_changed(&elsewhere);
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    assert_eq!(s.clock.blocked(), None);
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
+    assert_eq!((overlay.reason, overlay.glyph), (None, Some(crate::ui::icons::Icon::ServerBadgeMinus)));
 }
 
 // The observer consumes the same final geometry as widgets::card; the screen
@@ -2135,7 +2246,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     crate::plex::grant::offered(crate::plex::grant::scope(), verdict.clone());
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
     let measure = FixtureMeasure;
-    let overlay = status_overlay(view, &s.plaintext).unwrap();
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.action, Some(plaintext_question::connect()));
     let reason = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(reason.as_ref()));
@@ -2171,7 +2282,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
 
     crate::plex::grant::answer("account", "lan-machine", PlaintextChoice::Declined);
     step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
-    let overlay = status_overlay(view, &s.plaintext).unwrap();
+    let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.action, Some(plaintext_question::try_again()));
     assert!(overlay.reason.and_then(|r| r.to_str().ok()).is_some_and(|r|
         r.contains("Settings \u{2192} Unencrypted connections")), "{:?}", overlay.reason);

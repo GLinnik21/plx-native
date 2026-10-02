@@ -5776,8 +5776,9 @@ impl PersonOwnerGateFixture {
         # less step L1's 72, which moved the event log out of lib.rs in the same change, less the
         # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
         # declared (step L15), and the 42 (file, member) pairs that name it from outside became
-        # that step's entries: 0 + 42 = 42.
-        "layers.txt": 42,
+        # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
+        # two callers: 42 + 2 = 44.
+        "layers.txt": 44,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,

@@ -38,6 +38,7 @@ use std::sync::OnceLock;
 
 pub(crate) mod jail_repair;
 pub(crate) mod caps;
+pub(crate) mod toast;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
@@ -778,6 +779,19 @@ pub(crate) mod ls2 {
             token: *mut libc::c_ulong,
             error: *mut LSError,
         ) -> bool;
+        /// `LSCallOneReply` with `applicationID` attached to the message — `luna-send -a <id>`'s
+        /// call. Signature from `luna-service2/lunaservice.h`; exported by the NDK's
+        /// `libluna-service2.so.3`.
+        fn LSCallFromApplicationOneReply(
+            handle: *mut c_void,
+            uri: *const c_char,
+            payload: *const c_char,
+            application_id: *const c_char,
+            callback: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+            context: *mut c_void,
+            token: *mut libc::c_ulong,
+            error: *mut LSError,
+        ) -> bool;
         fn LSCallCancel(handle: *mut c_void, token: libc::c_ulong, error: *mut LSError) -> bool;
         fn LSMessageGetPayload(message: *mut c_void) -> *const c_char;
         fn LSUnregister(handle: *mut c_void, error: *mut LSError) -> bool;
@@ -949,6 +963,32 @@ pub(crate) mod ls2 {
         /// `Err` never means "the method said no" — a refusal comes back as the platform's own JSON
         /// in the `Ok`, for the caller to grade.
         pub(crate) fn call(&self, uri: &str, payload: &str, budget: Duration) -> Result<String, Fail> {
+            self.call_with(uri, payload, None, budget)
+        }
+
+        /// [`call`](Self::call) with `app_id` attached to the message as its application id
+        /// (`LSCallFromApplicationOneReply`) — what a service that attributes by caller identity
+        /// (the notification service's `sourceId` check) reads when this handle has no service
+        /// name. Whether the hub honours that from a jailed app is the question
+        /// [`crate::webos::toast`]'s probe asks.
+        pub(crate) fn call_as_app(
+            &self,
+            uri: &str,
+            payload: &str,
+            app_id: &str,
+            budget: Duration,
+        ) -> Result<String, Fail> {
+            self.call_with(uri, payload, Some(app_id), budget)
+        }
+
+        /// The one reply-slot / timeout / cancel path both public calls share.
+        fn call_with(
+            &self,
+            uri: &str,
+            payload: &str,
+            app_id: Option<&str>,
+            budget: Duration,
+        ) -> Result<String, Fail> {
             let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("LS2 round trip") });
             let setup = |stage| Fail::Setup {
                 stage,
@@ -956,6 +996,9 @@ pub(crate) mod ls2 {
             };
             let uri = CString::new(uri).map_err(|_| setup("uri"))?;
             let payload = CString::new(payload).map_err(|_| setup("payload"))?;
+            let app_id = app_id
+                .map(|id| CString::new(id).map_err(|_| setup("app-id")))
+                .transpose()?;
             let mut error: LSError = unsafe { std::mem::zeroed() };
             unsafe { LSErrorInit(&mut error) };
             // The reply slot lives on the HEAP, not this frame: a registration can outlive this
@@ -965,15 +1008,27 @@ pub(crate) mod ls2 {
             let slot: *mut Option<String> = Box::into_raw(Box::new(None));
             let mut token = 0;
             let called = unsafe {
-                LSCallOneReply(
-                    self.handle,
-                    uri.as_ptr(),
-                    payload.as_ptr(),
-                    on_reply,
-                    slot as *mut c_void,
-                    &mut token,
-                    &mut error,
-                )
+                match &app_id {
+                    None => LSCallOneReply(
+                        self.handle,
+                        uri.as_ptr(),
+                        payload.as_ptr(),
+                        on_reply,
+                        slot as *mut c_void,
+                        &mut token,
+                        &mut error,
+                    ),
+                    Some(app_id) => LSCallFromApplicationOneReply(
+                        self.handle,
+                        uri.as_ptr(),
+                        payload.as_ptr(),
+                        app_id.as_ptr(),
+                        on_reply,
+                        slot as *mut c_void,
+                        &mut token,
+                        &mut error,
+                    ),
+                }
             };
             if !called {
                 let code = Some(error.error_code);

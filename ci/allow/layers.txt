@@ -1,4 +1,4 @@
-# count: 42
+# count: 44
 # The module-layer gate's MIGRATION list (ci/check-module-layers.py, docs/module-layers.md): one
 # entry per (file, member) where a file names a module in a layer its own layer may not use, as
 # `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
@@ -11,6 +11,7 @@
 rust-modules/src/app/adapters/session.rs	webos	L15 reach the home key through platform, not webos
 rust-modules/src/app/boot.rs	system	L15 set up the surface and video plane through platform, not system
 rust-modules/src/app/boot.rs	webos	L15 reach window setup through platform, not webos
+rust-modules/src/app/clock_notice.rs	webos	L15 reach the system toast through platform, not webos
 rust-modules/src/app/diagnostics.rs	webos	L15 reach device identity, the playback capability, the Dolby Vision capability type through platform, not webos
 rust-modules/src/app/input.rs	webos	L15 reach the home key through platform, not webos
 rust-modules/src/app/lifecycle.rs	webos	L15 reach the home key through platform, not webos (cfg(test) only)
@@ -20,6 +21,7 @@ rust-modules/src/app/playback.rs	webos	L15 reach native-video repair through pla
 rust-modules/src/app/run.rs	system	L15 set up the surface and video plane through platform, not system
 rust-modules/src/app/run.rs	webos	L15 reach the home key through platform, not webos
 rust-modules/src/appkit/player_hud.rs	webos	L15 reach native-video repair through platform, not webos
+rust-modules/src/dev/scenarios/toast_probe.rs	webos	L15 reach the system toast through platform, not webos
 rust-modules/src/diag/schema.rs	webos	L15 reach device identity through platform, not webos
 rust-modules/src/i18n/mod.rs	webos	L15 reach the locale query through platform, not webos
 rust-modules/src/lab/snapshot.rs	webos	L15 reach device identity through platform, not webos

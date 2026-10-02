@@ -1,5 +1,5 @@
-//! A PEM certificate -> the string `CURLOPT_PINNEDPUBLICKEY` accepts (issue #380, groundwork for
-//! #378).
+//! A PEM certificate -> the string `CURLOPT_PINNEDPUBLICKEY` accepts (issue #380; used by
+//! [`crate::net::keypin`], issue #378).
 //!
 //! The app remembers each Plex server's certificate public key so an offline TV whose clock is
 //! wrong can still recognise its own server. libcurl 7.53.1 reports a verified connection's chain

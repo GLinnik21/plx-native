@@ -120,6 +120,7 @@ pub(crate) use bootstrap::HomeIo;
 pub(crate) mod diagnostics;
 pub(crate) mod words;
 pub(crate) mod clock;
+mod clock_notice;
 mod recorder;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
