@@ -111,6 +111,39 @@ pub(crate) fn install_plex_seams() {
     crate::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
 }
 
+#[cfg(test)]
+mod seam_order_tests {
+    /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
+    /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
+    /// before anything can play. It was installed by `player::report::requested`, which a
+    /// detail-page preview never passes, so a failed preview's trace outlived a withdrawal. This
+    /// reads the source, like `storage::diagnostics`'s boot-order test, because no host test can
+    /// run `enter_application`; what the eraser reaches is graded by `player::report`'s
+    /// `a_failed_preview_trace_is_erased_through_telemetrys_hook`.
+    #[test]
+    fn the_trace_eraser_is_installed_before_telemetry_loads_or_anything_plays() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("fn enter_application(")
+            .expect("enter_application")
+            .1
+            .split_once("/// The ten-line public skeleton")
+            .expect("end of enter_application")
+            .0;
+        let eraser = body
+            .find("crate::player::report::install_trace_eraser();")
+            .expect("enter_application must install telemetry's error-trace eraser");
+        let telemetry = body
+            .find(".then(pre_boot_diagnostics)")
+            .expect("telemetry's boot load");
+        let boot = body.find("boot(pms_host").expect("application boot");
+        assert!(
+            eraser < telemetry && eraser < boot,
+            "the eraser must be installed before telemetry loads and before anything can play"
+        );
+    }
+}
+
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
 /// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
 ///

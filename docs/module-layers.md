@@ -1,8 +1,10 @@
 # Module layers: getting rust-modules out of one big cycle
 
 Status: target graph declared and gated 2026-10-02, and all fourteen migration steps (L1 to L14)
-are done: 0 of the 231 baseline entries remain, and `--report` lists every layer as extractable.
-What is left is the split itself ("Then the split", below).
+are done: 0 of the 231 baseline entries remain, so no layer names a layer it may not use. That is
+not yet "extractable": 129 `cfg(test)` items are still named from another layer's tests, which a
+split hides from them, and the gate does not check impl coherence. Both are below ("Then the
+split"), and so is the split itself.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` held the migration list; it stays, empty, so a new upward reference still
@@ -138,6 +140,11 @@ tables say so, but `check-deps.sh`'s `layer` gate scans only `screens/`.
 - the config itself is wrong: a cycle among `uses`, an unknown layer, a missing or duplicate
   member.
 
+It also counts, without failing, the `cfg(test)` references that name a test-only module or a
+`#[cfg(test)]` item of **another** layer (`net::with_h2_reset_failure` from `plex::account`'s
+tests, say). Those names are legal today and invisible after the split, which is why `--report`
+lists every one; "Then the split" says what each needs.
+
 `ci/check-module-cycle.py`, which landed separately (#387), is the coarse companion. It holds the
 SET of top-level modules on the big cycle and fails when a module joins it, so it catches a cycle
 forming between modules this config puts in one layer. This gate is the fine one: it checks each
@@ -189,7 +196,7 @@ actually moved.
 | **L6** transport takes Plex values — **done** | 5 / 13 | `Origin`, `Scheme`, `url_host`, `ResolvePin` and `dial_port` are `net/origin.rs` (`plex::origin` re-exports them and keeps `CredentialPolicy`), the user agent is installed once at boot through `net::set_user_agent`, and `stream::redirect::Request` takes the credential-transport check as a function pointer. |
 | **L7** platform owns its types — **done** | 2 / 5 | `DP_AUDIO_CODECS` lives in `devcaps` (`plex` re-exports it), and the Dolby Vision half of `webos/caps.rs`'s frame-safety test moved to `metadata`'s tests. |
 | **L8** plex stops naming upward — **done** | 7 / 10 | `urlenc_str` is `plex::client`'s, `backoff_secs` and `EndpointRefresh(Set)` are `plex::retry` (`pms` and `stores` re-export them), `LinkClass`/`classify` are `plex::probe`'s, `route::auto_quality_ready` and `telemetry::cleanup_after_account_clear` are hooks `app::boot::install_plex_seams` installs, and `plex::session`'s whole-app tests moved to `app/plex_session_app_tests.rs`. |
-| **L9** telemetry owns its wire schema — **done** | 5 / 69 | The `*Class`/`Trace*` vocabulary and a new `FailureClass` are `telemetry::classes` (`player::report` re-exports them and converts through `FailureKind::class()`), clearing the error trace is a hook the player installs, an incident hands over a telemetry-owned `ReadoutGlyph` that `screens::login` maps to an icon, and the consent adapter's live half is `telemetry::transition`. |
+| **L9** telemetry owns its wire schema — **done** | 5 / 69 | The `*Class`/`Trace*` vocabulary and a new `FailureClass` are `telemetry::classes` (`player::report` re-exports them and converts through `FailureKind::class()`), clearing the error trace is a hook (`player::report::install_trace_eraser`, run at boot by `app::enter_application`, not by the first attempt: a failed preview traces without one), an incident hands over a telemetry-owned `ReadoutGlyph` that `screens::login` maps to an icon, and the consent adapter's live half is `telemetry::transition`. |
 | **L10** player and Plex-aware widgets out of ui — **done** | 38 / 511 | Part a moved `ui/{player_hud,track_menu,more_menu,info_panel,up_next,chapters_panel,timing_capsule,source_list}.rs` and `screens/player/skip_pill.rs` to the new `appkit` layer rather than `screens/` (the third choice above); part b gave `widgets`, `card_row`, `hero_logo`, `collection_tile` and `fmt` plain values (`ui::tile::TileFacts`, a raw `u16` server id, `fmt::RatingScale`), with `screens::registry::tile_facts::of` the one `PmsMovie` converter. |
 | **L11** data owns its seams — **done** | 13 / 74 | `app::bootstrap::stores` is `stores::tape`, `metadata` takes a `Playhead` value and owns `track_names`, `ContentArg` is `stores::content_arg`, `person` and `search` cap shelves at `pms::MAX_SHELF_ITEMS`, and the `Tile` trait is the base module `tile`. |
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume reducer and the transport-pause contract are `player::lifecycle` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
@@ -199,7 +206,12 @@ actually moved.
 ### Then the split
 
 `--report` ends with an "extractable as a crate" list. A layer is ready when neither it nor
-anything it uses has entries left; since L14 every layer is. Extract bottom-up: `base`, then `machine`, `platform`, and so
+anything it uses has entries left, **and** no other layer's tests name a `cfg(test)` item of it or
+of a layer below it. Since L14 the first half holds for every layer and the second for none:
+`--report` lists 129 such items (8 in `base`, 11 `machine`, 13 `platform`, 8 `gfx`, 5 `net`, 21
+`plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4 `screens`). The
+gate cannot see either remaining hazard on its own, because it checks names, not `cfg(test)`-ness
+of the item named or impl coherence. Extract bottom-up: `base`, then `machine`, `platform`, and so
 on. Each extraction:
 
 - creates `rust-modules/<layer>/` as a workspace member (the storage helper in `storage/` is the
@@ -210,9 +222,22 @@ on. Each extraction:
   stay valid;
 - forwards the features. `devtools`, `devtriggers`, `threadcheck`, `lab-diagnostics` and `hostsim`
   become features of each layer that has a `cfg` on them, enabled from the top crate;
-- gives test helpers a feature. `testlock` and `testnet` are `cfg(test)` today, and `cfg(test)` of
-  a dependency is never set when a dependent's tests build. So `base` exports them under a
-  `test-support` feature that the layers above enable in `[dev-dependencies]`;
+- gives test helpers a feature. `cfg(test)` of a dependency is never set when a dependent's tests
+  build, so every `--report` item of the layer being extracted moves behind a `test-support`
+  feature (`#[cfg(any(test, feature = "test-support"))]`) that the layers above enable in
+  `[dev-dependencies]`, or the test that names it moves down. They are not only `testlock` and
+  `testnet`: `storage_worker::drain_for_test` (67 references), `net::with_h2_reset_failure` (from
+  `plex::account`'s tests), `ui::machine::{BareArg, BareMeasure}` (from `auth::owner`),
+  `gfx::backdrop::commit` (from `ui/frame/backdrop_tests.rs`), and `plex::session`'s `TempSession`,
+  `with_io_for_test`, `invalidate_for_test` and `reads_for_test` (from `app/plex_session_app_tests.rs`)
+  among them. A `#[cfg(test)]` trait impl is a hazard `--report` cannot see, because trait dispatch
+  names nothing: `ui::machine`'s `impl Measure for fontcov::advances::ShippedMeasure`, which
+  `auth::owner`'s and the `ui`/`appkit`/`screens` fit tests measure through, needs the same feature;
+- checks impl coherence by hand. An impl written in a third layer, of one layer's trait for another
+  layer's type, is legal in one crate and E0117 (the orphan rule) after the split. `app/recorder.rs`
+  had `impl pms::initial::Sink for ui::machine::Canon`; the impl now lives beside the trait in
+  `pms/initial.rs`, since `data` may name `machine`. Before extracting a layer, look for `impl … for …` in the layers above whose
+  trait and self type both live in other crates;
 - watches `#[macro_export]`. `dynlib!` and the `focusable_via_*!` macros keep working through
   `$crate`, but a macro body that names another layer's path needs that layer as a dependency of
   the macro's crate.
@@ -228,3 +253,9 @@ on. Each extraction:
   it; that only matters if `lib.rs` defines one, and it does not.
 - The source side is per module, not per item. When an item has to move, the whole file's
   references count against the file's current layer until it does.
+- The `cfg(test)` item report sees a name written as a path (`crate::net::clear()`,
+  `crate::pms::HubsSnapshot::empty_for_test()`, a `use` of the item), a glob of the item's module
+  followed by the bare name, and a `use` of the module followed by `module::name`. It does not see
+  a method call, trait dispatch through a `cfg(test)` impl, an associated item called through a
+  `use`d type name, or a module imported under another name.
+- Impl coherence is not checked at all (see "Then the split").

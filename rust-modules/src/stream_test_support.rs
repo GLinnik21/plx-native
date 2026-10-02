@@ -15,18 +15,19 @@ impl LoopbackReply {
     }
 }
 
-/// One `GET /x` at a loopback port, composed the way the control plane composes it: open, read the
-/// status BEFORE anything else (a non-2xx open has already closed the socket, and the code survives
-/// on the struct), drain the body, report a short one, close. `None` when no status line ever
-/// arrived — a transport failure, which must not wear a status of 0.
+/// One `GET /x` at a loopback port through this module's own primitives, in the order the
+/// control plane calls them: open, read the status BEFORE anything else (a non-2xx open has
+/// already closed the socket, and the code survives on the struct), drain the body, report a
+/// short one, close. The status is handed back raw: `0` is what `http_open`'s parser leaves when
+/// no `HTTP/1.x NNN` line ever arrived.
 ///
 /// These assertions used to call `stream::http_get`, and they outlived it: what they grade —
-/// that a chunked body is decoded on the READ path, and that a truncated one still reaches its
-/// caller — is a property of `http_open`/`http_read`, not of the wrapper that wrapped them. They
-/// then graded it through `crate::http`'s plaintext arm. That arm sits above this layer, so the
-/// same composition (`Connection: close`, status first, read to the end, `note_short_body`, close)
-/// is restated here against this module's own primitives.
-pub(super) fn loopback_get(port: u16) -> Option<LoopbackReply> {
+/// that a chunked body is decoded on the READ path, that a truncated one still reaches its caller,
+/// that a refused open still leaves the server's code readable — is a property of
+/// `http_open`/`http_read`, not of the wrapper that wrapped them. What the production composition
+/// above this layer makes of the same four sockets (`crate::http`'s plaintext arm: a `0` becomes
+/// `None`, a 401 stays a response) is graded against a real socket in `http`'s own tests.
+pub(super) fn loopback_get(port: u16) -> LoopbackReply {
     let host = std::ffi::CString::new("127.0.0.1").unwrap();
     let path = std::ffi::CString::new("/x").unwrap();
     let extra = std::ffi::CString::new("Connection: close\r\n").unwrap();
@@ -58,7 +59,7 @@ pub(super) fn loopback_get(port: u16) -> Option<LoopbackReply> {
         note_short_body("GET", "/x", &hs, recv_err);
     }
     http_close(&mut *hs);
-    (status != 0).then_some(LoopbackReply { status, body })
+    LoopbackReply { status, body }
 }
 
 /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;

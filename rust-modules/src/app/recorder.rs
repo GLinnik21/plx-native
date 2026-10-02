@@ -123,13 +123,6 @@ impl LogicalState for RecordedInit<'_> {
     fn probe(&self, out: &mut String) { self.app.probe(out); }
 }
 
-impl crate::pms::initial::Sink for Canon {
-    fn u32(&mut self, v: u32) { Canon::u32(self, v); }
-    fn u64(&mut self, v: u64) { Canon::u64(self, v); }
-    fn boolean(&mut self, v: bool) { Canon::bool(self, v); }
-    fn text(&mut self, v: &str) { Canon::str(self, v); }
-}
-
 #[cfg(test)]
 fn initial_header(app: &AppInit, state: &crate::pms::PmsState, adapter: &crate::pms::PmsAdapter) -> Header {
     let hubs = crate::pms::initial::Initial::capture(state, adapter);

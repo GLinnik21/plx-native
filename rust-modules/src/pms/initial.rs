@@ -58,13 +58,25 @@ fn source_state<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error>
     Ok(n)
 }
 
-/// Data-layer traversal, not a dependency on UI's Canon. The application adapts its canonical
-/// writer to these scalar operations. Never hash JSON, host-sized integers, or resource pointers.
+/// Data-layer traversal: the scalar operations [`Initial::write`] needs, so a test can count them
+/// (`Words`) and the recorder can hash them. Never hash JSON, host-sized integers, or resource
+/// pointers.
 pub(crate) trait Sink {
     fn u32(&mut self, v: u32);
     fn u64(&mut self, v: u64);
     fn boolean(&mut self, v: bool);
     fn text(&mut self, v: &str);
+}
+
+/// The recorder's canonical writer (`app::recorder`, `app::bootstrap`). The impl lives HERE, beside
+/// the trait: `Canon` is the `machine` layer's, which this layer may name, while an impl written
+/// in `app` — whose layer owns neither the trait nor the type — would break the orphan rule
+/// (E0117) once the layers are crates.
+impl Sink for crate::ui::machine::Canon {
+    fn u32(&mut self, v: u32) { crate::ui::machine::Canon::u32(self, v); }
+    fn u64(&mut self, v: u64) { crate::ui::machine::Canon::u64(self, v); }
+    fn boolean(&mut self, v: bool) { crate::ui::machine::Canon::bool(self, v); }
+    fn text(&mut self, v: &str) { crate::ui::machine::Canon::str(self, v); }
 }
 
 impl Initial {

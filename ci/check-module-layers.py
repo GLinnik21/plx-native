@@ -16,8 +16,14 @@ module makes to another out of the Rust tokens. This script fails when
 So the module graph can get no more cyclic than it is today, and each entry removed from the
 allowlist is a step of docs/module-layers.md's plan landing. Exit 0 green, 1 on any failure.
 
+Not a failure, but counted on the green line and listed by `--report`: a `cfg(test)` reference
+that names a test-only module or `cfg(test)` item of ANOTHER layer. It is a legal name today, and
+after the split it is a name the dependent's tests cannot see, because a dependency is never built
+`cfg(test)`: each one needs a `test-support` feature on the provider, or the test moves.
+
     ci/check-module-layers.py              # the gate (make check-python runs it)
-    ci/check-module-layers.py --report     # the remaining debt, grouped by layer edge
+    ci/check-module-layers.py --report     # the remaining debt, grouped by layer edge, and the
+                                           # cfg(test)-only items other layers' tests name
     ci/check-module-layers.py --cycles     # strongly connected components of the module graph
     ci/check-module-layers.py --prune      # rewrite the allowlist without its stale entries
 """
@@ -95,6 +101,18 @@ def violations(crate, layers):
     return found
 
 
+def test_support(crate, layers):
+    """{provider layer: {item label: [Ref...]}} for every `cfg(test)` reference that names a
+    test-only module or `cfg(test)` item of a layer other than its own (`Crate.test_item_refs`)."""
+    found = collections.defaultdict(lambda: collections.defaultdict(list))
+    for ref, label, provider in crate.test_item_refs():
+        source, target = layers.member_of(ref.source), layers.member_of(provider)
+        if source is None or target is None: continue
+        a, b = layers.members[source], layers.members[target]
+        if a != b: found[b][label].append(ref)
+    return found
+
+
 def config_errors(crate, layers):
     errors = list(layers.errors)
     for member in layers.members:
@@ -135,7 +153,7 @@ def describe(refs, limit=4):
     return shown + (f', +{len(refs) - limit} more' if len(refs) > limit else '')
 
 
-def report(crate, layers, found, allow):
+def report(crate, layers, found, allow, support):
     by_edge = collections.defaultdict(list)
     for (file, member), refs in found.items():
         source = layers.members[layers.member_of(refs[0].source)]
@@ -150,17 +168,35 @@ def report(crate, layers, found, allow):
         target = layers.members[layers.member_of(refs[0].target)]
         print(f'[{source}] -> {member} [{target}]: {len(refs)} refs in {len(rows)} files ({", ".join(steps)})')
         print('    ' + ', '.join(f'{k} x{v}' for k, v in items.most_common(6)))
-    # A layer can become its own crate once neither it nor anything below it names upward.
+    items = sum(len(labels) for labels in support.values())
+    refs = sum(len(r) for labels in support.values() for r in labels.values())
+    print(f'\ncfg(test)-only items named from another layer\'s tests: {items} items, {refs} references.'
+          f'\nEach needs a `test-support` feature on its layer\'s crate, or the test that names it moves:')
+    for layer in layers.order:
+        labels = support.get(layer)
+        if not labels: continue
+        print(f'[{layer}] {len(labels)} items')
+        for label, rs in sorted(labels.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            users = sorted({layers.members[layers.member_of(r.source)] for r in rs}, key=layers.order.index)
+            print(f'    {label} x{len(rs)} from {" ".join(users)}')
+    # A layer can become its own crate once neither it nor anything below it names upward, and no
+    # other layer's tests name a cfg(test) item of it or of anything below it.
     blocked = collections.Counter(layers.members[layers.member_of(refs[0].source)] for refs in found.values())
-    print('\nextractable as a crate (no entry here or in any layer it uses, transitively):')
+    print('\nextractable as a crate (no entry here or in any layer it uses, transitively; and no cfg(test)\n'
+          'item of those layers named from another layer\'s tests):')
     for layer in layers.order:
         below, pending = set(), [layer]
         while pending:
             for used in layers.uses[pending.pop()]:
                 if used not in below: below.add(used); pending.append(used)
         waiting = blocked[layer] + sum(blocked[b] for b in below)
-        print(f'    {layer:10} ' + ('ready' if not waiting else
-              f'{blocked[layer]} own entr{"y" if blocked[layer] == 1 else "ies"}, {waiting - blocked[layer]} below'))
+        tests = sum(len(support.get(b, ())) for b in below | {layer})
+        reasons = []
+        if waiting:
+            reasons.append(f'{blocked[layer]} own entr{"y" if blocked[layer] == 1 else "ies"}, {waiting - blocked[layer]} below')
+        if tests:
+            reasons.append(f'{tests} cfg(test) item{"" if tests == 1 else "s"} named across layers, here or below')
+        print(f'    {layer:10} ' + ('; '.join(reasons) or 'ready'))
 
 
 def main(argv=None):
@@ -181,6 +217,7 @@ def main(argv=None):
         print(f'::error::check-module-layers: {error}')
         return 1
     found = violations(crate, layers)
+    support = test_support(crate, layers)
     declared, allow, malformed = read_allowlist(args.allow)
 
     if args.cycles:
@@ -201,7 +238,7 @@ def main(argv=None):
             print(f'{label}: ' + ('; '.join(f'{len(c)} of {len(nodes)} units: {" ".join(c)}' for c in cycles) or 'acyclic'))
         return 0
     if args.report:
-        report(crate, layers, found, allow)
+        report(crate, layers, found, allow, support)
         return 0
     if args.prune:
         kept = {key: reason for key, reason in allow.items() if key in found}
@@ -230,7 +267,8 @@ def main(argv=None):
               f'it `uses` in ci/module-layers.ini; see docs/module-layers.md for where code belongs.')
         return 1
     print(f'check-module-layers: green — {len(layers.order)} layers, {len(crate.modules)} modules, '
-          f'{len(allow)} migration entries left in {args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow}')
+          f'{len(allow)} migration entries left in {args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow}; '
+          f'{sum(len(labels) for labels in support.values())} cfg(test) items still named across layers (--report)')
     return 0
 
 

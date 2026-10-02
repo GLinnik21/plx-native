@@ -9,19 +9,19 @@ use super::classes::{FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcom
 use serde_json::{Map, Value};
 
 /// How telemetry erases the in-memory trace the player keeps for the current attempt. The trace
-/// lives in the player's shared state, which this layer cannot name, so the player installs the
-/// eraser the first time it arms a trace (`player::report::requested`). Unset, there is no trace to
-/// erase: nothing is retained before that first attempt arms one.
+/// lives in the player's shared state, which this layer cannot name, so the player's eraser is
+/// installed at boot (`player::report::install_trace_eraser`, from `app::enter_application`),
+/// before this layer first loads a decision and before anything can play. Not when the first full
+/// attempt arms a trace: a failed detail-page preview seals a trace without ever arming one.
 static CLEAR_ERROR_TRACE: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 
-/// Register the function [`clear_error_trace`] calls. The first registration wins; the player
-/// registers the same function every time.
+/// Register the function [`clear_error_trace`] calls. The first registration wins.
 pub(crate) fn install_error_trace_clear(clear: fn()) {
     let _ = CLEAR_ERROR_TRACE.set(clear);
 }
 
 /// Forget the in-memory playback trace immediately, as error reporting is withdrawn or the account
-/// that consented ends. A no-op until the player has installed its eraser.
+/// that consented ends. A no-op until the eraser is installed, which a booted app does first.
 pub(crate) fn clear_error_trace() {
     if let Some(clear) = CLEAR_ERROR_TRACE.get() {
         clear();

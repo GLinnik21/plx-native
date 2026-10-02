@@ -11,7 +11,10 @@ modules lived in different crates, which is the question this graph exists to an
 across crates they resolve through the transitive dependency graph without a direct dependency.
 
 Each reference carries `test`: true when it sits under `cfg(test)` — a `#[cfg(test)]` item, a
-test-only module, or a file reachable only through test modules. `cfg` predicates other than
+test-only module, or a file reachable only through test modules. `Crate.test_items` records the
+items that are themselves `cfg(test)` inside a module that is not, and `test_item_refs` the
+references that name one of those or a test-only module: what a dependent crate's tests could no
+longer see once the two sides are separate crates, since a dependency is never built `cfg(test)`. `cfg` predicates other than
 `test` count as possibly-on, so the graph is the UNION of every feature configuration: a cycle in
 any configuration is a cycle.
 
@@ -45,6 +48,8 @@ STRING = '"'  # the text of every string-literal token; its value is in `Tokens.
 BLOCK_ITEMS = frozenset({'fn', 'mod', 'impl', 'trait', 'struct', 'enum', 'union', 'macro_rules'})
 # Words that may precede the keyword naming an item.
 QUALIFIERS = frozenset({'pub', 'crate', 'const', 'async', 'unsafe', 'extern', 'default', 'safe'})
+# The items a `#[cfg(test)]` can hide that a path can name, recorded in `Crate.test_items`.
+NAMED_ITEMS = frozenset({'fn', 'struct', 'enum', 'union', 'trait', 'type', 'const', 'static'})
 # The token before a `use` that makes it a use DECLARATION (`impl Trait + use<'a>` is not one).
 USE_FOLLOWS = frozenset({';', '{', '}', ']', ')', 'pub', None})
 OPENERS = {'(': ')', '[': ']', '{': '}'}
@@ -154,6 +159,9 @@ class Tokens:
 
 
 Ref = collections.namedtuple('Ref', 'source target file line test kind path')
+# A `cfg(test)` item of a module that is not test-only. `owner` is None for a module-level item,
+# else the type or trait whose impl/trait block holds it (`Type::item` is how a path names it).
+TestItem = collections.namedtuple('TestItem', 'module owner name file line')
 
 
 class Crate:
@@ -167,6 +175,7 @@ class Crate:
         self._exported = {}        # macro name -> defining module, for `#[macro_export]`
         self._defined = []         # (macro name, defining module) for every `macro_rules!`
         self._macro_use = set()    # modules declared `#[macro_use] mod …;`
+        self.test_items = {}       # (module, owner, name) -> TestItem
         done = set()
         queue = collections.deque([(self.root / entry, (), self.root, self.root, False)])
         while queue:
@@ -198,6 +207,52 @@ class Crate:
 
     def rel(self, path):
         return Path(os.path.relpath(path, self.root)).as_posix()
+
+    def test_item_refs(self):
+        """[(Ref, label, provider module)] for every `cfg(test)` reference that names a test-only
+        module or a `test_items` entry: by path (`crate::net::clear()`, `use crate::pms::movie`,
+        `crate::pms::HubsSnapshot::empty_for_test()`), or through a `use` of its module — a glob
+        (`use crate::gfx::backdrop::*` and a bare `commit`) or the module itself
+        (`use crate::plex::session;` and `session::reads_for_test()`), where the file's tokens are
+        searched for the module's `cfg(test)` item names. The label is the module (`testlock`) or
+        the item. Not seen: a method call, trait dispatch through a `cfg(test)` impl, an associated
+        item called through a `use`d type name, and a module imported under another name."""
+        module_items = collections.defaultdict(set)  # module -> its module-level cfg(test) names
+        for module, owner, item in self.test_items:
+            if owner is None: module_items[module].add(item)
+        tokens = {}
+
+        def file_tokens(rel):
+            if rel not in tokens: tokens[rel] = Tokens((self.root / rel).read_text()).text
+            return tokens[rel]
+
+        found = []
+        for ref in self.refs:
+            if not ref.test: continue
+            info = self.modules.get(ref.target)
+            if info is not None and info['test']:
+                found.append((ref, name(ref.target), ref.target))
+                continue
+            segments = ref.path.split('::')
+            if ref.kind == 'macro' or tuple(segments[:len(ref.target)]) != ref.target: continue
+            rest = segments[len(ref.target):]
+            if ref.kind == 'use' and rest in ([], ['*']) and ref.target in module_items:
+                text = file_tokens(ref.file)
+                if rest:
+                    named = module_items[ref.target] & set(text)
+                else:
+                    alias = ref.target[-1]
+                    named = {text[k + 2] for k in range(len(text) - 2)
+                             if text[k] == alias and text[k + 1] == '::' and text[k + 2] in module_items[ref.target]}
+                found.extend((ref, f'{name(ref.target)}::{item}', ref.target) for item in sorted(named))
+                continue
+            keys = [((ref.target, None, rest[0]), 1)] if rest else []
+            if len(rest) > 1: keys.append(((ref.target, rest[0], rest[1]), 2))
+            for key, used in keys:
+                if key in self.test_items:
+                    found.append((ref, '::'.join(segments[:len(ref.target) + used]), ref.target))
+                    break
+        return found
 
     def _declare(self, module, test):
         info = self.modules.get(module)
@@ -264,17 +319,20 @@ class Crate:
         def item_end(j, limit):
             """Index of the last token of the item (or statement, field, arm) starting at `j`."""
             j = skip_attributes(j)
-            block, decided, k = False, False, j
+            block, decided, k = False, None, j
             while k < limit:
                 t = text[k]
                 if t == '(' or t == '[': k = group_end(k) + 1; continue
                 if t == '{':
-                    if block or not decided: return group_end(k)
+                    if block or decided is None: return group_end(k)
                     k = group_end(k) + 1; continue
+                # A macro-invocation item (`thread_local! { … }`) ends with its brace group, and
+                # takes no `;` after it.
+                if t == '!' and decided == k - 1 and at(k + 1) == '{': return group_end(k + 1)
                 if t == ';' or t == ',': return k
                 if t in CLOSERS: return k - 1
-                if not decided and t not in QUALIFIERS and WORD.match(t):
-                    decided, block = True, t in BLOCK_ITEMS
+                if decided is None and t not in QUALIFIERS and WORD.match(t):
+                    decided, block = k, t in BLOCK_ITEMS
                 k += 1
             return limit - 1
 
@@ -299,7 +357,7 @@ class Crate:
                             if pos < len(seq) and seq[pos] == ',': pos += 1
                         return pos + 1
                     if t == '*':
-                        leaves.append(path); return pos + 1
+                        leaves.append(path + ['*']); return pos + 1  # resolves to `path`'s module
                     if t == ',' or t == '}':
                         leaves.append(path); return pos
                     if t == 'as':
@@ -311,6 +369,76 @@ class Crate:
                 return pos
             tree(0, [])
             return [leaf for leaf in leaves if leaf]
+
+        enclosing = []  # the innermost `{` holding each token, built on first use
+
+        def holder(i):
+            if not enclosing:
+                stack = []
+                for k, t in enumerate(text):
+                    if t == '}' and stack: stack.pop()
+                    enclosing.append(stack[-1] if stack else None)
+                    if t == '{': stack.append(k)
+            return enclosing[i]
+
+        def block_owner(o):
+            """What the `{` at `o` opens: ('mod', None) for an inline module, ('impl', name) for an
+            impl or trait body (the self type, or the trait), else (None, None) — a fn body, a
+            struct's fields, an expression."""
+            j = o - 1
+            while j >= 0 and text[j] not in (';', '}', '{'): j -= 1
+            head = text[j + 1:o]
+            for k, t in enumerate(head):
+                if t == 'mod': return 'mod', None
+                if t in ('fn', 'struct', 'enum', 'union'): return None, None
+                if t == 'trait': return 'impl', head[k + 1] if k + 1 < len(head) else None
+                if t == 'impl':
+                    tail = head[k + 1:]
+                    if tail[:1] == ['<']:
+                        depth = 0
+                        for m, u in enumerate(tail):
+                            depth += (u == '<') - (u == '>')
+                            if depth == 0: tail = tail[m + 1:]; break
+                    if 'for' in tail: tail = tail[tail.index('for') + 1:]
+                    owner = None
+                    for u in tail:
+                        if u in ('<', 'where'): break
+                        if WORD.match(u) and u not in ('dyn', 'mut', 'crate', 'super', 'self'): owner = u
+                    return 'impl', owner
+            return None, None
+
+        def note_test_item(j, mod):
+            """Record the `cfg(test)` item starting at `j` in a module that is not test-only."""
+            o = holder(j)
+            kind, owner = ('mod', None) if o is None else block_owner(o)
+            if kind is None: return
+            k = item_start(j)
+            while True:
+                t = at(k)
+                if t in ('async', 'unsafe', 'default', 'safe'): k += 1
+                elif t == 'const' and at(k + 1) in ('fn', 'unsafe', 'async', 'extern'): k += 1
+                elif t == 'extern': k += 2 if at(k + 1) == STRING else 1
+                else: break
+            t = at(k)
+            if t == 'static' and at(k + 1) == 'mut': k += 1
+            if t in NAMED_ITEMS and k + 1 < n and WORD.match(text[k + 1]):
+                key = (mod, owner, text[k + 1])
+                self.test_items.setdefault(key, TestItem(mod, owner, text[k + 1], rel, tok.line(k)))
+            elif t == 'impl' and owner is None:
+                # A whole `#[cfg(test)] impl` block: each item directly in its body.
+                body = k
+                while body < n and text[body] != '{':
+                    body = group_end(body) + 1 if text[body] in ('(', '[') else body + 1
+                if body >= n: return
+                _, impl_owner = block_owner(body)
+                m, stop_at = body + 1, group_end(body)
+                while m < stop_at:
+                    u = text[m]
+                    if u in OPENERS: m = group_end(m) + 1; continue
+                    if u in ('fn', 'const', 'type') and m + 1 < stop_at and WORD.match(text[m + 1]):
+                        key = (mod, impl_owner, text[m + 1])
+                        self.test_items.setdefault(key, TestItem(mod, impl_owner, text[m + 1], rel, tok.line(m)))
+                    m += 1
 
         # Only these tokens can start anything the walk records; everything else is stepped over
         # in bulk. In the crate root ANY word may head a path (a top-level module is in scope
@@ -343,6 +471,7 @@ class Crate:
                         scopes.append((end, mod, mod_dir, attr_base, True))
                         if end == n: self._declare(mod, True)
                     else:
+                        if not test: note_test_item(stop + 1, mod)
                         scopes.append((item_end(stop + 1, scopes[-1][0]), mod, mod_dir, attr_base, True))
                 elif not inner and len(attr) == 3 and attr[:2] == ['path', '='] and attr[2] == STRING:
                     k = item_start(stop + 1)

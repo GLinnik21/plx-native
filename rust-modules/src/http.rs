@@ -894,6 +894,83 @@ mod tests {
         assert!(!r(500).ok());
     }
 
+    /// Answer ONE request with `resp` verbatim, then close; hands back the bound port and the
+    /// server thread to join. Local to these tests because `stream`'s own fixture is `cfg(test)`
+    /// of a lower layer, which this one's tests will not see once the layers are crates.
+    fn one_shot_server(resp: &'static [u8]) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().expect("address").port();
+        let h = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = srv.accept() {
+                // Drain the request so the client's send() completes; it arrives in one write.
+                let mut req = [0u8; 2048];
+                let _ = s.read(&mut req);
+                let _ = s.write_all(resp);
+            }
+        });
+        (port, h)
+    }
+
+    /// `GET /x` at a loopback port through [`request`], the door the control plane uses.
+    fn loopback(port: u16) -> Option<Reply> {
+        request(&Origin::http("127.0.0.1", port as i32), "/x", Method::Get, &[], None)
+    }
+
+    /// The plaintext arm's composition, end to end against a real socket: the stream primitives'
+    /// own tests grade what `http_open`/`http_read` report, and these grade what this arm makes of
+    /// it. A chunked body (spelled with no space after the colon) reaches the caller decoded.
+    #[test]
+    fn the_plaintext_arm_hands_back_a_chunked_body_decoded() {
+        let (port, h) = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n",
+        );
+        let r = loopback(port).expect("a 200 is a response");
+        h.join().unwrap();
+        assert_eq!(
+            (r.status, r.body.as_slice()),
+            (200, &b"abcdefg"[..]),
+            "the chunk framing was left in the body"
+        );
+    }
+
+    /// A server that promises 10 bytes and closes after 4 still hands the caller those 4 bytes as
+    /// a response. Reporting the short body (`note_short_body`) is observability only; what the
+    /// data layer does with a truncated body is decided where it was.
+    #[test]
+    fn the_plaintext_arm_hands_back_a_truncated_body_as_a_response() {
+        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd");
+        let r = loopback(port).expect("a truncated body is still a body — this must not become None");
+        h.join().unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (200, &b"abcd"[..]));
+    }
+
+    /// **A non-2xx is a RESPONSE.** `http_open` refuses a 401 through its return value and leaves
+    /// the code on the stream; this arm reads it before anything else, so the caller sees the
+    /// server's answer rather than a transport failure (the collapse `plex::probe::Outcome` exists
+    /// to avoid).
+    #[test]
+    fn the_plaintext_arm_hands_back_a_401_as_a_response() {
+        let (port, h) = one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+        let r = loopback(port).expect("the server ANSWERED — that is not a transport failure");
+        h.join().unwrap();
+        assert_eq!(r.status, 401);
+        assert!(!r.ok(), "…and it is still not a success");
+    }
+
+    /// Nothing listening leaves the stream's status at `0`, and this arm turns that into `None`:
+    /// a status no server sent must not reach a caller as a response (`classify` would score it
+    /// `Unreachable` by luck rather than by decision, and `Reply::ok` would read it as a refusal).
+    #[test]
+    fn the_plaintext_arm_answers_none_when_nothing_answers() {
+        // Bind and drop, so the port is one nothing is listening on any more.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("address").port()
+        };
+        assert_eq!(loopback(port), None);
+    }
+
     /// The JSON Accept line carries no CRLF — each transport adds its own framing, and a stray one
     /// here would be a header injection into the plaintext request head and a malformed slist
     /// entry for curl.

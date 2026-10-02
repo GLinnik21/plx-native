@@ -123,6 +123,49 @@ class Resolution(unittest.TestCase):
             '    #[doc = "crate::c::not_a_path"] y: u8 }']), 'b.rs': '', 'c.rs': ''})
         self.assertEqual(found, {('a', 'b', False)})
 
+    def test_a_cfg_test_brace_macro_item_ends_at_its_group(self):
+        # `thread_local! { … }` takes no `;`: the cfg(test) region must stop at its brace group,
+        # not run on through the production items after it.
+        found = refs({'lib.rs': LIB, 'a.rs': '\n'.join([
+            '#[cfg(test)]\nthread_local! { static X: u8 = 0; }',
+            '#[cfg(test)] mod t { fn x() { crate::c::y(); } }',
+            'fn after() { crate::b::z(); }']), 'b.rs': '', 'c.rs': ''})
+        self.assertEqual(found, {('a::t', 'c', True), ('a', 'b', False)})
+
+    def test_cfg_test_items_of_production_modules_are_recorded_with_their_owner(self):
+        with Tree({'lib.rs': LIB, 'b.rs': '', 'c.rs': '', 'a.rs': '\n'.join([
+                '#[cfg(test)] pub(crate) fn helper() {}',
+                '#[cfg(test)] pub(crate) static mut FLAG: u8 = 0;',
+                'pub struct S { #[cfg(test)] field: u8 }',
+                'impl S { pub fn real() {} #[cfg(test)] pub(crate) const fn fixture() -> u8 { 0 } }',
+                '#[cfg(test)] impl crate::b::Trait for S { fn shown(&self) {} }',
+                'fn body() { #[cfg(test)] fn local() {} }',
+                'mod inner { #[cfg(test)] pub fn deep() {} }',
+                '#[cfg(test)] mod tests { #[cfg(test)] fn hidden() {} }'])}) as tree:
+            crate = module_graph.Crate(tree.root)
+        self.assertEqual(set(crate.test_items), {
+            (('a',), None, 'helper'), (('a',), None, 'FLAG'), (('a',), 'S', 'fixture'),
+            (('a',), 'S', 'shown'), (('a', 'inner'), None, 'deep')})
+
+    def test_references_to_cfg_test_items_by_path_glob_and_module(self):
+        files = {'lib.rs': LIB, 'b.rs': '', 'c.rs': '\n'.join([
+            'pub fn real() {} pub struct S;',
+            '#[cfg(test)] pub fn helper() {}',
+            'impl S { #[cfg(test)] pub fn fixture() {} }',
+            '#[cfg(test)] pub mod support { pub fn s() {} }']),
+            'a.rs': '\n'.join([
+                'fn production() { crate::c::real(); }',
+                '#[cfg(test)] mod by_path { fn t() { crate::c::helper(); crate::c::S::fixture(); crate::c::real(); } }',
+                '#[cfg(test)] mod by_module { use crate::c::support::s; }',
+                '#[cfg(test)] mod by_glob { use crate::c::*; fn t() { helper(); } }',
+                '#[cfg(test)] mod by_alias { use crate::c; fn t() { c::helper(); c::real(); } }'])}
+        with Tree(files) as tree:
+            crate = module_graph.Crate(tree.root)
+            found = sorted((module_graph.name(r.source), label) for r, label, _ in crate.test_item_refs())
+        self.assertEqual(found, [('a::by_alias', 'c::helper'), ('a::by_glob', 'c::helper'),
+                                 ('a::by_module', 'c::support'), ('a::by_path', 'c::S::fixture'),
+                                 ('a::by_path', 'c::helper')])
+
     def test_precise_capturing_use_is_not_a_use_declaration(self):
         found = refs({'lib.rs': LIB, 'a.rs': "fn f<'a>(x: &'a u8) -> impl Sized + use<'a> { crate::b::g(x) }",
                       'b.rs': '', 'c.rs': ''})
@@ -208,6 +251,22 @@ class Gate(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('b/core.rs names b ([high]), which [low] may not use', out)
         self.assertNotIn('b.rs names a', out)
+
+    def test_cfg_test_items_named_across_layers_are_reported_not_failed(self):
+        files = dict(self.CLEAN, **{
+            'c.rs': '#[cfg(test)] pub fn helper() {} #[cfg(test)] pub mod support {}',
+            'b.rs': '#[cfg(test)] pub fn own() {}',
+            'a.rs': '#[cfg(test)] mod t { fn x() { crate::c::helper(); crate::b::own(); } use crate::c::support; }'})
+        code, out, _ = self.run_gate(files, allow='# count: 0\n')
+        self.assertEqual(code, 0, out)
+        self.assertIn('2 cfg(test) items still named across layers', out)
+        code, out, _ = self.run_gate(files, LAYERS, '# count: 0\n', '--report')
+        self.assertEqual(code, 0, out)
+        self.assertIn('[low] 2 items\n    c::helper x1 from high\n    c::support x1 from high\n', out)
+        self.assertNotIn('b::own', out, 'a same-layer cfg(test) name is not a split hazard')
+        self.assertIn('low        2 cfg(test) items named across layers, here or below', out)
+        code, out, _ = self.run_gate(self.CLEAN, LAYERS, '# count: 0\n', '--report')
+        self.assertIn('low        ready', out)
 
     def test_layer_config_errors_fail(self):
         for layers, message in [

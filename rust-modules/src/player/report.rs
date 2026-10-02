@@ -279,7 +279,7 @@ fn finish_trace(event: TraceEvent) -> Vec<TraceStep> {
 }
 
 /// Forget the in-memory error trace immediately when error reporting is withdrawn. Telemetry
-/// reaches this through the hook [`requested`] installs
+/// reaches this through the hook [`install_trace_eraser`] registers
 /// (`telemetry::playback::clear_error_trace`); the app's own call sites name it directly.
 pub(crate) fn clear_error_trace() {
     super::SHARED
@@ -287,6 +287,18 @@ pub(crate) fn clear_error_trace() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+}
+
+/// **Hand telemetry this trace's eraser.** Withdrawal and sign-out (`telemetry::transition`) and
+/// the boot load (`telemetry::activate_initial`) erase the trace through
+/// `telemetry::playback::clear_error_trace`, which cannot name the player and does nothing until
+/// this runs. `app::enter_application` runs it
+/// on every boot, before telemetry loads and before anything can play. Not from [`requested`]: a
+/// detail-page preview never passes it, yet a failed preview still seals a `Failed` step here
+/// ([`tick`] -> [`finish_trace`], whatever the generation), so an eraser installed by the first
+/// full attempt would leave that trace beyond a withdrawal's reach.
+pub(crate) fn install_trace_eraser() {
+    crate::telemetry::playback::install_error_trace_clear(clear_error_trace);
 }
 
 pub(crate) fn note_seek_for(generation: u32) {
@@ -430,10 +442,6 @@ fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
 pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex::ServerId) -> u32 {
-    // Hand telemetry the means to erase this trace on withdrawal. Nothing is ever retained before
-    // the first attempt arms the trace below, so installing here — once, idempotently, before
-    // anything can be written — leaves no window in which a withdrawal could miss it.
-    crate::telemetry::playback::install_error_trace_clear(clear_error_trace);
     resolve_replaced_attempt(ps);
     let id = new_attempt_id();
     let at = now_ms();
@@ -1340,6 +1348,41 @@ mod tests {
             trace.steps.is_empty(),
             "withdrawing consent must forget the trace in memory"
         );
+    }
+
+    /// **A preview's failure is erased by withdrawal too.** A detail-page preview never passes
+    /// [`requested`] (`trace_generation` stays 0), yet `tick` still seals its `Failed` step into
+    /// the shared trace whatever the generation. Telemetry erases that trace on withdrawal and
+    /// sign-out through `telemetry::playback::clear_error_trace`, a no-op while unset, so the
+    /// eraser cannot be installed by the first full attempt: a viewer whose only playback was a
+    /// failed preview would keep that trace past a withdrawal, and a later failure would send it.
+    /// [`install_trace_eraser`] is what `app::enter_application` runs at boot.
+    #[test]
+    fn a_failed_preview_trace_is_erased_through_telemetrys_hook() {
+        use crate::telemetry::consent::{self, Consent};
+        let _g = crate::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        clear_error_trace();
+
+        let sealed = finish_trace(TraceEvent::Failed {
+            kind: crate::telemetry::classes::FailureClass::OriginalRollback,
+        });
+        install_trace_eraser();
+        crate::telemetry::playback::clear_error_trace();
+        let left = super::super::SHARED
+            .playback_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .step_count_for_test();
+        clear_error_trace();
+        consent::install(previous.unwrap_or_default());
+
+        assert_eq!(sealed.len(), 1, "a preview's failure is traced with no attempt armed");
+        assert_eq!(left, 0, "withdrawal left a preview's failure trace in memory");
     }
 
     #[test]
