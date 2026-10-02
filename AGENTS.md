@@ -47,12 +47,14 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   that ignores whitespace *within* a line, not one line split into three. Size a change by content
   (`git show <rev>:<path> | tr -d '[:space:]' | wc -c`, before and after); a near-zero delta means
   reflow. Then diff the symbol sets to find what actually moved.
-- **New module references only point down.** `ci/module-layers.ini` declares the crates
-  `rust-modules/src` is being split into, and `ci/check-module-layers.py` (in `make check`) fails
-  on a reference that names a layer its own layer may not use, and on a module placed in no layer.
-  Fix the reference (`docs/module-layers.md` says where code belongs and how to cut an upward
-  name) instead of adding a (file, layer) pair to `ci/allow/layers.txt`, which the migration
-  emptied (2026-10-02) and which stays empty.
+- **New module references only point down, and only the webOS port names webOS.**
+  `ci/module-layers.ini` declares the crates `rust-modules/src` is being split into, and
+  `ci/check-module-layers.py` (in `make check`) fails on a reference that names a layer its own
+  layer may not use, on a module placed in no layer, and on a reference from outside
+  `[port webos]` to `webos`, `keymanager`, `system` or `player::ffi`. Fix the reference
+  (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
+  adding a (file, member) pair to `ci/allow/layers.txt`, which holds only step L15's port entries
+  and only shrinks.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,

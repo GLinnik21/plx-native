@@ -10,6 +10,10 @@ module makes to another out of the Rust tokens. This script fails when
   * a module of the crate belongs to no layer (a new top-level module must be placed);
   * a reference — production or `cfg(test)` — names a layer its own layer does not `use`, and
     ci/allow/layers.txt has no entry for that (file, member) pair;
+  * a reference from outside a PORT names one of its members, with no entry either. A
+    `[port <name>]` section is not a layer: its members stay placed in their layers, and the
+    port fences one platform's code off from the rest (docs/module-layers.md, step L15). Its
+    entries do not hold up any layer's extraction;
   * an allowlist entry no longer matches any such reference (the list only shrinks), or the
     list's `# count:` line disagrees with its entries.
 
@@ -22,8 +26,9 @@ after the split it is a name the dependent's tests cannot see, because a depende
 `cfg(test)`: each one needs a `test-support` feature on the provider, or the test moves.
 
     ci/check-module-layers.py              # the gate (make check-python runs it)
-    ci/check-module-layers.py --report     # the remaining debt, grouped by layer edge, and the
-                                           # cfg(test)-only items other layers' tests name
+    ci/check-module-layers.py --report     # the remaining debt, grouped by layer edge and by
+                                           # port, and the cfg(test)-only items other layers'
+                                           # tests name
     ci/check-module-layers.py --cycles     # strongly connected components of the module graph
     ci/check-module-layers.py --prune      # rewrite the allowlist without its stale entries
 """
@@ -45,7 +50,9 @@ ALLOW_HEADER = """\
 # `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
 # crate can be split along ci/module-layers.ini; the plan step says how. It only shrinks: a fixed
 # entry fails the gate as stale until removed (`ci/check-module-layers.py --prune` does that), and
-# a new upward reference fails it until the code is fixed — not until a line is added here. The one
+# a new upward reference fails it until the code is fixed — not until a line is added here. Lines
+# are added only by a design change that re-layers modules, or declares a port, that other code
+# already names: as the change's own new step, in the same diff as the ini (step L15). The one
 # re-keying allowed: a renamed or split file takes its entries to its new path in the same diff.
 """
 
@@ -57,8 +64,23 @@ class Layers:
         parser.optionxform = str
         with open(path, encoding='utf-8') as f:
             parser.read_file(f)
-        self.order = parser.sections()
+        self.order = [s for s in parser.sections() if not s.startswith('port ')]
         self.uses, self.members, self.errors = {}, {}, []
+        # A PORT is a set of members, still placed in their layers, that nothing outside the port
+        # may name: the boundary of one platform's code (docs/module-layers.md, step L15).
+        self.ports, self.port_members = {}, {}
+        for section in parser.sections():
+            if not section.startswith('port '): continue
+            port = section[len('port '):].strip()
+            unknown = set(parser[section]) - {'members'}
+            if unknown: self.errors.append(f'[{section}] has unknown key(s) {sorted(unknown)}')
+            self.ports[port] = []
+            for member in parser[section].get('members', '').split():
+                key = tuple(member.split('::'))
+                if key in self.port_members:
+                    self.errors.append(f'{member} is listed in [port {self.port_members[key]}] and [{section}]')
+                self.ports[port].append(key)
+                self.port_members[key] = port
         for layer in self.order:
             section = parser[layer]
             unknown = set(section) - {'uses', 'members'}
@@ -84,6 +106,12 @@ class Layers:
             if module[:k] in self.members: return module[:k]
         return () if module == () and () in self.members else None
 
+    def port_of(self, module):
+        """(the longest port member prefixing `module`, its port), or None."""
+        for k in range(len(module), 0, -1):
+            if module[:k] in self.port_members: return module[:k], self.port_members[module[:k]]
+        return None
+
 
 def member_name(member):
     return module_graph.name(member)
@@ -98,6 +126,18 @@ def violations(crate, layers):
         a, b = layers.members[source], layers.members[target]
         if a != b and b not in layers.uses[a]:
             found[(f'{SRC_REL}/{ref.file}', member_name(target))].append(ref)
+    return found
+
+
+def port_violations(crate, layers):
+    """{(file, port member name): [Ref...]} for every reference into a port from outside it."""
+    found = collections.defaultdict(list)
+    for ref in crate.refs:
+        target = layers.port_of(ref.target)
+        if target is None: continue
+        source = layers.port_of(ref.source)
+        if source is not None and source[1] == target[1]: continue
+        found[(f'{SRC_REL}/{ref.file}', member_name(target[0]))].append(ref)
     return found
 
 
@@ -118,6 +158,9 @@ def config_errors(crate, layers):
     for member in layers.members:
         if member not in crate.modules:
             errors.append(f'{member_name(member)} is listed in [{layers.members[member]}] but is not a module of the crate')
+    for member, port in layers.port_members.items():
+        if member not in crate.modules:
+            errors.append(f'{member_name(member)} is listed in [port {port}] but is not a module of the crate')
     for module in sorted(crate.modules):
         if layers.member_of(module) is None:
             errors.append(f'module {member_name(module)} belongs to no layer: add it (or its top-level module) to ci/module-layers.ini')
@@ -153,7 +196,7 @@ def describe(refs, limit=4):
     return shown + (f', +{len(refs) - limit} more' if len(refs) > limit else '')
 
 
-def report(crate, layers, found, allow, support):
+def report(crate, layers, found, allow, support, ported):
     by_edge = collections.defaultdict(list)
     for (file, member), refs in found.items():
         source = layers.members[layers.member_of(refs[0].source)]
@@ -168,6 +211,21 @@ def report(crate, layers, found, allow, support):
         target = layers.members[layers.member_of(refs[0].target)]
         print(f'[{source}] -> {member} [{target}]: {len(refs)} refs in {len(rows)} files ({", ".join(steps)})')
         print('    ' + ', '.join(f'{k} x{v}' for k, v in items.most_common(6)))
+    for port, members in layers.ports.items():
+        names = {member_name(m) for m in members}
+        rows = {key: refs for key, refs in ported.items() if key[1] in names}
+        refs = [r for rs in rows.values() for r in rs]
+        production = sum(1 for r in refs if not r.test)
+        print(f'\nport {port}: {len(rows)} (file, member) entries, {len(refs)} references ({production} production) '
+              f'name {" ".join(sorted(names))} from outside the port. They do not hold up the split.')
+        by_layer = collections.defaultdict(list)
+        for (file, member), rs in rows.items():
+            by_layer[layers.members[layers.member_of(rs[0].source)]].append((file, member, rs))
+        for layer in layers.order:
+            for file, member, rs in sorted(by_layer.get(layer, ())):
+                items = collections.Counter('::'.join(r.path.split('::')[:len(r.target) + 1]) for r in rs)
+                print(f'    [{layer}] {file.removeprefix(SRC_REL + "/")} -> {member}: '
+                      + ', '.join(f'{k} x{v}' for k, v in items.most_common(4)))
     items = sum(len(labels) for labels in support.values())
     refs = sum(len(r) for labels in support.values() for r in labels.values())
     print(f'\ncfg(test)-only items named from another layer\'s tests: {items} items, {refs} references.'
@@ -217,6 +275,8 @@ def main(argv=None):
         print(f'::error::check-module-layers: {error}')
         return 1
     found = violations(crate, layers)
+    ported = port_violations(crate, layers)
+    named = set(found) | set(ported)
     support = test_support(crate, layers)
     declared, allow, malformed = read_allowlist(args.allow)
 
@@ -238,10 +298,10 @@ def main(argv=None):
             print(f'{label}: ' + ('; '.join(f'{len(c)} of {len(nodes)} units: {" ".join(c)}' for c in cycles) or 'acyclic'))
         return 0
     if args.report:
-        report(crate, layers, found, allow, support)
+        report(crate, layers, found, allow, support, ported)
         return 0
     if args.prune:
-        kept = {key: reason for key, reason in allow.items() if key in found}
+        kept = {key: reason for key, reason in allow.items() if key in named}
         write_allowlist(args.allow, kept)
         print(f'check-module-layers: pruned {len(allow) - len(kept)} stale entr(y/ies), {len(kept)} remain')
         return 0
@@ -253,8 +313,14 @@ def main(argv=None):
             source = layers.members[layers.member_of(refs[0].source)]
             target = layers.members[layers.member_of(refs[0].target)]
             errors.append(f'{file} names {member} ([{target}]), which [{source}] may not use: {describe(refs)}')
-    for key in sorted(set(allow) - set(found)):
-        errors.append(f'stale allowlist entry {key[0]}\t{key[1]} — it no longer names that layer; '
+    for key, refs in sorted(ported.items()):
+        if key not in allow and key not in found:
+            file, member = key
+            port = layers.port_of(refs[0].target)[1]
+            errors.append(f'{file} names {member} from outside [port {port}], which only the port itself may '
+                          f'name: {describe(refs)}')
+    for key in sorted(set(allow) - named):
+        errors.append(f'stale allowlist entry {key[0]}\t{key[1]} — it no longer names that layer or port; '
                       f'remove it (ci/check-module-layers.py --prune), or, if the file was renamed or '
                       f'split, move the entry to the new path')
     if declared != len(allow) + len(malformed):
@@ -264,10 +330,14 @@ def main(argv=None):
         print(f'::error::check-module-layers: {error}')
     if errors:
         print(f'check-module-layers: {len(errors)} failure(s). A reference may only name its own layer or one '
-              f'it `uses` in ci/module-layers.ini; see docs/module-layers.md for where code belongs.')
+              f'it `uses` in ci/module-layers.ini, and never a port it is outside; see docs/module-layers.md '
+              f'for where code belongs.')
         return 1
+    where = args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow
+    ports = ''.join(f', {sum(1 for key in ported if key[1] in {member_name(m) for m in members})} of them '
+                    f'into [port {port}]' for port, members in layers.ports.items())
     print(f'check-module-layers: green — {len(layers.order)} layers, {len(crate.modules)} modules, '
-          f'{len(allow)} migration entries left in {args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow}; '
+          f'{len(allow)} migration entries left in {where}{ports}; '
           f'{sum(len(labels) for labels in support.values())} cfg(test) items still named across layers (--report)')
     return 0
 

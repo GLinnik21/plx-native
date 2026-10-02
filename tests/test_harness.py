@@ -5774,9 +5774,10 @@ impl PersonOwnerGateFixture {
         # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
         # upward references that existed when the target crate graph was declared, 2026-10-02 (231),
         # less step L1's 72, which moved the event log out of lib.rs in the same change, less the
-        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. The file stays, at 0, so a
-        # new upward reference still has nowhere to hide.
-        "layers.txt": 0,
+        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
+        # declared (step L15), and the 42 (file, member) pairs that name it from outside became
+        # that step's entries: 0 + 42 = 42.
+        "layers.txt": 42,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,
