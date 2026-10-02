@@ -755,12 +755,18 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool, 
 pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
     let mode = crate::route::next_episode_mode();
+    // The data layer does not read the player: the playhead is sampled here, once, and handed in.
+    let head = crate::metadata::Playhead {
+        playing: crate::player::is_playing(ps),
+        pos_ns: crate::player::playpos_ns(),
+        dur_ns: crate::player::duration_ns(),
+    };
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker` — and only to feed
     // the Up Next countdown, so it is not even computed in the other modes.
-    let m = meta.active_marker(ps).or_else(|| {
+    let m = meta.active_marker(head).or_else(|| {
         (mode == crate::route::NextEpisodeMode::Countdown)
-            .then(|| meta.synthesized_tail_marker(ps, has_next))
+            .then(|| meta.synthesized_tail_marker(head, has_next))
             .flatten()
     });
     slot_for(m, has_next, mode)

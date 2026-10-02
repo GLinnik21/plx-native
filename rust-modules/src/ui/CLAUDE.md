@@ -135,7 +135,7 @@ can follow.
 
 | layer | may name |
 |---|---|
-| `ui/` — the LIBRARY | `crate::{gfx,text,paths,task,i18n}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
+| `ui/` — the LIBRARY | `crate::{gfx,text,paths,task,i18n,tile}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
 | `screens/` — the application's screens | `ui/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
 | `stores/` | data crates and `ui::machine` only — never `screens/` |
 | `app/` | everything |

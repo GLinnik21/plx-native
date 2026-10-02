@@ -261,9 +261,9 @@ impl CollectionHit {
     /// section + tag id carried as the second identity the page resolves by when no ratingKey is
     /// available (`plex::collections::resolve_tag`). `None` when neither identity is whole: a
     /// guess would open a page for nothing.
-    pub(crate) fn route(&self) -> Option<crate::screens::registry::ContentArg> {
+    pub(crate) fn route(&self) -> Option<crate::stores::ContentArg> {
         let by_tag = self.tag > 0 && self.item.sec > 0;
-        (!self.item.rk.is_empty() || by_tag).then(|| crate::screens::registry::ContentArg::Collection(
+        (!self.item.rk.is_empty() || by_tag).then(|| crate::stores::ContentArg::Collection(
             crate::plex::collections::CollectionRef {
                 sid: self.item.sid,
                 rk: self.item.rk.clone(),
@@ -439,9 +439,12 @@ const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 const LIMIT: i64 = 12;
 
 /// Per-shelf item cap, for the same reason `person.rs` carries one: a `CardRow` owns exactly
-/// [`crate::ui::card_row::MAX_ROW_ITEMS`] focus-scale springs and `scale(i)` clamps past the end,
+/// `ui::card_row::MAX_ROW_ITEMS` focus-scale springs and `scale(i)` clamps past the end,
 /// so an item beyond the cap would draw with the last cell's pop and never pop at all when focused.
-const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
+/// The data layer cannot name the UI library's constant, so this is [`crate::pms::MAX_SHELF_ITEMS`],
+/// the data layer's own spelling of the same number (`screens::home`'s
+/// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal).
+const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
 /// ceiling cannot leave this module quietly never asking the extra servers.

@@ -3,16 +3,8 @@
 //! watch marks. The application implements it for `pms::PmsMovie`; the widgets that draw a tile
 //! ask a `&dyn Tile` and never a Plex type, which is the boundary the layer gate (§2.1) will hold
 //! once the screens migrate. Phase 3a: `widgets::poster_mark` reads through it.
+//!
+//! The trait itself is `crate::tile::Tile`, defined in `base` so that the data layer can implement
+//! it without naming `ui` (and `ui` without naming the data layer); this is its library spelling.
 
-/// A shelf item as a tile sees it.
-pub trait Tile {
-    fn title(&self) -> &str;
-    /// The poster's `(server raw id, path)`, if the item has art.
-    fn poster(&self) -> Option<(u16, &str)>;
-    /// How far in, 0..1 — `None` when never started or finished (the resume bar's fact).
-    fn progress(&self) -> Option<f32>;
-    /// Finished (the corner tick's fact).
-    fn watched(&self) -> bool;
-    /// Never started at all — `!unwatched && !watched` is a part-watched container.
-    fn unwatched(&self) -> bool;
-}
+pub(crate) use crate::tile::Tile;

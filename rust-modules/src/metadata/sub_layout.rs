@@ -225,7 +225,7 @@ fn group_firsts(subs: &[Stream]) -> HashMap<LangGroup, i64> {
 fn sub_tracks(
     subs: &[Stream],
     offered: &[usize],
-    names: &crate::player::TrackNames,
+    names: &super::track_names::TrackNames,
 ) -> Vec<(SubTrack, LangGroup, Option<Cow<'static, str>>)> {
     let mut out: Vec<(SubTrack, LangGroup, Option<Cow<'static, str>>)> = offered
         .iter()
@@ -285,7 +285,7 @@ fn sub_tracks(
 pub(crate) fn sub_sections(
     subs: &[Stream],
     offered: &[usize],
-    names: &crate::player::TrackNames,
+    names: &super::track_names::TrackNames,
     yours: &[String],
     show_timing: bool,
 ) -> SubModel {
@@ -380,7 +380,7 @@ pub(crate) fn sub_sections(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::TrackNames;
+    use super::super::track_names::TrackNames;
 
     fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> Stream {
         Stream {

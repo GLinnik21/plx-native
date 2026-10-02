@@ -26,10 +26,10 @@
 //! - `detail_loading() -> bool`, `season_loading() -> bool` — status flags for a spinner/read-out.
 //! - `detail_request_status(sid, rk) -> Option<bool>` — the addressed detail request: `None` for
 //!   another target, `Some(true)` while pending, `Some(false)` after success or failure settles.
-//! - `active_marker(ps: &route::PlaybackSession) -> Option<Marker>`,
-//!   `synthesized_tail_marker(ps: &route::PlaybackSession, has_next: bool) -> Option<Marker>` — the
-//!   skip-segment/Up-Next window logic; both also read `player::is_playing`/`playpos_ns`/
-//!   `duration_ns` (cross-module reads, still no mutation anywhere). Two free-function neighbours,
+//! - `active_marker(head: Playhead) -> Option<Marker>`,
+//!   `synthesized_tail_marker(head: Playhead, has_next: bool) -> Option<Marker>` — the
+//!   skip-segment/Up-Next window logic; both take the playhead (`is_playing`, `playpos_ns`,
+//!   `duration_ns`, sampled by the caller — this layer reads no player state). Two free-function neighbours,
 //!   `tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker>` and `marker_at(markers: &[Marker],
 //!   pos_ms: i64) -> Option<Marker>`, take their state explicitly and stay plain `crate::metadata`
 //!   functions — no owner to borrow from.

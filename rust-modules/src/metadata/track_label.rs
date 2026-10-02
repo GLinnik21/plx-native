@@ -312,7 +312,7 @@ pub(crate) fn flags(label: &SubLabel, forced: bool, sdh: bool) -> (bool, bool) {
 /// **The one name a track row shows, from the two places a name can come from.**
 ///
 /// `pms` is `Stream.title` — what the server parsed out of the container — and `container` is what
-/// OUR demuxer read out of the same file (`player::TrackNames`, published by `ff.rs`). They are the
+/// OUR demuxer read out of the same file (`track_names::TrackNames`, published by `ff.rs`). They are the
 /// same tag seen twice, so they do not disagree in practice; the order matters for a different
 /// reason. PMS's copy exists **before playback starts** and survives a transcode, while the
 /// demuxer's only exists on direct play and only once the file is open — so the server's answer is
