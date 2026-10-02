@@ -214,8 +214,9 @@ pub(crate) use servers::{
 // rest of `timeline` is reached through `Client`'s methods and needs none).
 #[allow(unused_imports)]
 pub use timeline::{queue_index_of, QueueRow};
-// DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
-// table — normal routing and its profile read the same codec and channel limits.
+// DP_AUDIO_CODECS is defined in `devcaps`, which intersects it with the device's own codec
+// table, and re-exported here — normal routing and its profile read the same codec and channel
+// limits.
 // `DP_SUBTITLE_CODECS` / `is_dp_subtitle` are the subtitle twin: the profile's `subtitleCodec=`
 // list and route's MDE `subtitleStreamID` gate, so a selected PGS cannot be advertised in one
 // and omitted from the other.
