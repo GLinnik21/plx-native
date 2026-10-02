@@ -15,8 +15,9 @@ impl LibraryScreen {
         // empty answer keep the region.
         // Same untyped "can't reach" verdict as Home's — no typed cause here either, so the two
         // pages share the glyph.
+        let glyph = self.clock_cause().map_or(crate::ui::icons::Icon::ServerBadgeMinus, |(_, glyph)| glyph);
         let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind)
-            .page(crate::ui::icons::Icon::ServerBadgeMinus).phase(cx.tick.ms)
+            .page(glyph).phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         // The tab strip (`draw_library_controls`) stays live above a failed section's read-out —
         // a section failing is not the app failing — so the glyph is told where that chrome's
@@ -33,15 +34,27 @@ impl LibraryScreen {
         overlay
     }
 
-    /// Follow the offer for the failed source's server (`plex::grant::offers`), and take the
-    /// question down once the read-out it was asked from no longer asks about that server.
-    pub(super) fn watch_plaintext<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+    /// **The clock reason and glyph this read-out shows, if any** — the ONE rule, read by the text
+    /// and the glyph alike: only a Failed read-out, and only when no plaintext offer holds the
+    /// reason slot (that cause is the one the person can act on). From the held
+    /// [`ClockWatch`](super::super::clock_readout::ClockWatch), so a frame's draw and hit rect agree.
+    fn clock_cause(&self) -> Option<(&'static CStr, crate::ui::icons::Icon)> {
+        if self.readout != Readout::Failed || self.plaintext.verdict().is_some() { return None; }
+        self.clock.reason()
+    }
+
+    /// Follow the offer for the failed source's server (`plex::grant::offers`) and the clock fact
+    /// about that same server (`net::keypin::blocked_for`), and take the question down once the
+    /// read-out it was asked from no longer asks about that server. `true` when what the read-out
+    /// shows changed, so the caller damages the frame (the reason line moves the action row).
+    pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
         let machine = (self.readout == Readout::Failed)
             .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
             .flatten()
             .map(|client| client.machine_id());
-        self.plaintext.refresh(machine, Near::Only);
+        let offer_moved = self.plaintext.refresh(machine, Near::Only);
+        let clock_moved = self.clock.refresh(machine);
         if self.plaintext_alert.is_open()
             && !(self.readout == Readout::Failed
                 && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
@@ -49,6 +62,7 @@ impl LibraryScreen {
         {
             self.plaintext_alert.withdraw();
         }
+        offer_moved || clock_moved
     }
 
     pub(super) fn status_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Rect> {
@@ -76,7 +90,11 @@ impl LibraryScreen {
                 let reason = match self.plaintext.verdict() {
                     Some(verdict) => Some(crate::auth::plaintext_copy(Some(verdict),
                         crate::auth::ReadoutSurface::SignedIn).into_owned()),
-                    None => owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)),
+                    // else a wrong clock, then who shares the server.
+                    None => match self.clock_cause() {
+                        Some((reason, _)) => Some(reason.to_string_lossy().into_owned()),
+                        None => owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)),
+                    },
                 };
                 (caption, reason)
             }

@@ -44,6 +44,7 @@ use crate::ui::widgets::{
 };
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
+use super::clock_readout::ClockWatch;
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
@@ -382,6 +383,9 @@ pub(crate) struct HomeScreen {
     /// The plaintext-only server the failure read-out speaks about, when discovery offers the
     /// question for one (`plex::grant::offers`) — not logical state: it is the grant table's.
     plaintext: OfferWatch,
+    /// Why key mode cannot help (`net::keypin::blocked`), held between ticks so a frame's draw and
+    /// its hit rects read ONE value — the reason line moves the action row.
+    clock: ClockWatch,
     /// The question, asked from the read-out's *Connect*.
     plaintext_alert: PlaintextAlert,
     hero_pop: CtlPop<HERO_NBTN>,
@@ -417,6 +421,7 @@ impl HomeScreen {
             snap: Spring::at(0.0),
             status_ms: 0.0,
             plaintext: OfferWatch::default(),
+            clock: ClockWatch::default(),
             plaintext_alert: PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM),
             hero_pop: CtlPop::new(),
             backdrop: Backdrop::new(),
@@ -827,7 +832,8 @@ impl HomeScreen {
             self.snap.jump(0.0);
         }
         let current = crate::plex::client_for(crate::plex::current_server()).map(|c| c.machine_id());
-        if self.plaintext.refresh(current, Near::First) {
+        // `|` not `||`: both watches must re-read.
+        if self.plaintext.refresh(current, Near::First) | self.clock.refresh(current) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
         if self.plaintext_alert.is_open()
@@ -1469,7 +1475,7 @@ impl HomeScreen {
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
-        let Some(overlay) = status_overlay(view, &self.plaintext) else {
+        let Some(overlay) = status_overlay(view, &self.plaintext, &self.clock) else {
             return;
         };
         overlay
@@ -1668,8 +1674,9 @@ impl LogicalState for HomeScreen {
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _,
             // The plaintext question is the grant table's (`plex::grant::offers`), which no
-            // recording can raise, and its alert only paints over a failed read-out.
-            plaintext: _, plaintext_alert: _ } = self;
+            // recording can raise, and its alert only paints over a failed read-out. The clock
+            // fact is `net::keypin`'s, likewise unraisable by a recording.
+            plaintext: _, plaintext_alert: _, clock: _ } = self;
         c.f32(self.snap_target)
             .f32(self.snap.pos).f32(self.snap.vel)
             .f32(self.hero_flip_cd)
@@ -2043,7 +2050,7 @@ impl HomeScreen {
             if index != 0 || action.is_none() {
                 return None;
             }
-            return status_overlay(view, &self.plaintext)?.action_frame_measured(measure);
+            return status_overlay(view, &self.plaintext, &self.clock)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
@@ -2411,7 +2418,7 @@ fn status_read(
 /// A failure while discovery offers "Connect without encryption?" for a server (`plaintext`)
 /// says why in the reason slot and — until it is answered — makes *Connect* the primary
 /// (`screens::plaintext_question`, shared with the sign-in and a Library source's read-out).
-fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch) -> Option<StatusOverlay<'a>> {
+fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch, clock: &ClockWatch) -> Option<StatusOverlay<'a>> {
     let (caption, kind, action) = status_read(view)?;
     // Home's hub failure carries no typed cause of its own — it is the same untyped "can't reach
     // the server" verdict as the Library's own, so the two share the glyph rather than one
@@ -2422,6 +2429,10 @@ fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch) -> Option<S
         if let (Some(verdict), Some(reason)) = (plaintext.verdict(), plaintext.reason()) {
             overlay = overlay.reason(reason);
             action = Some(plaintext_question::primary(Some(verdict)));
+        } else if let Some((reason, glyph)) = clock.reason() {
+            // No offer to answer: a wrong clock is the one cause the read-out can name, and it
+            // brings its own glyph (the same placement, a different mark).
+            overlay = overlay.reason(reason).page(glyph);
         }
     }
     Some(match action {

@@ -641,7 +641,7 @@ pub(crate) unsafe fn construct(
     };
     // The remembered server keys of the session this boot runs on, handed over before any request
     // can leave: a captured session was never READ through the cache that projects them.
-    crate::plex::session::project_server_keys(&session);
+    crate::plex::session::project_server_keys(&session, false);
     // dev: /tmp/plxnative-tls-selftest — exercises the wrong-clock TLS fallback on both planes with
     // no account (a no-op without the trigger; absent in shipping builds). Armed HERE, after the
     // projection above, and not beside `global_init`: the projection replaces the key table
@@ -649,6 +649,15 @@ pub(crate) unsafe fn construct(
     // landing while round 1's first handshake is in flight would wipe it and the round be refused.
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::tls_selftest::arm_at_boot();
+    // dev: /tmp/plxnative-toast=<text> — asks the TV's notification service for a system toast,
+    // once plain and once as the app, and logs each full outcome (`toast-probe …`).
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::toast_probe::arm_at_boot();
+    // dev: /tmp/plxnative-clockfact=nokey|keychanged|engaged[:<year>] — plants a wrong-clock fact
+    // (`net::keypin`) so the Home/Library read-out and the toast can be looked at with no
+    // television. Armed after the projection above, whose sign-out arm only clears bound hosts.
+    #[cfg(feature = "devtriggers")]
+    crate::dev::scenarios::clock_fact::arm_at_boot();
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();

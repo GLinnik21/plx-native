@@ -100,6 +100,7 @@ impl Frame {
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
     let watchdog = crate::task::watchdog::LoopWatch::start();
+    let mut clock_notice = super::clock_notice::ClockNotice::new();
     while app.running {
         watchdog.advance();
         let _frame_scope = crate::task::FrameScope::enter();
@@ -135,6 +136,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         }
         crate::system::ls2_pump();
         crate::webos::poll_home();
+        // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
+        clock_notice.poll();
         ingest(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
 

@@ -3264,6 +3264,12 @@ fn an_expired_leaf_is_served_when_its_remembered_key_is_known() {
     let _key = remember(port, &cert);
     let resp = identity_request(port, "https", false).expect("the date alone must not refuse the server we know");
     assert_eq!(resp.status, 200);
+    let facts = crate::net::keypin::fact_for(&key_of_port(port));
+    assert!(
+        matches!(facts.engaged, Some(Some(year)) if (2025..2200).contains(&year)),
+        "key mode engaged, carrying the year the device believed: {facts:?}"
+    );
+    assert_eq!(facts.blocked, None, "a served request blocks nothing");
 }
 
 #[test]
@@ -3287,6 +3293,11 @@ fn an_expired_leaf_whose_key_differs_from_the_remembered_one_is_refused_with_a_p
     let failure = identity_request(port, "https", false).err().expect("a stranger's key is not the server's");
     assert_eq!(failure.curl_rc, Some(90));
     assert!(!crate::net::keypin::is_latched(&key_of_port(port)), "a refusal never latches");
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(port)).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the control plane publishes the changed key",
+    );
 }
 
 #[test]
@@ -3308,8 +3319,14 @@ fn an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
     let _serial = crate::testlock::serial();
     if !curl_ready() { return; }
     let (_cert, _ca, port) = expired_server("clock-no-key");
+    let _watched = crate::net::keypin::Scoped::watch(&key_of_port(port));
     let failure = identity_request(port, "https", false).err().expect("nothing to recognise it by");
     assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(port)).blocked,
+        Some(crate::net::keypin::Blocked::NoKey),
+        "a date failure with no key to fall back on is published",
+    );
 }
 
 #[test]
@@ -3326,6 +3343,7 @@ fn an_untrusted_issuer_is_refused_even_with_the_leafs_key_remembered() {
     let failure = identity_request(port, "https", false).err().expect("an untrusted issuer is not a date problem");
     assert_eq!(failure.curl_rc, Some(60));
     assert!(!crate::net::keypin::is_latched(&key_of_port(port)));
+    assert_eq!(crate::net::keypin::fact_for(&key_of_port(port)).blocked, None, "not a date failure, not a fact");
 }
 
 #[test]
@@ -3408,6 +3426,12 @@ fn a_pin_mismatch_in_key_mode_clears_the_latch_and_is_the_failure() {
     assert_eq!(failure.curl_rc, Some(90));
     assert_eq!(served.accepted(), 1, "latched: no strict attempt first");
     assert!(!crate::net::keypin::is_latched(&key), "rc 90 ends key mode for the host");
+    assert_eq!(
+        crate::net::keypin::fact_for(&key).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the engaged fact stands and the change is published",
+    );
+    assert!(crate::net::keypin::fact_for(&key).engaged.is_some(), "…and the engaged fact survives the refusal");
 }
 
 #[test]
@@ -3492,6 +3516,11 @@ fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_misma
         .expect("a stranger's key is not the server's");
     assert_eq!(err, crate::curlio::OpenErr::Transport(90));
     assert!(!crate::net::keypin::is_latched(&key));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key).blocked,
+        Some(crate::net::keypin::Blocked::KeyChanged),
+        "the media plane publishes the changed key too",
+    );
 }
 
 #[test]
@@ -3501,10 +3530,80 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-nokey");
     let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let _watched = crate::net::keypin::Scoped::watch(&key_of_port(served.port));
     let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
         .err()
         .expect("nothing to recognise it by");
     assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+    assert_eq!(
+        crate::net::keypin::fact_for(&key_of_port(served.port)).blocked,
+        Some(crate::net::keypin::Blocked::NoKey),
+        "the media plane publishes a date failure with no key",
+    );
+}
+
+/// **A fact is the host's LATEST strict outcome** (both planes, the real handshake): a date failure
+/// with no key publishes NoKey; once the date is not what fails (here the CA is no longer trusted,
+/// the stand-in for "the clock was fixed and the server is unreachable or untrusted for another
+/// reason") the next strict failure ends it, so *Try again* stops blaming a clock that is right.
+#[test]
+fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_control_plane() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let (_cert, ca, port) = expired_server("clock-later-control");
+    let key = key_of_port(port);
+    let _watched = crate::net::keypin::Scoped::watch(&key);
+    let failure = identity_request(port, "https", false).err().expect("nothing to recognise it by");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(crate::net::keypin::fact_for(&key).blocked, Some(crate::net::keypin::Blocked::NoKey));
+    drop(ca);
+    let failure = identity_request(port, "https", false).err().expect("the issuer is no longer trusted");
+    assert_eq!(failure.curl_rc, Some(60));
+    assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "the date is no longer what fails");
+}
+
+#[test]
+fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_media_plane() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let cert = expired_leaf(&["127.0.0.1"]);
+    let ca = TestCaGuard::install(&cert.pem, "clock-later-media");
+    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
+    let key = key_of_port(served.port);
+    let _watched = crate::net::keypin::Scoped::watch(&key);
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0).err().expect("nothing to recognise it by");
+    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+    assert_eq!(crate::net::keypin::fact_for(&key).blocked, Some(crate::net::keypin::Blocked::NoKey));
+    drop(ca);
+    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0).err().expect("the issuer is no longer trusted");
+    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
+    assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "the date is no longer what fails");
+}
+
+/// Scenario A as the television has it: the date failure published NoKey, the clock was fixed, and
+/// the server is now simply unreachable (a refused connection, rc 7) — nothing about a certificate
+/// at all. Both planes end the fact.
+#[test]
+fn a_refused_connection_ends_no_key_on_both_planes() {
+    let _serial = crate::testlock::serial();
+    if !curl_ready() { return; }
+    let closed_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    for plane in ["control", "media"] {
+        let port = closed_port();
+        let key = key_of_port(port);
+        let _watched = crate::net::keypin::Scoped::watch(&key);
+        crate::net::keypin::strict_failure(&key, 60, Some(10));
+        assert_eq!(crate::net::keypin::fact_for(&key).blocked, Some(crate::net::keypin::Blocked::NoKey));
+        let rc = match plane {
+            "control" => identity_request(port, "https", false).err().expect("nothing listens").curl_rc,
+            _ => match crate::curlio::CurlSource::open(&media_url(port), 0).err().expect("nothing listens") {
+                crate::curlio::OpenErr::Transport(rc) => Some(rc),
+                other => panic!("{plane}: {other:?}"),
+            },
+        };
+        assert_eq!(rc, Some(7), "{plane}");
+        assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "{plane}: unreachable is not the clock");
+    }
 }
 
 #[test]

@@ -190,6 +190,9 @@ pub(crate) struct LibraryScreen {
     /// The failed source's server, when discovery offers the question for it
     /// (`plex::grant::offers`) — the grant table's, not logical state.
     plaintext: super::plaintext_question::OfferWatch,
+    /// Why key mode cannot help (`net::keypin::blocked`), held between ticks so the draw and the
+    /// *Try again* hit rect of one frame read ONE value — the reason line moves the action row.
+    clock: super::clock_readout::ClockWatch,
     /// The question, asked from the failed read-out's *Connect*.
     plaintext_alert: super::plaintext_question::PlaintextAlert,
 }
@@ -216,6 +219,7 @@ impl LibraryScreen {
             library_pop: crate::ui::widgets::CtlPop::new(),
             ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
             plaintext: Default::default(),
+            clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
         }
     }
@@ -902,7 +906,9 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
-                self.watch_plaintext(cx);
+                if self.watch_readout(cx) {
+                    fx.invalidate(Provenance::Landing(fx.from()));
+                }
                 self.plaintext_alert.update(tick.dt());
                 if self.grid_reset_pending {
                     if let Some(elem) = self.pair.detail.elem_at(0) {

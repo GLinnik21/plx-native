@@ -41,9 +41,13 @@ use std::os::raw::c_int;
 pub(crate) mod bench;
 pub(crate) mod screenshot;
 #[cfg(feature = "devtriggers")]
+pub(crate) mod clock_fact;
+#[cfg(feature = "devtriggers")]
 pub(crate) mod poster_gate;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod tls_selftest;
+#[cfg(feature = "devtriggers")]
+pub(crate) mod toast_probe;
 
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.

@@ -482,5 +482,9 @@
   "browse.collection.items": "Элементы",
   "browse.collection.order.release": "Па даце выхаду",
   "browse.collection.order.title": "Па алфавіце",
-  "browse.collection.order.custom": "Уласны парадак"
+  "browse.collection.order.custom": "Уласны парадак",
+  "browse.clock.notice_year": "Час на тэлевізары, здаецца, няправільны ({year}). Злучэнне па захаваным ключы.",
+  "browse.clock.notice": "Час на тэлевізары, здаецца, няправільны. Злучэнне па захаваным ключы.",
+  "browse.clock.no_key": "Час на тэлевізары, здаецца, няправільны. Злучыце тэлевізар з інтэрнэтам адзін раз і паспрабуйце зноў.",
+  "browse.clock.key_changed": "Ключ вашага сервера змяніўся. Злучыце тэлевізар з інтэрнэтам адзін раз, каб праграма магла праверыць яго зноў."
 }
