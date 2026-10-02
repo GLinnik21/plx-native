@@ -140,6 +140,12 @@ can follow.
 | `stores/` | data crates and `ui::machine` only — never `screens/` |
 | `app/` | everything |
 
+`ci/check-module-cycle.py` holds which top-level modules sit on the crate's module cycle, not the
+references between them: a module outside the cycle (or a new one) that gains a path into it fails
+with `file:line` (see "Module-cycle ratchet" in `docs/agent-reference.md`). Another `ui` ->
+`screens`/`app` or `gfx`/`text` -> `ui` reference between modules already on the cycle passes that
+gate, so `ci/check-deps.sh` and review are what stop it; a green `module-cycle: ok` is not permission.
+
 `ui/` is generic over one application bundle and is compiled and tested against `FixtureHost`
 with no Plex type in scope (`fixture.rs`). If you find yourself reaching for `crate::plex` or
 `crate::browse` from a file in this directory, the design says the code belongs in `screens/`.

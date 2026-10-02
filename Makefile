@@ -1468,6 +1468,10 @@ check-python: check-localization
 	@# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
 	@# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.
 	ci/check-statics.sh
+	@# The module-cycle ratchet: the top-level module cycle may shrink, never grow. The checker runs on the
+	@# real tree against ci/module-cycle-baseline.json (~1.5 s); its self-test uses a synthetic crate.
+	python3 ci/test_module_cycle.py
+	python3 ci/check-module-cycle.py
 	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
 	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
 	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong
