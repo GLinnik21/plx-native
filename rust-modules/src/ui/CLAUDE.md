@@ -335,7 +335,7 @@ tried first. None of it is reconstructable from the code without repeating the m
 - **Live-backdrop glass: call it, don't orchestrate it.** To add a surface, call
   `Glass::DYNAMIC_BACKDROP.backdrop` from its normal `Painter` draw. Do **not** prepare,
   invalidate, check for modals, or skip a source pass in the widget. The dispatcher supplies the
-  layer order and `frame/backdrop.rs` (owned by `GlassPlan`) declares geometry, excludes the
+  layer order and `ui::frame::backdrop` (`gfx/backdrop.rs`, owned by `GlassPlan`) declares geometry, excludes the
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 

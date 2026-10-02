@@ -358,7 +358,7 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     const CHROME: &[&str] = &[
         "ui/widgets.rs",
         "ui/frame/glass.rs",
-        "ui/frame/backdrop.rs",
+        "ui/frame/backdrop_tests.rs",
         "ui/glassload.rs",
         "ui/mod.rs",
         "ui/fixture.rs",

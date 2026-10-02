@@ -7,7 +7,16 @@
 //! content revision from composite alpha. Its full-alpha filtered source is reused through the
 //! fade; `gfx` applies the changing alpha over the constant app ground at composite
 //! time, while geometry or snapshot-content revision still invalidates normally.
-use crate::ui::Rect;
+//!
+//! This file lived at `ui/frame/backdrop.rs` and moved under `gfx` (module-layers step L5): `gfx`
+//! reads and writes this walk state from its clip, clear, glass and capture paths, and the `gfx`
+//! layer may not name `ui`. `ui::frame` re-exports it as `ui::frame::backdrop`, so the frame, the
+//! popover host and the screens still drive it through the old path. The tests that build their
+//! scene with `ui::Painter` live in `ui/frame/backdrop_tests.rs`.
+// `ui/mod.rs` blankets its whole tree with this attribute, which is what kept the walk's accessors
+// that only one configuration or one test calls from being dead code while this lived there.
+#![allow(dead_code)]
+use crate::gfx::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub(crate) struct Z(pub u64);
@@ -85,7 +94,7 @@ pub(crate) fn intersects(a: Rect, b: Rect) -> bool {
         && a.y < b.y + b.h
         && b.y < a.y + a.h
 }
-fn covers(a: Rect, b: Rect) -> bool {
+pub(crate) fn covers(a: Rect, b: Rect) -> bool {
     a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h
 }
 fn intersection(a: Rect, b: Rect) -> Option<Rect> {
@@ -128,11 +137,11 @@ fn union(a: Rect, b: Rect) -> Rect {
 /// Exact draw arguments, not a probabilistic hash. Comparing the ordered commands intersecting
 /// a sampler catches both motion and discrete changes without promoting chrome to page damage.
 #[derive(Clone)]
-struct Paint {
+pub(crate) struct Paint {
     z: Z,
     bounds: [u32; 4],
     values: Vec<u64>,
-    glass: Option<Z>,
+    pub(crate) glass: Option<Z>,
     source: Vec<Rc<Paint>>,
 }
 impl PartialEq for Paint {
@@ -372,21 +381,21 @@ pub(crate) fn in_surfaces_band() -> bool {
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 #[derive(Default)]
 pub(crate) struct Sources {
-    entries: BTreeMap<Z, Entry>,
+    pub(crate) entries: BTreeMap<Z, Entry>,
     pub layers: Vec<Layer>,
     damage: Vec<Damage>,
     frame: u64,
-    paints: Vec<std::rc::Rc<Paint>>,
+    pub(crate) paints: Vec<std::rc::Rc<Paint>>,
     assignments: BTreeMap<(Z, u64), Z>,
 }
-struct Entry {
+pub(crate) struct Entry {
     rect: Rect,
     seen: u64,
     image: Option<Rc<crate::gfx::BackdropImage>>,
-    valid: bool,
+    pub(crate) valid: bool,
     wanted: Vec<Rect>,
     members: Vec<Rect>,
-    underlay: Vec<std::rc::Rc<Paint>>,
+    pub(crate) underlay: Vec<std::rc::Rc<Paint>>,
     prefix: Vec<Rc<Paint>>,
     captured_prefix: Vec<Rc<Paint>>,
     captured_layers: Vec<Layer>,
@@ -894,12 +903,26 @@ pub(crate) fn captured(z: Z, image: crate::gfx::BackdropImage) {
     });
 }
 
+/// Mark every retained source as captured against the current prefix — what a successful GPU
+/// capture does — so a test can step the walk frame by frame without a GL context.
+#[cfg(test)]
+pub(crate) fn commit(s: &Rc<RefCell<Sources>>) {
+    let mut s = s.borrow_mut();
+    let layers = s.layers.clone();
+    for e in s.entries.values_mut() {
+        e.valid = true;
+        e.captured_prefix = e.prefix.clone();
+        e.captured_layers = layers.clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn rect(x: f32) -> Rect {
         Rect::new(x, 0.0, 10.0, 10.0)
     }
+
     fn request() -> Request {
         Request {
             z: Z(2),
@@ -907,6 +930,7 @@ mod tests {
             valid: true,
         }
     }
+
     #[test]
     fn a_blur_source_never_contains_its_own_layer_or_above() {
         let _guard = crate::testlock::serial();
@@ -922,6 +946,7 @@ mod tests {
             vec![Z(0)]
         );
     }
+
     #[test]
     fn a_glass_covered_by_a_frozen_or_opaque_layer_neither_refreshes_nor_draws() {
         let _guard = crate::testlock::serial();
@@ -942,6 +967,7 @@ mod tests {
         );
         assert!(!d.draw && !d.refresh);
     }
+
     #[test]
     fn a_glass_over_an_unchanged_region_reuses_its_source() {
         let _guard = crate::testlock::serial();
@@ -958,6 +984,7 @@ mod tests {
             "foreground motion is not underlay damage"
         );
     }
+
     #[test]
     fn damage_outside_a_glass_rect_does_not_refresh_it() {
         let _guard = crate::testlock::serial();
@@ -973,6 +1000,7 @@ mod tests {
             .refresh
         );
     }
+
     #[test]
     fn two_overlapping_glasses_at_different_z_each_sample_only_what_is_below_them() {
         let _guard = crate::testlock::serial();
@@ -989,198 +1017,7 @@ mod tests {
             vec![Z(0), Z(2)]
         );
     }
-    fn declare_glass(p: crate::ui::Painter, r: Rect) {
-        assert!(crate::ui::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
-            p,
-            r,
-            0.0,
-            2.0,
-            [1.0; 4],
-            crate::gfx::GlassRim::Standing,
-            crate::gfx::GlassFace::NONE,
-            crate::ui::theme::Material::UltraThin
-        ));
-    }
-    fn commit(s: &Rc<RefCell<Sources>>) {
-        let mut s = s.borrow_mut();
-        let layers = s.layers.clone();
-        for e in s.entries.values_mut() {
-            e.valid = true;
-            e.captured_prefix = e.prefix.clone();
-            e.captured_layers = layers.clone();
-        }
-    }
-    #[test]
-    fn still_commands_track_crop_texture_revision_and_scrim_under_cached_glass() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        let tex = 9081;
-        crate::gfx::tex_ledger::specified(tex, 720, 480);
-        // Each changed input repeats once: its first frame invalidates; its settled twin reuses.
-        for step in 0..14 {
-            let state = step / 2;
-            if step == 4 { crate::gfx::tex_ledger::specified(tex, 720, 480); }
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                let uv = if state >= 1 { [0.0, 0.1, 1.0, 0.8] } else { crate::gfx::UV_FULL };
-                let rad = if state >= 3 { 18.0 } else { 14.0 };
-                let focus = if state >= 4 { 0.5 } else { 0.0 };
-                let band = if state >= 5 { 90.0 } else { 80.0 };
-                let scrim = crate::ui::theme::scrim(if state >= 6 { 0.8 } else { 0.7 });
-                // `declare()` returns true here for a reason unrelated to fusion eligibility:
-                // `discover(sources.clone())` keeps this whole block inside a DISCOVERY walk, where
-                // `Painter::declare` always short-circuits true without ever reaching
-                // `gfx::draw_tex_carded_still` (see `declare`'s own `!frame::backdrop::discovering()`
-                // guard) — so this assertion never actually exercises the `f > 0.0` fusion refusal
-                // added alongside `FOCUS_IMAGE`; it is purely a discovery-tracking smoke test.
-                assert!(p.tex_carded_still(tex, uv, rect(0.0), rad, focus, band, scrim));
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            assert_eq!(!sources.borrow().entries[&Z(1)].valid, step % 2 == 0, "step {step}");
-            commit(&sources);
-        }
-        crate::gfx::tex_ledger::deleted(tex);
-    }
 
-    #[test]
-    fn standalone_still_scrims_invalidate_only_when_their_picture_changes() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for step in 0..8 {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                assert!(p.art_scrim(rect(0.0), if step >= 2 { 18.0 } else { 14.0 },
-                    if step >= 4 { 90.0 } else { 80.0 },
-                    crate::ui::theme::scrim(if step >= 6 { 0.8 } else { 0.7 })));
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            assert_eq!(!sources.borrow().entries[&Z(1)].valid, step % 2 == 0, "step {step}");
-            commit(&sources);
-        }
-    }
-
-    #[test]
-    fn the_real_painter_ignores_foreground_and_outside_motion_but_captures_settle() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for (i, x) in [0.0, 1.0, 2.0, 2.0].into_iter().enumerate() {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                p.rect(Rect::new(x, 0.0, 20.0, 20.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
-                p.rect(
-                    Rect::new(900.0 + i as f32, 900.0, 20.0, 20.0),
-                    0.0,
-                    [0.0; 4],
-                    [0.0; 4],
-                    0.0,
-                );
-                declare_glass(p, rect(0.0));
-                p.rect(rect(0.0), 0.0, [i as f32; 4], [0.0; 4], 0.0);
-            }
-            sources.borrow_mut().resolve();
-            assert_eq!(!sources.borrow().entries[&Z(1)].valid, i < 3, "frame {i}");
-            commit(&sources);
-        }
-    }
-    #[test]
-    fn one_capture_per_band_covers_this_frames_union_even_on_activation() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let _band = layer(Z::CHROME, true);
-            declare_glass(crate::ui::Painter::root(), rect(0.0));
-            declare_glass(crate::ui::Painter::root(), rect(1000.0));
-        }
-        sources.borrow_mut().resolve();
-        let jobs = sources.borrow().jobs();
-        assert_eq!(jobs.len(), 1);
-        assert!(covers(jobs[0].1, rect(0.0)) && covers(jobs[0].1, rect(1000.0)));
-    }
-    #[test]
-    fn overlapping_bands_retain_separate_underlays_and_capture_the_lower_composite() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
-            declare_glass(p, rect(0.0));
-            declare_glass(p, rect(0.0));
-        }
-        sources.borrow_mut().resolve();
-        let sources = sources.borrow();
-        assert!(sources.entries[&Z(1)]
-            .underlay
-            .iter()
-            .all(|p| p.glass.is_none()));
-        assert!(sources.entries[&Z(2)]
-            .underlay
-            .iter()
-            .any(|p| p.glass == Some(Z(1))));
-        assert!(sources.entries[&Z(2)]
-            .underlay
-            .iter()
-            .all(|p| p.glass != Some(Z(2))));
-        assert_eq!(
-            sources.jobs().iter().map(|(z, _)| *z).collect::<Vec<_>>(),
-            vec![Z(1)],
-            "the upper band captures in visible order, with the lower glass's exact sharp rim"
-        );
-    }
-
-    #[test]
-    fn a_frozen_replacement_removes_covered_lower_glass_from_upper_capture_dependencies() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-
-        // Seed the lower retained glass and its overlapping upper neighbour.
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            declare_glass(p, rect(0.0));
-            let _upper = layer(Z(3), false);
-            declare_glass(p, rect(0.0));
-        }
-        sources.borrow_mut().resolve();
-        commit(&sources);
-
-        for dim_revision in [1.0f32, 2.0] {
-            sources.borrow_mut().begin(vec![Layer {
-                z: Z(2),
-                rect: canvas(),
-                blocks: true,
-                revision: 9,
-                composite_alpha: None,
-            }]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                let _above_replacement = layer(Z(3), false);
-                p.rect(rect(0.0), 0.0, [dim_revision; 4], [0.0; 4], 0.0);
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            let jobs = sources.borrow().jobs();
-            assert_eq!(
-                jobs.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
-                vec![Z(4)],
-                "replay the frozen composite plus current dim directly; never refresh its covered lower glass"
-            );
-            commit(&sources);
-        }
-    }
     #[test]
     fn the_ceiling_stops_real_primitives_and_is_restored_when_a_walk_unwinds() {
         let _guard = crate::testlock::serial();
@@ -1205,6 +1042,7 @@ mod tests {
         );
         assert!(!suppressed());
     }
+
     #[test]
     fn multiple_partial_blockers_cover_a_glass_but_translucent_layers_do_not() {
         let _guard = crate::testlock::serial();
@@ -1230,177 +1068,6 @@ mod tests {
         layers[1].blocks = true;
         layers[1].z = Z(0);
         assert!(decide(request(), &layers, &[]).draw);
-    }
-
-    #[test]
-    fn adding_lower_glass_outside_the_sampled_region_does_not_refresh_shared_chrome() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for frame in 0..2 {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                if frame == 1 {
-                    declare_glass(p, rect(1000.0));
-                }
-                p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
-                let _band = layer(Z::CHROME, true);
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            if frame == 1 {
-                assert!(sources.borrow().entries[&Z::CHROME].valid);
-            }
-            commit(&sources);
-        }
-    }
-
-    #[test]
-    fn a_moving_lower_glass_outside_the_sampled_region_does_not_refresh_it() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for frame in 0..2 {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                declare_glass(p, rect(1000.0 + frame as f32));
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            if frame == 1 {
-                assert!(sources.borrow().entries[&Z(2)].valid);
-            }
-            commit(&sources);
-        }
-    }
-
-    #[test]
-    fn recording_painters_do_not_declare_live_glass_or_underlay_damage() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::recording();
-            p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
-            assert!(!crate::ui::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
-                p,
-                rect(0.0),
-                0.0,
-                2.0,
-                [1.0; 4],
-                crate::gfx::GlassRim::Standing,
-                crate::gfx::GlassFace::NONE,
-                crate::ui::theme::Material::UltraThin
-            ));
-        }
-        sources.borrow_mut().resolve();
-        assert!(sources.borrow().entries.is_empty());
-        assert!(sources.borrow().paints.is_empty());
-    }
-
-    #[test]
-    fn content_at_or_above_the_surfaces_band_is_never_recorded() {
-        // The `nav.modals.surfaces` draw loop (Settings/AccountMenu/ItemMenu/About's own content,
-        // `dispatch.rs::draw_with`) is not gated by `host_render`/`PagePlan`, so it walks fully on
-        // every discovered frame — but no glass entry ever lives at or above `Z::surface(0)`, so
-        // recording what it declares was pure cost for data nothing reads. This is the modal-100 /
-        // push-100 stress-bench regression's second cause (see docs/backdrop-blur-profiling.md).
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
-            assert_eq!(sources.borrow().paints.len(), 1, "below the surfaces band records");
-            {
-                let _layer = layer(Z::surface(0), false);
-                p.rect(rect(0.0), 0.0, [1.0; 4], [0.0; 4], 0.0);
-                p.rect(rect(0.0), 0.0, [2.0; 4], [0.0; 4], 0.0);
-            }
-            assert_eq!(
-                sources.borrow().paints.len(),
-                1,
-                "content declared at/above the surfaces band must not be recorded"
-            );
-            {
-                let _layer = layer(Z::PAGE, false);
-                p.rect(rect(0.0), 0.0, [3.0; 4], [0.0; 4], 0.0);
-            }
-            assert_eq!(sources.borrow().paints.len(), 2, "layer unwinds back below the band");
-        }
-    }
-
-    #[test]
-    fn a_glass_command_above_the_surfaces_band_trips_the_debug_assert() {
-        // `Painter::declare`'s fast pre-check must never silently eat a glass command: if one is
-        // ever declared inside a surface (none is today — grep-verified), the debug build has to
-        // say so immediately rather than let that glass quietly never resolve.
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            let _layer = layer(Z::surface(0), false);
-            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                declare_glass(p, rect(0.0));
-            }));
-            if cfg!(debug_assertions) {
-                assert!(caught.is_err(), "a glass command above the band must assert");
-            }
-        }
-    }
-
-    #[test]
-    fn content_below_a_frozen_host_boundary_is_never_recorded() {
-        // A Cached host (Settings/AccountMenu over Home) still walks its full page+chrome tree on
-        // every discovered frame; `held_ceiling()` publishes that freeze as a canvas-covering
-        // blocking `Layer` (`dispatch.rs::backdrop_layers`). No live glass ever reads through it —
-        // a glass above it retains the layer's own synthetic, revision-keyed `Paint` instead
-        // (`Sources::begin`) — so recording the real primitives underneath is exactly the dead
-        // work the surfaces-band fix already excludes above `Z::surface(0)`, just bounded by a
-        // per-frame layer instead of a fixed ceiling. This is the modal-100 stress-bench
-        // regression's open hypothesis (docs/backdrop-blur-profiling.md's last dated addendum).
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![Layer {
-            z: Z(5),
-            rect: canvas(),
-            blocks: true,
-            revision: 1,
-            composite_alpha: None,
-        }]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            assert_eq!(
-                sources.borrow().paints.len(),
-                1,
-                "begin() already recorded the blocking layer's own synthetic paint"
-            );
-            {
-                let _layer = layer(Z(1), false);
-                p.rect(rect(0.0), 0.0, [1.0; 4], [0.0; 4], 0.0);
-            }
-            assert_eq!(
-                sources.borrow().paints.len(),
-                1,
-                "content strictly below a canvas-wide blocking layer must not be recorded"
-            );
-            {
-                let _layer = layer(Z(6), false);
-                p.rect(rect(0.0), 0.0, [2.0; 4], [0.0; 4], 0.0);
-            }
-            assert_eq!(
-                sources.borrow().paints.len(),
-                2,
-                "content at/above the frozen boundary is still live and must still record"
-            );
-        }
     }
 
     #[test]
@@ -1458,56 +1125,6 @@ mod tests {
     }
 
     #[test]
-    fn glass_growing_into_unchanged_captured_pixels_reuses_its_source() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for frame in 0..2 {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                p.rect(rect(500.0), 0.0, [1.0; 4], [1.0; 4], 0.0);
-                let _band = layer(Z::CHROME, true);
-                declare_glass(
-                    p,
-                    Rect::new(0.0, 0.0, if frame == 0 { 10.0 } else { 700.0 }, 10.0),
-                );
-                declare_glass(p, rect(1000.0));
-            }
-            sources.borrow_mut().resolve();
-            if frame == 1 {
-                assert!(
-                    sources.borrow().entries[&Z::CHROME].valid,
-                    "unfurling chrome is not page damage"
-                );
-            }
-            commit(&sources);
-        }
-    }
-
-    #[test]
-    fn a_video_plane_does_not_declare_a_framebuffer_glass_source() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        let _walk = discover(sources.clone());
-        let old = crate::gfx::set_video_plane_frame(true);
-        let handled = crate::ui::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
-            crate::ui::Painter::root(),
-            rect(0.0),
-            0.0,
-            2.0,
-            [1.0; 4],
-            crate::gfx::GlassRim::Standing,
-            crate::gfx::GlassFace::NONE,
-            crate::ui::theme::Material::UltraThin,
-        );
-        crate::gfx::set_video_plane_frame(old);
-        assert!(!handled);
-        assert!(sources.borrow().entries.is_empty());
-    }
-
-    #[test]
     fn snapshot_claims_survive_layer_scopes_and_reset_for_each_source_walk() {
         let _guard = crate::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
@@ -1519,122 +1136,6 @@ mod tests {
         }
         let _walk = enter(sources, Z::OPENER);
         assert!(claim_snapshot(Z::DIM));
-    }
-
-    #[test]
-    fn shared_chrome_splits_when_its_glasses_overlap() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let _band = layer(Z::CHROME, true);
-            declare_glass(crate::ui::Painter::root(), rect(0.0));
-            declare_glass(crate::ui::Painter::root(), rect(0.0));
-            declare_glass(crate::ui::Painter::root(), rect(1000.0));
-        }
-        sources.borrow_mut().resolve();
-        assert_eq!(
-            sources.borrow().entries.keys().copied().collect::<Vec<_>>(),
-            vec![Z::CHROME, Z(Z::CHROME.0 + 2), Z(Z::CHROME.0 + 3)]
-        );
-        assert_eq!(
-            sources.borrow().jobs().len(),
-            2,
-            "the second band uses a visible prefix; the independent third stays above it"
-        );
-    }
-    #[test]
-    fn a_frozen_replacement_hides_lower_damage_but_its_new_image_invalidates() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for (frame, revision) in [7, 7, 8].into_iter().enumerate() {
-            sources.borrow_mut().begin(vec![Layer {
-                z: Z(2),
-                rect: canvas(),
-                blocks: true,
-                revision,
-                composite_alpha: None,
-            }]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                p.rect(rect(0.0), 0.0, [frame as f32; 4], [0.0; 4], 0.0);
-                let _upper = layer(Z(3), false);
-                declare_glass(p, rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            assert_eq!(!sources.borrow().entries[&Z(4)].valid, frame != 1);
-            commit(&sources);
-        }
-    }
-    #[test]
-    fn held_image_alpha_reuses_the_filter_but_content_revision_invalidates_it() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for (frame, (revision, alpha)) in [(7, 0.2), (7, 0.8), (8, 0.8)].into_iter().enumerate() {
-            sources.borrow_mut().begin(vec![Layer {
-                z: Z(2),
-                rect: canvas(),
-                blocks: true,
-                revision,
-                composite_alpha: Some(alpha),
-            }]);
-            {
-                let _walk = discover(sources.clone());
-                let _upper = layer(Z(3), false);
-                declare_glass(crate::ui::Painter::root(), rect(0.0));
-            }
-            sources.borrow_mut().resolve();
-            let jobs = sources.borrow().jobs();
-            match frame {
-                0 => assert_eq!(jobs.len(), 1, "the first filtered source is produced"),
-                1 => assert!(jobs.is_empty(), "alpha-only change is composed from the cached filter"),
-                2 => assert_eq!(jobs.len(), 1, "new held-image content invalidates the filter"),
-                _ => unreachable!(),
-            }
-            commit(&sources);
-        }
-    }
-    #[test]
-    fn clipped_out_glass_neither_captures_nor_draws() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = crate::ui::Painter::root();
-            p.clip(Rect::new(0.0, 0.0, 5.0, 5.0));
-            declare_glass(p, rect(100.0));
-        }
-        sources.borrow_mut().resolve();
-        assert!(sources.borrow().entries.is_empty());
-        let _walk = enter(sources, Z::ALL);
-        assert!(!surface(Rect::new(-100.0, -100.0, 10.0, 10.0)).unwrap().draw);
-    }
-
-    /// A `ClipScope` (what `TableView::draw` opens) must reach the discovery walk's clip exactly as
-    /// `Painter::clip` does, and hand it back on drop.
-    #[test]
-    fn a_clip_scope_clips_the_discovery_walk_and_restores_it() {
-        let _guard = crate::testlock::serial();
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        for scoped in [true, false] {
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = crate::ui::Painter::root();
-                if scoped {
-                    let _clip = crate::ui::screen::ClipScope::open_in(p, Rect::new(0.0, 0.0, 5.0, 5.0));
-                    declare_glass(p, rect(100.0));
-                } else {
-                    declare_glass(p, rect(100.0));
-                }
-            }
-            sources.borrow_mut().resolve();
-            assert_eq!(sources.borrow().entries.is_empty(), scoped, "scoped={scoped}");
-            commit(&sources);
-        }
     }
 
     #[test]

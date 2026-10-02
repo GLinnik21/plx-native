@@ -16,8 +16,8 @@ over 3px stems, inverting the typeface's stem>bar design and making titles read 
 The app therefore rasterizes with LIGHT hinting and draws text quads at integer pixel
 origins (both in rust-modules/src/text.rs), which keeps stems >= bars at every size.
 
-This script proves that property holds: it parses the rungs out of theme.rs `mod size`
-(single source of truth), adds the two documented carve-outs, and renders a capital F from
+This script proves that property holds: it parses the rungs out of gfx/tokens.rs `mod size`
+(single source of truth; `ui::theme::size` re-exports it), adds the two documented carve-outs, and renders a capital F from
 each shipped font at each size under LIGHT hinting, measuring the solid core (coverage
 > 0.9) of the top bar vs the vertical stem. Any size where bars come out heavier is
 flagged; new flags (outside the accepted list below) fail the run.
@@ -37,12 +37,12 @@ except ImportError:
     sys.exit("freetype-py not installed — run: pip install freetype-py")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-THEME = os.path.join(REPO, "rust-modules", "src", "ui", "theme.rs")
+THEME = os.path.join(REPO, "rust-modules", "src", "gfx", "tokens.rs")
 FONTS = {
     "bold": os.path.join(REPO, "pkg", "appfont-bold.ttf"),
     "regular": os.path.join(REPO, "pkg", "appfont.ttf"),
 }
-# Named carve-outs living outside the ladder (see theme.rs's size-module doc).
+# Named carve-outs living outside the ladder (see the size-module doc in gfx/tokens.rs).
 CARVEOUTS = {54: "HUD_TITLE_SZ (bold)", 36: "subtitle caption (bold)"}
 # Known, accepted imbalances — reviewed 2026-07-18. MICRO (22) and LABEL's rare regular
 # sites (26) are bar-heavy by one solid pixel even under LIGHT hinting; both are low-
@@ -52,7 +52,7 @@ ACCEPTED = {("regular", 22), ("regular", 26)}
 
 
 def ladder():
-    """size -> rung name, parsed from theme.rs `mod size`."""
+    """size -> rung name, parsed from gfx/tokens.rs `mod size`."""
     src = open(THEME).read()
     mod = re.search(r"pub mod size \{(.*?)\n\}", src, re.S).group(1)
     return {int(m.group(2)): m.group(1)
