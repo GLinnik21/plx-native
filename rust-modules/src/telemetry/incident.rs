@@ -407,6 +407,62 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// **The mark a failed sign-in read-out wears above its verdict** (spec "1A"): one per cause this
+/// schema can name, chosen by [`IncidentContext::readout_glyph`] from the SAME typed evidence the
+/// caption comes from, so the mark and the words cannot disagree. Telemetry owns which mark a cause
+/// earns; the screen owns what each mark looks like and maps it to an icon
+/// (`screens::login`), which is why this enum names no drawing code.
+///
+/// Twelve marks, one family: a BASE says what is involved (a server, plex.tv, an account, a
+/// sign-in's stored key, a profile roster, a wait's clock), a BADGE says what went wrong.
+/// `WifiSlash` stands alone — there is no server to blame when the TV itself has no link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadoutGlyph {
+    /// A clock, alert badge — a wait that ran out.
+    ClockBadgeAlert,
+    /// A cloud, alert badge — plex.tv answered with an error, or the app's own machinery failed.
+    CloudBadgeAlert,
+    /// A globe, minus badge — plex.tv did not answer and the failure is not DNS or TLS.
+    GlobeBadgeMinus,
+    /// A globe, question badge — plex.tv could not be found (DNS).
+    GlobeBadgeQuestion,
+    /// A key, alert badge — the sign-in could not be saved or read back.
+    KeyBadgeAlert,
+    /// A lock, alert badge — plex.tv could not be reached securely (TLS).
+    LockBadgeAlert,
+    /// A people roster, alert badge — the profile switch failed.
+    PeopleBadgeAlert,
+    /// A person, x badge — plex.tv refused the token.
+    PersonBadgeXmark,
+    /// A server, minus badge — the servers (or the first content load) did not answer.
+    ServerBadgeMinus,
+    /// A server, plus badge — the account has no server.
+    ServerBadgePlus,
+    /// A server, x badge — a server answered and refused.
+    ServerBadgeXmark,
+    /// A slashed Wi-Fi mark — the TV itself cannot get out.
+    WifiSlash,
+}
+
+impl ReadoutGlyph {
+    /// Every mark, so the screen's mapping can be held to one icon per mark.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 12] = [
+        Self::ClockBadgeAlert,
+        Self::CloudBadgeAlert,
+        Self::GlobeBadgeMinus,
+        Self::GlobeBadgeQuestion,
+        Self::KeyBadgeAlert,
+        Self::LockBadgeAlert,
+        Self::PeopleBadgeAlert,
+        Self::PersonBadgeXmark,
+        Self::ServerBadgeMinus,
+        Self::ServerBadgePlus,
+        Self::ServerBadgeXmark,
+        Self::WifiSlash,
+    ];
+}
+
 /// **The [`LinkClass`] outcomes a plex.tv-facing incident always reads the same way**, shared by
 /// [`IncidentKind::PinCreate`] (`mint_pin`, `auth.rs`) and the `Discovery(Silent)`/`PlexTv` arm of
 /// [`IncidentContext::readout_glyph`] — the one place both used to spell out the same three arms
@@ -416,15 +472,15 @@ fn now_ms() -> u64 {
 /// agree here. `None` for `Timeout`/`TransportOther`/`Unknown` — the two callers diverge only on
 /// that "nothing specific happened" fallback, each picking its own glyph, so this returns `None`
 /// rather than guessing one. Exhaustive on [`LinkClass`], no wildcard arm.
-fn plextv_link_glyph(link: LinkClass) -> Option<crate::ui::icons::Icon> {
-    use crate::ui::icons::Icon;
+fn plextv_link_glyph(link: LinkClass) -> Option<ReadoutGlyph> {
+    use ReadoutGlyph as Glyph;
     match link {
-        LinkClass::Dns => Some(Icon::GlobeBadgeQuestion),
-        LinkClass::Tls => Some(Icon::LockBadgeAlert),
+        LinkClass::Dns => Some(Glyph::GlobeBadgeQuestion),
+        LinkClass::Tls => Some(Glyph::LockBadgeAlert),
         LinkClass::Answered2xx
         | LinkClass::Answered4xx
         | LinkClass::Answered5xx
-        | LinkClass::AnsweredOther => Some(Icon::CloudBadgeAlert),
+        | LinkClass::AnsweredOther => Some(Glyph::CloudBadgeAlert),
         LinkClass::Timeout | LinkClass::TransportOther | LinkClass::Unknown => None,
     }
 }
@@ -594,26 +650,26 @@ impl IncidentContext {
     ///   failed rather than any named server or link, so this takes `CloudBadgeAlert`, the same
     ///   "something didn't work" mark an answered-but-broken plex.tv call wears, as the least
     ///   specific honest choice among the twelve.
-    pub(crate) fn readout_glyph(&self) -> crate::ui::icons::Icon {
-        use crate::ui::icons::Icon;
+    pub(crate) fn readout_glyph(&self) -> ReadoutGlyph {
+        use ReadoutGlyph as Glyph;
         match self.kind {
-            IncidentKind::PinExpired | IncidentKind::LinkStalled => Icon::ClockBadgeAlert,
-            IncidentKind::PinCreate => plextv_link_glyph(self.link).unwrap_or(Icon::WifiSlash),
-            IncidentKind::Authorization => Icon::PersonBadgeXmark,
-            IncidentKind::Discovery(DiscoveryClass::NoServers) => Icon::ServerBadgePlus,
-            IncidentKind::Discovery(DiscoveryClass::Refused) => Icon::ServerBadgeXmark,
-            IncidentKind::Discovery(DiscoveryClass::InsecureOnly) => Icon::ServerBadgeMinus,
+            IncidentKind::PinExpired | IncidentKind::LinkStalled => Glyph::ClockBadgeAlert,
+            IncidentKind::PinCreate => plextv_link_glyph(self.link).unwrap_or(Glyph::WifiSlash),
+            IncidentKind::Authorization => Glyph::PersonBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::NoServers) => Glyph::ServerBadgePlus,
+            IncidentKind::Discovery(DiscoveryClass::Refused) => Glyph::ServerBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::InsecureOnly) => Glyph::ServerBadgeMinus,
             IncidentKind::Discovery(DiscoveryClass::Silent) => {
                 match self.discovery.and_then(|d| d.target) {
-                    Some(DiscoveryTarget::Servers) => Icon::ServerBadgeMinus,
+                    Some(DiscoveryTarget::Servers) => Glyph::ServerBadgeMinus,
                     Some(DiscoveryTarget::PlexTv) | None =>
-                        plextv_link_glyph(self.link).unwrap_or(Icon::GlobeBadgeMinus),
+                        plextv_link_glyph(self.link).unwrap_or(Glyph::GlobeBadgeMinus),
                 }
             }
-            IncidentKind::SaveFailed | IncidentKind::StoredLocked => Icon::KeyBadgeAlert,
-            IncidentKind::ProfileSwitch => Icon::PeopleBadgeAlert,
+            IncidentKind::SaveFailed | IncidentKind::StoredLocked => Glyph::KeyBadgeAlert,
+            IncidentKind::ProfileSwitch => Glyph::PeopleBadgeAlert,
             IncidentKind::ContentLoad(ContentSource::Home | ContentSource::Libraries) => {
-                Icon::ServerBadgeMinus
+                Glyph::ServerBadgeMinus
             }
             IncidentKind::Internal(
                 InternalClass::AdmissionRefused
@@ -622,7 +678,7 @@ impl IncidentContext {
                 | InternalClass::CommitRefused
                 | InternalClass::ClientIdUnavailable
                 | InternalClass::Exhausted,
-            ) => Icon::CloudBadgeAlert,
+            ) => Glyph::CloudBadgeAlert,
         }
     }
 }
@@ -630,7 +686,7 @@ impl IncidentContext {
 #[cfg(test)]
 mod readout_glyph_tests {
     use super::*;
-    use crate::ui::icons::Icon;
+    use super::ReadoutGlyph as Glyph;
 
     fn ctx(kind: IncidentKind) -> IncidentContext {
         IncidentContext::new(kind, None)
@@ -651,76 +707,76 @@ mod readout_glyph_tests {
     /// arm happened to be last.
     #[test]
     fn every_incident_kind_maps_to_the_owner_approved_glyph() {
-        assert_eq!(ctx(IncidentKind::PinExpired).readout_glyph(), Icon::ClockBadgeAlert);
-        assert_eq!(ctx(IncidentKind::LinkStalled).readout_glyph(), Icon::ClockBadgeAlert);
+        assert_eq!(ctx(IncidentKind::PinExpired).readout_glyph(), Glyph::ClockBadgeAlert);
+        assert_eq!(ctx(IncidentKind::LinkStalled).readout_glyph(), Glyph::ClockBadgeAlert);
         // `PinCreate` follows the SAME plex.tv `LinkClass` table as the Silent/PlexTv discovery
         // arm below — `mint_pin` (`auth.rs`) keeps its last response in `self.link` too, so an
         // HTTP error or a malformed 2xx from plex.tv must not read as "no connection" (`WifiSlash`)
         // — only its fallback (no specific link recorded) does.
-        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
-        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Dns).readout_glyph(), Glyph::GlobeBadgeQuestion);
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Tls).readout_glyph(), Glyph::LockBadgeAlert);
         for answered in [
             LinkClass::Answered2xx,
             LinkClass::Answered4xx,
             LinkClass::Answered5xx,
             LinkClass::AnsweredOther,
         ] {
-            assert_eq!(with_link(ctx(IncidentKind::PinCreate), answered).readout_glyph(), Icon::CloudBadgeAlert,
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), answered).readout_glyph(), Glyph::CloudBadgeAlert,
                 "PinCreate with link={answered:?} must not read as no-connection");
         }
         for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
-            assert_eq!(with_link(ctx(IncidentKind::PinCreate), other).readout_glyph(), Icon::WifiSlash);
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), other).readout_glyph(), Glyph::WifiSlash);
         }
         // No link recorded at all (the context's own default) is the genuine "never got to ask" case.
-        assert_eq!(ctx(IncidentKind::PinCreate).readout_glyph(), Icon::WifiSlash);
-        assert_eq!(ctx(IncidentKind::Authorization).readout_glyph(), Icon::PersonBadgeXmark);
+        assert_eq!(ctx(IncidentKind::PinCreate).readout_glyph(), Glyph::WifiSlash);
+        assert_eq!(ctx(IncidentKind::Authorization).readout_glyph(), Glyph::PersonBadgeXmark);
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)).readout_glyph(),
-            Icon::ServerBadgePlus
+            Glyph::ServerBadgePlus
         );
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::Refused)).readout_glyph(),
-            Icon::ServerBadgeXmark
+            Glyph::ServerBadgeXmark
         );
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         assert_eq!(
             with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::Servers)
                 .readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         let plextv = with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::PlexTv);
-        assert_eq!(with_link(plextv, LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
-        assert_eq!(with_link(plextv, LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        assert_eq!(with_link(plextv, LinkClass::Dns).readout_glyph(), Glyph::GlobeBadgeQuestion);
+        assert_eq!(with_link(plextv, LinkClass::Tls).readout_glyph(), Glyph::LockBadgeAlert);
         for answered in [
             LinkClass::Answered2xx,
             LinkClass::Answered4xx,
             LinkClass::Answered5xx,
             LinkClass::AnsweredOther,
         ] {
-            assert_eq!(with_link(plextv, answered).readout_glyph(), Icon::CloudBadgeAlert);
+            assert_eq!(with_link(plextv, answered).readout_glyph(), Glyph::CloudBadgeAlert);
         }
         for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
-            assert_eq!(with_link(plextv, other).readout_glyph(), Icon::GlobeBadgeMinus);
+            assert_eq!(with_link(plextv, other).readout_glyph(), Glyph::GlobeBadgeMinus);
         }
         // No discovery target recorded at all (defensive: the field is `Option`) reads the same
         // as `PlexTv` — the fallback branch above, exercised here with the default `Unknown` link.
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::Silent)).readout_glyph(),
-            Icon::GlobeBadgeMinus
+            Glyph::GlobeBadgeMinus
         );
-        assert_eq!(ctx(IncidentKind::SaveFailed).readout_glyph(), Icon::KeyBadgeAlert);
-        assert_eq!(ctx(IncidentKind::StoredLocked).readout_glyph(), Icon::KeyBadgeAlert);
-        assert_eq!(ctx(IncidentKind::ProfileSwitch).readout_glyph(), Icon::PeopleBadgeAlert);
+        assert_eq!(ctx(IncidentKind::SaveFailed).readout_glyph(), Glyph::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::StoredLocked).readout_glyph(), Glyph::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::ProfileSwitch).readout_glyph(), Glyph::PeopleBadgeAlert);
         assert_eq!(
             ctx(IncidentKind::ContentLoad(ContentSource::Home)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         assert_eq!(
             ctx(IncidentKind::ContentLoad(ContentSource::Libraries)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         for internal in [
             InternalClass::AdmissionRefused,
@@ -730,7 +786,7 @@ mod readout_glyph_tests {
             InternalClass::ClientIdUnavailable,
             InternalClass::Exhausted,
         ] {
-            assert_eq!(ctx(IncidentKind::Internal(internal)).readout_glyph(), Icon::CloudBadgeAlert);
+            assert_eq!(ctx(IncidentKind::Internal(internal)).readout_glyph(), Glyph::CloudBadgeAlert);
         }
     }
 }

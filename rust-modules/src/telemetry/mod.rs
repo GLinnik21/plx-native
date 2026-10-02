@@ -11,13 +11,16 @@
 //! somebody who was never asked, or said Yes before it existed — as a one-off on an explicit press,
 //! whose bounded transport is [`oneoff`]. Either one's Report ID is watched in [`delivery`], which
 //! the flush, the spool and the one-off fallback all settle, so the screen can say "sent" only once
-//! a server accepted it.
+//! a server accepted it. [`classes`] is the closed vocabulary [`playback`] serialises, owned here so
+//! the player classifies INTO it rather than this layer naming the player; [`transition`] is what a
+//! consent change does to the resources this module keeps.
 //!
 //! **Ungated**, like `eventlog::scrub` and `diag::schema`, and for the reason both of those record: the
 //! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
 //! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
 //! was on the network is not erased by that flush's commit — and a test behind a feature the
 //! default gate does not build is a test that never runs.
+pub(crate) mod classes;
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod delivery;
@@ -32,6 +35,7 @@ pub(crate) mod queue;
 pub(crate) mod sender;
 pub(crate) mod sentry;
 pub(crate) mod spool;
+pub(crate) mod transition;
 
 use consent::Consent;
 
@@ -60,7 +64,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     ));
     consent::install(c.clone());
     if !c.errors {
-        crate::player::report::clear_error_trace();
+        playback::clear_error_trace();
     }
     // **Which destinations this build can actually reach**, once, at boot. A decision of `usage=true`
     // in a build with no PostHog key sends nothing, and every other line in this log looks
@@ -158,19 +162,20 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
     persistence::load(candidates)
 }
 
-/// Compatibility for resource-focused telemetry and auth tests. Production code has one explicit
-/// commit seam: `app::adapters::consent::ConsentAdapter`.
+/// Compatibility for resource-focused telemetry and auth tests: the live side effects of a
+/// transition, exactly as `app::adapters::consent::ConsentAdapter` performs them — production
+/// code has that one explicit commit seam.
 #[cfg(test)]
 pub(crate) fn record(next: Consent) {
     let previous = consent::current().unwrap_or_default();
-    crate::app::adapters::consent::ConsentAdapter::live().commit(&previous, &next);
+    transition::commit(&previous, &next);
 }
 
 /// Test-only twin of [`record`].
 #[cfg(test)]
 pub(crate) fn forget() {
     let prior = consent::current().unwrap_or_default();
-    crate::app::adapters::consent::ConsentAdapter::live().forget(&prior);
+    transition::forget(&prior);
 }
 
 /// Called after the shared account tombstone (`plex::session::clear`'s canonical commit) is

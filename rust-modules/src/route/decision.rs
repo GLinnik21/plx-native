@@ -3478,7 +3478,7 @@ fn install_auto_hls(
         crate::player::report::note_delivery_requested_for(
             playback_trace_generation(),
             crate::player::report::DeliveryClass::Hls,
-            crate::player::report::QualityClass::from_rung(rung),
+            crate::player::report::rung_quality_class(rung),
             reason,
         );
         Some(url)
