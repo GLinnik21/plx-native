@@ -25,7 +25,7 @@ fn direct_play_modes_compose_with_each_quality_ceiling() {
 fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    assert!(crate::net::global_init());
+    assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
     let sid = crate::plex::register_for_test("forced-original", "127.0.0.1", port, "token", "forced-client");
     crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Relay);
@@ -58,7 +58,7 @@ fn force_registers_original_despite_saved_quality_relay_and_device_raster() {
 fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    assert!(crate::net::global_init());
+    assert!(plx_net::net::global_init());
     for body in [MDE_TRANSCODE, EMPTY_MC] {
         let (port, rx, server) = plan_pms(2, body);
         let sid = crate::plex::register_for_test("forced-refusal", "127.0.0.1", port, "token", "forced-client");
@@ -81,7 +81,7 @@ fn force_server_refusal_or_missing_mde_never_attempts_conversion() {
 fn disabling_direct_play_keeps_codec_preserving_remux() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    assert!(crate::net::global_init());
+    assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms(3, MDE_TRANSCODE_COPY);
     let sid = crate::plex::register_for_test("disabled-original", "127.0.0.1", port, "token", "disabled-client");
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");

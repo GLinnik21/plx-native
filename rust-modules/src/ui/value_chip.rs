@@ -47,12 +47,12 @@ impl View for ValueChip<'_> {
         };
         let r = self.rect;
         p.rrect(r, r.h * 0.5, r.h * 0.5, fill);
-        let y = crate::text::text_vcenter_y(theme::size::LABEL, 1, r.y + r.h * 0.5);
+        let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, r.y + r.h * 0.5);
         let mut x = r.x + PAD;
         x += p.text(self.name.as_ptr(), x, y, theme::size::LABEL, name_ink, 0, 0);
         x += p.text(self.value.as_ptr(), x, y, theme::size::LABEL, value_ink, 0, 1);
         if let Some(note) = self.note {
-            let y = crate::text::baseline_y(theme::size::MICRO, 0, theme::size::LABEL, 1, y);
+            let y = plx_gfx::text::baseline_y(theme::size::MICRO, 0, theme::size::LABEL, 1, y);
             x += p.text(note.as_ptr(), x, y, theme::size::MICRO,
                 theme::with_a(value_ink, NOTE_ALPHA), 0, 0);
         }

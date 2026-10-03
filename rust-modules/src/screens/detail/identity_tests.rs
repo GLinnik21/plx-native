@@ -398,7 +398,7 @@ fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
     use crate::ui::screen::DrawFrame;
     let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
     let (mut d, _rig) = boot_with(detail);
-    let runs = crate::text::capture_text_runs_for_test(|| {
+    let runs = plx_gfx::text::capture_text_runs_for_test(|| {
         let entry = d.nav.tabs.stack.top_mut().expect("detail page");
         let owner = InputOwner::Entry(entry.id);
         let inst = entry.inst.as_mut().expect("mounted detail");
@@ -406,7 +406,7 @@ fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
             press: Default::default(), focus: Default::default(), owner };
         let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
-        crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+        plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
     });
     assert!(runs.iter().any(|run| run.contains("[!!")), "the page drew catalog text: {runs:?}");
     // A wrapped catalog paragraph draws its later lines without the brackets, but still in the
@@ -475,7 +475,7 @@ fn census(detail: Detail) -> std::collections::BTreeMap<(u64, bool), usize> {
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
             press: Default::default(), focus: Default::default(), owner };
         let mut f = DrawFrame::new(&cx, crate::ui::Painter::recording());
-        crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+        plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
     });
     let mut out = std::collections::BTreeMap::new();
     for (tag, r) in log {

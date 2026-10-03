@@ -176,7 +176,7 @@ fn label_frames(cx: f32, row_y: f32, drop: f32, measure: &dyn Measure) -> (Rect,
 }
 
 fn name_caption(name: &str, width: f32, focused: bool, measure: &dyn Measure) -> String {
-    crate::text::elide_by(name, width, false, |text| measure.width_str(text, theme::size::LABEL, focused))
+    plx_gfx::text::elide_by(name, width, false, |text| measure.width_str(text, theme::size::LABEL, focused))
 }
 
 fn role_view<'a>(role: &'a str, measure: &'a dyn Measure) -> TextView<'a> {

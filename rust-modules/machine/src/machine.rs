@@ -194,7 +194,7 @@ pub trait Measure {
 
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
     /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact
-    /// conversion every `crate::text::text_width(c.as_ptr(), …)` call site already did, moved
+    /// conversion every `plx_gfx::text::text_width(c.as_ptr(), …)` call site already did, moved
     /// behind the capability so the raw free function stops being reachable outside `ui/text*.rs`
     /// and the three `Measure` impls. An embedded NUL (never produced by real UI strings) answers
     /// `0.0`, the same fallback `CString::new(..).ok()` gave every caller before.

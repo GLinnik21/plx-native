@@ -1242,7 +1242,7 @@ fn chart_key_width(&self) -> f32 {
     // signature (and so `app/run.rs`'s two call sites, out of scope here), it reaches for the
     // same `TtfMeasure` a `DrawFrame` would have handed it: the device/simulator `Measure`, which
     // is what every other render-time site converted to.
-    let measure = crate::text::TtfMeasure;
+    let measure = plx_gfx::text::TtfMeasure;
     let measured = chart_labels()
         .iter()
         .map(|label| measure.width_str(label, theme::size::DIAGNOSTIC, false))

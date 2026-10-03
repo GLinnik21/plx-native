@@ -3,7 +3,7 @@
 //!
 //! This is a THIRD service, beside the PMS `Client` (raw socket, local, `library.rs`) and the
 //! plex.tv account API (`account.rs`). It shares the account API's transport and identity headers
-//! exactly — same [`crate::net`] libcurl HTTPS (DNS + TLS, which the raw PMS socket has neither of),
+//! exactly — same [`plx_net::net`] libcurl HTTPS (DNS + TLS, which the raw PMS socket has neither of),
 //! same `X-Plex-*` header set — so it is written as an `impl AccountClient` block here rather than
 //! as a fourth client type, the same way `library.rs`/`hubs.rs` add `impl Client` blocks to the PMS
 //! client. Every call is **blocking**; run it on a worker thread.

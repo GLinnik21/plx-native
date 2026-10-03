@@ -19,7 +19,7 @@
 use crate::gfx::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub(crate) struct Z(pub u64);
+pub struct Z(pub u64);
 impl Z {
     pub const PAGE: Self = Self(0);
     pub const CHROME: Self = Self(1 << 32);
@@ -34,7 +34,7 @@ impl Z {
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Layer {
+pub struct Layer {
     pub z: Z,
     pub rect: Rect,
     pub blocks: bool,
@@ -46,26 +46,26 @@ pub(crate) struct Layer {
     pub composite_alpha: Option<f32>,
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Damage {
+pub struct Damage {
     pub z: Z,
     pub rect: Rect,
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Request {
+pub struct Request {
     pub z: Z,
     pub rect: Rect,
     pub valid: bool,
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Decision {
+pub struct Decision {
     pub draw: bool,
     pub refresh: bool,
 }
 
-pub(crate) fn below(layers: &[Layer], ceiling: Z) -> impl Iterator<Item = &Layer> {
+pub fn below(layers: &[Layer], ceiling: Z) -> impl Iterator<Item = &Layer> {
     layers.iter().filter(move |layer| layer.z < ceiling)
 }
-pub(crate) fn decide(r: Request, layers: &[Layer], damage: &[Damage]) -> Decision {
+pub fn decide(r: Request, layers: &[Layer], damage: &[Damage]) -> Decision {
     let mut exposed = vec![r.rect];
     for layer in layers.iter().filter(|l| l.z > r.z && l.blocks) {
         exposed = exposed
@@ -84,7 +84,7 @@ pub(crate) fn decide(r: Request, layers: &[Layer], damage: &[Damage]) -> Decisio
     }
 }
 
-pub(crate) fn intersects(a: Rect, b: Rect) -> bool {
+pub fn intersects(a: Rect, b: Rect) -> bool {
     a.w > 0.0
         && a.h > 0.0
         && b.w > 0.0
@@ -94,7 +94,7 @@ pub(crate) fn intersects(a: Rect, b: Rect) -> bool {
         && a.y < b.y + b.h
         && b.y < a.y + a.h
 }
-pub(crate) fn covers(a: Rect, b: Rect) -> bool {
+pub fn covers(a: Rect, b: Rect) -> bool {
     a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h
 }
 fn intersection(a: Rect, b: Rect) -> Option<Rect> {
@@ -122,7 +122,7 @@ fn subtract(a: Rect, b: Rect) -> Vec<Rect> {
     .filter(|r| r.w > 0.0 && r.h > 0.0)
     .collect()
 }
-pub(crate) fn canvas() -> Rect {
+pub fn canvas() -> Rect {
     Rect::new(
         0.0,
         0.0,
@@ -137,11 +137,11 @@ fn union(a: Rect, b: Rect) -> Rect {
 /// Exact draw arguments, not a probabilistic hash. Comparing the ordered commands intersecting
 /// a sampler catches both motion and discrete changes without promoting chrome to page damage.
 #[derive(Clone)]
-pub(crate) struct Paint {
+pub struct Paint {
     z: Z,
     bounds: [u32; 4],
     values: Vec<u64>,
-    pub(crate) glass: Option<Z>,
+    pub glass: Option<Z>,
     source: Vec<Rc<Paint>>,
 }
 impl PartialEq for Paint {
@@ -152,7 +152,7 @@ impl PartialEq for Paint {
     }
 }
 /// Reserved command tag shared by the painter and the source dependency walk.
-pub(crate) const GLASS_COMMAND: u64 = 999;
+pub const GLASS_COMMAND: u64 = 999;
 impl Paint {
     fn rect(&self) -> Rect {
         let r = self.bounds.map(f32::from_bits);
@@ -190,7 +190,7 @@ fn signature(
         .collect()
 }
 
-pub(crate) trait Value {
+pub trait Value {
     fn record(&self, values: &mut Vec<u64>);
 }
 impl Value for f32 {
@@ -235,7 +235,7 @@ impl Value for (f32, f32) {
         self.1.record(v);
     }
 }
-pub(crate) fn text_value(s: *const std::ffi::c_char, values: &mut Vec<u64>) {
+pub fn text_value(s: *const std::ffi::c_char, values: &mut Vec<u64>) {
     if s.is_null() {
         values.push(0);
         return;
@@ -259,7 +259,7 @@ pub(crate) fn text_value(s: *const std::ffi::c_char, values: &mut Vec<u64>) {
         values.push(u64::from_le_bytes(word));
     }
 }
-pub(crate) fn clip(rect: Option<Rect>) {
+pub fn clip(rect: Option<Rect>) {
     WALK.with(|w| {
         if let Some(w) = w.borrow_mut().as_mut() {
             w.clip = Some(
@@ -306,7 +306,7 @@ fn occluded(rect: Rect, layers: &[Layer], z: Z) -> bool {
 fn fully_occluded(z: Z, layers: &[Layer]) -> bool {
     layers.iter().any(|l| l.blocks && l.z > z && covers(l.rect, canvas()))
 }
-pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
+pub fn paint(rect: Rect, values: Vec<u64>) {
     WALK.with(|w| {
         let w = w.borrow();
         let Some(w) = w.as_ref().filter(|w| w.discovery) else {
@@ -355,11 +355,11 @@ pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
         }));
     });
 }
-/// Fast pre-check for [`crate::ui::Painter::declare`]: true once the current walk position has
+/// Fast pre-check for `ui::Painter::declare`: true once the current walk position has
 /// reached the surfaces band, where [`paint`] discards everything anyway. Checking here lets a
 /// caller skip building the primitive's `Vec<u64>` (and, for text, the byte-packing in
 /// [`text_value`]) instead of building it only to have `paint` throw it away.
-pub(crate) fn recording_excluded() -> bool {
+pub fn recording_excluded() -> bool {
     WALK.with(|w| {
         w.borrow().as_ref().is_some_and(|w| {
             w.discovery
@@ -370,7 +370,7 @@ pub(crate) fn recording_excluded() -> bool {
 
 /// True once a DISCOVERY walk has reached the surfaces band — the half of
 /// [`recording_excluded`] where a glass declaration is a bug rather than dead content.
-pub(crate) fn in_surfaces_band() -> bool {
+pub fn in_surfaces_band() -> bool {
     WALK.with(|w| {
         w.borrow()
             .as_ref()
@@ -380,22 +380,22 @@ pub(crate) fn in_surfaces_band() -> bool {
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 #[derive(Default)]
-pub(crate) struct Sources {
-    pub(crate) entries: BTreeMap<Z, Entry>,
+pub struct Sources {
+    pub entries: BTreeMap<Z, Entry>,
     pub layers: Vec<Layer>,
     damage: Vec<Damage>,
     frame: u64,
-    pub(crate) paints: Vec<std::rc::Rc<Paint>>,
+    pub paints: Vec<std::rc::Rc<Paint>>,
     assignments: BTreeMap<(Z, u64), Z>,
 }
-pub(crate) struct Entry {
+pub struct Entry {
     rect: Rect,
     seen: u64,
     image: Option<Rc<crate::gfx::BackdropImage>>,
-    pub(crate) valid: bool,
+    pub valid: bool,
     wanted: Vec<Rect>,
     members: Vec<Rect>,
-    pub(crate) underlay: Vec<std::rc::Rc<Paint>>,
+    pub underlay: Vec<std::rc::Rc<Paint>>,
     prefix: Vec<Rc<Paint>>,
     captured_prefix: Vec<Rc<Paint>>,
     captured_layers: Vec<Layer>,
@@ -642,13 +642,13 @@ struct Walk {
 }
 thread_local! { static WALK: RefCell<Option<Walk>> = const { RefCell::new(None) }; }
 /// RAII also covers a screen's caught panic: no source ceiling leaks into a visible pass.
-pub(crate) struct Scope(Option<Walk>);
+pub struct Scope(Option<Walk>);
 impl Drop for Scope {
     fn drop(&mut self) {
         WALK.with(|w| *w.borrow_mut() = self.0.take());
     }
 }
-pub(crate) fn enter(sources: Rc<RefCell<Sources>>, ceiling: Z) -> Scope {
+pub fn enter(sources: Rc<RefCell<Sources>>, ceiling: Z) -> Scope {
     Scope(WALK.with(|w| {
         w.replace(Some(Walk {
             sources,
@@ -665,17 +665,17 @@ pub(crate) fn enter(sources: Rc<RefCell<Sources>>, ceiling: Z) -> Scope {
         }))
     }))
 }
-pub(crate) fn discover(sources: Rc<RefCell<Sources>>) -> Scope {
+pub fn discover(sources: Rc<RefCell<Sources>>) -> Scope {
     let scope = enter(sources, Z::ALL);
     WALK.with(|w| w.borrow_mut().as_mut().unwrap().discovery = true);
     scope
 }
-pub(crate) fn active() -> bool {
+pub fn active() -> bool {
     WALK.with(|w| w.borrow().is_some())
 }
 /// A snapshot/frozen-ground boundary is part of the same walk as glass boundaries. Advance in
 /// declaration and visible passes alike, so a captured ground can include arbitrary lower glass.
-pub(crate) fn boundary() -> Option<Z> {
+pub fn boundary() -> Option<Z> {
     WALK.with(|w| {
         let mut w = w.borrow_mut();
         let w = w.as_mut()?;
@@ -692,7 +692,7 @@ pub(crate) fn boundary() -> Option<Z> {
         Some(w.current)
     })
 }
-pub(crate) fn claim_snapshot(z: Z) -> bool {
+pub fn claim_snapshot(z: Z) -> bool {
     WALK.with(|w| {
         w.borrow()
             .as_ref()
@@ -700,20 +700,20 @@ pub(crate) fn claim_snapshot(z: Z) -> bool {
     })
 }
 
-pub(crate) fn current_layer() -> Option<Z> {
+pub fn current_layer() -> Option<Z> {
     WALK.with(|w| w.borrow().as_ref().map(|w| w.current))
 }
-pub(crate) fn source_walk() -> bool {
+pub fn source_walk() -> bool {
     WALK.with(|w| {
         w.borrow()
             .as_ref()
             .is_some_and(|w| w.discovery || w.ceiling != Z::ALL)
     })
 }
-pub(crate) fn discovering() -> bool {
+pub fn discovering() -> bool {
     WALK.with(|w| w.borrow().as_ref().is_some_and(|w| w.discovery))
 }
-pub(crate) fn layer(z: Z, shared: bool) -> Scope {
+pub fn layer(z: Z, shared: bool) -> Scope {
     let old = WALK.with(|w| {
         let old = w.borrow().clone();
         if let Some(w) = w.borrow_mut().as_mut() {
@@ -728,14 +728,14 @@ pub(crate) fn layer(z: Z, shared: bool) -> Scope {
     });
     Scope(old)
 }
-pub(crate) fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
+pub fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
     if discovering() {
         draw()
     } else {
         plx_base::diag::spans::span(name, draw)
     }
 }
-pub(crate) fn suppressed() -> bool {
+pub fn suppressed() -> bool {
     WALK.with(|w| {
         w.borrow()
             .as_ref()
@@ -743,13 +743,13 @@ pub(crate) fn suppressed() -> bool {
     })
 }
 #[derive(Clone, Copy)]
-pub(crate) struct Surface {
+pub struct Surface {
     pub z: Z,
     pub rect: Rect,
     pub draw: bool,
     pub refresh: bool,
 }
-pub(crate) fn surface(rect: Rect) -> Option<Surface> {
+pub fn surface(rect: Rect) -> Option<Surface> {
     WALK.with(|slot| {
         let mut slot = slot.borrow_mut();
         let w = slot.as_mut()?;
@@ -825,7 +825,7 @@ pub(crate) fn surface(rect: Rect) -> Option<Surface> {
         })
     })
 }
-pub(crate) fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
+pub fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
     WALK.with(|w| {
         w.borrow()
             .as_ref()?
@@ -837,13 +837,13 @@ pub(crate) fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
             .clone()
     })
 }
-pub(crate) fn region(z: Z) -> Option<Rect> {
+pub fn region(z: Z) -> Option<Rect> {
     WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.rect))
 }
-pub(crate) fn source_alpha(z: Z) -> Option<f32> {
+pub fn source_alpha(z: Z) -> Option<f32> {
     WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.source_alpha?))
 }
-pub(crate) fn begin_inline_capture(z: Z) -> bool {
+pub fn begin_inline_capture(z: Z) -> bool {
     WALK.with(|w| {
         let w = w.borrow();
         let Some(w) = w.as_ref() else {
@@ -861,7 +861,7 @@ pub(crate) fn begin_inline_capture(z: Z) -> bool {
         true
     })
 }
-pub(crate) fn capture_failed(z: Z) {
+pub fn capture_failed(z: Z) {
     WALK.with(|w| {
         if let Some(w) = w.borrow().as_ref() {
             if let Some(e) = w.sources.borrow_mut().entries.get_mut(&z) {
@@ -871,7 +871,7 @@ pub(crate) fn capture_failed(z: Z) {
     });
 }
 
-pub(crate) fn captured(z: Z, image: crate::gfx::BackdropImage) {
+pub fn captured(z: Z, image: crate::gfx::BackdropImage) {
     WALK.with(|w| {
         if let Some(w) = w.borrow().as_ref() {
             let mut sources = w.sources.borrow_mut();
@@ -905,8 +905,8 @@ pub(crate) fn captured(z: Z, image: crate::gfx::BackdropImage) {
 
 /// Mark every retained source as captured against the current prefix — what a successful GPU
 /// capture does — so a test can step the walk frame by frame without a GL context.
-#[cfg(test)]
-pub(crate) fn commit(s: &Rc<RefCell<Sources>>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn commit(s: &Rc<RefCell<Sources>>) {
     let mut s = s.borrow_mut();
     let layers = s.layers.clone();
     for e in s.entries.values_mut() {

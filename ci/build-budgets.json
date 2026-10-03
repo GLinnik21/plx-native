@@ -48,7 +48,7 @@
       "headroom": "+3"
     },
     "source_lines": {
-      "what": "Lines of Rust under rust-modules/src, rust-modules/base/src, rust-modules/machine/src and rust-modules/platform/src (every .rs file). Informational: exceeding it warns and never fails, because a growing feature is not a build-health defect by itself.",
+      "what": "Lines of Rust under rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src and rust-modules/gfx/src (every .rs file). Informational: exceeding it warns and never fails, because a growing feature is not a build-health defect by itself.",
       "unit": "lines",
       "mode": "warn",
       "limit": 485000,

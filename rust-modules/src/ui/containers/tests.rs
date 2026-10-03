@@ -169,7 +169,7 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
     modal.scrim_lift = Some(lift);
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
     let mut glass = crate::ui::frame::glass::GlassPlan::new();
-    glass.set_tab_face_for_test(crate::gfx::GlassFace {
+    glass.set_tab_face_for_test(plx_gfx::gfx::GlassFace {
         scrim_top: [0.1, 0.2, 0.3, 0.4],
         scrim_bot: [0.5, 0.6, 0.7, 0.8],
         rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,
@@ -239,21 +239,21 @@ impl super::modal::DimSink for FakeFb {
     fn captured(&self) -> bool {
         self.captured
     }
-    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
+    fn kick(&mut self) -> Option<plx_gfx::gfx::FieldTicket> {
         if self.refuse {
             return None;
         }
         self.events.push("kick");
         self.runs += 1;
         self.reduced = self.level;
-        Some(crate::gfx::FieldTicket::for_test(self.runs, self.swaps))
+        Some(plx_gfx::gfx::FieldTicket::for_test(self.runs, self.swaps))
     }
-    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
-        use crate::gfx::{field_ticket_state, FieldRead, TicketState};
+    fn collect(&mut self, t: plx_gfx::gfx::FieldTicket) -> plx_gfx::gfx::FieldRead {
+        use plx_gfx::gfx::{field_ticket_state, FieldRead, TicketState};
         match field_ticket_state(t, self.runs, self.swaps, true) {
             TicketState::Due => {
                 self.events.push("collect");
-                FieldRead::Ready([[self.reduced; 3]; crate::gfx::FIELD_CELLS])
+                FieldRead::Ready([[self.reduced; 3]; plx_gfx::gfx::FIELD_CELLS])
             }
             TicketState::Pending => FieldRead::Pending,
             TicketState::Lost => FieldRead::Lost,
@@ -1472,14 +1472,14 @@ fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
     }
     assert_eq!(d.top_screen().unwrap().name(), "home");
 
-    crate::text::reset_prewarm_for_test();
+    plx_gfx::text::reset_prewarm_for_test();
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(42)));
     d.frame(&mut rig, tick(600), vec![], vec![], &mut NoTap);
     d.frame(&mut rig, tick(616), vec![], vec![], &mut NoTap);
 
     assert_eq!(d.top_screen().unwrap().name(), "home", "the outgoing page remains visible");
     assert!(
-        crate::text::prewarm_resident_for_test(b"pending page text", 24, 0),
+        plx_gfx::text::prewarm_resident_for_test(b"pending page text", 24, 0),
         "the incoming page's text was warmed before the dip floor"
     );
 }
@@ -1495,32 +1495,32 @@ fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
 #[test]
 fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
     let (mut d, mut rig, _) = booted();
-    crate::text::reset_prewarm_for_test();
+    plx_gfx::text::reset_prewarm_for_test();
     crate::ui::fixture::modal_draws_text(true);
-    let runs = crate::text::capture_text_runs_for_test(|| {
+    let runs = plx_gfx::text::capture_text_runs_for_test(|| {
         open_modal(&mut d, &mut rig, Style::Compact, 16);
         d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
     });
     let motion = d.nav.modals.top().unwrap().motion;
     assert!(motion.held() && motion.capture_frame(), "premise: the present frame is the held capture");
     assert!(runs.iter().any(|r| r == "modal surface text"), "the held surface was walked through the recorder: {runs:?}");
-    assert!(crate::text::prewarm_pending(), "…its text is queued");
+    assert!(plx_gfx::text::prewarm_pending(), "…its text is queued");
     assert!(
-        !crate::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
+        !plx_gfx::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
         "…and the capture frame spent nothing on it"
     );
     d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
     let motion = d.nav.modals.top().unwrap().motion;
     assert!(motion.held() && !motion.capture_frame(), "held past the capture while its text was pending");
     assert!(
-        crate::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
+        plx_gfx::text::prewarm_resident_for_test(b"modal surface text", 24, 0),
         "the next held frame's prewarm budget made the text resident"
     );
-    assert!(!crate::text::prewarm_pending());
+    assert!(!plx_gfx::text::prewarm_pending());
     d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
     assert!(!d.nav.modals.top().unwrap().motion.held(), "nothing pending: the ramp starts");
     crate::ui::fixture::modal_draws_text(false);
-    crate::text::reset_prewarm_for_test();
+    plx_gfx::text::reset_prewarm_for_test();
 }
 
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out
@@ -1993,7 +1993,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
         d.draw(&mut rig, true);
     }
     // The page's text "lands" now: forget what the dip-out warmed.
-    crate::text::reset_prewarm_for_test();
+    plx_gfx::text::reset_prewarm_for_test();
     let screen = |d: &Dispatcher<FixtureHost>| {
         let s = d.top_screen().unwrap().as_any().unwrap()
             .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap();
@@ -2009,7 +2009,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     d.draw(&mut rig, true);
     assert_eq!(screen(&d).0, floor_draw, "premise: an image stands in for the page");
     assert!(screen(&d).1 > recorded, "the held page is walked through the text recorder");
-    assert!(crate::text::prewarm_resident_for_test(b"pending page text", 24, 0));
+    assert!(plx_gfx::text::prewarm_resident_for_test(b"pending page text", 24, 0));
     // The walk is CPU only; it runs ahead of the frame's first framebuffer command (the held
     // image's draw), where the driver waits out the previous frame's GPU work, so it overlaps
     // that wait rather than stacking on it.
@@ -2029,7 +2029,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
         ms += 16;
         plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
-        crate::text::queue_prewarm(c"late string".as_ptr(), 24, 0);
+        plx_gfx::text::queue_prewarm(c"late string".as_ptr(), 24, 0);
         d.draw(&mut rig, true);
         assert_eq!(begins.get(), floor_begins, "a pending prewarm defers the replacement capture");
     }

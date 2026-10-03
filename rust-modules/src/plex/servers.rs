@@ -918,9 +918,9 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 ///
 /// `pin` is the origin's [`ResolvePin`] when the caller holds the address plex.tv advertised
 /// beside it (`ResolvePin::for_origin`), `None` otherwise. The registry records it on the
-/// published `Client` for the control plane and in `crate::net::resolve` for the media plane;
+/// published `Client` for the control plane and in `plx_net::net::resolve` for the media plane;
 /// that table is append-only, so a pin is never retracted — see its doc for why that is sound. The
-/// same registration binds the server's machine to that `host:port` in `crate::net::keypin`, which
+/// same registration binds the server's machine to that `host:port` in `plx_net::net::keypin`, which
 /// is how the key the session remembers for the machine reaches the host (issue #378).
 /// Captured bootstrap identity: same registry/refresh path, without a lazy session-file read.
 ///
@@ -1059,7 +1059,7 @@ fn register_lazy(
     // reach `curlio` ahead of the table entry it will look for. Once per (host, port); the
     // log line below names the pin only when it is new, so a token-only re-registration of the
     // same server (every profile switch) stays byte-identical to what it always logged.
-    let pinned = pin.is_some_and(crate::net::resolve::add);
+    let pinned = pin.is_some_and(plx_net::net::resolve::add);
     // The NOTE names the family and nothing else. The pin's host is a dashed LAN address and its
     // `addr` is that address again: `plx_base::eventlog::log`'s scrubber rewrites a bare address but has no
     // rule for a `192-168-0-10.<hash>.plex.direct` label, so printing either would put the
@@ -1090,7 +1090,7 @@ fn register_lazy(
     // table just recorded; a registration with no machine id yet (the boot primary) is covered by
     // the stored-session projection instead.
     if let Some(p) = pin {
-        crate::net::keypin::bind(grant_machine, p.host(), p.port());
+        plx_net::net::keypin::bind(grant_machine, p.host(), p.port());
     }
     let credential_eligible = super::grant::allowed_for(policy, grant_machine, origin);
     let on_grant = super::grant::rests_on_grant(policy, grant_machine, origin);
@@ -1535,7 +1535,7 @@ mod tests {
     #[test]
     fn installing_a_pinned_origin_appends_to_the_resolve_table_and_a_repoint_appends_not_replaces() {
         let _g = fresh();
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
         let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
         let o1 = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
         let p1 = ResolvePin::for_origin(&o1, "192.168.0.10").expect("a valid pin");
@@ -1543,7 +1543,7 @@ mod tests {
         assert!(id.is_set());
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p1), "the client carries it");
         assert_eq!(
-            crate::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            plx_net::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
             Some(ip("192.168.0.10")),
             "the media plane can find it by host and port"
         );
@@ -1558,20 +1558,20 @@ mod tests {
         assert_eq!(moved, id, "re-pointed in place");
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p2));
         assert_eq!(
-            crate::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            plx_net::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
             Some(ip("192.168.0.10")),
             "append-only: the route an old worker captured still resolves"
         );
         assert_eq!(
-            crate::net::resolve::lookup("192-168-0-20.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            plx_net::net::resolve::lookup("192-168-0-20.h4sh.plex.direct", 32400).map(|p| p.addr()),
             Some(ip("192.168.0.20"))
         );
         // an unpinned registration carries nothing and records nothing
         let plain = Origin::http("10.0.0.7", 32400);
         let pid = register_pinned_with_client_id("m2", &plain, "t", None, "cid", ConnectionFacts::default());
         assert_eq!(client_for(pid).unwrap().resolve_pin(), None);
-        assert_eq!(crate::net::resolve::lookup("10.0.0.7", 32400), None);
-        crate::net::resolve::clear();
+        assert_eq!(plx_net::net::resolve::lookup("10.0.0.7", 32400), None);
+        plx_net::net::resolve::clear();
     }
 
     /// **Issue #378, the registry's half of the key table.** A registration that installs a server's
@@ -1584,22 +1584,22 @@ mod tests {
         let _g = fresh();
         let key_pin = plx_base::spki::pin_from_spki_der(&[7; 8]);
         let origin = Origin::parse("https://127-0-0-1.h4sh.plex.direct:41004").unwrap();
-        let key = crate::net::keypin::key_of(origin.host(), origin.port());
-        let _scoped = crate::net::keypin::Scoped::new(key.clone(), "sha256//unused");
-        crate::net::keypin::forget_for_test(&key);
-        crate::net::keypin::project(vec![("m-keys-bind".into(), key_pin.clone())], &[], false);
-        assert_eq!(crate::net::keypin::pin_for_test(&key), None, "no host bound yet");
+        let key = plx_net::net::keypin::key_of(origin.host(), origin.port());
+        let _scoped = plx_net::net::keypin::Scoped::new(key.clone(), "sha256//unused");
+        plx_net::net::keypin::forget_for_test(&key);
+        plx_net::net::keypin::project(vec![("m-keys-bind".into(), key_pin.clone())], &[], false);
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "no host bound yet");
 
         let pin = ResolvePin::for_origin(&origin, "127.0.0.1").unwrap();
         register_pinned_with_client_id("m-keys-bind", &origin, "tok", Some(&pin), "cid", ConnectionFacts::default());
-        assert_eq!(crate::net::keypin::pin_for_test(&key), Some(key_pin));
+        assert_eq!(plx_net::net::keypin::pin_for_test(&key), Some(key_pin));
 
         let plain = Origin::parse("https://127-0-0-1.h4sh.plex.direct:41005").unwrap();
         register_pinned_with_client_id("m-keys-bind-2", &plain, "tok", None, "cid", ConnectionFacts::default());
-        let other = crate::net::keypin::key_of(plain.host(), plain.port());
-        assert_eq!(crate::net::keypin::pin_for_test(&other), None, "no ResolvePin, no binding");
-        crate::net::resolve::clear();
-        crate::net::keypin::project(Vec::new(), &[], true);
+        let other = plx_net::net::keypin::key_of(plain.host(), plain.port());
+        assert_eq!(plx_net::net::keypin::pin_for_test(&other), None, "no ResolvePin, no binding");
+        plx_net::net::resolve::clear();
+        plx_net::net::keypin::project(Vec::new(), &[], true);
     }
 
     /// A pin that arrives on an ALREADY registered origin (a legacy session file re-saved with its
@@ -1608,7 +1608,7 @@ mod tests {
     #[test]
     fn a_pin_arriving_on_a_registered_origin_republishes_the_same_slot() {
         let _g = fresh();
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
         let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
         let id = register_pinned_with_client_id("m1", &o, "tok", None, "cid", ConnectionFacts::default());
         assert_eq!(client_for(id).unwrap().resolve_pin(), None);
@@ -1617,7 +1617,7 @@ mod tests {
         assert_eq!(again, id, "same slot");
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p), "…now pinned");
         assert_eq!(count(), 1);
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
     }
 
     /// #95 step 8 / A1: `ConnectionFacts::default()` (both fields `None`) on a same-origin
@@ -1679,7 +1679,7 @@ mod tests {
         let primary = register_pinned_with_client_id("", &o, "tok", Some(&p), "cid", ConnectionFacts::default());
         assert_eq!(primary, roster);
         assert_eq!(count(), 1);
-        crate::net::resolve::clear();
+        plx_net::net::resolve::clear();
     }
 
     /// The table's basic contract: a registration round trips through its id, the reserved UNSET

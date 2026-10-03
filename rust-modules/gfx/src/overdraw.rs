@@ -30,7 +30,7 @@
 /// having to declare itself — and it is enough to separate the things that plausibly differ in
 /// cost per pixel (a four-tap blur pass, a textured card composite, a flat SDF fill).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Class {
+pub enum Class {
     /// `draw_ambient` — the OPAQUE four-corner page wash.
     Ambient = 0,
     /// `draw_grad4`/`draw_art_scrim` — translucent hero gradients and artwork bottom scrims.
@@ -57,15 +57,15 @@ pub(crate) enum Class {
     Field = 9,
 }
 
-pub(crate) const NCLASS: usize = 10;
+pub const NCLASS: usize = 10;
 
 /// The name each class answers to in `/tmp/plxnative-drawmask`, in [`Class`] order.
-pub(crate) const NAMES: [&str; NCLASS] = [
+pub const NAMES: [&str; NCLASS] = [
     "ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur", "field",
 ];
 
 /// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
-/// shape, doing nothing — and the `pub(crate) use` under it re-exports whichever one is compiled.
+/// shape, doing nothing — and the `pub use` under it re-exports whichever one is compiled.
 #[cfg(feature = "devtriggers")]
 mod imp {
     use super::{Class, NAMES, NCLASS};
@@ -92,7 +92,7 @@ mod imp {
     }
 
     /// Arm the ledger (`/tmp/plxnative-overdraw`).
-    pub(crate) fn set_ledger(on: bool) {
+    pub fn set_ledger(on: bool) {
         ON.with(|f| f.set(on));
         if on {
             log("OVERDRAW ledger on: per-class submitted quad area, logged once a second");
@@ -102,7 +102,7 @@ mod imp {
     /// Arm the mask from a trigger body: class names separated by anything non-alphanumeric, or
     /// `all`. An unknown name is reported rather than silently ignored — a leg that measured the
     /// control twice reads exactly like "this class costs nothing".
-    pub(crate) fn set_mask(spec: &str) {
+    pub fn set_mask(spec: &str) {
         let mut mask = 0u32;
         let mut bad: Vec<&str> = Vec::new();
         for word in spec
@@ -146,7 +146,7 @@ mod imp {
     /// Record `Painter::clip`'s live box, so the ledger counts the fragments a scissored quad can
     /// actually produce rather than the quad it declared.
     #[inline]
-    pub(crate) fn set_clip(box_: Option<[f32; 4]>) {
+    pub fn set_clip(box_: Option<[f32; 4]>) {
         CLIP.with(|f| f.set(box_));
     }
 
@@ -157,14 +157,14 @@ mod imp {
     /// every path that returns without drawing. Asking `gate` twice would double-count; asking it
     /// once, early, books quads that never rasterize.
     #[inline]
-    pub(crate) fn masked(c: Class) -> bool {
+    pub fn masked(c: Class) -> bool {
         c != Class::Blur && MASK.with(|f| f.get()) & (1 << (c as usize)) != 0
     }
 
     /// Should this draw be REFUSED, and if not, book it. One call per primitive, immediately after
     /// that primitive's own `gfx::culled` test so a culled quad is never counted.
     #[inline]
-    pub(crate) fn gate(c: Class, x: f32, y: f32, w: f32, h: f32) -> bool {
+    pub fn gate(c: Class, x: f32, y: f32, w: f32, h: f32) -> bool {
         let i = c as usize;
         // [`Class::Blur`] is ACCOUNTING-ONLY and books itself through [`note_px`]: its passes write
         // reduced-resolution FBOs, so their authored-coordinate quad is meaningless here, and half
@@ -199,7 +199,7 @@ mod imp {
     /// Book `px` fragments against `c` directly — for a pass whose quad is not in authored
     /// coordinates at all (the blur chain writes reduced-resolution FBOs).
     #[inline]
-    pub(crate) fn note_px(c: Class, px: f64) {
+    pub fn note_px(c: Class, px: f64) {
         if ON.with(|f| f.get()) {
             add(c as usize, px);
         }
@@ -212,7 +212,7 @@ mod imp {
     }
 
     /// One PRESENTED frame has ended. Logs a window every `LOG_EVERY` frames and resets.
-    pub(crate) fn frame_end() {
+    pub fn frame_end() {
         if !ON.with(|f| f.get()) {
             return;
         }
@@ -270,26 +270,26 @@ mod imp {
     use super::Class;
 
     #[inline]
-    pub(crate) fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
+    pub fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
         false
     }
     #[inline]
-    pub(crate) fn masked(_c: Class) -> bool {
+    pub fn masked(_c: Class) -> bool {
         false
     }
     #[inline]
-    pub(crate) fn note_px(_c: Class, _px: f64) {}
+    pub fn note_px(_c: Class, _px: f64) {}
     #[inline]
-    pub(crate) fn set_clip(_box_: Option<[f32; 4]>) {}
+    pub fn set_clip(_box_: Option<[f32; 4]>) {}
     #[inline]
-    pub(crate) fn frame_end() {}
+    pub fn frame_end() {}
     #[inline]
-    pub(crate) fn set_ledger(_on: bool) {}
+    pub fn set_ledger(_on: bool) {}
     #[inline]
-    pub(crate) fn set_mask(_spec: &str) {}
+    pub fn set_mask(_spec: &str) {}
 }
 
-pub(crate) use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
+pub use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
 
 #[cfg(test)]
 mod tests {

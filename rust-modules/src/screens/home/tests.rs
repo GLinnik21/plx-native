@@ -309,7 +309,7 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 /// reason having moved the action row.
 #[test]
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use crate::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::{self, Blocked};
     use crate::ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
@@ -392,7 +392,7 @@ fn current_server_for_test(machine: &str) -> impl Drop {
 /// `net::keypin::blocked_for` about the current server only.
 #[test]
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
-    use crate::net::keypin;
+    use plx_net::net::keypin;
     let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
@@ -2531,7 +2531,7 @@ fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge()
     s.layout_grid();
     let title = view.hub(0).unwrap().title.to_string();
     let drawn = |s: &HomeScreen| {
-        crate::text::capture_text_runs_for_test(|| {
+        plx_gfx::text::capture_text_runs_for_test(|| {
             let env = s.env(0.0);
             s.draw_grid(view, &env, Painter::recording(), 1.0, None, None, &FixtureMeasure);
         })
@@ -2776,7 +2776,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
         let context = cx(view, Some(play(s)));
         crate::ui::draw_census::capture_tex(|| {
             let mut f = DrawFrame::new(&context, Painter::recording());
-            crate::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
+            plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
         })
         .into_iter()
         .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01 && r.x < SCR_W && r.x + r.w > 0.0)

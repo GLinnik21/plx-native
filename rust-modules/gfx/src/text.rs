@@ -78,7 +78,7 @@ use std::ptr::{addr_of, addr_of_mut};
 use std::rc::Rc;
 
 use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
-use crate::ui::overdraw::{gate, Class};
+use crate::overdraw::{gate, Class};
 
 /// Last resort only. Reaching this is a DEFECT, not a graceful degradation — see `font_at`.
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
@@ -338,16 +338,16 @@ thread_local! {
     /// by [`latch_surface_text_pending`]. `None` outside the product loop (host tests that drive a
     /// dispatcher directly), where [`surface_text_pending`] reads the queue itself.
     static SURFACE_TEXT_PENDING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     static PREWARMED_FOR_TEST: RefCell<Vec<WarmKey>> = const { RefCell::new(Vec::new()) };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     static CAPTURED_FOR_TEST: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
 }
 
 /// Every text run a recording painter (`ui::Painter::recording`) is handed while `f` runs on this
 /// thread — whether or not the glyph cache or the prewarm queue would take it.
-#[cfg(test)]
-pub(crate) fn capture_text_runs_for_test(f: impl FnOnce()) -> Vec<String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn capture_text_runs_for_test(f: impl FnOnce()) -> Vec<String> {
     CAPTURED_FOR_TEST.with(|c| *c.borrow_mut() = Some(Vec::new()));
     f();
     CAPTURED_FOR_TEST.with(|c| c.borrow_mut().take()).unwrap_or_default()
@@ -371,12 +371,12 @@ fn cache_has(s: &[u8], sz: c_int, bold: c_int) -> bool {
 
 /// Record a text-cache miss from an off-screen painter. Duplicate draws of the same label collapse
 /// to one job, and the queue is refused before it can consume the cache's 32-slot safety margin.
-pub(crate) fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
+pub fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
     if s.is_null() {
         return;
     }
     let bytes = unsafe { CStr::from_ptr(s).to_bytes() };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     CAPTURED_FOR_TEST.with(|c| {
         if let (Some(runs), false) = (c.borrow_mut().as_mut(), bytes.is_empty()) {
             runs.push(String::from_utf8_lossy(bytes).into_owned());
@@ -420,7 +420,7 @@ fn drain_budgeted<T>(
 
 /// Rasterise and upload recorded misses for one dip frame. Host tests deliberately substitute a
 /// residency ledger: there is no GL context there, while the queue and deadline remain identical.
-pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+pub fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
     PREWARM.with(|slot| {
         let mut jobs = std::mem::take(&mut *slot.borrow_mut());
         let done = drain_budgeted(&mut jobs, budget_us, now, rasterise_warm);
@@ -431,7 +431,7 @@ pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
 
 /// Rasterise and upload one queued key (host tests: record it as resident).
 fn rasterise_warm(job: &WarmKey) {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     unsafe {
         if *addr_of!(TEXT_OK) != 0 {
             if let Ok(s) = CString::new(job.bytes.clone()) {
@@ -439,7 +439,7 @@ fn rasterise_warm(job: &WarmKey) {
             }
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     PREWARMED_FOR_TEST.with(|w| {
         let mut w = w.borrow_mut();
         if !w.contains(job) {
@@ -453,7 +453,7 @@ fn rasterise_warm(job: &WarmKey) {
 /// [`clear_background_prewarm_owned`] with that token clears it, so a menu that is still fading
 /// out cannot wipe the queue of the one opened over it. A later park takes the queue AND the
 /// ownership: the earlier owner's token goes stale.
-pub(crate) fn park_prewarm_as_background() -> u64 {
+pub fn park_prewarm_as_background() -> u64 {
     let jobs = PREWARM.with(|q| std::mem::take(&mut *q.borrow_mut()));
     BACKGROUND.with(|b| *b.borrow_mut() = jobs);
     BACKGROUND_OWNER.with(|o| {
@@ -469,7 +469,7 @@ pub(crate) fn park_prewarm_as_background() -> u64 {
 /// Stops once this frame's occupancy ([`live_this_frame`]) plus the string about to be rasterised
 /// would reach the same ceiling a recording walk is held to (`TCACHE - PREWARM_HEADROOM`): the
 /// strings stay queued for a calmer frame instead of evicting what the frame is standing on.
-pub(crate) fn drain_background_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+pub fn drain_background_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
     drain_background_prewarm_at(budget_us, now, || live_this_frame() as usize)
 }
 
@@ -493,18 +493,18 @@ fn drain_background_prewarm_at(budget_us: u64, mut now: impl FnMut() -> u64, liv
 }
 
 /// Background strings not yet rasterised.
-pub(crate) fn background_prewarm_pending() -> bool {
+pub fn background_prewarm_pending() -> bool {
     BACKGROUND.with(|b| !b.borrow().is_empty())
 }
 
 /// Drop the background queue: the page it was warming can no longer be shown.
-pub(crate) fn clear_background_prewarm() {
+pub fn clear_background_prewarm() {
     BACKGROUND.with(|b| b.borrow_mut().clear());
 }
 
 /// Drop the background queue only if `owner` (a [`park_prewarm_as_background`] token) still owns
 /// it. A stale token — a newer park took the queue over — leaves it alone.
-pub(crate) fn clear_background_prewarm_owned(owner: u64) {
+pub fn clear_background_prewarm_owned(owner: u64) {
     if BACKGROUND_OWNER.with(std::cell::Cell::get) == owner {
         clear_background_prewarm();
     }
@@ -513,7 +513,7 @@ pub(crate) fn clear_background_prewarm_owned(owner: u64) {
 /// Recorded text a prewarm pass has not yet rasterised. A held page image is not replaced by a
 /// live capture while this is true (`ui::dispatch`'s quiescence predicate), so the capture frame
 /// never pays for a page's newly landed strings all at once.
-pub(crate) fn prewarm_pending() -> bool {
+pub fn prewarm_pending() -> bool {
     PREWARM.with(|q| !q.borrow().is_empty())
 }
 
@@ -529,23 +529,23 @@ pub(crate) fn prewarm_pending() -> bool {
 /// `update`, the budgeted drain on the presenting side before the draw, the draw's warm pass — and
 /// a frame that does not present drains nothing, so the latch is the queue as that iteration's
 /// springs saw it.
-pub(crate) fn latch_surface_text_pending(pending: bool) {
+pub fn latch_surface_text_pending(pending: bool) {
     SURFACE_TEXT_PENDING.with(|latch| latch.set(Some(pending)));
 }
 
 /// The text readiness a held surface waits on: this iteration's latched observation, or the live
 /// queue when no product loop latched one.
-pub(crate) fn surface_text_pending() -> bool {
+pub fn surface_text_pending() -> bool {
     SURFACE_TEXT_PENDING.with(|latch| latch.get()).unwrap_or_else(prewarm_pending)
 }
 
 /// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
-pub(crate) fn clear_prewarm() {
+pub fn clear_prewarm() {
     PREWARM.with(|q| q.borrow_mut().clear());
 }
 
-#[cfg(test)]
-pub(crate) fn reset_prewarm_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_prewarm_for_test() {
     clear_prewarm();
     clear_background_prewarm();
     SURFACE_TEXT_PENDING.with(|latch| latch.set(None));
@@ -554,18 +554,18 @@ pub(crate) fn reset_prewarm_for_test() {
 
 /// How many distinct strings the host's stand-in rasteriser has made resident since the last reset:
 /// the deterministic clock the drain-budget tests run on (one string is one unit of time).
-#[cfg(test)]
-pub(crate) fn rasterised_for_test() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn rasterised_for_test() -> u64 {
     PREWARMED_FOR_TEST.with(|w| w.borrow().len() as u64)
 }
 
-#[cfg(test)]
-pub(crate) fn prewarm_resident_any_size_for_test(bytes: &[u8]) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn prewarm_resident_any_size_for_test(bytes: &[u8]) -> bool {
     PREWARMED_FOR_TEST.with(|w| w.borrow().iter().any(|k| k.bytes == bytes))
 }
 
-#[cfg(test)]
-pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) -> bool {
     PREWARMED_FOR_TEST.with(|w| {
         w.borrow().iter().any(|k| k.bytes == bytes && k.sz == sz && k.bold == bold)
     })
@@ -622,7 +622,7 @@ fn warm_step(budget_us: u64, mut now: impl FnMut() -> u64, mut run: impl FnMut(c
 /// spent 23 ms in 176 width measurements and four face opens in ONE frame (the page's first
 /// text-prewarm walk), and later visits spent under 1 ms. The metrics are per face and live as
 /// long as it does, so this is paid once per process, on frames that were going to sleep.
-pub(crate) fn warm_fonts_idle(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+pub fn warm_fonts_idle(budget_us: u64, now: impl FnMut() -> u64) -> usize {
     if unsafe { *addr_of!(TEXT_OK) } == 0 {
         return 0;
     }
@@ -638,8 +638,8 @@ pub(crate) fn warm_fonts_idle(budget_us: u64, now: impl FnMut() -> u64) -> usize
     })
 }
 
-#[cfg(test)]
-pub(crate) fn reset_font_warm_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_font_warm_for_test() {
     WARM_NEXT.with(|n| n.set(0));
 }
 
@@ -658,7 +658,7 @@ const TCACHE_HOT_FRAMES: c_uint = 8;
 /// present rasterises nothing, so the serial counts drawn frames and "touched within 8 frames"
 /// means eight frames the cache could actually have been consulted on — not eight settled loop
 /// iterations, after which everything on a still screen would read as cold.
-pub(crate) fn begin_frame() {
+pub fn begin_frame() {
     unsafe {
         TFRAME = TFRAME.wrapping_add(1).max(1);
         TFRAME_ARMED = true;
@@ -677,14 +677,14 @@ pub(crate) fn begin_frame() {
 /// It counts an entry the first time it is touched in a frame, whether that touch was a HIT or a
 /// fresh store: the question is how much of the cache this frame is standing on, and a string
 /// rendered this frame occupies its slot exactly as one that was already there does.
-pub(crate) fn live_this_frame() -> u32 {
+pub fn live_this_frame() -> u32 {
     unsafe { *addr_of!(TLIVE) }
 }
 
 /// Take the count of entries evicted while still hot, and reset it (the heartbeat's
 /// `evicted_hot`, read on every heartbeat by `app/run.rs`). Zero on a settled screen is the
 /// property worth watching; a burst of new strings on a cold open is where it can move.
-pub(crate) fn take_evicted_hot() -> u32 {
+pub fn take_evicted_hot() -> u32 {
     unsafe {
         let n = *addr_of!(TEVICTED_HOT);
         TEVICTED_HOT = 0;
@@ -1064,7 +1064,7 @@ unsafe fn render_runs(
     Some((out, w, h))
 }
 
-pub(crate) fn init_text() {
+pub fn init_text() {
     FITTED_LINES.with(|cache| cache.borrow_mut().entries.clear());
     MEASURED_BOUNDS.with(|cache| cache.borrow_mut().entries.clear());
     unsafe {
@@ -1379,14 +1379,14 @@ unsafe fn cache_store(
 /// budgets and repeated toolbar draws reuse the same metrics. A pure-ASCII cache miss costs one
 /// `TTF_SizeUTF8`, decided before any coverage is loaded. Failed or partial measurements and the
 /// uninitialized-font estimate are never cached.
-pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+pub fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     text_bounds(s,sz,bold).0
 }
 
 /// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
 /// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
 /// This does not render or upload a glyph and does not spend the text-prewarm budget.
-pub(crate) fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
+pub fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
     unsafe {
         if s.is_null() || *s == 0 {
             return (0.0, 0.0);
@@ -1460,7 +1460,7 @@ fn unmeasured_width(bytes: usize, sz: c_int) -> f32 {
 }
 
 /// Whether a measurement happened without a font since the last call (and clears it).
-pub(crate) fn take_measure_fault() -> bool {
+pub fn take_measure_fault() -> bool {
     MEASURE_FAULT.swap(false, Ordering::Relaxed)
 }
 
@@ -1468,7 +1468,7 @@ pub(crate) fn take_measure_fault() -> bool {
 /// and LOUD when there are none — a debug build panics, a release build answers the average
 /// advance and records the fault. The other two implementations are `TableMeasure` (replay) and
 /// `FixtureMeasure` (host tests).
-pub(crate) struct TtfMeasure;
+pub struct TtfMeasure;
 
 impl plx_machine::machine::Measure for TtfMeasure {
     fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
@@ -1497,7 +1497,7 @@ impl plx_machine::machine::Measure for TtfMeasure {
 static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
 
 #[derive(Default)]
-pub(crate) struct MeasuredBounds {
+pub struct MeasuredBounds {
     entries: HashMap<u64, MeasuredBound>,
 }
 
@@ -1533,8 +1533,8 @@ impl MeasuredBounds {
         bounds
     }
 
-    #[cfg(test)]
-    pub(crate) fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
         compute: impl FnOnce() -> (f32, bool)) -> f32 {
         self.bounds(text, sz, bold, || {
             let (width, complete) = compute();
@@ -1611,10 +1611,10 @@ mod measured_width_tests {
 
 // `Measure::fit_line`'s default body and the supplied-metric elision under it are the machine
 // layer's (`plx_machine::machine`), which may not name this module; they stay reachable at these paths.
-pub(crate) use plx_machine::machine::{elide_by, fit_line_by};
+pub use plx_machine::machine::{elide_by, fit_line_by};
 
 #[derive(Default)]
-pub(crate) struct FittedLines {
+pub struct FittedLines {
     entries: HashMap<u64, FittedLine>,
 }
 
@@ -1631,7 +1631,7 @@ thread_local! {
 }
 
 impl FittedLines {
-    pub(crate) fn fit(&mut self, measure: &impl plx_machine::machine::Measure, s: &str,
+    pub fn fit(&mut self, measure: &impl plx_machine::machine::Measure, s: &str,
         budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
         let spec = (budget.to_bits(), sz, bold);
         let mut hash = DefaultHasher::new();
@@ -1752,7 +1752,7 @@ mod fitted_line_tests {
 /// `cont=true` always marks the result with `…` (a continued line whose caller already knows more text
 /// follows — `TextView`). The single truncation impl for the whole UI. Main-thread only, like the
 /// glyph cache.
-pub(crate) fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
+pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
     let mut hh = DefaultHasher::new();
     s.hash(&mut hh);
     (budget as i32).hash(&mut hh);
@@ -1787,7 +1787,7 @@ fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> St
 /// other text right behind it — a name followed by its sentence's period reads
 /// "Maximilian…czyk." rather than the four dots of "Maximilian….". `s` unchanged when it fits (or
 /// the budget is not positive).
-pub(crate) fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> String {
+pub fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> String {
     if budget <= 0.0 || measure(s) <= budget {
         return s.to_string();
     }
@@ -1830,7 +1830,7 @@ mod supplied_elide_tests {
 
 /// rendered height in px of a line of text at `sz`/`bold` — the font's line height, independent of
 /// the string. Used to vertically center a glyph on a text line (e.g. the transport clock).
-pub(crate) fn text_height(sz: c_int, bold: c_int) -> f32 {
+pub fn text_height(sz: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 {
             return sz as f32;
@@ -1845,7 +1845,7 @@ pub(crate) fn text_height(sz: c_int, bold: c_int) -> f32 {
 /// stable, string-independent band UI toolkits centre type on — it deliberately ignores descenders
 /// (g j y p q) and ascenders, so every label of a given size aligns the same way. Falls back to a
 /// rough em band without TTF.
-pub(crate) fn text_cap_band(sz: c_int, bold: c_int) -> (f32, f32) {
+pub fn text_cap_band(sz: c_int, bold: c_int) -> (f32, f32) {
     unsafe {
         if TEXT_OK == 0 {
             return (sz as f32 * 0.15, sz as f32 * 0.9);
@@ -1859,7 +1859,7 @@ pub(crate) fn text_cap_band(sz: c_int, bold: c_int) -> (f32, f32) {
 /// paint: descenders hang below this and are deliberately not measured (see `ui::label`'s module
 /// docs for the rule). The one place this subtraction lives, because every screen that stacks text
 /// needs it and three of them had written it out by hand.
-pub(crate) fn cap_h(sz: c_int, bold: c_int) -> f32 {
+pub fn cap_h(sz: c_int, bold: c_int) -> f32 {
     let (top, base) = text_cap_band(sz, bold);
     base - top
 }
@@ -1868,7 +1868,7 @@ pub(crate) fn cap_h(sz: c_int, bold: c_int) -> f32 {
 /// on the font's cap-top→baseline band rather than the specific string's ink, so a label with
 /// descenders ("From Beginning") and one without ("Go to Movie") land identically — descenders hang
 /// below the optical centre instead of dragging the whole line up.
-pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
+pub fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
     let (ct, cb) = text_cap_band(sz, bold);
     cy - (ct + cb) * 0.5
 }
@@ -1890,7 +1890,7 @@ pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
 /// run measured against its own tokens then returns `on_y` bit-for-bit, so a caller that resolves
 /// every run of a flow through this (`ui::card_row::draw_heading`) does not nudge its reference run by
 /// an ULP for the privilege.
-pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, on_y: f32) -> f32 {
+pub fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, on_y: f32) -> f32 {
     // The same-token case is the COMMON one — a flow resolves its own reference run through here
     // too — and it is not free: `text_cap_band` rasterizes through the glyph cache, whose lookup is
     // a linear scan of 160 entries. Twice per heading, per shelf, per frame, inside the grid draw
@@ -1994,7 +1994,7 @@ unsafe fn place_text(
 
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width. `zoom` (in the
 /// same space as `x`/`y`) grows the drawn quad about its origin; layout width is unaffected.
-pub(crate) fn draw_text(
+pub fn draw_text(
     s: *const c_char,
     x: f32,
     y: f32,
@@ -2034,7 +2034,7 @@ pub(crate) fn draw_text(
 /// it. The horizontal band is a fraction of the string's own texture, so it needs no mapping; the
 /// vertical bands are screen y and go through the same zoom as the quad.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_text_fade(
+pub fn draw_text_fade(
     s: *const c_char,
     x: f32,
     y: f32,

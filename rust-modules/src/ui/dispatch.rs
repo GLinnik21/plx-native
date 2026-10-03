@@ -1275,14 +1275,14 @@ where
         // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
         let video_plane = self.video_plane_frame();
-        let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
-        if !crate::gfx::blur_source_pass() { rig.clear_opaque_region(); }
+        let was_video_plane = plx_gfx::gfx::set_video_plane_frame(video_plane);
+        if !plx_gfx::gfx::blur_source_pass() { rig.clear_opaque_region(); }
         let parts = self.parts(tick);
-        let source_pass = backdrop::source_walk() || crate::gfx::blur_source_pass();
+        let source_pass = backdrop::source_walk() || plx_gfx::gfx::blur_source_pass();
         let eligible = pages && host_render == HostRender::Live
             && self.page_image_possible(video_plane);
         let page_quiescent = self.page_quiescent
-            && !crate::text::prewarm_pending()
+            && !plx_gfx::text::prewarm_pending()
             && !self.present.page_moving()
             && !plx_machine::idle::page_layout_moving()
             && !self.budget.has_queued_work();
@@ -1342,7 +1342,7 @@ where
             source_pass,
         );
         if let Some(target) = warm {
-            crate::text::clear_prewarm();
+            plx_gfx::text::clear_prewarm();
             let entry = match target {
                 PrewarmTarget::Pending => nav.tabs.stack.pending_target_mut(),
                 PrewarmTarget::HeldTop => nav.tabs.stack.top_mut(),
@@ -1363,7 +1363,7 @@ where
                     // the outgoing page while its destination only records text. The walk
                     // measures ahead of any frame that draws the page, so it is speculative to
                     // the recorder (`rec::speculative`).
-                    plx_base::diag::spans::span("warm", || crate::gfx::without_frame_clear(|| {
+                    plx_base::diag::spans::span("warm", || plx_gfx::gfx::without_frame_clear(|| {
                         super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
                     }));
                 }
@@ -1481,10 +1481,10 @@ where
         let mut warm_budget_us = super::containers::transition::TEXT_PREWARM_BUDGET_US;
         if warm.is_some() {
             let start = rig.now_us();
-            plx_base::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
+            plx_base::diag::spans::span("warmdrain", || plx_gfx::text::drain_prewarm(warm_budget_us, || rig.now_us()));
             warm_budget_us = warm_budget_us.saturating_sub(rig.now_us().saturating_sub(start));
-        } else if !crate::gfx::blur_source_pass() {
-            crate::text::clear_prewarm();
+        } else if !plx_gfx::gfx::blur_source_pass() {
+            plx_gfx::text::clear_prewarm();
         }
         set.frame_cache_bytes = page_snapshot.resident_bytes();
         if host_render == HostRender::Cached {
@@ -1529,7 +1529,7 @@ where
                     // Recorded on the capture frame, drained only on the held frames after it.
                     drain_surface_text |= !s.motion.capture_frame();
                     capture_surface |= s.motion.capture_frame();
-                    backdrop::draw_span("surf", || crate::gfx::without_frame_clear(|| {
+                    backdrop::draw_span("surf", || plx_gfx::gfx::without_frame_clear(|| {
                         super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
                     }));
                 } else {
@@ -1545,20 +1545,20 @@ where
                 set.surfaces.push((s.entry.id, render.textures));
                 set.bytes += render.bytes;
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
-                if !crate::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
+                if !plx_gfx::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
         }
         if drain_surface_text && !capture_surface && !source_pass && warm_budget_us > 0 {
-            plx_base::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
+            plx_base::diag::spans::span("warmdrain", || plx_gfx::text::drain_prewarm(warm_budget_us, || rig.now_us()));
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
-        crate::gfx::set_video_plane_frame(was_video_plane);
-        if !crate::gfx::blur_source_pass() {
+        plx_gfx::gfx::set_video_plane_frame(was_video_plane);
+        if !plx_gfx::gfx::blur_source_pass() {
             self.input.hit.fill(if hit_page { stops } else { Vec::new() });
             self.input.hit.swap();
         }
-        if crate::gfx::blur_source_pass() { report.render_set = set; return; }
+        if plx_gfx::gfx::blur_source_pass() { report.render_set = set; return; }
         set.extra_bytes = super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
         if let Err(breach) = set.check() {
             // The policy itself is `frame::on_breach` — assert on the host, log once on a

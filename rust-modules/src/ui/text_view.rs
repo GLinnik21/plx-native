@@ -158,18 +158,18 @@ impl<'a> TextView<'a> {
             None => {
                 #[cfg(test)]
                 assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView measurement forbidden");
-                crate::text::text_width(text.as_ptr(), self.sz, i32::from(bold))
+                plx_gfx::text::text_width(text.as_ptr(), self.sz, i32::from(bold))
             }
         }
     }
 
     fn elide(&self, text: &str, width: f32) -> String {
         if self.measure.is_some() {
-            crate::text::elide_by(text, width, true, |s| self.measure(s))
+            plx_gfx::text::elide_by(text, width, true, |s| self.measure(s))
         } else {
             #[cfg(test)]
             assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView elision forbidden");
-            crate::text::elide(text, width, self.sz, self.bold, true)
+            plx_gfx::text::elide(text, width, self.sz, self.bold, true)
         }
     }
     /// line pitch (cap-top to cap-top). Defaults to `sz * 1.32`.
@@ -630,7 +630,7 @@ impl<'a> TextView<'a> {
                  pick one on this TextView"
             );
             if last_line_dissolves {
-                let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
+                let (ct, _) = plx_gfx::text::text_cap_band(self.sz, self.bold);
                 // cap band at row.y, like Label's VAlign::CapTop
                 p.text_fade(
                     tc.as_ptr(),
@@ -645,7 +645,7 @@ impl<'a> TextView<'a> {
                 continue;
             }
             if vtop.is_some() || vbot.is_some() {
-                let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
+                let (ct, _) = plx_gfx::text::text_cap_band(self.sz, self.bold);
                 p.text_fade_v(
                     tc.as_ptr(),
                     row.x,
@@ -768,7 +768,7 @@ mod tests {
             let _ = measured.with_measure(&missing).wrap(180.0);
             assert!(missing.take_miss().is_some(), "changing capability must invalidate this view's memo too");
         }
-        crate::text::take_measure_fault();
+        plx_gfx::text::take_measure_fault();
     }
 
     /// **A live-font capability wraps a paragraph ONCE, not once per frame.** Every frame builds
@@ -806,7 +806,7 @@ mod tests {
         let second = frame();
         assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
         assert_eq!(first.lines, second.lines);
-        crate::text::take_measure_fault();
+        plx_gfx::text::take_measure_fault();
     }
 
     #[test]
@@ -849,7 +849,7 @@ mod tests {
         view().measure_h(200.0);
         let _forbid = ForbidLive::enter();
         assert!(std::panic::catch_unwind(|| view().measure_h(200.0)).is_err());
-        crate::text::take_measure_fault();
+        plx_gfx::text::take_measure_fault();
     }
 
     /// **Item 8's grey-band regression, as a pure decision.** `edge_feather` used to paint an

@@ -32,7 +32,7 @@
 //! refusal here names only the libcurl code, because the control plane's failure value carries
 //! nothing more.
 
-use crate::net::{keypin, resolve};
+use plx_net::net::{keypin, resolve};
 use crate::plex::{Origin, ResolvePin};
 use std::time::{Duration, Instant};
 
@@ -341,11 +341,11 @@ mod tests {
 
     // ---- one loopback round through the real transports ----------------------------------------
 
-    fn serve(not_before: i64, not_after: i64, tag: &str) -> (Arc<crate::net::TestCert>, crate::net::TestCaGuard, u16) {
-        let cert = Arc::new(crate::net::mint_ca_issued_cert(&[&host()], crate::net::ymd_from_now(not_before), crate::net::ymd_from_now(not_after)));
-        let ca = crate::net::TestCaGuard::install(&cert.pem, tag);
+    fn serve(not_before: i64, not_after: i64, tag: &str) -> (Arc<plx_net::net::TestCert>, plx_net::net::TestCaGuard, u16) {
+        let cert = Arc::new(plx_net::net::mint_ca_issued_cert(&[&host()], plx_net::net::ymd_from_now(not_before), plx_net::net::ymd_from_now(not_after)));
+        let ca = plx_net::net::TestCaGuard::install(&cert.pem, tag);
         let body = br#"{"MediaContainer":{"machineIdentifier":"selftest"}}"#.to_vec();
-        let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), body);
+        let port = plx_net::net::spawn_dual_protocol(Arc::clone(&cert), body);
         (cert, ca, port)
     }
 
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn a_strict_round_learns_the_pin_and_both_planes_say_strict() {
         let _serial = plx_base::testlock::serial();
-        if !(crate::net::global_init() && crate::net::available()) { return; }
+        if !(plx_net::net::global_init() && plx_net::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-30, 30, "selftest-strict");
         let given = plx_base::spki::pin_from_spki_der(&cert.spki_der);
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn an_expired_leaf_with_a_held_pin_is_answered_in_key_mode_on_both_planes() {
         let _serial = plx_base::testlock::serial();
-        if !(crate::net::global_init() && crate::net::available()) { return; }
+        if !(plx_net::net::global_init() && plx_net::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-90, -30, "selftest-expired");
         let pin = plx_base::spki::pin_from_spki_der(&cert.spki_der);
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn a_projection_that_wipes_the_pin_costs_one_plane_and_the_line_says_so() {
         let _serial = plx_base::testlock::serial();
-        if !(crate::net::global_init() && crate::net::available()) { return; }
+        if !(plx_net::net::global_init() && plx_net::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-90, -30, "selftest-wiped");
         let pin = plx_base::spki::pin_from_spki_der(&cert.spki_der);
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn an_expired_leaf_is_refused_without_a_pin_and_with_a_wrong_one() {
         let _serial = plx_base::testlock::serial();
-        if !(crate::net::global_init() && crate::net::available()) { return; }
+        if !(plx_net::net::global_init() && plx_net::net::available()) { return; }
         resolve::clear();
         let (_cert, _ca, port) = serve(-90, -30, "selftest-refused");
         let mut run = run_for(port, "");
@@ -453,7 +453,7 @@ mod tests {
         assert!(!control.ok && !media.ok);
         forget(port);
 
-        let other = crate::net::mint_cert(&["127.0.0.1"]);
+        let other = plx_net::net::mint_cert(&["127.0.0.1"]);
         let wrong = plx_base::spki::pin_from_spki_der(&other.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{wrong}""#));
         let [control, media] = run.round(2);

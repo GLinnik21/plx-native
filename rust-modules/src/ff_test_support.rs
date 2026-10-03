@@ -144,8 +144,8 @@ pub(super) fn opened_stream_with_aborted_lane(
 ) -> (Box<HttpStream>, Box<AuQueue>, CString, CString) {
     let ip = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/library/parts/1/file.mkv").unwrap();
-    let mut hs = crate::stream::http_stream_boxed();
-    let rv = crate::stream::http_open(
+    let mut hs = plx_net::stream::http_stream_boxed();
+    let rv = plx_net::stream::http_open(
         &mut *hs,
         ip.as_ptr(),
         port as c_int,
@@ -174,7 +174,7 @@ pub(super) fn opened_stream_with_aborted_lane(
 /// on a host with no libcurl at all, where these two would be grading nothing.
 pub(super) fn curl_gate() -> Option<plx_base::testlock::Serial> {
     let g = plx_base::testlock::serial();
-    if crate::net::global_init() && crate::curlio::available() {
+    if plx_net::net::global_init() && crate::curlio::available() {
         Some(g)
     } else {
         None

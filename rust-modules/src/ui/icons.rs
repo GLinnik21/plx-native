@@ -1,7 +1,7 @@
 //! Vector icon assets (SVG) rasterized at runtime into tinted GL textures — the iOS-style
 //! "ship the vector, render at runtime" approach. Each icon lives as an SVG file under
 //! assets/icons/ (authored as a white #ffffff mask), embedded via include_str!. On first use
-//! at a given pixel size we rasterize it (crate::svg → nanosvg), upload it once as a GL texture
+//! at a given pixel size we rasterize it (plx_gfx::svg → nanosvg), upload it once as a GL texture
 //! (cached), and draw it through the Painter with a per-state tint. Main/GL-thread only.
 //!
 //! ## Authoring contract (what an asset may contain)
@@ -25,7 +25,7 @@
 //! sub-255 pixel more than 2px inside the ink except where the geometry really is notched (it
 //! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
-use crate::gfx::upload_rgba;
+use plx_gfx::gfx::upload_rgba;
 use crate::ui::{Painter, Rect};
 use std::os::raw::c_uint;
 use std::ptr::addr_of_mut;
@@ -370,7 +370,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         // rasterised at physical size and still drawn into the same logical rect.
         let target = raster_px * plx_base::surface::render_scale();
         let hi = target * SS;
-        let tex = match crate::svg::rasterize(src(id), hi, hi) {
+        let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {
                 let small = downsample_alpha(&rgba, hi, SS);
                 upload_rgba(0, target, target, small.as_ptr())
@@ -418,8 +418,8 @@ pub(crate) fn draw(p: Painter, id: Icon, r: Rect, tint: [f32; 4]) {
         // 1:1 mask — snap the COMPOSITED origin (fold the painter translate, snap, unfold),
         // same contract as text; see gfx::snap.
         let r = Rect::new(
-            crate::gfx::snap(r.x + p.dx) - p.dx,
-            crate::gfx::snap(r.y + p.dy) - p.dy,
+            plx_gfx::gfx::snap(r.x + p.dx) - p.dx,
+            plx_gfx::gfx::snap(r.y + p.dy) - p.dy,
             r.w,
             r.h,
         );
@@ -494,7 +494,7 @@ mod ink_tests {
 
     /// Every one of the twelve read-out marks (spec "1A") rasterizes at the size
     /// `StatusOverlay::page`'s glyph actually draws them at (112px, this family's only draw
-    /// size) — `crate::svg::rasterize` returns `Some`, reaches full opacity somewhere inside the
+    /// size) — `plx_gfx::svg::rasterize` returns `Some`, reaches full opacity somewhere inside the
     /// mask (nanosvg did not silently fail to fill the shape), and leaves the outermost ring of
     /// pixels untouched (no ink on the border), the same two checks the module doc's own
     /// authoring contract asks a human to grade by eye.
@@ -521,7 +521,7 @@ mod ink_tests {
             Icon::ServerBadgeXmark,
             Icon::WifiSlash,
         ] {
-            let rgba = crate::svg::rasterize(src(id), px, px)
+            let rgba = plx_gfx::svg::rasterize(src(id), px, px)
                 .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {px}px"));
             assert_eq!(rgba.len(), (px * px * 4) as usize, "{id:?} wrong buffer size");
             let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
@@ -543,7 +543,7 @@ mod ink_tests {
     #[test]
     fn the_collection_mark_rasterizes_clean_at_its_tile_sizes() {
         for px in [64, 72, 76, 80, 84] {
-            let rgba = crate::svg::rasterize(src(Icon::Collection), px, px)
+            let rgba = plx_gfx::svg::rasterize(src(Icon::Collection), px, px)
                 .unwrap_or_else(|| panic!("Collection failed to rasterize at {px}px"));
             let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
             let max_alpha = (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
@@ -571,7 +571,7 @@ mod ink_tests {
                 size,
                 "size {size}px (inside the glyph's shrink range) was clamped — MAX_ICON_PX must cover it"
             );
-            let rgba = crate::svg::rasterize(src(Icon::WifiSlash), size, size)
+            let rgba = plx_gfx::svg::rasterize(src(Icon::WifiSlash), size, size)
                 .unwrap_or_else(|| panic!("WifiSlash failed to rasterize at {size}px"));
             let alpha = |x: i32, y: i32| rgba[((y * size + x) * 4 + 3) as usize];
             let max_alpha = (0..size).flat_map(|y| (0..size).map(move |x| alpha(x, y))).max().unwrap();

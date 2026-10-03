@@ -220,7 +220,7 @@ pub(crate) fn tick(now: u32) {
     let cycle = {
         #[cfg(feature = "threadcheck")]
         let _readback = plx_base::task::watchdog::readback_scope();
-        crate::gfx::cap_cycle(want_960, &mut buf)
+        plx_gfx::gfx::cap_cycle(want_960, &mut buf)
     };
     match cycle {
         Some((w, h, flip)) => {
@@ -755,8 +755,8 @@ fn capenc() {
                         CYC_N.swap(0, Ordering::Relaxed),
                     );
                     let (rd_us, rd_n) = (
-                        crate::gfx::CAP_READ_US.swap(0, Ordering::Relaxed),
-                        crate::gfx::CAP_READ_N.swap(0, Ordering::Relaxed),
+                        plx_gfx::gfx::CAP_READ_US.swap(0, Ordering::Relaxed),
+                        plx_gfx::gfx::CAP_READ_N.swap(0, Ordering::Relaxed),
                     );
                     log(&format!(
                         "capture: {} frm/{:.1}s ({:.1}fps) enc {:.1}ms avg (max {:.1}) send {:.1}ms \

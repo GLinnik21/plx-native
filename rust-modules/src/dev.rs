@@ -85,7 +85,7 @@ const DIAG: [&str; 35] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
-    // The two OVERDRAW surfaces and the hero-ground fold ([`crate::ui::overdraw`],
+    // The two OVERDRAW surfaces and the hero-ground fold ([`plx_gfx::overdraw`],
     // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
     // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the
     // who's-watching picker, so the control leg and the masked leg would boot to DIFFERENT

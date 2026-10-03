@@ -58,7 +58,7 @@ impl Live {
 
     /// A server whose raw Part GETs answer `parts`, and whose media GETs serve `media_bytes`.
     fn start_with_parts(mode: EnhMode, media_bytes: usize, parts: PartAnswer) -> Self {
-        assert!(crate::net::global_init() && crate::curlio::available());
+        assert!(plx_net::net::global_init() && crate::curlio::available());
         let (port, done, server) = enhancement_pms_parts(MDE_DIRECTPLAY, mode, media_bytes, parts);
         let sid = crate::plex::register_for_test("enh-live", "127.0.0.1", port, "token", "enh-client");
         crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
@@ -220,7 +220,7 @@ fn slow_live(delay: std::time::Duration) -> Live {
 type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 fn slow_live_logged(delay: std::time::Duration) -> (Live, RequestLog) {
-    assert!(crate::net::global_init() && crate::curlio::available());
+    assert!(plx_net::net::global_init() && crate::curlio::available());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();
@@ -301,7 +301,7 @@ fn landing_posted() -> bool {
 /// instance — always succeeds against it. This fixture refuses everything, for a test that needs a
 /// PLAIN retranscode attempt to fail server-side.
 fn always_refusing_live() -> Live {
-    assert!(crate::net::global_init() && crate::curlio::available());
+    assert!(plx_net::net::global_init() && crate::curlio::available());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();

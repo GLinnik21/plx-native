@@ -944,12 +944,12 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::default();
         for st in [MoreMenuState::new(&ps), MoreMenuState::new_quality(&ps)] {
-            crate::text::reset_prewarm_for_test();
+            plx_gfx::text::reset_prewarm_for_test();
             st.warm_open(&M);
-            assert!(crate::text::prewarm_pending(), "warm_open queued the opening page");
-            crate::text::clear_prewarm();
+            assert!(plx_gfx::text::prewarm_pending(), "warm_open queued the opening page");
+            plx_gfx::text::clear_prewarm();
             st.warm_open(&M);
-            assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again");
+            assert!(!plx_gfx::text::prewarm_pending(), "an unchanged layout was walked again");
         }
     }
 

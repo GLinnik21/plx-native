@@ -143,14 +143,14 @@ fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String
         "Expect:".to_string(),
     ];
     let sent = body.len();
-    let t = crate::net::Timeouts {
+    let t = plx_net::net::Timeouts {
         connect_s: 8,
         total_s: 60,
         total_ms: 0,
         low_speed_bps: 0,
         low_speed_s: 0,
     };
-    match crate::net::post_pinned(url, &headers, &body, pin, t) {
+    match plx_net::net::post_pinned(url, &headers, &body, pin, t) {
         Some(r) if r.ok() => {
             plx_base::eventlog::log(&format!(
                 "lab: uploaded seq={seq} {raw_len}B -> {sent}B ({encoding}) status={}",

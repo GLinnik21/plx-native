@@ -388,7 +388,7 @@ rougher, because the Kawase tap offsets scale with the source while the bilinear
 
 ## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
 
-> **The instruments this part describes ARE in the tree now** — `ui::overdraw`,
+> **The instruments this part describes ARE in the tree now** — `plx_gfx::overdraw`,
 > `/tmp/plxnative-overdraw`, `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground`. They were
 > hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
 > with `filter-branch`, so it shares no ancestry with the baseline commits here, and a direct merge
@@ -424,7 +424,7 @@ note, for two reasons this part settles with measurements: **most of the 3.65x i
 `FRAG_QUADS_RAST` is GPU-global, so it cannot say whose quads it counted. Two things were added to
 answer that without guessing.
 
-**`/tmp/plxnative-overdraw`** — a CPU-side ledger (`ui::overdraw`) that sums, per draw class, the
+**`/tmp/plxnative-overdraw`** — a CPU-side ledger (`plx_gfx::overdraw`) that sums, per draw class, the
 screen-VISIBLE area of every quad the app submits, clipped to the panel and to `Painter::clip`'s
 live box. It is not `glFinish`-serialised and it cannot be billed for another process's work. It
 runs in the desktop simulator too, and gives the same authored-pixel answer there, because it works
@@ -553,7 +553,7 @@ remove ARITHMETIC, not fragments.
    app's own share of a hero frame is 5,733,199 cycles; that is the whole size of the prize.
 3. **The bottleneck is the arithmetic pipe at 89.5% occupancy.** The lever is arith words per
    fragment on the quads that carry them, not the number of quads.
-4. **`ui::overdraw` is worth keeping** whichever way the fold goes. It is compiled out of a release
+4. **`plx_gfx::overdraw` is worth keeping** whichever way the fold goes. It is compiled out of a release
    build entirely, it runs in the simulator, and it is the only instrument here that can attribute a
    fragment to a draw class — the counters cannot, because they are GPU-global.
 5. The fold itself is **worth having in the tree behind its flag and not worth switching on**: 0.81%

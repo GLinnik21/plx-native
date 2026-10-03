@@ -5,7 +5,7 @@
 //! of the `plex` layer (`hubs.rs`/`library.rs`): typed methods returning serde DTOs, with all the
 //! transport, identity headers, and token injection centralised on [`AccountClient`].
 //!
-//! Transport is [`crate::net`] (libcurl HTTPS) — the TLS analog of `stream::http_get`, since plex.tv
+//! Transport is [`plx_net::net`] (libcurl HTTPS) — the TLS analog of `stream::http_get`, since plex.tv
 //! needs DNS + TLS that the plain-HTTP PMS socket can't do. Every call is **blocking**, so callers
 //! run it on a background thread (the login-poll / discovery / switch threads), never the SDL loop.
 //!
@@ -278,17 +278,17 @@ impl AccountClient {
         decode_evidence("GET", url, self.get_raw(url))
     }
 
-    fn get_evidence_with<T: DeserializeOwned>(&self, url: &str, timeouts: crate::net::Timeouts)
+    fn get_evidence_with<T: DeserializeOwned>(&self, url: &str, timeouts: plx_net::net::Timeouts)
         -> Result<T, CallEvidence> {
-        let response = crate::net::request_evidence(url, &self.headers(), "GET", None,
+        let response = plx_net::net::request_evidence(url, &self.headers(), "GET", None,
             timeouts, false, None, None);
         note_response_contact(url, &response);
         decode_evidence("GET", url, response)
     }
 
-    fn get_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
-        let resp = crate::net::request_evidence(url, &self.headers(), "GET", None,
-            crate::net::API, false, None, None);
+    fn get_raw(&self, url: &str) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+        let resp = plx_net::net::request_evidence(url, &self.headers(), "GET", None,
+            plx_net::net::API, false, None, None);
         note_response_contact(url, &resp);
         resp
     }
@@ -314,14 +314,14 @@ impl AccountClient {
     }
 
     fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
-        timeouts: crate::net::Timeouts) -> AudioPreferencesOutcome
+        timeouts: plx_net::net::Timeouts) -> AudioPreferencesOutcome
     {
         let url = format!("{}/api/v2/user", plex_tv());
-        let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
+        let response = plx_net::net::request_evidence(&url, &self.headers(), "GET", None,
             timeouts, false, None, None);
         note_response_contact(&url, &response);
         match response {
-            Err(failure) if failure.cause == crate::net::RequestError::TimedOut =>
+            Err(failure) if failure.cause == plx_net::net::RequestError::TimedOut =>
                 AudioPreferencesOutcome::TimedOut,
             Err(_) => AudioPreferencesOutcome::Failed,
             Ok(response) => decode::<AccountUser>("GET", &url, response)
@@ -331,9 +331,9 @@ impl AccountClient {
     }
 
     /// Complete responses or safe incomplete-response evidence. No body ceiling is enabled here.
-    fn post_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
-        let resp = crate::net::request_evidence(url, &self.headers(), "POST", Some(b""),
-            crate::net::API, false, None, None);
+    fn post_raw(&self, url: &str) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+        let resp = plx_net::net::request_evidence(url, &self.headers(), "POST", Some(b""),
+            plx_net::net::API, false, None, None);
         note_response_contact(url, &resp);
         resp
     }
@@ -353,9 +353,9 @@ impl AccountClient {
         decode_evidence("POST", &url, self.post_raw(&url))
     }
 
-    pub(crate) fn create_pin_with(&self, timeouts: crate::net::Timeouts) -> Result<Pin, CallEvidence> {
+    pub(crate) fn create_pin_with(&self, timeouts: plx_net::net::Timeouts) -> Result<Pin, CallEvidence> {
         let url = format!("{}/api/v2/pins?strong=false", plex_tv());
-        let response = crate::net::request_evidence(&url, &self.headers(), "POST", Some(b""),
+        let response = plx_net::net::request_evidence(&url, &self.headers(), "POST", Some(b""),
             timeouts, false, None, None);
         note_response_contact(&url, &response);
         decode_evidence("POST", &url, response)
@@ -370,8 +370,8 @@ impl AccountClient {
     pub fn poll_pin(&self, id: i64) -> PinPoll {
         let url = format!("{}/api/v2/pins/{id}", plex_tv());
         // Polling did not update the reachability memo; preserve that policy.
-        let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
-            crate::net::API, false, None, None);
+        let response = plx_net::net::request_evidence(&url, &self.headers(), "GET", None,
+            plx_net::net::API, false, None, None);
         poll_response(&url, response)
             .expect("uncapped account request cannot report a local body limit")
     }
@@ -392,7 +392,7 @@ impl AccountClient {
         ))
     }
 
-    pub(crate) fn resources_with(&self, timeouts: crate::net::Timeouts)
+    pub(crate) fn resources_with(&self, timeouts: plx_net::net::Timeouts)
         -> Result<Vec<Resource>, CallEvidence> {
         self.get_evidence_with(&format!(
             "{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", plex_tv()
@@ -406,7 +406,7 @@ impl AccountClient {
     /// about WHICH user answered, it only reads what the account token's owner is called.
     ///
     /// The name is personal data: this method logs no body and the caller keeps it in UI state only.
-    pub(crate) fn display_name_with(&self, timeouts: crate::net::Timeouts) -> Option<String> {
+    pub(crate) fn display_name_with(&self, timeouts: plx_net::net::Timeouts) -> Option<String> {
         let dto: AccountDisplayName = self
             .get_evidence_with(&format!("{}/api/v2/user", plex_tv()), timeouts).ok()?;
         dto.chosen()
@@ -426,7 +426,7 @@ impl AccountClient {
         Ok(hu.users)
     }
 
-    pub(crate) fn home_users_with(&self, timeouts: crate::net::Timeouts)
+    pub(crate) fn home_users_with(&self, timeouts: plx_net::net::Timeouts)
         -> Result<Vec<HomeUser>, CallEvidence> {
         let hu: HomeUsers = self.get_evidence_with(
             &format!("{}/api/v2/home/users", plex_tv()), timeouts)?;
@@ -455,14 +455,14 @@ impl AccountClient {
     }
 }
 
-fn response_status(response: &Result<crate::net::Resp, crate::net::RequestFailure>) -> Option<u16> {
+fn response_status(response: &Result<plx_net::net::Resp, plx_net::net::RequestFailure>) -> Option<u16> {
     match response { Ok(resp) => Some(resp.status), Err(failure) => failure.status }
 }
 
 /// A size policy failure has no authority to say the service is offline. Keep it fallible for
 /// future limited callers; today's public methods pass max_body=None and cannot reach this Err.
-fn complete_response(response: Result<crate::net::Resp, crate::net::RequestFailure>)
-    -> Result<Option<crate::net::Resp>, crate::net::RequestFailure> {
+fn complete_response(response: Result<plx_net::net::Resp, plx_net::net::RequestFailure>)
+    -> Result<Option<plx_net::net::Resp>, plx_net::net::RequestFailure> {
     match response {
         Ok(resp) => Ok(Some(resp)),
         Err(failure) if failure.body_limit.is_some() => Err(failure),
@@ -470,8 +470,8 @@ fn complete_response(response: Result<crate::net::Resp, crate::net::RequestFailu
     }
 }
 
-fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::RequestFailure>)
-    -> Result<PinPoll, crate::net::RequestFailure> {
+fn poll_response(url: &str, response: Result<plx_net::net::Resp, plx_net::net::RequestFailure>)
+    -> Result<PinPoll, plx_net::net::RequestFailure> {
         if let Some(status) = response_status(&response).filter(|status| pin_is_gone(*status)) {
             log_status_failure("GET", url, status);
             return Ok(PinPoll::Gone);
@@ -502,8 +502,8 @@ fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::Reque
         })
 }
 
-fn switch_response(url: &str, response: Result<crate::net::Resp, crate::net::RequestFailure>)
-    -> Result<SwitchOutcome, crate::net::RequestFailure> {
+fn switch_response(url: &str, response: Result<plx_net::net::Resp, plx_net::net::RequestFailure>)
+    -> Result<SwitchOutcome, plx_net::net::RequestFailure> {
         if let Some(status @ 400..=499) = response_status(&response) {
             log_status_failure("POST", url, status);
             return Ok(SwitchOutcome::Refused(status));
@@ -519,7 +519,7 @@ fn switch_response(url: &str, response: Result<crate::net::Resp, crate::net::Req
         })
 }
 
-fn note_response_contact(url: &str, response: &Result<crate::net::Resp, crate::net::RequestFailure>) {
+fn note_response_contact(url: &str, response: &Result<plx_net::net::Resp, plx_net::net::RequestFailure>) {
     match response {
         Ok(_) => note_contact(url, true),
         Err(failure) if failure.status.is_some() => note_contact(url, true),
@@ -542,7 +542,7 @@ pub enum SwitchOutcome {
 #[cfg(test)]
 mod evidence_tests {
     use super::*;
-    use crate::net::{RequestError, RequestFailure, Resp};
+    use plx_net::net::{RequestError, RequestFailure, Resp};
 
     const SWITCH: &str = "https://plex.tv/api/v2/home/users/synthetic/switch";
 
@@ -589,7 +589,7 @@ mod evidence_tests {
     fn http2_reset_policy(status: u16) {
         let _serial = plx_base::testlock::serial();
         for rc in [16, 55, 92] {
-            assert_refusal_evidence(status, crate::net::test_response_failure(rc, 0, status.into(), false));
+            assert_refusal_evidence(status, plx_net::net::test_response_failure(rc, 0, status.into(), false));
         }
     }
 
@@ -625,21 +625,21 @@ mod evidence_tests {
     fn http2_wire_reset_failure_keeps_the_account_verdict() {
         let _serial = plx_base::testlock::serial();
         for status in [401, 403, 404, 410] {
-            crate::net::with_h2_reset_failure(status, |failure| assert_refusal_evidence(status, Err(failure)));
+            plx_net::net::with_h2_reset_failure(status, |failure| assert_refusal_evidence(status, Err(failure)));
         }
     }
 
     #[test]
     fn incomplete_refusal_survives_real_transport_and_preserves_contact() {
         let _serial = plx_base::testlock::serial();
-        assert!(crate::net::global_init());
+        assert!(plx_net::net::global_init());
         for status in [401, 403, 404, 410] {
           for limit in [None, Some(4)] {
             let reply = format!("HTTP/1.1 {status} Refused\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort");
-            crate::net::with_test_response(reply.into_bytes(), false, |url| {
+            plx_net::net::with_test_response(reply.into_bytes(), false, |url| {
                 let client = AccountClient::new("synthetic-client", None);
                 let response = if let Some(limit) = limit {
-                    crate::net::request_evidence(url, &client.headers(), "POST", Some(b""), crate::net::API, false, Some(limit), None)
+                    plx_net::net::request_evidence(url, &client.headers(), "POST", Some(b""), plx_net::net::API, false, Some(limit), None)
                 } else { client.post_raw(url) };
                 assert_eq!(response_status(&response), Some(status));
                 set_unreachable_for_test(true);
@@ -694,11 +694,11 @@ mod evidence_tests {
         assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(SwitchOutcome::Switched(_))));
         assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Pending)));
         assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Authorized(_))));
-        assert!(crate::net::global_init());
+        assert!(plx_net::net::global_init());
         for body in [br#"[{"provides":"server","connections":null}]"#.as_slice(), br#"{"users":[]}"#.as_slice()] {
             let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
             reply.extend_from_slice(body);
-            crate::net::with_test_response(reply, false, |url| {
+            plx_net::net::with_test_response(reply, false, |url| {
                 let client = AccountClient::new("synthetic-client", None);
                 if body[0] == b'[' { assert_eq!(client.get::<Vec<Resource>>(url).unwrap().len(), 1); }
                 else { assert!(client.get::<HomeUsers>(url).unwrap().users.is_empty()); }
@@ -711,13 +711,13 @@ mod evidence_tests {
     #[test]
     fn an_overflowing_valid_prefix_is_never_a_token_or_grant_response() {
         let _serial = plx_base::testlock::serial();
-        assert!(crate::net::global_init());
+        assert!(plx_net::net::global_init());
         for prefix in [br#"{"authToken":"synthetic-secret"}"#.as_slice(), br#"[{"accessToken":"synthetic-secret"}]"#.as_slice()] {
             let mut body = prefix.to_vec(); body.extend([b' '; 128]);
             let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
             reply.extend(body);
-            crate::net::with_test_response(reply, false, |url| {
-                let response = crate::net::request_evidence(url, &[], "GET", None, crate::net::API, false, Some(prefix.len()), None);
+            plx_net::net::with_test_response(reply, false, |url| {
+                let response = plx_net::net::request_evidence(url, &[], "GET", None, plx_net::net::API, false, Some(prefix.len()), None);
                 let failure = switch_response(SWITCH, response).err().expect("prefix cannot authorize");
                 assert_eq!(failure.status, Some(200));
                 assert_eq!(failure.body_limit, Some(prefix.len()));
@@ -861,7 +861,7 @@ pub enum PinPoll {
 /// response that was refused or would not decode, `Err` for `net`'s own failure. Closed evidence
 /// only — the onboarding report reduces it to a link class plus one number
 /// (`telemetry::incident::classify`); no body, URL or header is kept.
-pub type CallEvidence = Result<u16, crate::net::RequestFailure>;
+pub type CallEvidence = Result<u16, plx_net::net::RequestFailure>;
 
 /// Is this a status by which plex.tv refused the IDENTITY a request carried (the token
 /// `headers()` attached), as opposed to failing to serve it? One definition, read by the log line
@@ -912,7 +912,7 @@ pub fn describe_evidence(evidence: &CallEvidence) -> String {
         Ok(status) => format!("HTTP {status}"),
         Err(failure) => match (failure.status, failure.curl_rc) {
             (Some(status), _) => format!("HTTP {status}, transfer incomplete"),
-            (None, _) if failure.cause == crate::net::RequestError::TimedOut => "no answer (timed out)".into(),
+            (None, _) if failure.cause == plx_net::net::RequestError::TimedOut => "no answer (timed out)".into(),
             (None, Some(rc)) => format!("no answer (curl rc={rc})"),
             (None, None) => "no answer".into(),
         },
@@ -921,7 +921,7 @@ pub fn describe_evidence(evidence: &CallEvidence) -> String {
 
 /// [`decode`], keeping the evidence of a call that yields nothing.
 fn decode_evidence<T: DeserializeOwned>(verb: &str, url: &str,
-    response: Result<crate::net::Resp, crate::net::RequestFailure>) -> Result<T, CallEvidence> {
+    response: Result<plx_net::net::Resp, plx_net::net::RequestFailure>) -> Result<T, CallEvidence> {
     match response {
         Err(failure) => Err(Err(failure)),
         Ok(resp) => {
@@ -964,7 +964,7 @@ fn pin_is_gone(status: u16) -> bool {
 /// QR uses `net::https_get_public` and grades `r.ok()` itself. Switch refusal and poll Gone
 /// classify received status before decoding, including incomplete responses. Every typed body
 /// decoded here (including `discover.rs`) belongs to a complete transfer; failures carry no prefix.
-fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) -> Option<T> {
+fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: plx_net::net::Resp) -> Option<T> {
     if !resp.ok() {
         log_status_failure(verb, url, resp.status);
         return None;
@@ -1062,9 +1062,9 @@ fn id_shaped(seg: &str) -> bool {
         || (seg.len() >= 8 && seg.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
-fn play_timeouts(remaining: Duration) -> crate::net::Timeouts {
+fn play_timeouts(remaining: Duration) -> plx_net::net::Timeouts {
     let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as _;
-    crate::net::Timeouts { total_ms: millis, ..crate::net::API }
+    plx_net::net::Timeouts { total_ms: millis, ..plx_net::net::API }
 }
 
 fn audio_preferences_cached_at<F, N, C>(cache: &AudioPreferencesCache,
@@ -1133,7 +1133,7 @@ pub(crate) fn warm_audio_preferences(client_id: String, credential: String,
     warm_audio_preferences_with(&AUDIO_PREFERENCES_CACHE, key,
         |job| plx_base::task::spawn_small("account-audio", job),
         move || AccountClient::new(&client_id, Some(&credential))
-            .fetch_audio_preferences(&user, crate::net::API),
+            .fetch_audio_preferences(&user, plx_net::net::API),
         move || current.is_current());
 }
 
@@ -1176,10 +1176,10 @@ fn de_soft_profile<'de, D: serde::Deserializer<'de>>(d: D)
 }
 
 /// How long the failure read-out may wait for [`AccountClient::display_name_with`]: 5 s whole
-/// request and connect, a short deadline of its own because [`crate::net::API`]'s 25 s would hold
+/// request and connect, a short deadline of its own because [`plx_net::net::API`]'s 25 s would hold
 /// the "no server yet" screen back for a caption nicety (no shorter preset exists in `net`).
-pub(crate) const DISPLAY_NAME_TIMEOUTS: crate::net::Timeouts =
-    crate::net::Timeouts { connect_s: 5, total_s: 5, ..crate::net::API };
+pub(crate) const DISPLAY_NAME_TIMEOUTS: plx_net::net::Timeouts =
+    plx_net::net::Timeouts { connect_s: 5, total_s: 5, ..plx_net::net::API };
 
 /// `/api/v2/user`, read only for the names a person would call the account. A JSON `null` (which
 /// plex.tv sends for `username` and `email` on a managed user) and any non-string are `None`.

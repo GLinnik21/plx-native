@@ -226,7 +226,7 @@ fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
     // may be used from several threads" -- not `curlio::available()`, which adds the multi table
     // only the media transport reads (and `curlio` is not the data layer's to name).
     assert!(
-        crate::net::global_init() && crate::net::available() && crate::net::threaded_tls_ready()
+        plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready()
     );
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();

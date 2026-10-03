@@ -199,7 +199,7 @@ impl RouteGround {
     /// sample at all.
     ///
     /// `latch_from_frame` refuses on `gfx::field_kick`'s list (§9's video-plane door among them —
-    /// see [`crate::gfx::field_kick`]'s doc): whenever it answers [`FrameLatch::Refused`] this falls
+    /// see [`plx_gfx::gfx::field_kick`]'s doc): whenever it answers [`FrameLatch::Refused`] this falls
     /// back to the same authored atmosphere [`Self::draw_default`] uses when it has no host at all,
     /// graded [`Grade::Ground`] because it is standing in for a live sample rather than being drawn
     /// as itself.
@@ -228,7 +228,7 @@ impl RouteGround {
 
     pub(crate) fn draw_host(&mut self, p: Painter) {
         // `ModalStack::draw_scrims_on`'s rule, for its reason — see [`ground_reads_host`].
-        if ground_reads_host(p.opacity(), crate::gfx::snapshot_captured_this_frame()) {
+        if ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
             self.latch_host();
         }
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
@@ -1593,10 +1593,10 @@ mod tests {
         // A refusal is not a pending read, and the deferred read must not turn one into a frame of
         // no atmosphere.
         {
-            let was = crate::gfx::set_video_plane_frame(true);
+            let was = plx_gfx::gfx::set_video_plane_frame(true);
             let mut ground = RouteGround::new();
             ground.latch_host();
-            crate::gfx::set_video_plane_frame(was);
+            plx_gfx::gfx::set_video_plane_frame(was);
 
             assert!(
                 ground.is_latched(),

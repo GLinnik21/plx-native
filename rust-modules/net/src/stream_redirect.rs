@@ -43,31 +43,31 @@ use crate::net::origin::{Origin, Scheme};
 /// Hops followed after the first request. The first request plus this many redirects is the most
 /// a media open will send before failing with [`FollowError::TooManyHops`] — the same bound
 /// `curlio` gives libcurl (`CURLOPT_MAXREDIRS`).
-pub(crate) const MAX_HOPS: u32 = 5;
+pub const MAX_HOPS: u32 = 5;
 
 /// The statuses that carry a `Location` to re-request with the same method. 300 and 304 are not
 /// redirects in that sense; 305/306 are deprecated.
-pub(crate) fn is_redirect(status: c_int) -> bool {
+pub fn is_redirect(status: c_int) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
 /// One request target: an origin plus an absolute path with optional query (no fragment).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Target {
-    pub(crate) origin: Origin,
-    pub(crate) path: String,
+pub struct Target {
+    pub origin: Origin,
+    pub path: String,
 }
 
 impl Target {
     /// The full URL, for the curl source. Carries whatever query the target has — never log it.
-    pub(crate) fn url(&self) -> String {
+    pub fn url(&self) -> String {
         format!("{}{}", self.origin.base(), self.path)
     }
 }
 
 /// Where a followed open ended.
 #[derive(Debug)]
-pub(crate) enum Opened {
+pub enum Opened {
     /// The stream holds a 2xx response for this target — the EFFECTIVE URL, which every later
     /// reopen (a Range seek) must use.
     Socket(Target),
@@ -77,7 +77,7 @@ pub(crate) enum Opened {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FollowError {
+pub enum FollowError {
     /// A request of the chain failed; the stream's status field still holds its code.
     Open(HttpOpenError),
     /// More than [`MAX_HOPS`] redirects.
@@ -97,27 +97,27 @@ pub(crate) enum FollowError {
 /// plaintext hop that would carry one, so a revoked grant stops the very next request. A plain
 /// function pointer, not a lookup: the transport takes the decision as a value and never names the
 /// layer that makes it.
-pub(crate) type CredentialGate = fn(&Origin, &str, &[&str]) -> bool;
+pub type CredentialGate = fn(&Origin, &str, &[&str]) -> bool;
 
 /// One media GET to be opened with redirects followed.
-pub(crate) struct Request<'a> {
-    pub(crate) origin: &'a Origin,
+pub struct Request<'a> {
+    pub origin: &'a Origin,
     /// Absolute path plus optional query. May carry `X-Plex-Token`.
-    pub(crate) path: &'a str,
+    pub path: &'a str,
     /// A credential header block (`Name: value\r\n`…), sent to the original origin only.
-    pub(crate) credentials: Option<&'a str>,
+    pub credentials: Option<&'a str>,
     /// `Range: bytes=N-` on every hop when set.
-    pub(crate) range_from: Option<i64>,
+    pub range_from: Option<i64>,
     /// Absolute setup deadline for the whole chain (connect/send/headers of every hop).
-    pub(crate) deadline: Option<Instant>,
+    pub deadline: Option<Instant>,
     /// Refuse, undialled, any hop whose scheme+host+port differ from [`Self::origin`].
-    pub(crate) same_origin_only: bool,
+    pub same_origin_only: bool,
     /// Asked before every plaintext hop that would carry a credential; see [`CredentialGate`].
-    pub(crate) credential_gate: CredentialGate,
+    pub credential_gate: CredentialGate,
 }
 
 /// Open `req` on `hs`, following plaintext redirects. See the module doc for the credential rule.
-pub(crate) fn open_following(
+pub fn open_following(
     hs: *mut HttpStream,
     req: &Request,
     checkpoint: &mut dyn Checkpoint,
@@ -229,7 +229,7 @@ fn header_lines(block: &str) -> Vec<&str> {
 }
 
 /// Same scheme, host (ASCII case-insensitive) and port.
-pub(crate) fn same_origin(a: &Origin, b: &Origin) -> bool {
+pub fn same_origin(a: &Origin, b: &Origin) -> bool {
     a.scheme() == b.scheme() && a.port() == b.port() && a.host().eq_ignore_ascii_case(b.host())
 }
 
@@ -264,7 +264,7 @@ fn with_query_pair(path: &str, pair: &str) -> String {
 /// an HTTP client needs). `None` for anything this client cannot request: a scheme other than
 /// http/https, a malformed authority, or any whitespace/control byte (which would otherwise be
 /// written into a request line).
-pub(crate) fn resolve_location(base: &Target, location: &str) -> Option<Target> {
+pub fn resolve_location(base: &Target, location: &str) -> Option<Target> {
     let loc = location.trim_matches(|c| c == ' ' || c == '\t');
     if loc.is_empty() || loc.bytes().any(|b| b <= 0x20 || b == 0x7f) {
         return None;
