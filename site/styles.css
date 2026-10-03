@@ -428,10 +428,10 @@ video::-webkit-media-controls-start-playback-button {
   gap: 4px;
   margin-left: 4px;
 }
-/* GitHub and the Ko-fi cup are a pair of quiet glyphs: the same target,
-   lifting to the same white on hover. The cup is Ko-fi's own outline with
-   the heart and handle cut out, so it reads as Ko-fi without the brand
-   colours; Install stays the one filled shape in the bar. */
+/* GitHub and the Ko-fi cup are a matched pair of quiet glyphs: the same
+   grey, the same target, lifting to white on hover. The cup is Ko-fi's own
+   outline with the heart and handle cut out, so it reads as Ko-fi without
+   the brand colours; Install stays the one filled shape in the bar. */
 .header-github,
 .header-kofi {
   display: grid;
@@ -445,11 +445,7 @@ video::-webkit-media-controls-start-playback-button {
     background-color 200ms ease;
 }
 /* Ko-fi's cup carries half again the GitHub mark's ink at the same height,
-   so it is drawn a little smaller and a step dimmer, behind GitHub; it lifts
-   to the same white on hover. */
-.header-kofi {
-  color: var(--text-tertiary);
-}
+   so it is drawn a little smaller to weigh the same. */
 .kofi-icon {
   width: 22px;
   height: 17.6px;
