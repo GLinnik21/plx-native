@@ -1,3 +1,4 @@
 # GitHub's "Sponsor" button on the repository page.
 github: GLinnik21
-ko_fi: 0xbeb
+# Quoted: unquoted, YAML reads 0xbeb as the hex number 3051.
+ko_fi: "0xbeb"
