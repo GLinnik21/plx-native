@@ -475,7 +475,11 @@ video::-webkit-media-controls-start-playback-button {
   inherits: false;
   initial-value: #e2e2e2;
 }
+/* The icons' ink sits inside round 40-44px targets, so the space between
+   two glyphs reads about twice the gap to the pill. The margin evens the
+   visible gaps so GitHub and Ko-fi read as a pair, apart from Install. */
 .header-cta {
+  margin-left: 10px;
   --cta-face: var(--accent-face);
   --cta-body: var(--accent-face-body);
   display: inline-flex;
@@ -2340,10 +2344,10 @@ video::-webkit-media-controls-start-playback-button {
    thumbnail at the wide layout's width and too tall at a phone's: it only has
    to fit under the header, alone on the screen. After the phone rule above,
    which a phone on its side can match as well. */
-/* Under 380px (iPhone SE and mini) the brand, GitHub, Ko-fi and Install do
-   not fit on one capsule: the PLX mark stands for the name, and the link
-   keeps its aria-label. */
-@media (max-width: 379px) {
+/* Under 390px (iPhone SE and mini) the brand, GitHub, Ko-fi and Install do
+   not fit on one capsule, the sub-pages' "<- PlxNative" being the widest:
+   the PLX mark stands for the name, and the link keeps its aria-label. */
+@media (max-width: 389px) {
   .brand-name {
     display: none;
   }
