@@ -678,7 +678,7 @@ pub(crate) mod host {
             if !self.valid() { return; }
             if clear {
                 let c = crate::ui::theme::CLEAR_RGB;
-                crate::gfx::frame_clear(c.0, c.1, c.2);
+                plx_gfx::gfx::frame_clear(c.0, c.1, c.2);
             }
             unsafe { (*std::ptr::addr_of!(CACHE)).draw_alpha(alpha); }
         }
@@ -692,7 +692,7 @@ pub(crate) mod host {
     use std::sync::atomic::Ordering::Relaxed;
 
     #[cfg(not(test))]
-    use crate::gfx::FrameCache;
+    use plx_gfx::gfx::FrameCache;
     #[cfg(test)]
     use tests::FrameCache;
 
@@ -810,7 +810,7 @@ pub(crate) mod host {
 
     /// See [`GROUND_DEFERRED`].
     pub(crate) fn defer_ground(defer: bool) {
-        if crate::gfx::blur_source_pass() { return; }
+        if plx_gfx::gfx::blur_source_pass() { return; }
         GROUND_DEFERRED.store(defer, Relaxed);
     }
 
@@ -859,7 +859,7 @@ pub(crate) mod host {
         }
     }
 
-    /// [`crate::gfx::blur_invalidate`] **plus** the popover's GROUND stage — what every caller outside
+    /// [`plx_gfx::gfx::blur_invalidate`] **plus** the popover's GROUND stage — what every caller outside
     /// `gfx` means by "retake the blur".
     ///
     /// A popover's ground snapshot contains that popover's frost, composited from the very snapshot
@@ -869,7 +869,7 @@ pub(crate) mod host {
     /// cache — it sits below `ui` — so it drops its own snapshot and this drops the ground, in that
     /// order, which is the order `gfx::blur_invalidate` itself used to run them in.
     pub(crate) fn blur_invalidate() {
-        crate::gfx::blur_invalidate();
+        plx_gfx::gfx::blur_invalidate();
         ground_invalidate();
     }
 
@@ -926,7 +926,7 @@ pub(crate) mod host {
         // hole. The player path already did not call this (`app/run.rs`'s player branch says so);
         // this is the same rule stated where it can be BROKEN rather than where it happens to be
         // obeyed, and keyed on the plane being bound rather than on the route.
-        if crate::gfx::video_plane_refuses("popover::host::begin_frame") {
+        if plx_gfx::gfx::video_plane_refuses("popover::host::begin_frame") {
             return;
         }
         // This frame's page verdict — the scoped one app.rs threads in (Home, the Library, Search,
@@ -977,7 +977,7 @@ pub(crate) mod host {
     pub(crate) fn page_pass() -> PagePass {
         if users() == 0 {
             return PagePass {
-                was_frozen: crate::gfx::page_frozen(),
+                was_frozen: plx_gfx::gfx::page_frozen(),
                 own: None,
             };
         }
@@ -995,7 +995,7 @@ pub(crate) mod host {
             // Draw this page into the snapshot rather than onto the frame and copy it out after:
             // see `FrameCache::render_into` for what the copy cost. Not in a blur source pass (the
             // capture is refused there anyway) and not when the capture would be thrown away.
-            if !crate::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
+            if !plx_gfx::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
                 unsafe {
                     if (*std::ptr::addr_of!(TARGET)).is_none() {
                         TARGET = (*std::ptr::addr_of_mut!(CACHE)).render_into();
@@ -1004,7 +1004,7 @@ pub(crate) mod host {
             }
         }
         PagePass {
-            was_frozen: crate::gfx::set_page_frozen(served),
+            was_frozen: plx_gfx::gfx::set_page_frozen(served),
             own: Some(plx_machine::idle::OwnScope::open()),
         }
     }
@@ -1015,8 +1015,8 @@ pub(crate) mod host {
         /// with the freeze armed would otherwise leave every later frame refusing every quad — a
         /// frozen picture with no crash, no log line and no way back.
         fn drop(&mut self) {
-            crate::gfx::set_page_frozen(self.was_frozen);
-            if crate::gfx::blur_source_pass() { return; }
+            plx_gfx::gfx::set_page_frozen(self.was_frozen);
+            if plx_gfx::gfx::blur_source_pass() { return; }
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
@@ -1057,15 +1057,15 @@ pub(crate) mod host {
     pub(crate) fn live() -> Live {
         if crate::ui::frame::backdrop::discovering() {
             return Live {
-                was_frozen: crate::gfx::page_frozen(),
+                was_frozen: plx_gfx::gfx::page_frozen(),
                 own: plx_machine::idle::OwnScope::open(),
             };
         }
-        if crate::gfx::blur_source_pass() {
+        if plx_gfx::gfx::blur_source_pass() {
             let ground = matches!(held(), Held::Ground(_));
             if ground && held_ceiling().is_some_and(crate::ui::frame::backdrop::claim_snapshot) { draw_held(); }
             return Live {
-                was_frozen: crate::gfx::set_page_frozen(ground && freezes_current_layer()),
+                was_frozen: plx_gfx::gfx::set_page_frozen(ground && freezes_current_layer()),
                 own: plx_machine::idle::OwnScope::open(),
             };
         }
@@ -1076,7 +1076,7 @@ pub(crate) mod host {
                 draw_held();
             }
             return Live {
-                was_frozen: crate::gfx::set_page_frozen(freezes_current_layer()),
+                was_frozen: plx_gfx::gfx::set_page_frozen(freezes_current_layer()),
                 own: plx_machine::idle::OwnScope::open(),
             };
         }
@@ -1088,7 +1088,7 @@ pub(crate) mod host {
             }
         }
         Live {
-            was_frozen: crate::gfx::set_page_frozen(false),
+            was_frozen: plx_gfx::gfx::set_page_frozen(false),
             own: plx_machine::idle::OwnScope::open(),
         }
     }
@@ -1110,13 +1110,13 @@ pub(crate) mod host {
     pub(crate) fn ground_drawn(settled: bool) {
         crate::ui::frame::backdrop::boundary();
         if crate::ui::frame::backdrop::discovering() { return; }
-        if crate::gfx::page_frozen() {
-            crate::gfx::set_page_frozen(false);
+        if plx_gfx::gfx::page_frozen() {
+            plx_gfx::gfx::set_page_frozen(false);
             return;
         }
         if settled
             && held() == Held::Page
-            && !crate::gfx::blur_source_pass()
+            && !plx_gfx::gfx::blur_source_pass()
             && !GROUND_DEFERRED.load(Relaxed)
         {
             if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
@@ -1127,7 +1127,7 @@ pub(crate) mod host {
 
     impl Drop for Live {
         fn drop(&mut self) {
-            crate::gfx::set_page_frozen(self.was_frozen);
+            plx_gfx::gfx::set_page_frozen(self.was_frozen);
         }
     }
     #[cfg(test)]
@@ -1148,7 +1148,7 @@ pub(crate) mod host {
                 let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
                 let _walk=crate::ui::frame::backdrop::enter(sources,ceiling);
                 let _layer=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(1),false);
-                let _live=live(); frozen.push(crate::gfx::page_frozen());
+                let _live=live(); frozen.push(plx_gfx::gfx::page_frozen());
             }
             unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
             assert_eq!(frozen,vec![false,false]);

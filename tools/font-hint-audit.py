@@ -4,7 +4,7 @@ font-hint-audit.py — verify the theme::size ladder rasterizes with design-true
 weights for the INTER faces we ship (`FONTS` below).
 
 Scope, because a third face ships and is deliberately NOT audited here: `pkg/appfont-cjk.ttf`
-(Noto Sans CJK KR, the fallback chain's link 2 — see rust-modules/src/text.rs) never draws Latin
+(Noto Sans CJK KR, the fallback chain's link 2 — see rust-modules/gfx/src/text.rs) never draws Latin
 in this app, the ladder was tuned on Inter's stems, and SDL_ttf's synthetic bold is never applied
 to it. A CJK re-cut is graded by rust-modules/base/src/fontcov.rs's coverage gate and by a device
 capture, not by this script.
@@ -14,7 +14,7 @@ size- and font-specific. Under FreeType's default NORMAL hinting, Arial's own by
 rounds horizontal bars UP — at bold 26 (size::LABEL, the card-title rung) it drew 4px bars
 over 3px stems, inverting the typeface's stem>bar design and making titles read top-heavy.
 The app therefore rasterizes with LIGHT hinting and draws text quads at integer pixel
-origins (both in rust-modules/src/text.rs), which keeps stems >= bars at every size.
+origins (both in rust-modules/gfx/src/text.rs), which keeps stems >= bars at every size.
 
 This script proves that property holds: it parses the rungs out of gfx/tokens.rs `mod size`
 (single source of truth; `ui::theme::size` re-exports it), adds the two documented carve-outs, and renders a capital F from

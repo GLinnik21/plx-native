@@ -71,7 +71,7 @@ fn decode_limits() -> image::Limits {
 /// Decode compressed bytes into an OWNED RGBA buffer under the same limits, panic guard and
 /// failure lines as [`img_decode_rgba`] — for a worker that composes pixels itself (the collection
 /// fan baker) rather than handing a `malloc`'d buffer across the store.
-pub(crate) fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+pub fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if data.is_empty() {
         return None;
     }
@@ -122,7 +122,7 @@ fn magic(data: &[u8]) -> String {
 /// `pkg/appinfo.json` declares `requiredMemory: 160`. So the byte count answers the first question
 /// a reader has: one outsized request, or a heap already full. Same `img:` prefix as the decoder's
 /// two failures, so one `img:` grep finds this line and those.
-pub(crate) fn img_malloc_copy(rgba: &[u8], detail: impl FnOnce() -> String) -> *mut c_uchar {
+pub fn img_malloc_copy(rgba: &[u8], detail: impl FnOnce() -> String) -> *mut c_uchar {
     if rgba.is_empty() {
         return ptr::null_mut();
     }
@@ -149,7 +149,7 @@ pub(crate) fn img_malloc_copy(rgba: &[u8], detail: impl FnOnce() -> String) -> *
 /// Encode OPAQUE RGBA as an RGB PNG, the format baked artwork is persisted in: the alpha channel
 /// is dropped (a quarter of the pixels to deflate, none of them information) and
 /// [`img_decode_owned`] restores it as 255. `None` if the encoder refuses.
-pub(crate) fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+pub fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     let mut out = Vec::new();
     let enc = image::codecs::png::PngEncoder::new(&mut out);
@@ -157,7 +157,7 @@ pub(crate) fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub(crate) fn img_decode_rgba(
+pub fn img_decode_rgba(
     buf: *const c_uchar,
     len: c_int,
     w: *mut c_int,
@@ -185,14 +185,14 @@ pub(crate) fn img_decode_rgba(
     px
 }
 
-pub(crate) fn img_free(px: *mut c_uchar) {
+pub fn img_free(px: *mut c_uchar) {
     if !px.is_null() {
         unsafe { free(px as *mut c_void) }
     }
 }
 
 /// Upload decoded RGBA pixels into a fresh GL texture (gfx owns the GL bindings). Main thread.
-pub(crate) fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_uint {
+pub fn img_upload_rgba(px: *const c_uchar, w: c_int, h: c_int) -> c_uint {
     if px.is_null() || w <= 0 || h <= 0 {
         return 0;
     }

@@ -315,8 +315,9 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
 
 
 # The layer crates split out of rust-modules/src whose files this gate reads (docs/module-layers.md).
-# `platform` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs).
-LAYER_SRCS = ('rust-modules/platform/src',)
+# `platform` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs);
+# `gfx` holds `overdraw.rs`, which this gate read as `ui/overdraw.rs` before the split.
+LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src')
 
 
 def source_paths(root: Path):
@@ -331,6 +332,7 @@ def source_paths(root: Path):
         yield src / rel
     for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
         yield platform / rel
+    yield root / LAYER_SRCS[1] / 'overdraw.rs'
 
 
 def const_table(root: Path) -> dict[str, str]:

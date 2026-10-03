@@ -226,9 +226,9 @@ pub(crate) fn composite_under() {
     TEX.with(|t| {
         let (mut tex, held) = t.get();
         if held != Some(n) {
-            tex = crate::gfx::upload_rgba(tex, W as i32, H as i32, rgba.as_ptr());
+            tex = plx_gfx::gfx::upload_rgba(tex, W as i32, H as i32, rgba.as_ptr());
             t.set((tex, Some(n)));
         }
-        crate::gfx::draw_under(tex, 0.0, 0.0, W as f32, H as f32);
+        plx_gfx::gfx::draw_under(tex, 0.0, 0.0, W as f32, H as f32);
     });
 }

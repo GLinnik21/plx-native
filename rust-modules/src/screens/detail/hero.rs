@@ -330,7 +330,7 @@ pub(crate) fn hero_pill_label(has_restart: bool) -> &'static CStr {
     }
 }
 
-/// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `crate::text` directly
+/// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `plx_gfx::text` directly
 /// — see [`HERO_ICON_RATIO`]'s doc for why the icon-box constants are duplicated, and
 /// `screens::login::status_action_rect`'s own doc for the general pattern (host-test-safe geometry
 /// shared by `Focusable::place` and `draw`).
@@ -465,7 +465,7 @@ pub(super) fn disc_caps_at(
 
 /// The live widths, combining [`hero_pill_w`]/[`alt_pill_w`]/[`disc_caps`] — the one function
 /// `DetailScreen`'s `Focusable` queries and `draw` both call, so they can never drift (mirrors
-/// `ui/detail.rs::hero_widths`, over `Measure` instead of `crate::text` directly).
+/// `ui/detail.rs::hero_widths`, over `Measure` instead of `plx_gfx::text` directly).
 pub(crate) fn hero_widths(
     measure: &dyn Measure,
     set: HeroSet,
@@ -668,7 +668,7 @@ fn draw_play_mode(
     after: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
-    let (top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+    let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = y + (top + baseline) * 0.5;
     let (bits, n) = play_mode_bits(d, after);
     let mut bx = x;
@@ -790,7 +790,7 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machi
     let elided;
     let date = if fit.elide {
         let budget = (FACTS_R - crate::ui::consts::MARGIN_X - play_mode_w(d, true, measure)).max(0.0);
-        elided = crate::text::elide_by(&date, budget, false, |t| {
+        elided = plx_gfx::text::elide_by(&date, budget, false, |t| {
             measure.width_str(t, theme::size::CAPTION, false)
         });
         elided.as_str()

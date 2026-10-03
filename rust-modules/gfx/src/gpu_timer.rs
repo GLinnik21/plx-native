@@ -110,7 +110,7 @@ fn has_extension(name: &str) -> bool {
         .any(|extension| extension == name)
 }
 
-pub(crate) fn init(filter: &str) -> Result<(), String> {
+pub fn init(filter: &str) -> Result<(), String> {
     ON.store(false, Ordering::Relaxed);
     if !has_extension("GL_EXT_disjoint_timer_query") {
         return Err("GL_EXT_disjoint_timer_query is not advertised".to_string());
@@ -189,7 +189,7 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
 }
 
 #[inline]
-pub(crate) fn enabled() -> bool {
+pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
@@ -247,7 +247,7 @@ impl Drop for QueryGuard {
 }
 
 #[inline]
-pub(crate) fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
+pub fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
     let Some(id) = begin(name) else { return draw() };
     let mut guard = QueryGuard {
         id,
@@ -314,7 +314,7 @@ fn record(state: &mut State, pending: Pending, gpu_ns: u64) {
     state.samples_since_log += 1;
 }
 
-pub(crate) fn frame_end() {
+pub fn frame_end() {
     if !enabled() {
         return;
     }

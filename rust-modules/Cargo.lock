@@ -574,6 +574,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_gfx"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "libc",
+ "plx_base",
+ "plx_machine",
+]
+
+[[package]]
 name = "plx_machine"
 version = "0.0.0"
 dependencies = [
@@ -604,6 +614,7 @@ dependencies = [
  "image",
  "libc",
  "plx_base",
+ "plx_gfx",
  "plx_machine",
  "plx_platform",
  "qrcodegen",

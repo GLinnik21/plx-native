@@ -245,7 +245,7 @@ fn balanced(words: &[&str], column: f32, sz: c_int, m: &dyn Measure) -> Vec<Stri
 
 /// Elide `text` to `w` at `sz` with a trailing ellipsis.
 fn elide(text: &str, w: f32, sz: c_int, m: &dyn Measure) -> String {
-    crate::text::elide_by(text, w, false, |t| m.width_str(t, sz, true))
+    plx_gfx::text::elide_by(text, w, false, |t| m.width_str(t, sz, true))
 }
 
 /// Set line `text` at `sz`, or — a single word wider than the column — shrink it toward `floor`

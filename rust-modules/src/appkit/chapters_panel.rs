@@ -172,7 +172,7 @@ impl ChaptersState {
             } else {
                 ch.title.clone()
             };
-            if let Ok(tc) = CString::new(crate::text::elide_by(&name, CH_W, false, |t| {
+            if let Ok(tc) = CString::new(plx_gfx::text::elide_by(&name, CH_W, false, |t| {
                 measure.width_str(t, theme::size::LABEL, true)
             })) {
                 p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);

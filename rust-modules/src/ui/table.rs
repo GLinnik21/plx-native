@@ -1410,13 +1410,13 @@ impl TableView {
                 if sy + HDR_H > vis_top && sy < vis_bot {
                     let p = p.alpha(edge_alpha(sy + HDR_H - HDR_INK_PAD, vis_bot, HDR_INK_PAD));
                     let hsz = theme::size::CAPTION;
-                    let (cap_top, baseline) = crate::text::text_cap_band(hsz, 0);
+                    let (cap_top, baseline) = plx_gfx::text::text_cap_band(hsz, 0);
                     let band = Rect::new(content_x, sy + HEADER_CAP_INSET, (text_right - content_x).max(0.0), baseline - cap_top);
                     if let Some((title, x0)) = self.title_run(measure) {
                         let glyph = CString::new(TITLE_BACK_GLYPH).unwrap_or_default();
                         Label::new(glyph.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, band);
                         let text_band = Rect::new(band.x + x0, band.y, (band.w - x0).max(0.0), band.h);
-                        let text = crate::text::elide_by(&title, text_band.w, false, |t| measure.width_str(t, hsz, false));
+                        let text = plx_gfx::text::elide_by(&title, text_band.w, false, |t| measure.width_str(t, hsz, false));
                         if let Ok(cs) = CString::new(text) {
                             Label::new(cs.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, text_band);
                         }
@@ -1441,7 +1441,7 @@ impl TableView {
                     // library name and can be any script — the share measured here is Cyrillic.
                     let hsz = theme::size::CAPTION;
                     let cap_y = sy + HEADER_CAP_INSET;
-                    let (cap_top, baseline) = crate::text::text_cap_band(hsz, 0);
+                    let (cap_top, baseline) = plx_gfx::text::text_cap_band(hsz, 0);
                     let header_band = Rect::new(
                         content_x,
                         cap_y,
@@ -1449,7 +1449,7 @@ impl TableView {
                         baseline - cap_top,
                     );
                     let (header_w, accessory_w) = Self::header_columns(sec, frame.w, measure, 1.0);
-                    let header_text = crate::text::elide_by(&sec.header.to_uppercase(), header_w, false, |t| {
+                    let header_text = plx_gfx::text::elide_by(&sec.header.to_uppercase(), header_w, false, |t| {
                         measure.width_str(t, hsz, false)
                     });
                     if let Ok(cs) = CString::new(header_text) {
@@ -1465,7 +1465,7 @@ impl TableView {
                         // (`TableView.prompt.md`). At CAPTION the two were the same size and a
                         // plex.tv handle read as loud as the machine it hangs off.
                         let asz = theme::size::MICRO;
-                        let a = crate::text::elide_by(&sec.accessory, accessory_w, false, |t| {
+                        let a = plx_gfx::text::elide_by(&sec.accessory, accessory_w, false, |t| {
                             measure.width_str(t, asz, false)
                         });
                         if let Ok(ac) = CString::new(a) {
@@ -1603,11 +1603,11 @@ impl TableView {
                 // the value gives way before the label (`row_columns`): elided to its column
                 let vsz = theme::size::LABEL;
                 let value_w = self.row_columns(row, frame.w, measure).value_w;
-                let v = crate::text::elide_by(v, value_w, false, |t| {
+                let v = plx_gfx::text::elide_by(v, value_w, false, |t| {
                     measure.width_str(t, vsz, VALUE_BOLD != 0)
                 });
                 if let Ok(vc) = std::ffi::CString::new(v) {
-                    let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
+                    let vy = plx_gfx::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
                     p.text(
                         vc.as_ptr(),
                         text_right - trailing,
@@ -1631,8 +1631,8 @@ impl TableView {
                 (theme::size::HEADLINE, 1)
             };
             let (title_y, detail_y) = if two_line {
-                let (t_top, t_base) = crate::text::text_cap_band(tsz, tbold);
-                let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
+                let (t_top, t_base) = plx_gfx::text::text_cap_band(tsz, tbold);
+                let (d_top, d_base) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
                 let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
                 let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
                 let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
@@ -1648,7 +1648,7 @@ impl TableView {
                 (theme::size::HEADLINE, 1)
             };
             let text_w = self.label_width(row, frame.w, measure);
-            let lbl = crate::text::elide_by(&row.label, text_w, false, |t| {
+            let lbl = plx_gfx::text::elide_by(&row.label, text_w, false, |t| {
                 measure.width_str(t, lsz, lbold != 0)
             });
             if let Ok(cs) = CString::new(lbl) {
@@ -1673,7 +1673,7 @@ impl TableView {
                 } else {
                     dimc
                 };
-                let detail = crate::text::elide_by(&row.detail, text_w, false, |t| {
+                let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
                 if let Ok(cd) = CString::new(detail) {

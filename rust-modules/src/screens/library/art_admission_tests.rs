@@ -81,7 +81,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
             // The normal paint pass admits warm requests (discovery/source replay does not).
             // Translate the retained page outside the canvas so the production cull keeps all
             // primitives away from GL, but both hidden-card paths still execute normally.
-            assert!(!crate::gfx::blur_source_pass());
+            assert!(!plx_gfx::gfx::blur_source_pass());
             for _ in 0..12 {
                 let mut frame = DrawFrame::new(&cx, painter.translate(2.0 * SCR_W, 0.0));
                 page.pair.detail.draw(&mut frame, Rect::FULL);
