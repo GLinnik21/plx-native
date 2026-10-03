@@ -428,10 +428,10 @@ video::-webkit-media-controls-start-playback-button {
   gap: 4px;
   margin-left: 4px;
 }
-/* GitHub and the Ko-fi cup are a matched pair of quiet glyphs: the same
-   grey, the same target, lifting to white on hover. The cup is Ko-fi's own
-   outline with the heart and handle cut out, so it reads as Ko-fi without
-   the brand colours; Install stays the one filled shape in the bar. */
+/* GitHub and the Ko-fi cup are a pair of quiet glyphs: the same target,
+   lifting to the same white on hover. The cup is Ko-fi's own outline with
+   the heart and handle cut out, so it reads as Ko-fi without the brand
+   colours; Install stays the one filled shape in the bar. */
 .header-github,
 .header-kofi {
   display: grid;
@@ -2341,7 +2341,7 @@ video::-webkit-media-controls-start-playback-button {
    which a phone on its side can match as well. */
 /* Under 380px (iPhone SE and mini) the brand, GitHub, Ko-fi and Install do
    not fit on one capsule: the PLX mark stands for the name, and the link
-   keeps its "PlxNative home" label. */
+   keeps its aria-label. */
 @media (max-width: 379px) {
   .brand-name {
     display: none;
