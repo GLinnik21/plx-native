@@ -35,7 +35,7 @@ use crate::plex::session::Account;
 use crate::screens::registry::{AppFx, AppLike, AuthLike, LoopReq};
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
@@ -208,7 +208,7 @@ fn action_row(a: Action) -> Row {
 /// `px` is the app's own side margin: it was a literal 80, which sat 16px outside the 5% overscan
 /// frame — and the chip it hangs off is at `MARGIN_X`, so aligning the two is what the design meant
 /// anyway. `py` clears `widgets::TOP_BAR_BOTTOM` (130) by a `space::MD`.
-fn panel_rect(table: &TableView, measure: &dyn crate::ui::machine::Measure) -> Rect {
+fn panel_rect(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
     let px = crate::ui::consts::MARGIN_X;
     let py = 154.0f32;
@@ -274,7 +274,7 @@ impl AccountMenuScreen {
         self.form.set_or_open(form, keep.as_ref());
     }
 
-    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         panel_rect(&self.form.table, measure)
     }
 
@@ -324,7 +324,7 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
                 }
                 if !self.built {
                     self.build(switch_refused);
-                    if self.built { fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session)); }
+                    if self.built { fx.invalidate(plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Session)); }
                 }
                 self.form.table.sel = cx
                     .focus
@@ -514,7 +514,7 @@ mod tests {
 
     /// A host whose only view is the Session publication — the one fact the menu reads off it.
     struct MenuHost;
-    impl crate::ui::machine::Host for MenuHost {
+    impl plx_machine::machine::Host for MenuHost {
         type Arg = super::super::family::SettingsPage;
         type Fx = AppFx;
         type Msg = crate::screens::registry::AppMsg;
@@ -543,7 +543,7 @@ mod tests {
     }
 
     fn tick(menu: &mut AccountMenuScreen, read: &crate::auth::owner::SessionSnapshot) {
-        use crate::ui::machine::{InputOwner, MachineId, Tick};
+        use plx_machine::machine::{InputOwner, MachineId, Tick};
         let cx = Cx::<MenuHost> {
             views: read.read(),
             tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
@@ -551,7 +551,7 @@ mod tests {
             owner: InputOwner::Entry(EntryId(0)),
         };
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
         menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
     }

@@ -6,7 +6,7 @@ use crate::metadata::Detail;
 use crate::plex::ServerId;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::label::{HAlign, Label, VAlign};
-use crate::ui::machine::{GroupId, Measure};
+use plx_machine::machine::{GroupId, Measure};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::Art;
 use crate::ui::{theme, Painter, Rect};
@@ -99,7 +99,7 @@ pub(crate) fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     p.text(
         crate::i18n::msg::browse_detail_cast_c().as_ptr(),

@@ -120,7 +120,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
 
     struct BrowseNotices(usize);
     impl crate::ui::dispatch::Tap<AppHost> for BrowseNotices {
-        fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(
                 ScreenEvent::StoreChanged(ord, _))) if *ord == StoreId::Browse.ord()) {
                 self.0 += 1;
@@ -199,7 +199,7 @@ fn session_current_negative_commit_reply_unblocks_independent_carried_work() {
     use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending,
         SessionEvent, SessionOp, SessionWorkKey, StreamPhase};
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
-    use crate::ui::machine::RequestId;
+    use plx_machine::machine::RequestId;
     let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
@@ -262,7 +262,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
     use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending, Receipt,
         SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
-    use crate::ui::machine::RequestId;
+    use plx_machine::machine::RequestId;
     let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
         client_id: "synthetic-client".into(), ..Default::default()
     });
@@ -382,7 +382,7 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
     use crate::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionOp,
         SessionWorkKey, StreamPhase};
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
-    use crate::ui::machine::RequestId;
+    use plx_machine::machine::RequestId;
     for (success, carry) in [(true, false), (false, false), (true, true), (false, true)] {
         let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
@@ -453,7 +453,7 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
     use crate::ui::dispatch::Tap;
     struct Replies(Vec<(u32, u32, bool)>);
     impl Tap<AppHost> for Replies {
-        fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             if let Fx::Deliver(MachineId::Instance(instance),
                 Delivery::Screen(ScreenEvent::Async(req, message))) = &stamped.fx {
                 match message {
@@ -524,7 +524,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         }
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
-        let mut present = crate::ui::present::Present::default();
+        let mut present = plx_machine::present::Present::default();
         let mut out = Vec::new();
         let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         rig.deliver(MachineId::Store(StoreId::Hubs.ord()),

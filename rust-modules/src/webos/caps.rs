@@ -54,7 +54,7 @@ fn publish(probe: DvProbe, started: Instant, code: Option<i64>, detail: Option<&
             probe.provenance(),
         ));
     }
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Start the one boot probe. The registration and its private GLib context are both created and

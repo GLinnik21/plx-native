@@ -606,7 +606,7 @@ pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
     PROBES[i].store(probe_code(outcome), Ordering::Release);
     // The Sources list follows this atomic from `browse::sync_roster`; wake an idle frame so the
     // new word/tier is visible immediately rather than at the two-second keepalive.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Publish what a generic PMS request proved, but only if the slot still names the exact client
@@ -663,7 +663,7 @@ pub fn commit_reachability_if_current<R>(
     // registry; callers keep it to their own main-thread stores.
     let committed = commit(outcome);
     drop(w);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     Some(committed)
 }
 
@@ -765,10 +765,10 @@ fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, grant: GrantE
     FACTS_GEN.fetch_add(1, Ordering::AcqRel);
     // A server learning its own name CHANGES PIXELS — the Search screen's scope line and the
     // Library's Source chip both read it — and it lands asynchronously, well after the first frame.
-    // `ui::idle` gates the whole present on detected motion and cannot see a `static` being
+    // `plx_machine::idle` gates the whole present on detected motion and cannot see a `static` being
     // written, so without this the new name sat invisible until the 2 s keepalive or the next
     // keypress: a screen showing "your server and your server" for two seconds after it knew better.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Record a server's MACHINE NAME and nothing else — for a describer that learned it from the
@@ -1256,7 +1256,7 @@ pub(crate) fn revoke_for_profile_switch() {
             live.len()
         ));
     }
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Finish a profile/roster replacement with exactly the slots the caller just installed.
@@ -1317,7 +1317,7 @@ pub(crate) fn revoke_before_foreign_retoken(machine_id: &str, token: &str) {
         if let Some(i) = id.index() {
             PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 
@@ -1353,7 +1353,7 @@ fn commit_installed_roster(installed: &[ServerId]) {
     let old = ACTIVE.swap(exact, Ordering::AcqRel);
     if old != exact {
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 
@@ -1402,9 +1402,9 @@ pub(crate) fn revoke_all() {
         ));
     }
     // The Sources list, the Search scope line and every shelf heading are drawn from this table,
-    // and `ui::idle` gates the whole present on detected motion — it cannot see a `static` being
+    // and `plx_machine::idle` gates the whole present on detected motion — it cannot see a `static` being
     // written. Same reason `describe` invalidates.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// **Re-ask the grant table for every client a grant was carrying** ([`ON_GRANT`]), after a plaintext grant was
@@ -1439,7 +1439,7 @@ pub(crate) fn regrade_credentials() {
         plx_base::eventlog::log(&format!(
             "plex: {regraded} server(s) lost their plaintext credential — the grant ended"
         ));
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 

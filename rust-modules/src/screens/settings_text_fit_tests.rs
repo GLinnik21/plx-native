@@ -97,7 +97,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
 /// string never measures narrower.
 #[test]
 fn the_shipped_measure_sums_whole_pixel_advances_like_the_device() {
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     let m = ShippedMeasure;
     let a = m.width_str("Privacy & data", theme::size::CAPTION, false);
     let b = m.width_str("Privacy & data, and more", theme::size::CAPTION, false);

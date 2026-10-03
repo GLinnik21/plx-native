@@ -7,7 +7,7 @@
 use super::*;
 use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::hit::{HitMap, PointerKind};
-use crate::ui::machine::{Chrome, Host, InputOwner, PressRead, ScreenId};
+use plx_machine::machine::{Chrome, Host, InputOwner, PressRead, ScreenId};
 use crate::ui::screen::{Activate, At, By, Focusable, Hover, ScreenArg, Stop};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -58,16 +58,16 @@ impl crate::screens::registry::MetadataLike for TestHost {
     }
 }
 
-fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
         tick: Default::default(),
         measure,
         press: PressRead::default(),
-        focus: crate::ui::machine::FocusRead {
+        focus: plx_machine::machine::FocusRead {
             current: elem.map(|elem| FocusKey { entry: EntryId(8), elem }),
         ..Default::default() },
-        owner: crate::ui::machine::InputOwner::Entry(EntryId(8)),
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(8)),
     }
 }
 
@@ -130,7 +130,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
                 .cloned()
         },
         spin_ms: 0.0,
-        spin_phase: crate::ui::motion::Phase::default(),
+        spin_phase: plx_machine::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),

@@ -25,7 +25,7 @@
 //! across every surface, so it belongs to the phase that owns the hit map's remaining work
 //! (spec §7.5-§7.6) rather than to the screen migration that found it (2026-09-07).
 
-use super::machine::{EntryId, FocusKey};
+use plx_machine::machine::{EntryId, FocusKey};
 use super::screen::{Activate, Hover, Stop};
 
 /// How far the pointer must travel after a D-pad press before hover parks focus again.
@@ -202,7 +202,7 @@ pub(crate) fn pointer_gaps<K: Copy + Eq + std::fmt::Debug>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::machine::EntryId;
+    use plx_machine::machine::EntryId;
 
     #[test]
     fn a_foreign_entry_cannot_capture_the_active_owners_hit_or_suppress_a_miss() {

@@ -2,7 +2,7 @@
 //! The host consumes a boolean answer; no application command or persistence lives here.
 use std::ffi::CStr;
 use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
-use crate::ui::machine::{Cx, Edge, EntryId, FocusKey, GroupId, Handled, Host, InputEvent, InputKind, Key};
+use plx_machine::machine::{Cx, Edge, EntryId, FocusKey, GroupId, Handled, Host, InputEvent, InputKind, Key};
 use crate::ui::screen::{Activate, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, ScreenEvent, Seat, Step, Stop};
 use crate::ui::{Painter, Rect};
 
@@ -70,14 +70,14 @@ impl DecisionPrompt {
         FocusKey { entry, elem }
     }
 
-    fn rect(&self, elem: u32, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn rect(&self, elem: u32, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let (cancel, affirm) = self.alert.frames(measure);
         if elem == self.affirm { affirm } else { cancel }
     }
 
     /// `Focusable::groups`: while open, the answers are the ONLY group — push it and return
     /// `true` so the host adds none of its own.
-    pub(crate) fn groups(&self, out: &mut Vec<GroupSpec>, measure: &dyn crate::ui::machine::Measure) -> bool {
+    pub(crate) fn groups(&self, out: &mut Vec<GroupSpec>, measure: &dyn plx_machine::machine::Measure) -> bool {
         if !self.is_open() {
             return false;
         }
@@ -113,7 +113,7 @@ impl DecisionPrompt {
     }
 
     /// `Focusable::place` while open.
-    pub(crate) fn place(&self, key: u32, measure: &dyn crate::ui::machine::Measure) -> Option<Option<Placed>> {
+    pub(crate) fn place(&self, key: u32, measure: &dyn plx_machine::machine::Measure) -> Option<Option<Placed>> {
         if !self.is_open() {
             return None;
         }

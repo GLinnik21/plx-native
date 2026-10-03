@@ -136,10 +136,10 @@ can follow.
 
 | layer | may name |
 |---|---|
-| `ui/` — the LIBRARY | `crate::{gfx,text,i18n}` plus `plx_base::{paths,task,tile}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
+| `ui/` — the LIBRARY | `crate::{gfx,text,i18n}` plus `plx_base::{paths,task,tile}` — **never an application type**. Except the `plx_machine` crate (`machine`, `present`, `idle`, `landgate`, `landing`, `motion`; `rust-modules/machine/`), which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): it names only `plx_base` and itself, never `gfx`/`text`/`i18n` or anything in `ui/` |
 | `appkit/` — widgets several screens share (`player_hud`, `track_menu`, `more_menu`, `info_panel`, `up_next`, `chapters_panel`, `timing_capsule`, `skip_pill`, `source_list`) | `ui/`, `stores/`, `plex/` types, `player/`, `route/` — never `screens/` or `app/`. They are compositions of `ui/` components over application types; they cannot live under `screens/` because the `sibling` gate forbids one screen family naming another |
 | `screens/` — the application's screens | `ui/`, `appkit/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
-| `stores/` | data crates and `ui::machine` only — never `screens/` |
+| `stores/` | data crates and `plx_machine::machine` only — never `screens/` |
 | `app/` | everything |
 
 `ci/check-module-cycle.py` holds which top-level modules sit on the crate's module cycle, not the
@@ -243,8 +243,9 @@ table) and `FixtureMeasure` (host tests) — and travels on `Cx`/`DrawFrame`. Th
 
 - §11 lists `nav.rs`, `trail.rs` and `press.rs` for deletion. Only `trail.rs` is gone; `nav.rs`
   (164 lines) and `press.rs` (619) are still here and still used.
-- §11 says `present.rs` REPLACES `idle.rs`. Both exist — `idle.rs` at 1069 lines against
-  `present.rs`'s 233 — so the gate has two homes and `idle.rs` is still the larger one.
+- §11 says `present.rs` REPLACES `idle.rs`. Both exist (in `rust-modules/machine/src/`, since the
+  machine split) — `idle.rs` at 1127 lines against `present.rs`'s 242 — so the gate has two homes
+  and `idle.rs` is still the larger one.
 - §0's done-criterion 9 (`doc_claim_auditor` clean against §11's prose list) is not met.
 
 Modules with no product caller yet carry `#![allow(dead_code)]` with a one-line reason; that is
@@ -467,7 +468,7 @@ own (the `FocusEngine` does). Tests that seed the shared registry or the remaini
 take `testlock::serial()`; tests using separate production BrowseStore owners isolate their state
 and landings. **`xfade.rs` is
 the cautionary case**: its tests were ordinary and parallel until `tick` started reporting to
-`ui::idle`'s process-global flag, at which point driving a fader began mutating state *another
+`plx_machine::idle`'s process-global flag, at which point driving a fader began mutating state *another
 module's* assertions read. They all take `testlock::serial()` now. Anything you make report to the
 frame gate inherits that obligation — and the lock is ENFORCED rather than merely documented since
 2026-09-10: it records the holding thread, and the shared stores (plus the app frame trunk, which
@@ -476,7 +477,7 @@ it rather than in whichever bystander it happened to land on.
 
 **If you add anything that ANIMATES, it owes two tests**, because the failure modes are opposite and
 each is invisible to the other's gate. Host: it reports while running **and** goes quiet at rest —
-`ui/idle.rs`'s and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
+`machine/src/idle.rs`'s and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
 steps 439 springs and asserts *nothing* is requested. Device: an `fps_floor` scene proving it
 still animates under the gate, and (if its screen settles) an `fps_ceiling` proving it stops. An
 over-reporting animator costs the entire ~38-points-of-a-core saving while every `floor` in the

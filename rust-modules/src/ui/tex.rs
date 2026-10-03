@@ -48,8 +48,8 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::frame::{Budget, Class};
-use super::machine::{PosterKey, PresentHandle};
-use super::present::{PresentEvent, Provenance, ResourceKind};
+use plx_machine::machine::{PosterKey, PresentHandle};
+use plx_machine::present::{PresentEvent, Provenance, ResourceKind};
 
 /// What a prefetch did — which is what lets a caller spend exactly ONE key per frame: a prefetch
 /// loop walks its candidates and stops at the first `Claimed`.
@@ -701,7 +701,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
 
     struct StubUp {
         next: u32,

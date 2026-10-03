@@ -17,7 +17,7 @@ use std::ffi::CStr;
 use crate::stores::browse::{BrowseCmd, DirectoryView, SecFetch, SrcRow};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
 };
 use crate::ui::route_screen::RouteLayout;
@@ -82,7 +82,7 @@ pub(crate) struct OnboardScreen {
     /// The underlying clock for [`phase_ms`](Self::phase_ms) (`motion::Phase`, phase 12 D4):
     /// reports `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be,
     /// with `fx.note(Motion)` a separate line further down `step`.
-    phase_clock: crate::ui::motion::Phase,
+    phase_clock: plx_machine::motion::Phase,
     pop: CtlPop<1>,
     ground: RouteGround,
     state: OnboardState,
@@ -170,7 +170,7 @@ impl OnboardScreen {
             draft: base,
             touched: Vec::new(),
             phase_ms: 0.0,
-            phase_clock: crate::ui::motion::Phase::default(),
+            phase_clock: plx_machine::motion::Phase::default(),
             pop: CtlPop::new(),
             ground,
             state: OnboardState {
@@ -363,7 +363,7 @@ impl OnboardScreen {
     /// The one action pill, pressed: retry discovery (nothing found yet) or write the draft down
     /// for real. **Both leave through `fx` as an `AppFx::Store`**; calling an owner directly from
     /// here would let an owned screen reach around the one exit the restructure gives it
-    /// (`ui::machine::Machine`'s doc: purity is enforced by `Effects` being the only exit).
+    /// (`plx_machine::machine::Machine`'s doc: purity is enforced by `Effects` being the only exit).
     /// `Bridge::app_fx` (`app/bridge.rs`) turns
     /// `AppFx::Store(id, cmd)` into `Fx::Deliver(MachineId::Store(id.ord()), …)` in the SAME
     /// drain the push happens in, so from outside this screen the command still lands before the
@@ -466,16 +466,16 @@ impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardView<'_> {
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         crate::ui::screen::Focusable::<H>::group_of(&self.screen(), key, cx)
     }
-    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
+    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
         crate::ui::screen::Focusable::<H>::neighbour(&self.screen(), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: crate::ui::screen::At) -> Option<crate::ui::screen::Placed> {
         crate::ui::screen::Focusable::<H>::place(&self.screen(), key, cx, at)
     }
-    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         crate::ui::screen::Focusable::<H>::reconcile(&self.screen(), want, cx)
     }
-    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         crate::ui::screen::Focusable::<H>::seat(&self.screen(), g, from, cx)
     }
 }
@@ -487,16 +487,16 @@ impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardScreen {
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         crate::ui::screen::Focusable::<H>::group_of(&self.view(H::directory(cx)), key, cx)
     }
-    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
+    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
         crate::ui::screen::Focusable::<H>::neighbour(&self.view(H::directory(cx)), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: crate::ui::screen::At) -> Option<crate::ui::screen::Placed> {
         crate::ui::screen::Focusable::<H>::place(&self.view(H::directory(cx)), key, cx, at)
     }
-    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         crate::ui::screen::Focusable::<H>::reconcile(&self.view(H::directory(cx)), want, cx)
     }
-    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         crate::ui::screen::Focusable::<H>::seat(&self.view(H::directory(cx)), g, from, cx)
     }
 }
@@ -507,14 +507,14 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
         match ev {
             ScreenEvent::Tick(t) => {
                 if self.ground.refresh() {
-                    fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session));
+                    fx.invalidate(plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Session));
                 }
                 let dt = t.dt();
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 let directory = H::directory(cx);
                 if self.table_gen != directory.source_list_gen() {
                     self.rebuild(true, directory);
-                    fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
+                    fx.invalidate(plx_machine::present::Provenance::Landing(fx.from()));
                 }
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
@@ -541,7 +541,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                     if let Some(target) = target {
                         self.toggle_row(target, H::directory(cx));
                     }
-                    fx.invalidate(crate::ui::present::Provenance::Input);
+                    fx.invalidate(plx_machine::present::Provenance::Input);
                 }
                 Handled::Yes
             }
@@ -796,8 +796,8 @@ mod tests {
 
     use super::*;
     use crate::ui::form::FormId;
-    use crate::ui::machine::{FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Source, Stamped};
-    use crate::ui::present::Present;
+    use plx_machine::machine::{FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Source, Stamped};
+    use plx_machine::present::Present;
 
     use super::super::family::InnerHost;
     use super::super::registry::band_elem;
@@ -870,7 +870,7 @@ mod tests {
     ) -> Cx<'a, InnerHost> {
         Cx {
             views: directory,
-            tick: crate::ui::machine::Tick::default(),
+            tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
             focus: FocusRead {
@@ -920,7 +920,7 @@ mod tests {
         let source_list_gen = directory.source_list_gen();
         let (_, effects) = step_ev(
             &mut s,
-            &ScreenEvent::Tick(crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }),
+            &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }),
             None,
             directory,
         );
@@ -932,7 +932,7 @@ mod tests {
 
     fn key_ok_down() -> ScreenEvent<InnerHost> {
         ScreenEvent::Input(InputEvent {
-            at: crate::ui::machine::Tick::default(),
+            at: plx_machine::machine::Tick::default(),
             source: Source::Script,
             kind: InputKind::Key { key: Key::Ok, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
         })
@@ -940,7 +940,7 @@ mod tests {
 
     fn key_back_down() -> ScreenEvent<InnerHost> {
         ScreenEvent::Input(InputEvent {
-            at: crate::ui::machine::Tick::default(),
+            at: plx_machine::machine::Tick::default(),
             source: Source::Script,
             kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
         })
@@ -1533,7 +1533,7 @@ mod tests {
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
         for ms in [16, 32, 48] {
             let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
-            let ev = ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 16_667 });
+            let ev = ScreenEvent::Tick(plx_machine::machine::Tick { ms, dt_us: 16_667 });
             Machine::<InnerHost>::step(&mut s, &ev, &cxv, &mut fx);
             assert!(
                 present.take(ms),

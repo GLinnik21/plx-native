@@ -15,7 +15,7 @@ use crate::auth::{
 use crate::plex::account::{AccountClient, CallEvidence, Resource, SwitchOutcome, SwitchedUser};
 use crate::plex::probe::{self, Outcome};
 use crate::plex::session::SourceRef;
-use crate::ui::machine::RequestId;
+use plx_machine::machine::RequestId;
 
 /// **The next account to sign in must be asked afresh.** The maintainer's scenario (2026-09-04):
 /// account A consents to both channels, signs out, account B signs in through the QR flow — and
@@ -78,8 +78,8 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     let mut dispatcher =
         crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
     dispatcher.emit(
-        crate::ui::machine::MachineId::Session,
-        crate::ui::machine::Fx::App(
+        plx_machine::machine::MachineId::Session,
+        plx_machine::machine::Fx::App(
             crate::screens::registry::AppFx::SessionEffect(
                 owner::SessionFx::Coordinator(owner::CoordinatorAction::CloseTelemetry),
             ),
@@ -87,7 +87,7 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
     );
     dispatcher.frame_with(
         &mut bridge,
-        crate::ui::machine::Tick::default(),
+        plx_machine::machine::Tick::default(),
         Vec::new(),
         Vec::new(),
         &mut crate::ui::dispatch::NoTap,

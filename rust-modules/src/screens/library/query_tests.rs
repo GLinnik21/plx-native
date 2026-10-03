@@ -84,7 +84,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             let mut cx = fixture.cx(Some(toolbar));
             cx.focus = engine.read(OWNER);
             let mut output = Vec::new();
-            let mut present = crate::ui::present::Present::new();
+            let mut present = plx_machine::present::Present::new();
             page.step(
                 &ScreenEvent::App(AppMsg::LibraryEdit {
                     target: SectionAddress {

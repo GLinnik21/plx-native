@@ -5,7 +5,7 @@ use super::layout::{rail_geom, rail_scroll_target, MAX_LETTERS, RAIL_CAP_PAD, RA
 use crate::screens::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use crate::ui::consts::K_SCROLL;
 use crate::ui::frame::Budget;
-use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, GroupId};
+use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId};
 use crate::ui::screen::{Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable,
     GroupKind, GroupSpec, Hover, Part, Placed, Seat, Step, Stop};
 use crate::ui::{Rect, Spring, theme};
@@ -206,7 +206,7 @@ mod tests {
     fn rail_scroll_and_presence_animate_then_settle_outside_the_grid_region() {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
-        let (_, moving) = crate::ui::idle::scoped_motion(|| rail.step_motion(Some(29), true, 0.016));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(29), true, 0.016));
         assert!(moving, "entering the region reports its scroll and fade motion");
         assert!(rail.scroll.pos > 0.0 && rail.scroll.pos < rail.scroll_target);
         assert!(rail.alpha.pos > 0.0 && rail.alpha.pos < 1.0);
@@ -215,7 +215,7 @@ mod tests {
         assert!((rail.alpha.pos - 1.0).abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
         for _ in 0..400 { rail.step_motion(None, false, 0.016); }
         assert!(rail.alpha.pos.abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
-        let (_, moving) = crate::ui::idle::scoped_motion(|| rail.step_motion(None, false, 0.016));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(None, false, 0.016));
         assert!(!moving, "a resting hidden rail requests no further animated presents");
     }
 

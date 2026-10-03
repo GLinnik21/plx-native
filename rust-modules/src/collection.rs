@@ -161,13 +161,13 @@ impl CollectionState {
         true
     }
 
-    pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &plx_machine::landgate::Gate) -> bool {
         let mut changed = self.refresh_if_client_changed(adapter);
         if self.retry_cd > 0 { self.retry_cd -= 1; }
         let reply = crate::stores::tape::take_store_landing(
             gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch);
         if let Some(reply) = reply {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
             if reply.gen == self.generation { changed |= self.apply(reply.what); }
         }
         self.maybe_spawn(adapter);

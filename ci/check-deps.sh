@@ -6,12 +6,12 @@
 # allowlist's count equals its entries, so an allowlist grows only by a deliberate edit of both.
 #
 # Phase 2 rules (the rest of §15.2 land with the phases that make them true):
-#   libm     — the transcendental surface outside ui/motion.rs (spec §4.2): logical state must
+#   libm     — the transcendental surface outside machine/src/motion.rs (spec §4.2): logical state must
 #              integrate with motion.rs's own exp/sin_cos; a render or colour formula is allowlisted.
 #   ticks    — `SDL_GetTicks(` only in app/clock.rs (the one door) and diag/heartbeat.rs.
 #   fpflags  — no `fp-contract`, `fast-math` or `+fma` in the build configuration.
 #   wall     — `Instant::now`/`SystemTime::now`/`.elapsed()` in ui/ and app/ only in instruments.
-#   present  — the present gate's worker door: ONE atomic static in ui/present.rs and ONE
+#   present  — the present gate's worker door: ONE atomic static in machine/src/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
 #   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs and port.rs
@@ -95,9 +95,11 @@ cd "$(dirname "$0")/.."
 SRC=rust-modules/src
 # The layer crates already split out of $SRC (docs/module-layers.md, ci/module-layers.ini). The
 # rules below that read the WHOLE tree read these too: moving a file into one must not move it out
-# of a gate. Rules scoped to a directory of $SRC (ui/, screens/, app/ ...) cannot reach a layer
-# below them and stay as they are.
+# of a gate. A rule scoped to a directory of $SRC (ui/, screens/, app/ ...) cannot reach a layer
+# below them and stays as it is, UNLESS the files it policed there were moved out: `machine` came
+# from ui/, so the rules scoped to $SRC/ui read $SRC_MACHINE too.
 SRC_BASE=rust-modules/base/src
+SRC_MACHINE=rust-modules/machine/src
 fails=0
 fail() { echo "::error::check-deps: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
@@ -197,6 +199,7 @@ $1|$2
 # production reference keeps a shared file in the scan. No filename suffix grants an exemption.
 wholly_test_files() {
   python3 ci/rust_test_modules.py "$SRC"
+  python3 ci/rust_test_modules.py "$SRC_MACHINE"
 }
 
 # is_wholly_test <path>: the `wholly_test` list as a builtin lookup. Three gates below asked this
@@ -535,12 +538,12 @@ else
   fail "metadata-owner: retired Metadata compatibility surface returned"
 fi
 
-# libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
+# libm: the method-call spelling, OUTSIDE machine/src/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
 # test's reference colour maths is not logical state.
-libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" "$SRC_BASE" \
-  | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
+libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" "$SRC_BASE" "$SRC_MACHINE" \
+  | grep -vE '\.log\((&|")' | grep -v "^$SRC_MACHINE/motion.rs:")
 libm_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
@@ -555,16 +558,16 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE"
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/appkit" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC_MACHINE" "$SRC/appkit" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
 
-n=$(grep -cE '^static [A-Z_]+: Atomic' "$SRC/ui/present.rs"); d=$(grep -c 'pub fn wake_from_worker' "$SRC/ui/present.rs")
+n=$(grep -cE '^static [A-Z_]+: Atomic' "$SRC_MACHINE/present.rs"); d=$(grep -c 'pub fn wake_from_worker' "$SRC_MACHINE/present.rs")
 if [ "$n" -eq 1 ] && [ "$d" -eq 1 ]; then ok "present: one worker door"; else fail "present: $n atomic statics, $d doors (one of each)"; fi
 
-if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
+if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
 
 # mutators: production lines of ui/, screens/ and app/ (everything before the file's first
 # `#[cfg(test)]` + `mod` pair, which is where every screen keeps its tests) — PLUS, since D3, every
@@ -610,7 +613,7 @@ while IFS= read -r f; do
 # ...over the files that name a mutator at all. The per-file pass only subtracts (a `#[cfg(test)] mod`
 # block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
 # that can produce a hit.
-done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/appkit" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC_MACHINE" "$SRC/appkit" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
@@ -682,16 +685,16 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
   grep_code '(crate|super)::app::' "$SRC/screens" | sed 's/^/    /'
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
-gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui" "$SRC/appkit"
+gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui" "$SRC_MACHINE" "$SRC/appkit"
 # uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
 # `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
 # injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
 # grep yet: ui/ still names other application modules, mostly from tests and dev instruments.
-gate uistorage '(crate|super)::storage::' "$SRC/ui"
+gate uistorage '(crate|super)::storage::' "$SRC/ui" "$SRC_MACHINE"
 
 # legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
 # a hit as a declaration, which is the point (nothing compiles the prose either).
-legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" "$SRC_BASE" 2>/dev/null || true)
+legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" "$SRC_BASE" "$SRC_MACHINE" 2>/dev/null || true)
 if [ -z "$legacy_hits" ]; then ok "legacypage"; else
   echo "$legacy_hits" | sed 's/^/    /'
   fail "legacypage: $(echo "$legacy_hits" | wc -l | tr -d ' ') mention(s) — the type is retired (§15.2)"
@@ -739,7 +742,7 @@ else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::screens::
 # outside the three files that own the raw primitives (`text.rs`, `ui/text_view.rs`,
 # `ui/text_buffer.rs` — the TextView component built directly on them) and the BODY of an
 # `impl … Measure for …` block. That second exemption is structural, not a path: `Measure`
-# (`ui/machine.rs`) is the one seam (`TtfMeasure` on device/sim, `TableMeasure` under replay,
+# (`machine/src/machine.rs`) is the one seam (`TtfMeasure` on device/sim, `TableMeasure` under replay,
 # `FixtureMeasure` in host tests), and every real call site now threads it down from its caller —
 # but two leaves genuinely could not (each struct's own doc says which and why): `widgets.rs`'s
 # `LegacyMeasure` (generic `View::draw` leaves with no capability parameter, and the legacy
@@ -769,17 +772,17 @@ while IFS= read -r f; do
 done < <(grep -rlE --include='*.rs' 'crate::text::(text_width|elide|cap_h)\(' "$SRC" 2>/dev/null | sort)
 if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad line(s) outside the Measure seam"; fi
 
-# dt (phase 12, D4 — ZERO now, was an allowlist): idle::dt() (deleted from ui/idle.rs entirely —
+# dt (phase 12, D4 — ZERO now, was an allowlist): idle::dt() (deleted from machine/src/idle.rs entirely —
 # card_row.rs's focused-title marquee, its last caller, now reads the absolute idle::now_ms()
 # instead and wrapping_sub's two readings, motion::Phase's own drift-free idiom) and (+=|-=) *dt
-# outside ui/motion.rs, which owns the integrators spec §4.2 requires for hashed logical state.
+# outside machine/src/motion.rs, which owns the integrators spec §4.2 requires for hashed logical state.
 # Every clock-driven animator (spinners, ramps, hero auto-advance, the modal dip, the route
 # cross-fade, the poster-preview settle) now advances through motion::Ramp/motion::Phase, which
 # read Tick.ms directly and report Motion from inside advance() — the frozen-animator regression
 # class this whole gate exists to catch. motion.rs currently has no hit either; the exclusion is
 # the documented intent (spec §4.2: the ONLY file licensed to touch a raw per-frame delta), not a
 # live carve-out.
-dt_hits=$(grep_code 'idle::dt\(\)|(\+=|-=)\s*dt\b' "$SRC" | grep -v "^$SRC/ui/motion.rs:")
+dt_hits=$(grep_code 'idle::dt\(\)|(\+=|-=)\s*dt\b' "$SRC" "$SRC_MACHINE" | grep -v "^$SRC_MACHINE/motion.rs:")
 if [ -z "$dt_hits" ]; then ok "dt"; else
   echo "$dt_hits" | sed 's/^/    /'
   fail "dt: $(echo "$dt_hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
@@ -796,7 +799,7 @@ gate_zero() {
     fail "$rule: $(echo "$hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
   fi
 }
-gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC/appkit" "$SRC/screens"
+gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC_MACHINE" "$SRC/appkit" "$SRC/screens"
 
 # hittest: the narrowed raw hit-tester call shape, zero in app/ once the player's HUD registers
 # its stops through DrawFrame::stop (D2) instead of app/run.rs testing raw coordinates against
@@ -813,7 +816,7 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # methods beside these three). A self-test that spells two of the three call shapes as STRING
 # LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy of the
 # exact line it expects, which is data, not a call (`app/run.rs`'s own `video_plane_gate_tests`
-# today, `ui/idle.rs`'s before the machine layer left `ui/`) — must not trip this gate in any file
+# today, `machine/src/idle.rs`'s before the machine layer left `ui/`) — must not trip this gate in any file
 # that is not exempt, so a hit inside a `"…"` literal is stripped before matching (the same
 # double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
 # actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
@@ -834,7 +837,7 @@ while IFS= read -r f; do
 # REMOVES matches, so a file with no raw hit cannot fail this gate — and running its `awk` plus a
 # `grep` over all 420 files, to reach the two that mention the shape, was the single most expensive
 # rule in this script (4.8 s of its 17 s).
-done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" "$SRC_BASE" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" "$SRC_BASE" "$SRC_MACHINE" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
@@ -933,7 +936,7 @@ while IFS= read -r f; do
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
 # ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
 # below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.
-done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" "$SRC_BASE" 2>/dev/null | grep -v "^$SRC_BASE/task.rs\$" | sort)
+done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" "$SRC_BASE" "$SRC_MACHINE" 2>/dev/null | grep -v "^$SRC_BASE/task.rs\$" | sort)
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi
@@ -962,7 +965,7 @@ else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared 
 # path through `paths::in_runtime_dir("plxnative-…")`, a bare filename with no `/tmp/` prefix, so
 # neither one is a `/tmp/plxnative-` literal in the first place and there is no second file to
 # name here (re-verify this if a log sink is ever given a hardcoded `/tmp/` path).
-tmp_hits=$(python3 - "$SRC" "$SRC_BASE" <<'PY'
+tmp_hits=$(python3 - "$SRC" "$SRC_BASE" "$SRC_MACHINE" <<'PY'
 import os, sys
 
 src = sys.argv[1]

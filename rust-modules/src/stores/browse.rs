@@ -4,7 +4,7 @@
 //! implementation.
 
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Machine};
+use plx_machine::machine::{Cx, Effects, Handled, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -144,7 +144,7 @@ impl BrowseStore {
         changed
     }
 
-    pub(crate) fn pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
+    pub(crate) fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
@@ -159,10 +159,10 @@ impl BrowseStore {
     }
     #[cfg(test)]
     pub(crate) fn pump(&mut self) -> super::StoreOutcome {
-        self.pump_with_gate(crate::ui::landgate::fixture_gate())
+        self.pump_with_gate(plx_machine::landgate::fixture_gate())
     }
 
-    pub(crate) fn discover_pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
+    pub(crate) fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
@@ -175,7 +175,7 @@ impl BrowseStore {
     }
     #[cfg(test)]
     pub(crate) fn discover_pump(&mut self) -> super::StoreOutcome {
-        self.discover_pump_with_gate(crate::ui::landgate::fixture_gate())
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
     }
 
     pub(crate) fn listing_snapshot(&mut self) -> ListingSnapshot {
@@ -455,7 +455,7 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump_with_gate(&crate::ui::landgate::Gate::default()).endpoints.emit(fx);
+                self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints.emit(fx);
             }
         }
         Handled::Yes
@@ -745,7 +745,7 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), before_notice + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_notice + 1)]);
         assert!(stores.take_notices().is_empty());
-        let _ = crate::ui::idle::take_local_damage();
+        let _ = plx_machine::idle::take_local_damage();
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
@@ -758,7 +758,7 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
         assert!(stores.take_notices().is_empty());
-        assert_eq!(crate::ui::idle::take_local_damage(), 0,
+        assert_eq!(plx_machine::idle::take_local_damage(), 0,
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
         crate::plex::reset_servers_for_test();

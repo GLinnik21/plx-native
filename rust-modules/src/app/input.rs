@@ -1202,7 +1202,7 @@ pub(crate) fn chip_activate(
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     use crate::ui::screen::ScreenArg;
-    if pages.top_arg().map(|a| a.chrome()) != Some(crate::ui::machine::Chrome::TabBar) {
+    if pages.top_arg().map(|a| a.chrome()) != Some(plx_machine::machine::Chrome::TabBar) {
         return;
     }
     // Search USED to need an explicit keyboard-dismissal nudge here (`BarHost::Search =>` the
@@ -1226,7 +1226,7 @@ pub(crate) fn chip_activate(
 /// bar", and the two cannot drift.
 pub(crate) fn wears_the_chip(route: &AppArg) -> bool {
     use crate::ui::screen::ScreenArg;
-    route.chrome() == crate::ui::machine::Chrome::TabBar
+    route.chrome() == plx_machine::machine::Chrome::TabBar
 }
 
 /// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer

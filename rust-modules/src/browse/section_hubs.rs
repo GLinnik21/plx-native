@@ -436,7 +436,7 @@ impl super::BrowseState {
     }
 
     pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>,
-        gate: &crate::ui::landgate::Gate) -> bool {
+        gate: &plx_machine::landgate::Gate) -> bool {
         let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
@@ -482,7 +482,7 @@ impl super::BrowseState {
                 state.hubs.owed = true;
             }
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         true
     }
 

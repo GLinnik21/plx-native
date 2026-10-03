@@ -98,7 +98,7 @@ fn the_failed_reason_names_the_account_or_keeps_the_caption() {
 /// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
 #[test]
 fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     let column = StatusOverlay::REASON_W * HEADROOM;
     for language in [Preference::En, Preference::Es, Preference::Be] {
         let _guard = language_on_this_thread_for_test(language);
@@ -148,7 +148,7 @@ fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
 #[test]
 fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
     struct Wide;
-    impl crate::ui::machine::Measure for Wide {
+    impl plx_machine::machine::Measure for Wide {
         fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
         fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
         fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
@@ -230,7 +230,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
     /// count doubles every Cyrillic letter, so it would grade Belarusian against a font no device
     /// has; this grades every locale on exactly the advance the English copy is held to.
     struct ScalarMeasure;
-    impl crate::ui::machine::Measure for ScalarMeasure {
+    impl plx_machine::machine::Measure for ScalarMeasure {
         fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
             text.to_string_lossy().chars().count() as f32 * size as f32 * 0.5
         }

@@ -4,7 +4,7 @@
 
 use super::card_row;
 use super::icons::{self, Icon};
-use super::machine::{FocusKey, FocusRead, GroupId, Host, Measure};
+use plx_machine::machine::{FocusKey, FocusRead, GroupId, Host, Measure};
 use super::screen::{
     Activate, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Link,
     Seat, Stop,
@@ -448,7 +448,7 @@ mod tests {
         tree::{key, split, Tree},
         FocusEngine, Outcome,
     };
-    use crate::ui::machine::{Cx, EntryId, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{Cx, EntryId, InputOwner, PressRead, Tick};
     use crate::ui::screen::By;
 
     const ENTRY: EntryId = EntryId(1);

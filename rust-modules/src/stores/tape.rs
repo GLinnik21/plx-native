@@ -1,6 +1,6 @@
 //! Resource boundary for the controlled content domain: the record/replay tape the Metadata,
 //! Person and Collection stores call through. It lives with the stores it serves (and names only
-//! data modules, `plex` and `ui::landgate`), so the data layer reaches no application module.
+//! data modules, `plex` and `plx_machine::landgate`), so the data layer reaches no application module.
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -110,7 +110,7 @@ fn person_completion(t: &mut Tape, slot: u32, data: &Value) -> Result<(), &'stat
 /// tape answers ([`poll`]) and the landing is reported to the gate itself; otherwise the landing
 /// gate schedules the take. The one spelling of that choice for the Person and Collection stores.
 pub(crate) fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
-    gate: &crate::ui::landgate::Gate, id: super::StoreId, store: &str, slot: u32,
+    gate: &plx_machine::landgate::Gate, id: super::StoreId, store: &str, slot: u32,
     fetch: &super::Fetch<T>) -> Option<T> {
     if active() {
         let reply = poll(store, slot, || fetch.take());

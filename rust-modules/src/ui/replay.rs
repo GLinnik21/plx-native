@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use super::dispatch::{Dispatcher, Rig, Tap};
 use super::geom::IndexElem;
-use super::machine::{Addr, EntryId, FocusKey, Host, InputEvent, InputKind, Tick};
+use plx_machine::machine::{Addr, EntryId, FocusKey, Host, InputEvent, InputKind, Tick};
 use super::rec::Recording;
 
 /// The two replay modes (§5.5).
@@ -229,7 +229,7 @@ where
                         entry: EntryId(e),
                         elem: H::Elem::of_index(k),
                     }),
-                    recorded.and_then(|(_, _, g)| g.map(super::machine::GroupId)),
+                    recorded.and_then(|(_, _, g)| g.map(plx_machine::machine::GroupId)),
                 );
             }
         }

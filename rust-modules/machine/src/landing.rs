@@ -340,7 +340,7 @@ mod stream_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::machine::{InstanceId, MachineId};
+    use crate::machine::{InstanceId, MachineId};
 
     fn addr(req: u32) -> Addr {
         Addr {

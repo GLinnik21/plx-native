@@ -59,7 +59,7 @@
 use super::{Command, SessionFx, SessionMachine};
 use crate::telemetry::consent::Permission;
 use crate::telemetry::incident::{IncidentContext, IncidentKind, LinkClass};
-use crate::ui::machine::Canon;
+use plx_machine::machine::Canon;
 use serde::{Deserialize, Serialize};
 
 /// Which onboarding flow an incident belongs to. Only sign-in raises one in this stage.

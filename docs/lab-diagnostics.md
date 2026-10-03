@@ -214,7 +214,7 @@ budget is declared in `appinfo.json`, which is why both caps exist rather than a
 
 **The overlay**: `Uploading diagnostics…` → `Diagnostics uploaded (142 KB)` / `Upload failed: <reason>`,
 auto-dismissing after ~4 s, drawn from `theme` tokens through the existing `Label`/card widgets, and
-calling `ui::idle::invalidate()` on every state change — it animates from a clock, not a spring, so
+calling `plx_machine::idle::invalidate()` on every state change — it animates from a clock, not a spring, so
 the present gate cannot see it otherwise (`docs/agent-reference.md`, the `Xfade`/`Spinner` precedent).
 
 **Threading.** `Diag` is main-thread-only by contract, so the snapshot is built on the SDL thread
@@ -439,7 +439,7 @@ not pretending the old filesystem contract exists.
 
 * `make check` is green in both configurations. **Take the counts yourself** — this repository has
   rotted four written test counts already and the fifth is not going to be this one:
-  `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -- --list | grep -c ': test'`, with and without
+  `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -- --list | grep -c ': test'`, with and without
   `--features lab-diagnostics`. What the feature's own tests cover: the ring's two caps and its
   `dropped` delta, the `lab.json` parse and each refusal it names, the five scrub rewrites and the
   outright refusal (including the bare address and the household name the device test found), the

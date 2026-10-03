@@ -17,12 +17,12 @@
 //!
 //! What lives here is the vocabulary and machines plus all seven stores' production aggregate; no
 //! data stays in a legacy compatibility global any more (§14 complete). This module names data
-//! crates, `ui::machine` and — since
-//! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
+//! crates, `plx_machine::machine` and — since
+//! phase 11's landing schedule — `plx_machine::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
 
-use crate::ui::machine::StoreOrd;
+use plx_machine::machine::StoreOrd;
 
 // The advisory endpoint-refresh request, its first-observation-ordered set, and the host trait that
 // turns one into an effect live in `plex::retry`: the plaintext grant's upgrade retry (`plex`) answers
@@ -59,7 +59,7 @@ pub(crate) mod viewstate;
 pub(crate) struct Stores {
     /// The landing schedule belongs to the same application owner as these stores. Two Bridges
     /// may contain the same `StoreId`; they must not share its replay cursor or wait budget.
-    pub(crate) landgate: crate::ui::landgate::Gate,
+    pub(crate) landgate: plx_machine::landgate::Gate,
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) hubs: hubs::HubsStore,
     pub(crate) metadata: metadata::MetadataStore,
@@ -366,7 +366,7 @@ pub(crate) enum StoreEv<C> {
 //
 // Every store here lands OUTSIDE the dispatcher's drain — the legacy pumps poll their own
 // mailboxes once a frame — so which frame a worker's answer is observed on was, until phase 11,
-// whatever the network and the thread scheduler produced. `ui::landgate` is the schedule; these
+// whatever the network and the thread scheduler produced. `plx_machine::landgate` is the schedule; these
 // two are the store vocabulary's spelling of it, so a data module wraps its take rather than
 // naming the library module and an ordinal by hand. They wrap the TAKE alone and never the pump:
 // the retry countdowns, `maybe_spawn` and the debounce must keep running, or the gate would
@@ -375,7 +375,7 @@ pub(crate) enum StoreEv<C> {
 // Off a recording and off a replay each is one relaxed atomic load and the closure's own answer.
 
 /// A one-slot mailbox: `None` while the replay is still waiting for this owner's store's frame.
-pub(crate) fn take_landing<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+pub(crate) fn take_landing<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     f: impl FnMut() -> Option<T>) -> Option<T> {
     gate.take(id.ord(), f)
 }
@@ -463,7 +463,7 @@ impl<M> Fetch<M> {
 }
 
 /// A mailbox drained as a QUEUE: an empty answer is not a landing.
-pub(crate) fn take_landings<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+pub(crate) fn take_landings<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     f: impl FnMut() -> Vec<T>) -> Vec<T> {
     gate.take_all(id.ord(), f)
 }

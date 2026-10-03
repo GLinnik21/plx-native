@@ -110,7 +110,7 @@ fn deliver_person(rig: &mut Bridge, command: crate::stores::person::PersonCmd) {
     let parts = CxParts { tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Person.ord()), &mut present);
     assert_eq!(Rig::<AppHost>::deliver(rig, MachineId::Store(StoreId::Person.ord()),
         &AppMsg::Store(StoreCmd::Person(command)), &parts, &mut fx), Handled::Yes);
@@ -286,7 +286,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     }
 
     impl Tap<AppHost> for ViewStateDispatch {
-        fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             match &stamped.fx {
                 Fx::App(AppFx::Store(StoreId::ViewState,
                     StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {

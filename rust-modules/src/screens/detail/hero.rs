@@ -26,7 +26,7 @@ use std::os::raw::c_int;
 
 use crate::metadata::{Detail, Episode, Extra};
 use crate::ui::label::HAlign;
-use crate::ui::machine::{GroupId, Measure};
+use plx_machine::machine::{GroupId, Measure};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{CircleButton, PosterMark};
 use crate::ui::{theme, Painter, Rect};
@@ -645,7 +645,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     (bits, n)
 }
 
-fn bit_w(bit: Bit, measure: &dyn crate::ui::machine::Measure) -> f32 {
+fn bit_w(bit: Bit, measure: &dyn plx_machine::machine::Measure) -> f32 {
     match bit {
         Bit::Word(text, _, bold) => measure.width(text, theme::size::CAPTION, bold != 0),
         Bit::Sep(gap) => 2.0 * gap + measure.width(c"\u{b7}", theme::size::CAPTION, false),
@@ -655,7 +655,7 @@ fn bit_w(bit: Bit, measure: &dyn crate::ui::machine::Measure) -> f32 {
     }
 }
 
-fn play_mode_w(d: &Detail, after: bool, measure: &dyn crate::ui::machine::Measure) -> f32 {
+fn play_mode_w(d: &Detail, after: bool, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (bits, n) = play_mode_bits(d, after);
     bits[..n].iter().copied().map(|b| bit_w(b, measure)).sum()
 }
@@ -666,7 +666,7 @@ fn draw_play_mode(
     x: f32,
     y: f32,
     after: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let (top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = y + (top + baseline) * 0.5;
@@ -770,7 +770,7 @@ fn facts_flow(
     dx
 }
 
-pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
+pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = crate::ui::fmt::shared_by(&d.source()).unwrap_or_default();
@@ -1735,7 +1735,7 @@ mod tests {
     #[test]
     fn the_trailer_unfurl_spring_reports_while_opening_and_is_quiet_at_rest() {
         let _g = plx_base::testlock::serial();
-        crate::ui::idle::reset_for_test();
+        plx_machine::idle::reset_for_test();
         let mut springs = [crate::ui::Spring::at(0.0); 3];
         for spring in springs.iter_mut() {
             spring.step(0.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
@@ -1745,38 +1745,38 @@ mod tests {
             );
         }
 
-        crate::ui::idle::note_present(10_000);
-        crate::ui::idle::frame_begin(1.0 / 60.0);
-        crate::ui::idle::note_spring(0.0, 0.0, 0.0);
+        plx_machine::idle::note_present(10_000);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::note_spring(0.0, 0.0, 0.0);
         assert!(
-            !crate::ui::idle::should_present(10_016),
+            !plx_machine::idle::should_present(10_016),
             "a trailer=false set must not keep the present gate awake"
         );
 
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         springs[1].step(1.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
         assert!(
-            crate::ui::idle::should_present(10_032),
+            plx_machine::idle::should_present(10_032),
             "opening the trailer disc reports motion"
         );
         assert!(springs[1].pos > 0.01 || springs[1].vel.abs() > 0.01);
 
         for _ in 0..240 {
-            crate::ui::idle::frame_begin(1.0 / 60.0);
+            plx_machine::idle::frame_begin(1.0 / 60.0);
             springs[1].step(1.0, crate::ui::widgets::K_DISC_UNFURL, 1.0 / 60.0);
         }
         assert!(
             (springs[1].pos - 1.0).abs() < 0.01 && springs[1].vel.abs() < 0.01,
             "the third unfurl spring settles"
         );
-        crate::ui::idle::frame_begin(1.0 / 60.0);
-        crate::ui::idle::note_spring(1.0, 1.0, 0.0);
-        let _ = crate::ui::idle::should_present(19_000);
-        crate::ui::idle::note_present(20_000);
-        crate::ui::idle::frame_begin(1.0 / 60.0);
-        crate::ui::idle::note_spring(1.0, 1.0, 0.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::note_spring(1.0, 1.0, 0.0);
+        let _ = plx_machine::idle::should_present(19_000);
+        plx_machine::idle::note_present(20_000);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::note_spring(1.0, 1.0, 0.0);
         assert!(
-            !crate::ui::idle::should_present(20_016),
+            !plx_machine::idle::should_present(20_016),
             "the third unfurl spring is quiet at rest"
         );
     }

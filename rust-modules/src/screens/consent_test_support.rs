@@ -4,10 +4,10 @@ use super::*;
 
 pub(super) use crate::screens::registry::BAND;
 pub(super) use crate::ui::fixture::FixtureMeasure;
-pub(super) use crate::ui::machine::{
+pub(super) use plx_machine::machine::{
     Edge, FocusRead, InputOwner, InstanceId, PressId, PressRead, PresentHandle, Source, Stamped, Tick,
 };
-pub(super) use crate::ui::present::Present;
+pub(super) use plx_machine::present::Present;
 
 /// A bare `Cx<InnerHost>` for constructing or stepping a page with no SDL, no GL and no
 /// television. Consent does not inspect the retained Browse directory, so the explicit empty

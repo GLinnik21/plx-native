@@ -88,10 +88,10 @@ fn set_phase(p: u8, detail: String) {
         },
         Relaxed,
     );
-    // A toast is a clock-driven overlay, not a spring — `ui::idle::note_spring` cannot see it, and
+    // A toast is a clock-driven overlay, not a spring — `plx_machine::idle::note_spring` cannot see it, and
     // an uninvalidated one appears only on the next keypress (the failure mode `Xfade` and
     // `Spinner` both shipped with; see `docs/agent-reference.md`'s note on the present gate).
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// **Main thread.** Sample everything, then hand it to a worker.

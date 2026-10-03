@@ -530,7 +530,7 @@ fn elide(
     width: f32,
     size: i32,
     bold: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> String {
     crate::text::elide_by(text, width, false, |s| {
         measure.width(&cstring(s), size, bold)

@@ -14,15 +14,15 @@ use std::borrow::Cow;
 use std::ops::Deref;
 
 use super::frame::{Budget, RenderReport};
-use super::machine::{
+use plx_machine::machine::{
     Cx, Effects, EntryId, FocusKey, GroupId, Host, InstanceId, Leave, LogicalState, Machine,
     PartId, PressRead,
 };
 // The screen vocabulary the machine runtime itself names (`Host::Arg: ScreenArg`,
 // `Delivery::Screen(ScreenEvent)`, and `Enter`/`FocusTarget`/`By` through the event) is defined
-// in `ui::machine`, below `ui` in the layer graph (docs/module-layers.md, step L4). These paths
+// in `plx_machine::machine`, below `ui` in the layer graph (docs/module-layers.md, step L4). These paths
 // stay how the containers, the dispatcher and every screen name it.
-pub use super::machine::{By, Enter, FocusTarget, ScreenArg, ScreenEvent};
+pub use plx_machine::machine::{By, Enter, FocusTarget, ScreenArg, ScreenEvent};
 use super::{Painter, Rect};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -352,7 +352,7 @@ pub enum EdgeRule {
     Geometric,
     Stop,
     Screen,
-    Nav(super::machine::NavOpKind),
+    Nav(plx_machine::machine::NavOpKind),
 }
 
 /// Bit 0 = horizontal, bit 1 = vertical: the axes along which a geometric search may LAND here.
@@ -551,45 +551,45 @@ pub fn composed_seat<H: Host, T: Composed<H> + ?Sized>(s: &T, g: GroupId, from: 
 macro_rules! focusable_via_composed {
     ($t:ty, $h:ty) => {
         impl $crate::ui::screen::Focusable<$h> for $t {
-            fn groups(&self, cx: &$crate::ui::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
+            fn groups(&self, cx: &plx_machine::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
                 $crate::ui::screen::composed_groups(self, cx, out)
             }
             fn group_of(
                 &self,
-                key: &<$h as $crate::ui::machine::Host>::Elem,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> Option<$crate::ui::machine::GroupId> {
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<plx_machine::machine::GroupId> {
                 $crate::ui::screen::composed_group_of(self, key, cx)
             }
             fn neighbour(
                 &self,
-                key: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
+                key: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
                 dir: $crate::ui::screen::Dir,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::screen::Step<<$h as $crate::ui::machine::Host>::Elem> {
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> $crate::ui::screen::Step<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::composed_neighbour(self, key, dir, cx)
             }
             fn place(
                 &self,
-                key: &<$h as $crate::ui::machine::Host>::Elem,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
                 at: $crate::ui::screen::At,
             ) -> Option<$crate::ui::screen::Placed> {
                 $crate::ui::screen::composed_place(self, key, cx, at)
             }
             fn reconcile(
                 &self,
-                want: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                want: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::composed_reconcile(self, want, cx)
             }
             fn seat(
                 &self,
-                g: $crate::ui::machine::GroupId,
+                g: plx_machine::machine::GroupId,
                 from: $crate::ui::screen::Placed,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::composed_seat(self, g, from, cx)
             }
         }
@@ -604,45 +604,45 @@ macro_rules! focusable_via_composed {
 macro_rules! focusable_via_view {
     ($t:ty, $h:ty, $view:ident) => {
         impl $crate::ui::screen::Focusable<$h> for $t {
-            fn groups(&self, cx: &$crate::ui::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
+            fn groups(&self, cx: &plx_machine::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
                 $crate::ui::screen::Focusable::<$h>::groups(&self.$view(), cx, out)
             }
             fn group_of(
                 &self,
-                key: &<$h as $crate::ui::machine::Host>::Elem,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> Option<$crate::ui::machine::GroupId> {
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<plx_machine::machine::GroupId> {
                 $crate::ui::screen::Focusable::<$h>::group_of(&self.$view(), key, cx)
             }
             fn neighbour(
                 &self,
-                key: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
+                key: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
                 dir: $crate::ui::screen::Dir,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::screen::Step<<$h as $crate::ui::machine::Host>::Elem> {
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> $crate::ui::screen::Step<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::Focusable::<$h>::neighbour(&self.$view(), key, dir, cx)
             }
             fn place(
                 &self,
-                key: &<$h as $crate::ui::machine::Host>::Elem,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
                 at: $crate::ui::screen::At,
             ) -> Option<$crate::ui::screen::Placed> {
                 $crate::ui::screen::Focusable::<$h>::place(&self.$view(), key, cx, at)
             }
             fn reconcile(
                 &self,
-                want: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                want: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::Focusable::<$h>::reconcile(&self.$view(), want, cx)
             }
             fn seat(
                 &self,
-                g: $crate::ui::machine::GroupId,
+                g: plx_machine::machine::GroupId,
                 from: $crate::ui::screen::Placed,
-                cx: &$crate::ui::machine::Cx<'_, $h>,
-            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::ui::screen::Focusable::<$h>::seat(&self.$view(), g, from, cx)
             }
         }
@@ -910,9 +910,9 @@ impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
 mod draw_frame_tests {
     use super::*;
     use crate::ui::fixture::FixtureHost;
-    use crate::ui::machine::{Cx, EntryId, FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{Cx, EntryId, FocusRead, InputOwner, PressRead, Tick};
 
-    fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, store: &'a crate::ui::fixture::FixtureView) -> Cx<'a, FixtureHost> {
+    fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, store: &'a crate::ui::fixture::FixtureView) -> Cx<'a, FixtureHost> {
         Cx {
             views: crate::ui::fixture::FixtureViews { store },
             tick: Tick::default(),
@@ -1100,7 +1100,7 @@ mod draw_frame_tests {
 mod composed_owner_tests {
     use super::*;
     use crate::ui::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct RepairPart { owned: Vec<u32>, placed: Vec<u32>, repaired: u32 }
     impl Focusable<FixtureHost> for RepairPart {

@@ -2,7 +2,7 @@
 use super::*;
 use crate::stores::browse::QueryEdit;
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
-use crate::ui::machine::{Host, InputOwner, Stamped, Tick};
+use plx_machine::machine::{Host, InputOwner, Stamped, Tick};
 
 struct TestHost;
 
@@ -113,7 +113,7 @@ impl Fixture {
         event: ScreenEvent<TestHost>,
     ) -> Vec<Stamped<TestHost>> {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(
             &event,
             &self.cx(),
@@ -124,7 +124,7 @@ impl Fixture {
     fn flush(&mut self, page: &mut LibraryScreen) -> Vec<bool> {
         let out = self.step(
             page,
-            ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper),
+            ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper),
         );
         let directory = self.directory.view();
         let results = apply(&mut self.stores, directory, out);
@@ -175,9 +175,9 @@ fn apply(
         .collect()
 }
 fn back() -> ScreenEvent<TestHost> {
-    ScreenEvent::Input(crate::ui::machine::InputEvent {
+    ScreenEvent::Input(plx_machine::machine::InputEvent {
         at: Tick::default(),
-        source: crate::ui::machine::Source::Script,
+        source: plx_machine::machine::Source::Script,
         kind: InputKind::Key {
             key: Key::Back,
             sym: 0,

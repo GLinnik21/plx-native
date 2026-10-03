@@ -75,7 +75,7 @@
 //! overlapping workers, and a monotone mailbox is what stops a slow answer for `wal` repopulating
 //! the results for `wallace`. Debounce is `ui/detail.rs`'s `season_settle` accumulator. Two rules
 //! that are easy to miss and both wedge the screen forever if missed: release the in-flight flag
-//! when `spawn_small` REFUSES, and call [`crate::ui::idle::invalidate`] on every landing including
+//! when `spawn_small` REFUSES, and call [`plx_machine::idle::invalidate`] on every landing including
 //! the failure branch.
 //!
 //! ## Ownership (`docs/stores-as-machines.md`)
@@ -681,7 +681,7 @@ impl SearchState {
     #[cfg(test)]
     pub(crate) fn pump(&mut self, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
         pump_with_optional_directory(self, adapter, dt, None,
-            crate::ui::landgate::fixture_gate())
+            plx_machine::landgate::fixture_gate())
     }
 
     /// Advance the debounce and land whatever arrived under this frame's retained directory policy.
@@ -691,7 +691,7 @@ impl SearchState {
         adapter: &Arc<SearchAdapter>,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> bool {
         pump_with_optional_directory(self, adapter, dt, Some(directory), gate)
     }
@@ -700,7 +700,7 @@ impl SearchState {
     pub(crate) fn pump_with_directory(&mut self, adapter: &Arc<SearchAdapter>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>) -> bool {
         self.pump_with_directory_and_gate(adapter, dt, directory,
-            crate::ui::landgate::fixture_gate())
+            plx_machine::landgate::fixture_gate())
     }
 
     /// Publish a bounded catalog through the real retained-view boundary, without network work.
@@ -789,7 +789,7 @@ fn set_query_with_directory(
         state.settle_us = 0;
         state.armed = real_query;
     }
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
@@ -915,7 +915,7 @@ fn favs_match_directory(
 #[cfg(test)]
 fn pump(state: &mut SearchState, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
     pump_with_optional_directory(state, adapter, dt, None,
-        crate::ui::landgate::fixture_gate())
+        plx_machine::landgate::fixture_gate())
 }
 
 fn pump_with_optional_directory(
@@ -923,7 +923,7 @@ fn pump_with_optional_directory(
     adapter: &Arc<SearchAdapter>,
     dt: f32,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
-    gate: &crate::ui::landgate::Gate,
+    gate: &plx_machine::landgate::Gate,
 ) -> bool {
     let live = slots();
     let visible = crate::plex::server_roster_gen();
@@ -988,7 +988,7 @@ fn pump_with_optional_directory(
         if state.src[i].retry_cd > 0 {
             state.src[i].retry_cd -= 1;
         }
-        // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
+        // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
         // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
@@ -1032,7 +1032,7 @@ fn pump_with_optional_directory(
     }
     // every landing repaints, the failure branch included: without this the screen sits on a
     // spinner that has already been answered until the next keypress happens to invalidate it
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     true
 }
 

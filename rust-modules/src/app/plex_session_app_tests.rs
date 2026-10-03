@@ -28,22 +28,22 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
     let _session = session::TempSession::new("bridge-session-landing");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { crate::ui::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
     }
     let _idle = ResetIdle;
     let mut bridge = Bridge::for_test(|| 0);
     session::save(&signed_in());
-    crate::ui::idle::reset_for_test();
+    plx_machine::idle::reset_for_test();
     let _frame = plx_base::task::FrameScope::enter();
     bridge.land_session_cache();
-    assert_eq!(crate::ui::idle::take_local_damage(), 1, "a changed session lands on the frame step");
+    assert_eq!(plx_machine::idle::take_local_damage(), 1, "a changed session lands on the frame step");
     bridge.land_session_cache();
-    assert_eq!(crate::ui::idle::take_local_damage(), 0, "one invalidation per landing");
+    assert_eq!(plx_machine::idle::take_local_damage(), 0, "one invalidation per landing");
     drop(_frame);
     session::save(&signed_in());
     let _frame = plx_base::task::FrameScope::enter();
     bridge.land_session_cache();
-    assert_eq!(crate::ui::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
+    assert_eq!(plx_machine::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
 }
 
 /// This thread holds the session's IO lock for the whole run, so a frame that took it — or made any
@@ -66,7 +66,7 @@ fn login_frames_never_wait_for_the_session_io_lock() {
         crate::app::bridge::nav_root(&mut pages, crate::screens::registry::AppArg::Login);
         for ms in 0..30 {
             crate::app::bridge::frame(&mut pages, &mut bridge,
-                crate::ui::machine::Tick { ms: ms * 16, dt_us: 16_000 }, Vec::new());
+                plx_machine::machine::Tick { ms: ms * 16, dt_us: 16_000 }, Vec::new());
         }
         assert!(matches!(pages.top_arg(), Some(crate::screens::registry::AppArg::Login)));
         assert_eq!(session::reads_for_test(), 0, "login's Browse/Search captures may only peek");

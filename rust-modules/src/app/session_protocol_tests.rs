@@ -10,7 +10,7 @@ mod carry_matrix {
     use crate::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
         RegistryPlan, SessionEnvelope, SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
     use crate::plex::session::{Session, SourceRef, UserRef, ServerRef};
-    use crate::ui::machine::{RequestId, Stamped};
+    use plx_machine::machine::{RequestId, Stamped};
 
     const EPOCH: u64 = u32::MAX as u64 + 191;
     const BUDGET: usize = crate::ui::dispatch::MAX_STEPS_PRE as usize + crate::ui::dispatch::MAX_STEPS_POST as usize;
@@ -318,7 +318,7 @@ mod carry_matrix {
 fn home_roster_failure_history(cached: bool, failure: u8) {
     use crate::auth::{SessionCmd, Phase};
     use crate::auth::owner::{SessionEvent, SessionWork, SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
-    use crate::ui::machine::RequestId;
+    use plx_machine::machine::RequestId;
     let mut stored = crate::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
@@ -387,8 +387,8 @@ mod qr_exhaustion_guard {
     use super::*;
     use crate::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionEvent,
         SessionFx, SessionOp, SessionWorkKey, StreamPhase, SESSION_TOTAL_RESERVATIONS};
-    use crate::ui::landing::AdmissionError;
-    use crate::ui::machine::{RequestId, Stamped};
+    use plx_machine::landing::AdmissionError;
+    use plx_machine::machine::{RequestId, Stamped};
     use std::sync::mpsc::{sync_channel, SyncSender};
     use std::time::Duration;
 
@@ -494,7 +494,7 @@ mod qr_exhaustion_guard {
 fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_terminal() {
     use crate::auth::owner::{AdmissionId, AdmissionReply, AdmissionState, Identity, Pending,
         SessionEvent, SessionOp, SessionWork, SessionWorkKey, StreamPhase, SESSION_TOTAL_RESERVATIONS};
-    use crate::ui::machine::{Addr, RequestId};
+    use plx_machine::machine::{Addr, RequestId};
     fn deliver(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, event: SessionEvent) {
         d.emit(MachineId::Session, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
         d.frame_with(rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
@@ -675,7 +675,7 @@ fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
 #[test]
 fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_command_carry() {
     use crate::auth::owner::Command;
-    use crate::ui::machine::{PressId, RequestId};
+    use plx_machine::machine::{PressId, RequestId};
     let _guard = plx_base::testlock::serial();
     let epoch = u64::from(u32::MAX) + 31;
     let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
@@ -823,7 +823,7 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
     #[derive(Default)]
     struct Replies(Vec<(u32, u32, bool, u64)>);
     impl Tap<AppHost> for Replies {
-        fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             if let Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(ScreenEvent::Async(req,
                 AppMsg::SelectionReply { correlation, accepted, flow_epoch }))) = &stamped.fx {
                 assert_eq!(req.0, *correlation);
@@ -891,7 +891,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending, Receipt,
         SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase,
         SESSION_DATA_RECORDS, SESSION_TOTAL_RESERVATIONS, SESSION_TRANSFER_RECORDS};
-    use crate::ui::machine::RequestId;
+    use plx_machine::machine::RequestId;
     // frame_ingest also captures the OTHER stores. Serialize that real frame boundary;
     // Session's own resources remain private and every network operation is injected.
     let _guard = plx_base::testlock::serial();

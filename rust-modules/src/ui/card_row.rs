@@ -182,7 +182,7 @@ pub(crate) struct CardRow {
 impl CardRow {
     /// Motion read by placement/reveal is behavioral state for an owned, replayable screen.
     /// Destructure exhaustively so adding a field requires revisiting the census.
-    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
         let Self { scale, overflow, focus, scroll_x, lift, band, base_y } = self;
         c.seq(scale.len());
         for spring in scale { c.f32(spring.pos).f32(spring.vel); }
@@ -538,7 +538,7 @@ pub(crate) fn draw_heading(
     x: f32,
     y: f32,
     max_w: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     bounded_heading_flow(title, source, max_w, measure, |s, dx, sz, bold, ink| {
         // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
@@ -572,7 +572,7 @@ pub(crate) fn bounded_heading_flow(
     title: &str,
     source: &str,
     max_w: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
     mut run: impl FnMut(&str, f32, std::os::raw::c_int, std::os::raw::c_int, [f32; 4]) -> f32,
 ) -> f32 {
     heading_flow(title, source, |s, dx, sz, bold, ink| {
@@ -766,7 +766,7 @@ pub(crate) fn draw_focused(
     sty: &RowStyle,
     resume: Option<f32>,
     label: &TileLabel,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
@@ -824,7 +824,7 @@ pub(crate) fn strip<'a>(
     resume: impl Fn(usize) -> Option<f32>,
     label: impl Fn(usize) -> TileLabel,
     extra: impl Fn(Painter, usize, f32, bool),
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let sx = row.scroll_x();
     let pr = p.translate(-sx, 0.0);
@@ -1101,7 +1101,7 @@ fn marquee_x(t_ms: f32, text_w: f32, budget: f32) -> f32 {
 }
 
 /// Is the marquee actually GLIDING at `t_ms` — i.e. is this the frame that must keep
-/// [`crate::ui::idle`] awake? `false` during the rest beat and whenever the run fits, so a settled
+/// [`plx_machine::idle`] awake? `false` during the rest beat and whenever the run fits, so a settled
 /// screen full of short (or currently-resting) titles still meets the idle present gate's fps
 /// ceiling — see [`title_marquee`]'s doc for why this has to be a separate question from
 /// [`marquee_x`] rather than "moved since last frame": the rest beat's `offset == 0` is not motion,
@@ -1142,7 +1142,7 @@ thread_local! {
     /// identical title on a genuinely different item simply keeps the marquee running rather than
     /// resetting it, which is invisible — the two runs read the same either way.
     static MARQUEE_KEY: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-    /// The [`crate::ui::idle::now_ms`] reading when `MARQUEE_KEY` last changed. `marquee_clock`
+    /// The [`plx_machine::idle::now_ms`] reading when `MARQUEE_KEY` last changed. `marquee_clock`
     /// reads its elapsed time as `now_ms().wrapping_sub(this)` rather than summing a per-frame
     /// delta — this runs inside `draw`, which — unlike [`CardRow::update`] — gets no `Tick` of its
     /// own, so it cannot advance a `motion::Phase` directly, but a `wrapping_sub` of two absolute
@@ -1156,7 +1156,7 @@ thread_local! {
 /// exactly once) — so this cannot double-advance within a frame the way a naively-shared clock read
 /// from two draws in the same pass would.
 fn marquee_clock(text: &str) -> f64 {
-    let now = crate::ui::idle::now_ms();
+    let now = plx_machine::idle::now_ms();
     let changed = MARQUEE_KEY.with(|k| {
         let mut k = k.borrow_mut();
         if k.as_str() == text {
@@ -1263,7 +1263,7 @@ pub(crate) fn place_label(p: Painter, rect: Rect, sty: &RowStyle, w: f32, lag: f
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
 /// block, else a looping [`marquee_x`] inside it — see the section doc above for why. Reports to
-/// [`crate::ui::idle`] only on a frame the marquee is actually gliding, so a screen full of short
+/// [`plx_machine::idle`] only on a frame the marquee is actually gliding, so a screen full of short
 /// (or resting) titles costs the present gate nothing.
 ///
 /// `glyph` leads the line with Continue-Watching's amber play triangle — the SAME clock and the
@@ -1319,9 +1319,9 @@ fn title_marquee(
     // therefore never lets the screen rest — which is what "marquee while focused" means, and why
     // a fitting title must never reach this branch.
     if marquee_moving(t_ms, w, budget) {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     } else {
-        crate::ui::idle::wake();
+        plx_machine::idle::wake();
     }
     let off = marquee_x(t_ms, w, budget);
     let travel = w + MARQUEE_GAP;
@@ -1338,7 +1338,7 @@ fn title_marquee(
 }
 
 /// The drawn width of a focused title run (LABEL, bold); `0` for a null pointer.
-fn title_w(text: *const c_char, measure: &dyn crate::ui::machine::Measure) -> f32 {
+fn title_w(text: *const c_char, measure: &dyn plx_machine::machine::Measure) -> f32 {
     if text.is_null() {
         0.0
     } else {
@@ -1383,7 +1383,7 @@ fn draw_label_block(
     sty: &RowStyle,
     label: &TileLabel,
     mut y: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
@@ -1851,19 +1851,19 @@ mod tests {
     }
 
     /// [`marquee_clock`] restarts at zero the instant the focused text changes, and keeps
-    /// advancing by real elapsed time (read off [`crate::ui::idle::now_ms`]) while it stays the
+    /// advancing by real elapsed time (read off [`plx_machine::idle::now_ms`]) while it stays the
     /// same. `frame_begin` stands in for the real frame loop's own per-frame call, advancing the
     /// same clock `title_marquee` reads in production — nothing about `marquee_clock` itself is
     /// untestable now that it reads an absolute snapshot instead of summing a `dt` of its own.
     #[test]
     fn the_marquee_clock_restarts_when_the_focused_text_changes() {
         MARQUEE_KEY.with(|k| k.borrow_mut().clear());
-        crate::ui::idle::frame_begin(0.0);
+        plx_machine::idle::frame_begin(0.0);
         assert_eq!(marquee_clock("Alpha"), 0.0, "first sight of a title starts at 0");
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         let t1 = marquee_clock("Alpha");
         assert!(t1 > 0.0, "the clock must advance while the title holds focus");
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         let t2 = marquee_clock("Alpha");
         assert!(t2 > t1, "and keep advancing frame over frame");
         assert_eq!(
@@ -2013,7 +2013,7 @@ mod tests {
         let sty = RowStyle::HOME;
 
         // opening: the very first step has to be seen by the gate
-        let (_, moved) = crate::ui::idle::scoped_motion(|| {
+        let (_, moved) = plx_machine::idle::scoped_motion(|| {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         });
         assert!(moved, "an opening band must wake the present gate");
@@ -2024,7 +2024,7 @@ mod tests {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         }
         assert!((row.under_band() - UNDER_LABEL_H).abs() < 0.5);
-        let (_, still) = crate::ui::idle::scoped_motion(|| {
+        let (_, still) = plx_machine::idle::scoped_motion(|| {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         });
         assert!(!still, "a settled open band must not keep the panel awake");
@@ -2034,7 +2034,7 @@ mod tests {
             row.update(6, None, &sty, 1.0 / 60.0);
         }
         assert!((row.under_band() - LABEL_BAND_COLLAPSED).abs() < 0.5);
-        let (_, still) = crate::ui::idle::scoped_motion(|| {
+        let (_, still) = plx_machine::idle::scoped_motion(|| {
             row.update(6, None, &sty, 1.0 / 60.0);
         });
         assert!(!still, "a settled collapsed band must not keep the panel awake");

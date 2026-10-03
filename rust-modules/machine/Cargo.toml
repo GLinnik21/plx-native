@@ -1,0 +1,37 @@
+[package]
+name = "plx_machine"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative machine layer: the deterministic state-machine runtime (machines, effects, the present gate, the idle wake, the landing schedule, motion) the stores, auth and screens are written against."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[lib]
+name = "plx_machine"
+# An rlib the application crate links, never an archive of its own: the one staticlib is the
+# application crate's (ci/test_no_host_staticlib.py holds that line for this crate too).
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Forwarded from the application crate, which is the only one that sets them. Each is named here
+# only because some code in this crate has a `cfg` on it (`motion`'s held phase clock,
+# `idle`'s simulator settle clock).
+devtriggers = ["plx_base/devtriggers"]
+hostsim = ["plx_base/hostsim"]
+# The `cfg(test)` fixtures other crates' tests use (`landgate`'s fixture gate, `idle::reset_for_test`,
+# `machine::{BareArg, BareMeasure}`, the `Measure` impl for `fontcov`'s `ShippedMeasure`) plus the
+# test-mode behaviour that `cfg(test)` alone cannot give a dependent (`present`'s private wake door,
+# `idle`'s per-thread damage counter). Enabled from the dependents' `[dev-dependencies]`; never in a
+# shipped build. It enables `plx_base/test-support` because the `ShippedMeasure` impl needs it.
+test-support = ["plx_base/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+
+[dev-dependencies]
+plx_base = { path = "../base", features = ["test-support"] }
+
+[lints]
+workspace = true

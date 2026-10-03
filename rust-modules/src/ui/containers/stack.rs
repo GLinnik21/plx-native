@@ -14,7 +14,7 @@
 //! the entry stays, and a Pop that reaches it remounts from its `ReturnState` — which is what
 //! `an_evicted_entry_keeps_its_focus_identity_on_remount` grades.
 
-use super::super::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId, Stamped};
+use plx_machine::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId, Stamped};
 use super::super::screen::{Enter, FocusTarget, ReturnState, Screen, ScreenArg, ScreenEvent};
 use super::transition::{CommitPoint, Transition};
 use super::{Life, Minter};
@@ -208,7 +208,7 @@ impl<H: Host> NavStack<H> {
 
     /// Both sides wear the shared chrome (`ui::nav`'s `continuous`): the top and the destination.
     fn continuous_for(&self, op: &NavOp<H::Arg>) -> bool {
-        use super::super::machine::Chrome;
+        use plx_machine::machine::Chrome;
         let top = self.top().map(|e| e.arg.chrome());
         let dest = match op {
             NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) | NavOp::Present(a) => {
@@ -241,7 +241,7 @@ impl<H: Host> NavStack<H> {
 
     /// One frame of the transition (§3.3 step 4, containers before pages). A floor crossed
     /// marks the pending op due for THIS frame's commit.
-    pub fn tick(&mut self, t: super::super::machine::Tick, present: &mut super::super::machine::PresentHandle<'_>) {
+    pub fn tick(&mut self, t: plx_machine::machine::Tick, present: &mut plx_machine::machine::PresentHandle<'_>) {
         if self.transition.tick_presented(t, present, crate::gfx::snapshot_pending()) && self.pending.is_some() {
             self.due = true;
         }

@@ -8,7 +8,7 @@
 //! the stores that emit to them (phases 3a and 4). `FixtureRig` is the first implementor.
 
 use super::dispatch::CxParts;
-use super::machine::{Effects, Host, MachineId};
+use plx_machine::machine::{Effects, Host, MachineId};
 
 /// The one door out of the machine world.
 pub trait Adapters<H: Host> {
@@ -62,7 +62,7 @@ impl<H: Host> Adapters<H> for StubAdapters<H> {
 mod tests {
     use super::*;
     use crate::ui::fixture::{FixtureFx, FixtureHost, FixtureMsg};
-    use crate::ui::machine::{Delivery, Fx, StoreOrd};
+    use plx_machine::machine::{Delivery, Fx, StoreOrd};
 
     /// The stub logs what it was asked and answers by script; the answer lands in the same drain
     /// (an effect on `out`), which is the synchronous half of an adapter's contract.
@@ -82,12 +82,12 @@ mod tests {
             }
         });
         let parts = CxParts {
-            tick: crate::ui::machine::Tick::default(),
+            tick: plx_machine::machine::Tick::default(),
             press: Default::default(),
             focus: Default::default(),
-            owner: crate::ui::machine::InputOwner::Entry(crate::ui::machine::EntryId(0)),
+            owner: plx_machine::machine::InputOwner::Entry(plx_machine::machine::EntryId(0)),
         };
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut buf = Vec::new();
         let mut out = Effects::new(&mut buf, MachineId::Nav, &mut present);
         stub.execute(MachineId::Nav, FixtureFx::StoreAdd(6), &parts, &mut out);

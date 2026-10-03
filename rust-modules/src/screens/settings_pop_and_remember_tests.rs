@@ -5,7 +5,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::ui::present::Present;
+use plx_machine::present::Present;
 use crate::ui::screen::By;
 
 #[test]

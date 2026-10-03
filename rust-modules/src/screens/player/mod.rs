@@ -33,7 +33,7 @@ use std::borrow::Cow;
 use crate::screens::registry::{AppFx, AppLike, PlayerLike, PlayerReq};
 use crate::ui::consts;
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
     LogicalState, Machine,
 };
@@ -237,7 +237,7 @@ impl PlayerScreen {
         &mut self,
         ps: &crate::route::PlaybackSession,
         now: u32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         meta: crate::metadata::MetadataView<'_>,
     ) {
         crate::appkit::player_hud::draw_hud(
@@ -333,7 +333,7 @@ impl PlayerScreen {
 
     /// **Everything this page draws from a CLOCK, folded into ONE value** (spec §8.3, §9).
     ///
-    /// The loop compares it with the previous frame's and raises `ui::idle::invalidate()` when it
+    /// The loop compares it with the previous frame's and raises `plx_machine::idle::invalidate()` when it
     /// changes; `Player::note_clock` owns the comparison. This is what replaces the exemption the
     /// player route used to have from the present gate.
     ///
@@ -613,7 +613,7 @@ impl PlayerScreen {
     fn repair_focus<H: AppLike>(fx: &mut Effects<'_, H>, group: GroupId) {
         fx.push(Fx::Deliver(
             fx.from(),
-            crate::ui::machine::Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
+            plx_machine::machine::Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
                 focus: crate::ui::screen::FocusTarget::ContainerGroup(group),
             })),
         ));
@@ -646,7 +646,7 @@ impl PlayerScreen {
         if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
         Self::repair_focus(fx, GROUP_FAILURE);
     }
-    fn repair_rect(&self, confirm: bool, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn repair_rect(&self, confirm: bool, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let (cancel, repair) = self.repair_alert.frames(measure);
         if confirm { repair } else { cancel }
     }
@@ -821,7 +821,7 @@ impl PlayerScreen {
                 match input::failed_key_action(key, self.failure_sel, n) {
                     input::FailedKeyAction::Focus(i) => {
                         self.failure_sel = i;
-                        crate::ui::idle::invalidate();
+                        plx_machine::idle::invalidate();
                     }
                     input::FailedKeyAction::Activate(i) => self.failure_activate(ps, i, fx),
                     input::FailedKeyAction::Return => Self::ask(fx, PlayerReq::Exit),
@@ -1424,22 +1424,22 @@ mod clock_animator_tests {
     ///
     /// Graded on `idle::take_local_damage`, which counts what this THREAD reported, rather than on
     /// `should_present`, which reads the process-wide `DIRTY`/`DAMAGE_GEN` that every unlocked
-    /// test repainting anything also moves — the flake `ui::idle`'s own `LOCAL_DAMAGE` doc
+    /// test repainting anything also moves — the flake `plx_machine::idle`'s own `LOCAL_DAMAGE` doc
     /// describes, and which cost this test two red runs in six before it was written this way.
     /// The gate's own half is asserted once, below, where it cannot be made false by another
     /// thread: a spurious `invalidate` elsewhere can only make `should_present` MORE true.
     fn reported(pl: &mut Player, screen: &PlayerScreen, ps: &PlaybackSession, now: u32) -> bool {
-        let _ = crate::ui::idle::take_local_damage();
+        let _ = plx_machine::idle::take_local_damage();
         if pl.note_clock(screen.clock_fingerprint(ps, now)) {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
-        crate::ui::idle::take_local_damage() > 0
+        plx_machine::idle::take_local_damage() > 0
     }
 
     /// Run the page to a standstill, so that a report below can only be this test's own doing.
     fn settled(pl: &mut Player, screen: &PlayerScreen, ps: &PlaybackSession, now: u32) {
-        crate::ui::idle::set_enabled(true);
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::set_enabled(true);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         for t in 0..4 {
             reported(pl, screen, ps, now + t);
         }
@@ -1452,7 +1452,7 @@ mod clock_animator_tests {
 
     /// The other half, asserted once per test: a report really does open the gate.
     fn presents(now: u32) -> bool {
-        crate::ui::idle::should_present(now)
+        plx_machine::idle::should_present(now)
     }
 
     /// **The MEDIA CLOCK class** — the scrub bar, the playhead, both clocks, the hold-to-scrub
@@ -1467,7 +1467,7 @@ mod clock_animator_tests {
         let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
-        let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
+        let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1));
         screen.hud.extend(1_000, 60_000);
         assert!(screen.hud_up(&ps, 1_005), "the fixture: the scrub bar is on screen");
         assert!(!pl.video_plane_bound, "the window this test is about");
@@ -1492,7 +1492,7 @@ mod clock_animator_tests {
         let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
-        let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
+        let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1));
         screen.hud.extend(2_000, 500); // on screen until 2_500
 
         assert!(screen.hud_up(&ps, 2_400), "the fixture: still up before the deadline");
@@ -1512,7 +1512,7 @@ mod clock_animator_tests {
         let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
-        let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
+        let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1));
         // A resume edge at t=5s. Stamped directly rather than derived from `player::TX`, which
         // every playback test in the crate moves: what is under test is the CLOCK, not the
         // observer that reads the transport.
@@ -1539,7 +1539,7 @@ mod clock_animator_tests {
         let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
-        let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
+        let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1));
         screen.busy = crate::appkit::player_hud::Busy::None;
 
         settled(&mut pl, &screen, &ps, 9_000);
@@ -1616,7 +1616,7 @@ mod step_ladder_tests {
         WCODE_STOP,
     };
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, Fx, Handled, InputEvent, InputKind, InputOwner, MachineId,
         Source, Tick,
     };
@@ -1639,10 +1639,10 @@ mod step_ladder_tests {
     /// for)` — the same shape `overlay_tests.rs::press` returns for the sibling surface.
     fn press(page: &mut PlayerScreen, sym: u32, wcode: u32, edge: Edge) -> (Handled, Vec<PlayerReq>) {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let ev = ScreenEvent::<TestHost>::Input(InputEvent {
             kind: InputKind::Key {
-                key: crate::ui::machine::Key::Other,
+                key: plx_machine::machine::Key::Other,
                 sym,
                 wcode,
                 edge,
@@ -1668,7 +1668,7 @@ mod step_ladder_tests {
 
     fn click(page: &mut PlayerScreen, elem: u32) -> (Handled, Vec<PlayerReq>) {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let ev = ScreenEvent::<TestHost>::Input(InputEvent {
             kind: InputKind::Click { x: 0.0, y: 0.0, hit: Some(elem) },
             at: Tick { ms: 1_000, dt_us: 0 },
@@ -1826,7 +1826,7 @@ mod step_ladder_tests {
         use crate::metadata::{Marker, MarkerKind};
         use crate::screens::registry::PlayerLike;
         use crate::ui::hit::{pointer_gaps, HitMap, PointerKind};
-        use crate::ui::machine::FocusKey;
+        use plx_machine::machine::FocusKey;
         use crate::appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         use crate::ui::screen::{At, DrawFrame};
         let _g = plx_base::testlock::serial();
@@ -2069,7 +2069,7 @@ mod scrub_ownership_tests {
     use crate::screens::registry::AppFx;
     use crate::ui::consts::{SDLK_RETURN, SDLK_RIGHT, WCODE_BACK, WCODE_EXIT};
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, Fx, Handled, InputEvent, InputKind, InputOwner, MachineId,
         Source, Tick,
     };
@@ -2130,7 +2130,7 @@ mod scrub_ownership_tests {
 
     fn run(page: &mut PlayerScreen, ev: ScreenEvent<TestHost>) -> (Handled, Vec<PlayerReq>) {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let handled = page.step(
             &ev,
             &cx(),
@@ -2162,7 +2162,7 @@ mod scrub_ownership_tests {
             page,
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key {
-                    key: crate::ui::machine::Key::Other,
+                    key: plx_machine::machine::Key::Other,
                     sym,
                     wcode,
                     edge,
@@ -2571,7 +2571,7 @@ mod scrub_ownership_tests {
 #[cfg(test)]
 mod repair_confirmation_tests {
     use super::*;
-    use crate::ui::machine::{Host, InputEvent, InputOwner, MachineId, PressId, Source, Tick};
+    use plx_machine::machine::{Host, InputEvent, InputOwner, MachineId, PressId, Source, Tick};
     struct TestHost;
     impl Host for TestHost {
         type Arg = crate::ui::fixture::FixtureArg;
@@ -2605,7 +2605,7 @@ mod repair_confirmation_tests {
     }
     fn deliver(page: &mut PlayerScreen, ps: &crate::route::PlaybackSession, elem: Option<u32>, ev: ScreenEvent<TestHost>) -> Vec<PlayerReq> {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(&ev, &context(ps, elem), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present));
         for effect in &out {
             if let Fx::Deliver(MachineId::Instance(id), _) = &effect.fx {
@@ -2615,7 +2615,7 @@ mod repair_confirmation_tests {
         out.into_iter().filter_map(|e| match e.fx { Fx::App(AppFx::Player(req)) => Some(req), _ => None }).collect()
     }
     fn key_event(sym: u32, wcode: u32) -> ScreenEvent<TestHost> {
-        ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: crate::ui::machine::Key::Other, sym, wcode, edge: Edge::Down, at_edge: false }, at: Tick::default(), source: Source::Sdl })
+        ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: plx_machine::machine::Key::Other, sym, wcode, edge: Edge::Down, at_edge: false }, at: Tick::default(), source: Source::Sdl })
     }
     fn blocked() -> crate::route::PlaybackSession {
         let mut ps = crate::route::PlaybackSession::IDLE;

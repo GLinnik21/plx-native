@@ -55,7 +55,7 @@ pub(super) struct Layout {
 impl Layout {
     pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,empty:bool,episodes:bool,pitches:[f32;12],grid_bands:[(row:u32,expansion:f32)]}";
 
-    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+    pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         let Self { libraries, shelves, rows, grid_head, status, empty, episodes, pitches, grid_bands } = self;
         c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*empty).bool(*episodes);
         for pitch in pitches { c.f32(*pitch); }

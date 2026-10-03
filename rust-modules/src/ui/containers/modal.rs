@@ -18,9 +18,9 @@
 //!   Sheet or PlayerPanel dismisses it; an Alert ignores the miss; an Opaque surface swallows it.
 //! - `host_policy()` folds bottom-to-top into the `(HostUpdate, HostRender)` pair the frame reads.
 
-use super::super::machine::{EntryId, Host, InputOwner, Leave, PresentHandle, Tick};
-use super::super::motion;
-use super::super::machine::GroupId;
+use plx_machine::machine::{EntryId, Host, InputOwner, Leave, PresentHandle, Tick};
+use plx_machine::motion;
+use plx_machine::machine::GroupId;
 use super::super::screen::{Enter, FocusTarget, ReturnState, ScreenEvent, UnderlaySource};
 use super::stack::{Entry, Instance};
 use super::{Life, Minter};
@@ -162,7 +162,7 @@ impl PopoverMotion {
             self.held_ms += t.dt() * 1000.0;
             self.held_ticks += 1;
             // Still moving: the next frame must present and take the first real step.
-            present.note(super::super::present::PresentEvent::Motion);
+            present.note(plx_machine::present::PresentEvent::Motion);
             return;
         }
         motion::spring(&mut self.appear, &mut self.vel, self.target, APPEAR_K, t, present);
@@ -173,7 +173,7 @@ impl PopoverMotion {
             // The generic spring's visual epsilon can stop requesting presents before this
             // exact endpoint. The surface must paint the snap, including its last closing frame.
             if changed {
-                present.note(super::super::present::PresentEvent::Motion);
+                present.note(plx_machine::present::PresentEvent::Motion);
             }
         }
     }
@@ -382,7 +382,7 @@ impl DimSink for GlDims {
         if pending {
             // A frame for the read to land in, without claiming the page changed — which would
             // re-capture the host and restart the read it is waiting on.
-            crate::ui::idle::wake();
+            plx_machine::idle::wake();
         }
     }
     fn dim(&mut self, field: &crate::ui::underlay::UnderlayField, alpha: f32) {
@@ -808,8 +808,8 @@ impl<H: Host> ModalStack<H> {
     /// One frame: EVERY surface's motion steps — Closing ones unconditionally, whatever the host
     /// fold says — and an Opening surface whose spring settled becomes Open.
     ///
-    /// **Each surface's step runs in its OWN [`MotionScope`](crate::ui::idle::MotionScope)** (§4.4),
-    /// the `ui::idle` half of the `Present::set_scope(Surface)` the dispatcher already sets around
+    /// **Each surface's step runs in its OWN [`MotionScope`](plx_machine::idle::MotionScope)** (§4.4),
+    /// the `plx_machine::idle` half of the `Present::set_scope(Surface)` the dispatcher already sets around
     /// it: a panel's appear spring is the PANEL's motion, never the host page's. The scope merges
     /// back, so it changes who the motion is attributed to and never whether it counts.
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
@@ -817,7 +817,7 @@ impl<H: Host> ModalStack<H> {
             if s.phase == Phase::Hidden {
                 continue;
             }
-            let _scope = crate::ui::idle::MotionScope::open();
+            let _scope = plx_machine::idle::MotionScope::open();
             s.motion.tick(t, present);
             if s.phase == Phase::Opening && s.motion.settled() {
                 s.phase = Phase::Open;
@@ -850,7 +850,7 @@ impl<H: Host> ModalStack<H> {
     }
 
     /// Drop retired entries whose `Unmount` was delivered.
-    pub fn drop_unmounted(&mut self, unmounted: &[super::super::machine::InstanceId]) {
+    pub fn drop_unmounted(&mut self, unmounted: &[plx_machine::machine::InstanceId]) {
         self.retired
             .retain(|e| !e.inst.as_ref().map_or(true, |i| unmounted.contains(&i.id)));
         for surface in &mut self.surfaces {
@@ -1014,7 +1014,7 @@ impl<H: Host> ModalStack<H> {
         Some((s.entry.id, on_miss(s.style)))
     }
 
-    pub fn instance_mut(&mut self, id: super::super::machine::InstanceId) -> Option<&mut Instance<H>> {
+    pub fn instance_mut(&mut self, id: plx_machine::machine::InstanceId) -> Option<&mut Instance<H>> {
         self.surfaces
             .iter_mut()
             .map(|s| &mut s.entry)
@@ -1030,7 +1030,7 @@ impl<H: Host> ModalStack<H> {
 mod hide_tests {
     use super::*;
     use crate::ui::fixture::{tick, FixtureArg, FixtureHost};
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
 
     /// A surface presented and then stepped until its appear spring has settled: `Open`, with the
     /// motion at 1. Everything below starts here, because a JUST-presented surface is at 0 and

@@ -88,7 +88,7 @@ use crate::plex::ServerId;
 use crate::screens::registry::{AppLike, AppMsg, ContentArg, PageMemory};
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
     InstanceId, Key, LogicalState, Machine, MachineId, NavOp,
 };
@@ -432,7 +432,7 @@ impl AltSourcesScreen {
         }
     }
 
-    pub(crate) fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    pub(crate) fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
         panel_at(Rect::new(x, y, w, h), self.form.table.measured_width(measure), self.form.table.measured_height())
     }
@@ -478,7 +478,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
             }
             ScreenEvent::StoreChanged(ord, _) => {
                 if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh(H::metadata(cx)) {
-                    fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
+                    fx.invalidate(plx_machine::present::Provenance::Landing(fx.from()));
                 }
                 Handled::Yes
             }
@@ -500,7 +500,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> M
                 if let Some(i) = self.form.index_of_key(RowKey(to.elem)) {
                     self.form.table.sel = i as i32;
                 }
-                fx.invalidate(crate::ui::present::Provenance::Input);
+                fx.invalidate(plx_machine::present::Provenance::Input);
                 Handled::Yes
             }
             // The engine's OK arm, for a `Bare` element, delivers `Activate` directly rather than

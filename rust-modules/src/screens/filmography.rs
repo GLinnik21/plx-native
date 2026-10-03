@@ -16,11 +16,11 @@ use crate::plex::ServerId;
 use crate::ui::card_row;
 use crate::ui::consts::*;
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
     Machine, Measure, Tick,
 };
-use crate::ui::present::{PresentEvent, Provenance};
+use plx_machine::present::{PresentEvent, Provenance};
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
@@ -280,7 +280,7 @@ impl FilmographyScreen {
         self.dept().map(|d| d.rows.as_slice()).unwrap_or(&[])
     }
 
-    fn current_row(&self, focus: Option<crate::ui::machine::FocusKey<u32>>) -> Option<usize> {
+    fn current_row(&self, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Option<usize> {
         let k = focus.filter(|k| k.entry == self.entry)?;
         match self.locate(k.elem)? {
             Located::Row(i) if i < self.rows().len() => Some(i),
@@ -288,7 +288,7 @@ impl FilmographyScreen {
         }
     }
 
-    fn current_tab(&self, focus: Option<crate::ui::machine::FocusKey<u32>>) -> Option<usize> {
+    fn current_tab(&self, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Option<usize> {
         let k = focus.filter(|k| k.entry == self.entry)?;
         match self.locate(k.elem)? {
             Located::Tab(i) if i < self.model.len() => Some(i),
@@ -298,7 +298,7 @@ impl FilmographyScreen {
 
     fn focused_target(
         &self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
     ) -> Option<(ServerId, &str)> {
         let i = self.current_row(focus)?;
         self.rows()
@@ -345,13 +345,13 @@ impl FilmographyScreen {
             .copied()
     }
 
-    fn focus_key(&self, located: Located) -> crate::ui::machine::FocusKey<u32> {
+    fn focus_key(&self, located: Located) -> plx_machine::machine::FocusKey<u32> {
         let elem = match located {
             Located::Tab(i) => self.elem_for_tab(i),
             Located::Row(i) => self.elem_for_row(i),
         }
         .unwrap_or(FIRST_ELEM);
-        crate::ui::machine::FocusKey {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem,
         }
@@ -498,7 +498,7 @@ impl FilmographyScreen {
 
     fn rebuild_from(
         &mut self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         person: Option<&crate::person::Person>,
     ) {
         self.dirty = false;
@@ -528,7 +528,7 @@ impl FilmographyScreen {
 
     fn rebuild<H: PersonLike>(
         &mut self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         cx: &Cx<'_, H>,
     ) {
         self.rebuild_from(focus, self.person(cx));
@@ -580,10 +580,10 @@ impl FilmographyScreen {
         card_row::reveal(self.tab_hscroll.pos, lo, hi, f32::MAX)
     }
 
-    fn step_preview<H: crate::ui::machine::Host>(
+    fn step_preview<H: plx_machine::machine::Host>(
         &mut self,
         t: Tick,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         fx: &mut Effects<'_, H>,
     ) -> bool {
         let dt = t.dt();
@@ -606,7 +606,7 @@ impl FilmographyScreen {
             // bug — this settle timer never reported `Motion` — is fixed by the explicit `note`
             // below, with no change to the number itself.
             self.pv_still = self.pv_still + dt;
-            fx.present().note(crate::ui::present::PresentEvent::Motion);
+            fx.present().note(plx_machine::present::PresentEvent::Motion);
             if self.pv_still >= PV_SETTLE && !self.pv_fade.is_swapping() {
                 self.pv_fade.reload();
             }
@@ -653,7 +653,7 @@ impl FilmographyScreen {
 
     fn activate_focus<H: ContentLike>(
         &mut self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         fx: &mut Effects<'_, H>,
     ) {
         if let Some(i) = self.current_tab(focus) {
@@ -661,7 +661,7 @@ impl FilmographyScreen {
             return;
         }
         if let Some((sid, rk)) = self.focused_target(focus) {
-            fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+            fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                 ContentReq::Push(ContentArg::Detail {
                     sid,
                     rk: rk.to_string(),
@@ -847,7 +847,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
 
     fn neighbour(
         &self,
-        current: crate::ui::machine::FocusKey<u32>,
+        current: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         _cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -896,9 +896,9 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
 
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
+        want: plx_machine::machine::FocusKey<u32>,
         _cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         match self.locate(want.elem) {
             Some(Located::Tab(i)) if !self.model.is_empty() => {
                 self.focus_key(Located::Tab(i.min(self.model.len() - 1)))
@@ -907,7 +907,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
                 self.focus_key(Located::Row(i.min(self.rows().len() - 1)))
             }
             _ if !self.model.is_empty() => self.focus_key(Located::Tab(self.selected_tab())),
-            _ => crate::ui::machine::FocusKey {
+            _ => plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: FIRST_ELEM,
             },
@@ -919,7 +919,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
         group: GroupId,
         from: Placed,
         cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         if group == LIST_GROUP {
             return self.focus_key(Located::Row(0));
         }
@@ -983,7 +983,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
             }
             ScreenEvent::Activate(elem) => {
                 self.activate_focus(
-                    Some(crate::ui::machine::FocusKey {
+                    Some(plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: *elem,
                     }),
@@ -1003,7 +1003,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
                 kind: InputKind::Key { key: Key::Back, .. },
                 ..
             }) => {
-                fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+                fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                     ContentReq::Back,
                 )));
                 Handled::Yes
@@ -1018,7 +1018,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
             // restores its focus from ReturnState; resetting here would lose the exact route the
             // legacy person→filmography→detail→BACK flow preserved.
             ScreenEvent::Enter(_) | ScreenEvent::Cover | ScreenEvent::Uncover => Handled::Yes,
-            ScreenEvent::WillLeave(crate::ui::machine::Leave::ForGood) | ScreenEvent::Unmount => {
+            ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood) | ScreenEvent::Unmount => {
                 self.ground.reset();
                 self.ground_ready = false;
                 Handled::Yes
@@ -1064,7 +1064,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
         self.ground_ready
     }
 
-    fn memory_at(&self, _focus: Option<crate::ui::machine::FocusKey<u32>>) -> PageMemory {
+    fn memory_at(&self, _focus: Option<plx_machine::machine::FocusKey<u32>>) -> PageMemory {
         PageMemory::Filmography(self.memory())
     }
 
@@ -1081,7 +1081,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
 mod tests {
     use super::*;
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Edge, FocusRead, Host, InputOwner, PressId, PressRead, Source, Stamped, Tick,
     };
 
@@ -1181,13 +1181,13 @@ mod tests {
         s.sync_rows(0, false);
     }
 
-    fn focus(s: &FilmographyScreen, located: Located) -> crate::ui::machine::FocusKey<u32> {
+    fn focus(s: &FilmographyScreen, located: Located) -> plx_machine::machine::FocusKey<u32> {
         s.focus_key(located)
     }
 
     fn cx<'a>(
         measure: &'a FixtureMeasure,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
     ) -> Cx<'a, FilmographyHost> {
         Cx {
             views: crate::person::PersonView::default(),
@@ -1202,15 +1202,15 @@ mod tests {
     fn step_screen(
         s: &mut FilmographyScreen,
         ev: &ScreenEvent<FilmographyHost>,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
     ) -> (Handled, Vec<Stamped<FilmographyHost>>, bool) {
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let handled = {
             let mut fx = Effects::new(
                 &mut out,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
                 &mut present,
             );
             Machine::<FilmographyHost>::step(s, ev, &cx(&measure, focus), &mut fx)
@@ -1220,7 +1220,7 @@ mod tests {
 
     fn has_content(out: &[Stamped<FilmographyHost>], pred: impl Fn(&ContentReq) -> bool) -> bool {
         out.iter().any(|st| match &st.fx {
-            crate::ui::machine::Fx::App(AppFx::Content(req)) => pred(req),
+            plx_machine::machine::Fx::App(AppFx::Content(req)) => pred(req),
             _ => false,
         })
     }
@@ -1311,7 +1311,7 @@ mod tests {
         let measure = FixtureMeasure;
         let n = s.model.len();
         let path: Vec<usize> = (0..n).chain((0..n).rev()).collect();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
         let (mut ms, mut scrolled, mut graded) = (0u32, 0.0f32, 0);
         for &i in &path {
@@ -1323,7 +1323,7 @@ mod tests {
                 {
                     let mut fx = Effects::new(
                         &mut out,
-                        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
                         &mut present,
                     );
                     s.tick(c.tick, &c, &mut fx);
@@ -1392,7 +1392,7 @@ mod tests {
         // auto-repeat cadence with the same integer-ms `Tick.ms` sequence a real frame loop
         // produces, which is what `step_preview` itself now reads.
         const DT_US: u32 = 16_667;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
         let mut ms: u32 = 0;
         let mut last_repeat_ms: u32 = 0;
@@ -1403,11 +1403,11 @@ mod tests {
             let row_focus = focus(s, Located::Row(row));
             let mut fx = Effects::new(
                 &mut out,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
                 &mut present,
             );
             s.step_preview(
-                crate::ui::machine::Tick { ms, dt_us: DT_US },
+                plx_machine::machine::Tick { ms, dt_us: DT_US },
                 Some(row_focus),
                 &mut fx,
             );
@@ -1449,13 +1449,13 @@ mod tests {
         s.preview = Some(("Actor".to_string(), "catalog-Film 0".to_string()));
         s.pv_want = s.preview.clone();
         let row_focus = focus(&s, Located::Row(1));
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let _ = present.take(0);
         let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
         for ms in [16, 32, 48] {
             let mut fx = Effects::new(
                 &mut out,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
                 &mut present,
             );
             let waiting = s.step_preview(Tick { ms, dt_us: 16_667 }, Some(row_focus), &mut fx);
@@ -1486,7 +1486,7 @@ mod tests {
     #[test]
     fn holding_a_joined_credit_does_not_activate_it_on_release() {
         use crate::ui::input::{InputMachine, PressEvent};
-        use crate::ui::machine::{InstanceId, MachineId, PressArm, PressFrom};
+        use plx_machine::machine::{InstanceId, MachineId, PressArm, PressFrom};
         let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         select(&mut s, "Writer");
@@ -1632,11 +1632,11 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut a = screen(20, &_serial);
         let b = screen(21, &_serial);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::<FilmographyHost>::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
             &mut present,
         );
         a.pick_tab(1, &mut fx);

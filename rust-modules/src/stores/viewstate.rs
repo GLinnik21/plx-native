@@ -86,7 +86,7 @@ impl ViewStateStore {
     /// Route-unconditional landing pass for this owner's adapter.
     pub(crate) fn pump_with_gate(
         &mut self,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -113,7 +113,7 @@ impl ViewStateStore {
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
-        self.pump_with_gate(crate::ui::landgate::fixture_gate(), browse, hubs, person, collection, search,
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), browse, hubs, person, collection, search,
             metadata)
     }
 

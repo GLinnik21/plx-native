@@ -84,7 +84,7 @@ fn consent_effect_is_an_addressed_delivery_before_the_owner_steps() {
     assert_eq!(rig.consent.current(), &initial, "AppFx routing must not step the owner inline");
     assert!(matches!(
         out.as_slice(),
-        [crate::ui::machine::Stamped {
+        [plx_machine::machine::Stamped {
             fx: Fx::Deliver(
                 MachineId::Consent,
                 Delivery::Machine(AppMsg::Consent(ConsentCmd::Record {

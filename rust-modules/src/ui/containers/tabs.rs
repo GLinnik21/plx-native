@@ -27,7 +27,7 @@
 //! See `machine.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the regression test
 //! `containers::tests::a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore`.
 
-use super::super::machine::{EntryId, GroupId, Host};
+use plx_machine::machine::{EntryId, GroupId, Host};
 use super::super::screen::{AxisMask, EdgeRule, ElemKind, GroupKind, GroupSpec, Seat};
 use super::super::Rect;
 use super::stack::NavStack;
@@ -107,6 +107,6 @@ impl<H: Host> TabContainer<H> {
         };
         self.selected = i;
         self.stack
-            .request(super::super::machine::NavOp::SelectTab(arg), ret);
+            .request(plx_machine::machine::NavOp::SelectTab(arg), ret);
     }
 }

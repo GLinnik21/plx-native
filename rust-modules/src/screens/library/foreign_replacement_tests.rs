@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::machine::{Host, InputOwner, Tick};
+use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
 
@@ -97,7 +97,7 @@ impl Publication {
     ) -> Vec<AppFx> {
         let mut queue = std::collections::VecDeque::from([event]);
         let mut apps = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         while let Some(event) = queue.pop_front() {
             let mut out = Vec::new();
             page.step(

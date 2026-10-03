@@ -110,7 +110,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
 /// **It has to be the LIBRARY, and it has to be `idle`.** The dispatcher keeps a motion ledger of
 /// its own (`Present::page_moving`, reported as `FrameReport::underlay_moving`), but a screen only
 /// reaches it by calling `fx.note(PresentEvent::Motion)` — which `screens::library` never does. It
-/// animates through `crate::ui::Spring`, i.e. `gfx::spring`, which reports to `ui::idle` and
+/// animates through `crate::ui::Spring`, i.e. `gfx::spring`, which reports to `plx_machine::idle` and
 /// nowhere else; `report.underlay_moving` is false on every frame below. `idle::page_moving()` is
 /// the only witness there is.
 #[test]
@@ -164,9 +164,9 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
 
     // a settled panel over a settled page: nothing moves, and in particular the panel's own
     // appear spring (`ModalStack::tick`, now in a scope of its own) is not the page's motion
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
-    assert!(!crate::ui::idle::page_moving(), "a settled host does not move");
+    assert!(!plx_machine::idle::page_moving(), "a settled host does not move");
 
     // dismiss: input returns to the page while the panel is still visible, and the page is driven
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
@@ -174,9 +174,9 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
     let mut moved = 0;
     for i in 122..136u32 {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         let (_, report) = frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
-        if !crate::ui::idle::present_moving() {
+        if !plx_machine::idle::present_moving() {
             continue;
         }
         moved += 1;
@@ -185,13 +185,13 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             "frame {i}: the reproduction needs the panel still up (fading) while the page moves"
         );
         assert!(
-            crate::ui::idle::page_moving(),
+            plx_machine::idle::page_moving(),
             "frame {i}: the page's own scroll spring is in flight and nothing else is — \
              it is the HOST that is moving (report.underlay_moving={})",
             report.underlay_moving
         );
         assert!(
-            crate::ui::popover::host_refresh(true, false, crate::ui::idle::page_moving()),
+            crate::ui::popover::host_refresh(true, false, plx_machine::idle::page_moving()),
             "frame {i}: …so the fading panel's frozen snapshot is re-taken"
         );
     }

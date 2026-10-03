@@ -586,7 +586,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     // validated filmography boot, whose `personcredits` is 9); this test needs no more of it.
     const CONTENT_CREDITS: Option<u32> = Some(9);
     crate::stores::tape::init(CONTENT_CREDITS, false);
-    crate::ui::landgate::arm_recording();
+    plx_machine::landgate::arm_recording();
     // Arms this test's own thread-confined adapter's Tracker so cancel_all/admit/land_detail
     // below actually record into crate::stores::tape -- each per-owner MetadataAdapter
     // now starts with its Tracker disabled (there is no more single crate-global TRACKER static
@@ -607,7 +607,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
         assert_eq!(results.len(), 1,
             "the cancelled completion remains a recorded capacity-retiring observation");
         recorded.push(results[0].clone());
-        assert_eq!(crate::ui::landgate::take_frame_lands(),
+        assert_eq!(plx_machine::landgate::take_frame_lands(),
             vec![(crate::stores::StoreId::Metadata.ord(), 1)],
             "a filtered ACK retains its original observed landing frame");
         assert_eq!(crate::stores::tape::finish().1, None);
@@ -620,7 +620,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     assert!(!pump_detail(test_state(), test_adapter()), "a wrong-server answer stays filtered");
     let wrong_result = crate::stores::tape::take_results().pop().unwrap();
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(wrong).to), 0);
-    assert_eq!(crate::ui::landgate::take_frame_lands(),
+    assert_eq!(plx_machine::landgate::take_frame_lands(),
         vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
     assert_eq!(crate::stores::tape::finish().1, None);
 
@@ -631,11 +631,11 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
             ..Default::default() }));
     assert!(pump_detail(test_state(), test_adapter()), "more than the four-slot cap can run after cancelled ACKs retire");
     let fresh_result = crate::stores::tape::take_results().pop().unwrap();
-    assert_eq!(crate::ui::landgate::take_frame_lands(),
+    assert_eq!(plx_machine::landgate::take_frame_lands(),
         vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
     assert_eq!(crate::stores::tape::finish().1, None);
     clear(test_state(), test_adapter());
-    crate::ui::landgate::disarm();
+    plx_machine::landgate::disarm();
 
     crate::stores::tape::init(CONTENT_CREDITS, true);
     // The replay run must start from a ZEROED Tracker, exactly as the recording run did: the

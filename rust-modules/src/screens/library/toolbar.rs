@@ -9,7 +9,7 @@ pub(super) struct Chip {
     pub note: Option<CString>,
 }
 impl Chip {
-    pub fn width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub fn width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
         ValueChip::width(measure, self.name, &self.value, self.note.as_deref())
     }
 }

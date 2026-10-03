@@ -255,7 +255,7 @@ impl BufferEstimate {
     /// 2026-08-25, a buffer sitting flat at 11,918 ms reported −16, −12, −9, −6, −4 ms/s over
     /// successive segments, every one of them "draining" to a sign test. The upshift gate requires
     /// `!draining`, so Auto sat on the 10 Mbps rung with a 25 Mbit/s safe budget and a full reserve
-    /// for the rest of the film. The same shape as `ui::idle`'s rest test, and the same fix: judge
+    /// for the rest of the film. The same shape as `plx_machine::idle`'s rest test, and the same fix: judge
     /// the travel, not the sign of it.
     pub(crate) fn draining(&self) -> bool {
         self.slope_ms_per_s < -DRAIN_EPS_MS_PER_S

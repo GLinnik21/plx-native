@@ -348,7 +348,7 @@ pub(crate) fn crash_on_purpose() {
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn crash_on_purpose() {}
 
-/// `plxnative-softfloat`: the ARM half of `ui::motion`'s differential claim (spec §4.2). Runs the
+/// `plxnative-softfloat`: the ARM half of `plx_machine::motion`'s differential claim (spec §4.2). Runs the
 /// 4,096-operand table through this binary's own arithmetic, logs its hash beside the host's
 /// pinned one, and writes the words to `plxnative-softfloat.tbl` in the runtime root so a
 /// divergence can be diffed word by word. `make softfloat-probe` is the recipe.
@@ -357,15 +357,15 @@ pub(crate) fn softfloat_probe() {
     if !plx_base::devtrig::flag("softfloat") {
         return;
     }
-    let host = crate::ui::motion::DIFFERENTIAL_HASH_HOST;
-    let here = crate::ui::motion::differential_hash();
+    let host = plx_machine::motion::DIFFERENTIAL_HASH_HOST;
+    let here = plx_machine::motion::differential_hash();
     plx_base::eventlog::log(&format!(
         "softfloat: n={} hash={here:#018x} host={host:#018x} {}",
-        crate::ui::motion::DIFFERENTIAL_N,
+        plx_machine::motion::DIFFERENTIAL_N,
         if here == host { "MATCH" } else { "DIVERGE" }
     ));
     let mut t = Vec::new();
-    crate::ui::motion::differential_table(&mut t);
+    plx_machine::motion::differential_table(&mut t);
     let body: String = t.iter().map(|w| format!("{w:08x}\n")).collect();
     let path = plx_base::paths::runtime_dir().join("plxnative-softfloat.tbl");
     if let Err(e) = std::fs::write(&path, body) {

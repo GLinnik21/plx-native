@@ -18,12 +18,12 @@
 use super::*;
 use crate::ui::fixture::FixtureMeasure;
 // `By` is the odd one out and the split is deliberate rather than untidy: the other seven
-// names really are `ui::machine`'s, but `By` — how a focus move was CAUSED (a direction key,
+// names really are `plx_machine::machine`'s, but `By` — how a focus move was CAUSED (a direction key,
 // a pointer, a restore) — belongs to `ui::screen` beside `ScreenEvent::FocusMoved`, the only
-// thing that carries one. Writing it as `ui::machine::By` compiles nowhere and is invisible
+// thing that carries one. Writing it as `plx_machine::machine::By` compiles nowhere and is invisible
 // to every non-test gate, since this module is `cfg(test)`.
-use crate::ui::machine::{Edge, FocusRead, InputEvent, InputKind, InputOwner, PressRead, Source};
-use crate::ui::present::Present;
+use plx_machine::machine::{Edge, FocusRead, InputEvent, InputKind, InputOwner, PressRead, Source};
+use plx_machine::present::Present;
 
 // A `static`, not a `const`: `Cx::measure` needs a genuine `&'static dyn Measure`, and a
 // `static` gives one outright rather than leaning on constant-promotion rules at the borrow
@@ -166,7 +166,7 @@ pub(super) fn root_key(id: RootId) -> u32 {
 pub(super) fn select_root(page: &mut RootPage, id: RootId) {
     let entry = page.entry;
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     let to = FocusKey { entry, elem: root_key(id) };
     page.step(&ScreenEvent::FocusMoved { from: None, to, by: crate::ui::screen::By::Dir }, &cx(None), &mut fx);

@@ -6,7 +6,7 @@
 use std::ffi::CString;
 
 use crate::metadata::Detail;
-use crate::ui::machine::{GroupId, Measure};
+use plx_machine::machine::{GroupId, Measure};
 use crate::ui::text_lift::{draw_focused, TextLift, CENTRE};
 use crate::ui::text_view::TextView;
 use crate::ui::{theme, Painter, Rect};
@@ -216,7 +216,7 @@ impl Rows {
         tracks: bool,
         card_lift: &TextLift,
         lang_lift: &TextLift,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         let x = crate::ui::consts::MARGIN_X;
         p.text(
@@ -346,7 +346,7 @@ impl Rows {
         p: Painter,
         x: f32,
         y: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         text_at(
             p,

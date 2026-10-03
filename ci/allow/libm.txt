@@ -1,5 +1,5 @@
 # count: 6
-# The transcendental surface OUTSIDE ui/motion.rs (spec §4.2). Every entry is RENDER or
+# The transcendental surface OUTSIDE machine/src/motion.rs (spec §4.2). Every entry is RENDER or
 # COLOUR arithmetic — nothing here is logical state, hashed or replayed. Shrink, never grow.
 # The test-support entry preserves widgets.rs's existing colour-test exception after its
 # cfg(test) module moved to a separate file; no production arithmetic was added.

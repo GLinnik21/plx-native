@@ -14,11 +14,11 @@ use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Effects, FocusKey, Fx, GroupId, Handled, Host, InstanceId, LogicalState, Machine,
     MachineId, NavOp, Stamped, Tick, TimerId,
 };
-use crate::ui::present::Present;
+use plx_machine::present::Present;
 use crate::ui::screen::{
     At, Dir, DrawFrame, Focusable, GroupSpec, Mounter, Placed, ReturnState, Screen, ScreenEvent,
     Step,

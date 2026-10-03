@@ -8,7 +8,7 @@ use super::test_support::*;
 #[test]
 fn tab_strip_canonical_motion_covers_both_capsules_and_each_spring() {
     let hash = |strip: &TabStrip| {
-        let mut c = crate::ui::machine::Canon::new();
+        let mut c = plx_machine::machine::Canon::new();
         strip.write_motion(&mut c);
         c.finish()
     };

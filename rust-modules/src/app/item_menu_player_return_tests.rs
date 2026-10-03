@@ -9,7 +9,7 @@ use super::super::{
 use crate::plex::ServerId;
 use crate::screens::registry::{AppArg, ContentArg, ItemMenuKind};
 use crate::ui::dispatch::Dispatcher;
-use crate::ui::machine::Key;
+use plx_machine::machine::Key;
 use crate::ui::screen::ScreenArg;
 
 const SID: ServerId = ServerId::from_raw(0);

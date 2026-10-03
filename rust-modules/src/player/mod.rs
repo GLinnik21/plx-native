@@ -1736,7 +1736,7 @@ pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, 
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
     // the rows' checkmarks move on this — see `route::persist_quality_choice`
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 fn persist_audio_enhancements(a: crate::plex::AudioEnhancements) {
@@ -1756,7 +1756,7 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
     let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
     // the picker's checkmark moves on this — see `route::persist_quality_choice`
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Set the timing offset (ms) on the main thread, clamped to the range; like the tone it takes
@@ -1764,7 +1764,7 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
 /// [`SUBTITLE_OFFSET_MS`].
 pub(crate) fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Carry a retry's offset through [`reset_subtitle`] (`route::reset_track_selection`). The
@@ -2095,7 +2095,7 @@ fn vclock_ms() -> u32 {
 
 /// **The pipeline's `FRAMEREADY` cadence since the last call**: ticks received, and the worst gap
 /// between two consecutive ones in milliseconds. Draining, like
-/// [`crate::ui::idle::take_presents`] — the heartbeat is the one caller, once a second.
+/// [`plx_machine::idle::take_presents`] — the heartbeat is the one caller, once a second.
 ///
 /// **This is a liveness signal, not a frame rate.** See [`sf_on_event`]: the healthy reading on
 /// every codec, resolution and container measured so far is `5` and `201`, because the tick is

@@ -4,7 +4,7 @@
 //! with the type it tests (module-layers step L5). It builds its stand-in from `text`'s two memos.
 use super::Measurements;
 use crate::text::{FittedLines, MeasuredBounds};
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CStr;

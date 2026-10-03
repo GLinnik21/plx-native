@@ -35,11 +35,11 @@ use crate::ui::containers::transition::Immediate;
 use crate::ui::containers::{Life, Minter};
 use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, Key,
     LogicalState, Machine, MachineId, NavOp, PresentHandle, Stamped, Tick,
 };
-use crate::ui::present::Provenance;
+use plx_machine::present::Provenance;
 use crate::ui::route_screen::{RouteLayout, RoutePush};
 use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{
@@ -605,7 +605,7 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
             }
             ScreenEvent::Tick(t) => {
                 if self.ground.refresh() {
-                    fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                    fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
                 self.tick(*t, cx, fx);
                 Handled::Yes
@@ -653,9 +653,9 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
                 // two ends of that.
                 let back = matches!(
                     iev.kind,
-                    crate::ui::machine::InputKind::Key {
+                    plx_machine::machine::InputKind::Key {
                         key: Key::Back,
-                        edge: crate::ui::machine::Edge::Down,
+                        edge: plx_machine::machine::Edge::Down,
                         ..
                     }
                 );
@@ -939,7 +939,7 @@ impl Mounter<InnerHost> for RouteSurface {
 // ---------------------------------------------------------------------------------------------
 
 /// A server's machine id — the identity of its "connect without encryption" row. Not
-/// [`MachineId`], which names a UI machine (`ui/machine.rs`).
+/// [`MachineId`], which names a UI machine (`machine/src/machine.rs`).
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct ServerMachineId(String);
 
@@ -1439,7 +1439,7 @@ impl Machine<InnerHost> for RootPage {
                     self.alert.withdraw();
                 }
                 self.alert.update(t.dt());
-                if landed { self.rebuild(cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
+                if landed { self.rebuild(cx.views); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
@@ -1456,9 +1456,9 @@ impl Machine<InnerHost> for RootPage {
                 self.activate(*e, cx.views, fx);
                 Handled::Yes
             }
-            ScreenEvent::Input(crate::ui::machine::InputEvent {
+            ScreenEvent::Input(plx_machine::machine::InputEvent {
                 kind:
-                    crate::ui::machine::InputKind::Key {
+                    plx_machine::machine::InputKind::Key {
                         key: Key::Right,
                         at_edge: true,
                         ..
@@ -1752,7 +1752,7 @@ impl Machine<InnerHost> for LanguagePage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.poll_save() { fx.invalidate(crate::ui::present::Provenance::Input); }
+                if self.poll_save() { fx.invalidate(plx_machine::present::Provenance::Input); }
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
@@ -1762,7 +1762,7 @@ impl Machine<InnerHost> for LanguagePage {
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => { self.activate(*key, fx); Handled::Yes }
-            ScreenEvent::Input(crate::ui::machine::InputEvent { kind: crate::ui::machine::InputKind::Key {
+            ScreenEvent::Input(plx_machine::machine::InputEvent { kind: plx_machine::machine::InputKind::Key {
                 key: Key::Right, at_edge: true, .. }, .. }) => {
                 if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
                     self.activate(key, fx);

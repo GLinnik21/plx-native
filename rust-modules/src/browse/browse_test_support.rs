@@ -268,7 +268,7 @@ pub(super) fn assert_new_directories_survive(browse: &TestBrowse) {
 }
 // ---- the three-state fetch machine ---------------------------------------------------------
 //
-// These drive the same owned pump core that reports to `ui::idle`'s process-global flag — the
+// These drive the same owned pump core that reports to `plx_machine::idle`'s process-global flag — the
 // exact obligation `ui/xfade.rs` inherited when its `tick` started doing the same — so they
 // take the CRATE-wide serial lock, not a module-local one. Their local state has one default
 // row and no sections; `maybe_spawn` returns before it can reach the network, so nothing here

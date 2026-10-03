@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::machine::{Host, InputOwner, Tick};
+use plx_machine::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
 
@@ -148,7 +148,7 @@ impl Fixture {
     ) -> Vec<AppFx> {
         let mut queue = std::collections::VecDeque::from([event]);
         let mut apps = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         while let Some(event) = queue.pop_front() {
             let mut out = Vec::new();
             page.step(
@@ -586,9 +586,9 @@ fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
 #[test]
 fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
     let _guard = plx_base::testlock::serial();
-    let press = |key, edge| ScreenEvent::Input(crate::ui::machine::InputEvent {
+    let press = |key, edge| ScreenEvent::Input(plx_machine::machine::InputEvent {
         at: Tick::default(),
-        source: crate::ui::machine::Source::Sdl,
+        source: plx_machine::machine::Source::Sdl,
         kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
     });
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
@@ -605,9 +605,9 @@ fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
     assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
-    fixture.step(&mut page, &mut engine, ScreenEvent::Input(crate::ui::machine::InputEvent {
+    fixture.step(&mut page, &mut engine, ScreenEvent::Input(plx_machine::machine::InputEvent {
         at: Tick::default(),
-        source: crate::ui::machine::Source::Sdl,
+        source: plx_machine::machine::Source::Sdl,
         kind: InputKind::Pointer { x: 0.0, y: 0.0, hit: Some(TYPE) },
     }));
     land_shelves(&mut fixture, &mut page, &mut engine);

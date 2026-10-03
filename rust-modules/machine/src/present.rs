@@ -3,7 +3,7 @@
 //! one per-frame question, `take(tick)`, asked exactly once at §3.3 step 8. Workers get exactly
 //! one documented atomic door (`wake_from_worker`, phase 2); nothing else touches the atomics.
 //!
-//! Phase 2-i: the logical half only. `ui/idle.rs` stays the product's gate until phase 2 swaps
+//! Phase 2-i: the logical half only. `machine/src/idle.rs` stays the product's gate until phase 2 swaps
 //! this in under it; the two agree on the one behaviour a test can pin — a settled screen stops
 //! presenting and the keepalive bounds staleness.
 #![allow(dead_code)] // phase 2-i: no consumer until phase 2 (spec §13)
@@ -73,7 +73,7 @@ pub enum PresentEvent {
     Fault(Fault),
 }
 
-/// The keepalive: a settled screen still presents at least this often (`ui::idle`'s bound).
+/// The keepalive: a settled screen still presents at least this often (`plx_machine::idle`'s bound).
 pub const KEEPALIVE_MS: u32 = 2000;
 
 /// Whose springs are reporting (§4.4 `MotionScope`, structural): the dispatcher sets the scope
@@ -120,9 +120,11 @@ impl Present {
             why: None,
             // a test's gate reads a PRIVATE door: tests run in parallel, and one wake must not
             // present a frame in another test's dispatcher (`global()` is the exception)
-            #[cfg(not(test))]
+            // (`test-support` is how a dependent's tests, which build this crate without
+            // `cfg(test)`, get the same private door their gates had before the crate split)
+            #[cfg(not(any(test, feature = "test-support")))]
             door: &WAKE,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             door: Box::leak(Box::new(AtomicBool::new(false))),
         }
     }

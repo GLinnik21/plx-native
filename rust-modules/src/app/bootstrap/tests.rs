@@ -45,8 +45,8 @@ fn content_resources_deny_execution_and_require_exact_admissions() {
 
 #[test]
 fn controlled_script_input_roundtrips_without_claiming_a_physical_key() {
-    for event in super::super::bridge::script_key(crate::ui::machine::Key::Down,
-        crate::ui::machine::Tick { ms:646, dt_us:0 }) {
+    for event in super::super::bridge::script_key(plx_machine::machine::Key::Down,
+        plx_machine::machine::Tick { ms:646, dt_us:0 }) {
         let value = effects::input(&event).unwrap();
         assert_eq!(effects::input(&effects::decode_input(&value).unwrap()).unwrap(), value);
         let mut wrong = value;
@@ -80,7 +80,7 @@ fn settings_initial_is_typed_hashed_and_bound_to_its_trigger() {
     let plain = Initial::synthetic_home(17, 32517, None).unwrap();
     assert_ne!(plain.hash(), initial.hash());
 }
-use crate::ui::machine::{InputEvent, InputKind, Key, Edge, Source, Tick};
+use plx_machine::machine::{InputEvent, InputKind, Key, Edge, Source, Tick};
 use serde_json::json;
 
 #[test]
@@ -215,7 +215,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
         filmography: false, personcredits: 0, nowan: false,
     });
     crate::stores::tape::init(initial.person_credits(), false);
-    crate::ui::landgate::arm_recording();
+    plx_machine::landgate::arm_recording();
     let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
     let sid = crate::plex::ServerId::UNSET;
     crate::stores::tape::begin(Default::default(), Default::default());
@@ -231,7 +231,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
         "controlled_home must arm this Bridge's own MetadataStore Tracker from initial.content, \
          or a controlled-content detail landing never reaches stores::tape at all");
     crate::stores::tape::finish();
-    crate::ui::landgate::disarm();
+    plx_machine::landgate::disarm();
     crate::stores::tape::reset_for_test();
     crate::plex::reset_servers_for_test();
 }
@@ -388,7 +388,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                 assert_eq!(requests,transcript[frame]);
                 assert!(state == states[frame], "real Home retry and result state diverged at {frame}");
             } else {
-                writer.tick(frame as u64,crate::ui::machine::Tick {ms:frame as u32 * 50,dt_us:50_000});
+                writer.tick(frame as u64,plx_machine::machine::Tick {ms:frame as u32 * 50,dt_us:50_000});
                 for request in &requests { writer.effect_payload(frame as u64,"Cache","Request",request.clone()); }
                 writer.flush_frame().unwrap();
                 transcript.push(requests); states.push(state);
@@ -507,7 +507,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             } else {
                 writer.tick(
                     frame as u64,
-                    crate::ui::machine::Tick {
+                    plx_machine::machine::Tick {
                         ms: frame as u32 * 16,
                         dt_us: 16_000,
                     },

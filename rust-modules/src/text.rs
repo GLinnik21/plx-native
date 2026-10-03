@@ -1470,7 +1470,7 @@ pub(crate) fn take_measure_fault() -> bool {
 /// `FixtureMeasure` (host tests).
 pub(crate) struct TtfMeasure;
 
-impl crate::ui::machine::Measure for TtfMeasure {
+impl plx_machine::machine::Measure for TtfMeasure {
     fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
         if unsafe { addr_of!(TEXT_OK).read() } == 0 {
             return fit_line_by(self, s, budget, sz, bold);
@@ -1610,8 +1610,8 @@ mod measured_width_tests {
 }
 
 // `Measure::fit_line`'s default body and the supplied-metric elision under it are the machine
-// layer's (`ui::machine`), which may not name this module; they stay reachable at these paths.
-pub(crate) use crate::ui::machine::{elide_by, fit_line_by};
+// layer's (`plx_machine::machine`), which may not name this module; they stay reachable at these paths.
+pub(crate) use plx_machine::machine::{elide_by, fit_line_by};
 
 #[derive(Default)]
 pub(crate) struct FittedLines {
@@ -1631,7 +1631,7 @@ thread_local! {
 }
 
 impl FittedLines {
-    pub(crate) fn fit(&mut self, measure: &impl crate::ui::machine::Measure, s: &str,
+    pub(crate) fn fit(&mut self, measure: &impl plx_machine::machine::Measure, s: &str,
         budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
         let spec = (budget.to_bits(), sz, bold);
         let mut hash = DefaultHasher::new();
@@ -1655,7 +1655,7 @@ impl FittedLines {
 #[cfg(test)]
 mod fitted_line_tests {
     use super::*;
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     use std::cell::Cell;
 
     #[derive(Default)]
@@ -1812,7 +1812,7 @@ pub(crate) fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f3
 
 #[cfg(test)]
 mod supplied_elide_tests {
-    // `elide_by`'s own test is beside it in `ui::machine`; this one grades the middle cut.
+    // `elide_by`'s own test is beside it in `plx_machine::machine`; this one grades the middle cut.
     #[test]
     fn middle_elision_keeps_both_ends_within_the_budget() {
         let width = |s: &str| s.chars().count() as f32;

@@ -49,12 +49,12 @@ use crate::screens::registry::every_surface_arg;
 #[cfg(test)]
 use crate::ui::dispatch::NoTap;
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, Handled, Host,
     InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, Measure, NavOp,
     Source, Tick, TimerId,
 };
-use crate::ui::present::Present;
+use plx_machine::present::Present;
 use crate::ui::screen::{
     At, DrawFrame, FocusSource, Focusable, ReturnState, Screen, ScreenEvent,
 };
@@ -572,7 +572,7 @@ impl Bridge {
         let generation = crate::plex::session::visible_generation();
         if self.session_cache_generation != generation {
             self.session_cache_generation = generation;
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
     }
 
@@ -628,7 +628,7 @@ impl Bridge {
         -> Option<(crate::search::Item, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
+            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
@@ -647,7 +647,7 @@ impl Bridge {
         -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
+            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
@@ -729,7 +729,7 @@ impl Bridge {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-                focus: crate::ui::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
+                focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
             let cx = parts.cx::<AppHost>(self.views(), &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -765,7 +765,7 @@ impl Bridge {
         let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?;
         let focus = Self::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         Some(f(home, &cx, focus))
     }
@@ -895,7 +895,7 @@ impl Bridge {
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return false };
         if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+            focus: plx_machine::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -911,10 +911,10 @@ impl Bridge {
         let e = d.nav.entry(entry)?;
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
-            owner: crate::ui::machine::InputOwner::Entry(entry) };
-        parts.owner = crate::ui::machine::InputOwner::Entry(entry);
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+            focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
+            owner: plx_machine::machine::InputOwner::Entry(entry) };
+        parts.owner = plx_machine::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -963,10 +963,10 @@ impl Bridge {
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
         let _live = crate::ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
-            owner: crate::ui::machine::InputOwner::Entry(entry) };
-        parts.owner = crate::ui::machine::InputOwner::Entry(entry);
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+            focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
+            owner: plx_machine::machine::InputOwner::Entry(entry) };
+        parts.owner = plx_machine::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
@@ -1138,7 +1138,7 @@ impl Bridge {
         self.stores.gen(id)
     }
 
-    pub(crate) fn landgate(&self) -> &crate::ui::landgate::Gate { &self.stores.landgate }
+    pub(crate) fn landgate(&self) -> &plx_machine::landgate::Gate { &self.stores.landgate }
 
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
@@ -1243,7 +1243,7 @@ impl Bridge {
     /// route over" — has nothing left to resolve and went with the routes in D1.
     fn draws_chrome_for(arg: &AppArg) -> bool {
         use crate::ui::screen::ScreenArg;
-        arg.chrome() == crate::ui::machine::Chrome::TabBar
+        arg.chrome() == plx_machine::machine::Chrome::TabBar
     }
 }
 
@@ -1559,7 +1559,7 @@ impl Bridge {
     /// commit acknowledgement never recursively steps the owner outside drain/carry budgets.
     fn session_effect(&mut self, effect: crate::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
         use crate::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
-        use crate::ui::machine::{Addr, RequestId};
+        use plx_machine::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
                 | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
@@ -1706,15 +1706,15 @@ pub(crate) fn frame_with_tap(
     frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
 }
 
-pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
+pub(crate) type AppResults = Vec<(plx_machine::machine::Addr, AppMsg)>;
 
 /// Home's hubs — the one adapter result the dispatcher delivers, and a LANDING SITE exactly like
-/// the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the arrival
+/// the legacy pumps' mailboxes, so it goes through `plx_machine::landgate`: under a replay the arrival
 /// waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one relaxed
 /// atomic load and the same call.
 impl Bridge {
     /// Home's hubs — the one adapter result the dispatcher delivers, and a LANDING SITE exactly
-    /// like the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the
+    /// like the legacy pumps' mailboxes, so it goes through `plx_machine::landgate`: under a replay the
     /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
     /// relaxed atomic load and the same call.
     fn take_hubs_results(&self) -> AppResults {
@@ -1722,9 +1722,9 @@ impl Bridge {
             self.stores.landgate.take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());
         results.into_iter().map(|result| (
-            crate::ui::machine::Addr {
+            plx_machine::machine::Addr {
                 to: MachineId::Store(StoreId::Hubs.ord()),
-                req: crate::ui::machine::RequestId(result.request_id()),
+                req: plx_machine::machine::RequestId(result.request_id()),
             },
             AppMsg::HubsResult(result),
         )).collect()
@@ -1753,11 +1753,11 @@ impl Bridge {
             self.session.commit_is_current(req, epoch, arrival));
         if let Some(completed) = self.session_adapter.take_committed() {
             let disk_event = completed.disk_event();
-            let disk_addr = crate::ui::machine::Addr { to: MachineId::Session,
-                req: crate::ui::machine::RequestId(completed.req) };
+            let disk_addr = plx_machine::machine::Addr { to: MachineId::Session,
+                req: plx_machine::machine::RequestId(completed.req) };
             if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
                 let reply = self.session_adapter.finish_commit(permit, completed);
-                let addr = crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(reply.req) };
+                let addr = plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(reply.req) };
                 results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Commit(reply))));
                 if let Some(completion) = self.session_adapter.take_live_completion() {
                     results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Persistence(completion))));
@@ -1768,22 +1768,22 @@ impl Bridge {
             if let Some(event) = disk_event { results.push((disk_addr, AppMsg::Session(event))); }
         }
         if let Some(event) = self.session_adapter.take_erased(&mut self.stores.metadata) {
-            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
                 AppMsg::Session(event)));
         }
         // What became of the report whose Report ID the sign-in screen shows: held, delivered or
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
-            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
                 AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
             if let Some(result) = self.stores.landgate.take(StoreId::Browse.ord(),
                 || self.stores.browse.borrow_mut().take_discovery()) {
-                results.push((crate::ui::machine::Addr {
+                results.push((plx_machine::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),
-                    req: crate::ui::machine::RequestId(result.request_id()),
+                    req: plx_machine::machine::RequestId(result.request_id()),
                 }, AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result)))));
             }
         }
@@ -1883,16 +1883,16 @@ fn frame_ingest(
     plx_base::diag::spans::span("dsync", || rig.sync_host(d));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
     // loop's gate presents it on its own video-plane term anyway, and the report would keep the
-    // settled-capture clock (`ui::idle::last_change_ms`) from ever seeing a paused player at rest
+    // settled-capture clock (`plx_machine::idle::last_change_ms`) from ever seeing a paused player at rest
     // (`FrameReport::video_only`). The television keeps the unconditional report it always had.
     let video_only = cfg!(feature = "hostsim") && report.video_only;
     if report.presented && !video_only {
         // The dispatcher's gate wants a frame: the loop's gate presents it. While a surface is up
         // this bump is the PANEL's — `take_page_damage` subtracts the panel's claims BY COUNT, and
-        // a page's own landings reach `ui::idle` from the pumps outside this frame (the poster
+        // a page's own landings reach `plx_machine::idle` from the pumps outside this frame (the poster
         // adapter, `pms::commit`), where nothing claims them.
-        let _own = surface.then(crate::ui::idle::OwnScope::open);
-        crate::ui::idle::invalidate();
+        let _own = surface.then(plx_machine::idle::OwnScope::open);
+        plx_machine::idle::invalidate();
     }
     // **Publish the transition's presentation** for the readers that draw outside a page's own
     // `DrawFrame` (`ui::popover`'s panel and scrim, the profile chip's redraw, the glass track's
@@ -2006,7 +2006,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return String::new() };
         let focus = Bridge::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -2026,7 +2026,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             .and_then(|s| s.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
@@ -2063,8 +2063,8 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else { return String::new() };
     let focus = d.focus();
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-        press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-        focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
+        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false },
+        focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
     let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);

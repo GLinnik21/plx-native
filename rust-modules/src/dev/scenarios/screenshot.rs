@@ -67,7 +67,7 @@ pub(crate) fn arm_stillclock() {
     #[cfg(feature = "devtriggers")]
     if let Some(v) = plx_base::devtrig::read("stillclock") {
         let ms = v.parse().unwrap_or(0);
-        crate::ui::motion::hold_phase_clocks(Some(ms));
+        plx_machine::motion::hold_phase_clocks(Some(ms));
         plx_base::eventlog::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
     }
 }
@@ -84,12 +84,12 @@ pub(super) fn parse_cell(v: &str) -> Option<(usize, usize)> {
 /// so an arm that opens a menu while the page under it is still scrolling or still waiting for its
 /// art photographs a half-landed page forever. The arms that open a surface over a page therefore
 /// accept a rest period, and hold the surface back until the page has stopped changing. The signal
-/// is `ui::idle`'s change clock, which only the simulator keeps; on the television there is none,
+/// is `plx_machine::idle`'s change clock, which only the simulator keeps; on the television there is none,
 /// the wait is skipped, and the arm behaves exactly as it did before it took a value.
 pub(crate) fn at_rest(now: u32, rest: Option<u32>) -> bool {
     #[cfg(feature = "hostsim")]
     {
-        rest.is_none_or(|ms| now.wrapping_sub(crate::ui::idle::last_change_ms()) >= ms)
+        rest.is_none_or(|ms| now.wrapping_sub(plx_machine::idle::last_change_ms()) >= ms)
     }
     #[cfg(not(feature = "hostsim"))]
     {

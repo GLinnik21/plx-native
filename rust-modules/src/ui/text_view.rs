@@ -75,7 +75,7 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
 pub(crate) fn more_mark() -> &'static std::ffi::CStr { crate::i18n::msg::browse_action_more_c() }
 
 pub struct TextView<'a> {
-    measure: Option<&'a dyn crate::ui::machine::Measure>,
+    measure: Option<&'a dyn plx_machine::machine::Measure>,
     measured_wrap: std::cell::RefCell<Option<(u64, Rc<Wrapped>)>>,
     text: &'a str,
     sz: c_int,
@@ -146,7 +146,7 @@ impl<'a> TextView<'a> {
     /// Borrow the frame's measurement capability for wrapping and inline-run placement.
     /// Capability-backed wraps never consult the process-wide live-font memo: its entries
     /// belong to a different measurement source and could hide a missing replay metric.
-    pub fn with_measure(mut self, measure: &'a dyn crate::ui::machine::Measure) -> Self {
+    pub fn with_measure(mut self, measure: &'a dyn plx_machine::machine::Measure) -> Self {
         self.measure = Some(measure);
         *self.measured_wrap.get_mut() = None;
         self
@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn long_word_wrapping_preserves_utf8_and_respects_line_limits() {
         struct Measure;
-        impl crate::ui::machine::Measure for Measure {
+        impl plx_machine::machine::Measure for Measure {
             fn width(&self, s: &std::ffi::CStr, _: i32, _: bool) -> f32 {
                 s.to_string_lossy().chars().count() as f32 * 10.0
             }
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn measured_wrapping_keeps_live_semantics_and_cannot_reuse_another_owner() {
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         let _serial = plx_base::testlock::serial();
         // The host's uninitialized font path has a defined fallback. Supply that same source
         // explicitly to compare the wrap algorithm, including lead, ellipsis and long tokens.
@@ -778,7 +778,7 @@ mod tests {
     /// IS the live font shares the process memo; the test above still proves a table does not.
     #[test]
     fn a_live_font_capability_wraps_once_across_frames() {
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         use std::cell::Cell;
         let _serial = plx_base::testlock::serial();
         struct CountingLive(Cell<u32>);
@@ -811,7 +811,7 @@ mod tests {
 
     #[test]
     fn cached_wrap_reuses_line_widths_across_queries_and_frames() {
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         use std::cell::Cell;
         let _serial = plx_base::testlock::serial();
         struct Counting(Cell<u32>, bool);

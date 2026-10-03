@@ -5,7 +5,7 @@
 //! that size changes (a page push or pop, a tab switch, a live row added) the card does not jump:
 //! a [`Spring`] per moving edge carries the TOP and LEFT edges to the new layout while the bottom
 //! and right edges stay on the anchor the panel family shares with the control row. Everything
-//! here is built from the app's one spring integrator, so the present gate ([`ui::idle`]) knows
+//! here is built from the app's one spring integrator, so the present gate ([`plx_machine::idle`]) knows
 //! exactly when the panel is moving and an at-rest panel asks for no frame at all.
 //!
 //! A page transition additionally moves the OUTGOING and INCOMING pages sideways, both inside the
@@ -28,7 +28,7 @@
 
 use std::cell::Cell;
 
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::screen::ClipScope;
 use crate::ui::table::TableView;
 use crate::ui::{theme, Painter, Rect, Spring};
@@ -247,7 +247,7 @@ impl PanelMotion {
             // land exactly: the analytic spring only approaches its target, and a panel that rests
             // a hair off its anchor would never be bit-identical to its own layout
             for (spring, target) in [(&mut self.left, natural.x), (&mut self.top, natural.y)] {
-                if crate::ui::idle::settled(spring.pos, target, spring.vel) {
+                if plx_machine::idle::settled(spring.pos, target, spring.vel) {
                     *spring = Spring::at(target);
                 }
             }
@@ -257,7 +257,7 @@ impl PanelMotion {
             for layer in &mut slide.leaving {
                 layer.alpha = (layer.alpha - dt / OUT_S).max(0.0);
                 layer.x.step(-slide.dir * shift, SLIDE_K, dt);
-                crate::ui::idle::note_spring(layer.alpha, 0.0, 1.0);
+                plx_machine::idle::note_spring(layer.alpha, 0.0, 1.0);
             }
             slide.leaving.retain(|l| l.alpha > 0.0);
             let loudest = slide.leaving.iter().fold(0.0_f32, |m, l| m.max(l.alpha));
@@ -266,9 +266,9 @@ impl PanelMotion {
             }
             slide.live_x.step(0.0, SLIDE_K, dt);
             if slide.live_alpha < 1.0 {
-                crate::ui::idle::note_spring(slide.live_alpha, 1.0, 1.0);
+                plx_machine::idle::note_spring(slide.live_alpha, 1.0, 1.0);
             }
-            let at_rest = crate::ui::idle::settled(slide.live_x.pos, 0.0, slide.live_x.vel);
+            let at_rest = plx_machine::idle::settled(slide.live_x.pos, 0.0, slide.live_x.vel);
             if slide.leaving.is_empty() && slide.live_alpha >= 1.0 && at_rest {
                 self.slide = None;
             }

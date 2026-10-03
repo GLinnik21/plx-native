@@ -2,7 +2,7 @@
 //! player panels, and the heartbeat word each mounted screen reports.
 
 use super::*;
-use crate::ui::machine::Chrome;
+use plx_machine::machine::Chrome;
 use crate::ui::screen::ScreenArg;
 use crate::screens::player::HudPolicy;
 #[allow(unused_imports)]

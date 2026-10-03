@@ -30,7 +30,7 @@ pub(crate) struct EndpointFact {
 }
 
 impl Observation {
-    pub(crate) fn write(&self, w: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write(&self, w: &mut plx_machine::machine::Canon) {
         use owner::{write_profile, write_server, write_sources, write_tile, write_user};
         match self {
             Self::Login(progress) => {
@@ -207,7 +207,7 @@ impl Observation {
     }
 }
 
-fn write_identity(w: &mut crate::ui::machine::Canon, identity: &SessionIdentity) {
+fn write_identity(w: &mut plx_machine::machine::Canon, identity: &SessionIdentity) {
     w.str(&identity.client_id).str(&identity.account_token).str(&identity.profile_uuid);
 }
 
@@ -217,7 +217,7 @@ mod identity_canon_tests {
 
     #[test]
     fn observation_identity_canon_is_three_fields_without_legacy_authority_tag() {
-        use crate::ui::machine::Canon;
+        use plx_machine::machine::Canon;
         let identity = SessionIdentity::of(&Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
             user: UserRef { uuid: "synthetic-profile".into(), ..Default::default() },
@@ -240,7 +240,7 @@ mod identity_canon_tests {
     }
 }
 
-fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
+fn write_probe(w: &mut plx_machine::machine::Canon, probe: &SettledProbe) {
     w.str(&probe.machine_id).u8(match probe.outcome {
         Outcome::Reachable => 0, Outcome::WrongServer => 1, Outcome::Unauthorized => 2, Outcome::Unreachable => 3,
         Outcome::InsecureOnly => 4,
@@ -251,11 +251,11 @@ fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
     w.option(probe.address.as_deref(), |w, address| { w.str(address); });
 }
 
-fn write_probes(w: &mut crate::ui::machine::Canon, probes: &[SettledProbe]) {
+fn write_probes(w: &mut plx_machine::machine::Canon, probes: &[SettledProbe]) {
     w.seq(probes.len()); for probe in probes { write_probe(w, probe); }
 }
 
-fn write_resources(w: &mut crate::ui::machine::Canon, resources: &[Resource]) {
+fn write_resources(w: &mut plx_machine::machine::Canon, resources: &[Resource]) {
     w.seq(resources.len());
     for resource in resources {
         w.str(&resource.name).str(&resource.client_identifier).str(&resource.provides)
@@ -373,7 +373,7 @@ pub(super) mod arc {
 
 pub(super) mod address {
     use serde::{Deserialize, Serialize};
-    use crate::ui::machine::{Addr, InstanceId, MachineId, RequestId, StoreOrd};
+    use plx_machine::machine::{Addr, InstanceId, MachineId, RequestId, StoreOrd};
     pub fn serialize<S: serde::Serializer>(value: &Addr, serializer: S) -> Result<S::Ok, S::Error> {
         let (tag, id): (u8, u32) = match value.to {
             MachineId::Session => (0, 0), MachineId::Consent => (1, 0),
@@ -459,12 +459,12 @@ mod insecure_only_outcome_tests {
         }
     }
 
-    /// The Canon (`ui::machine`) hash the recorder/replay tools pin also gets a tag for
+    /// The Canon (`plx_machine::machine`) hash the recorder/replay tools pin also gets a tag for
     /// InsecureOnly, distinct from every other outcome's — a collision here would make a replay
     /// diverge silently rather than fail loudly.
     #[test]
     fn write_probe_gives_insecure_only_its_own_canon_byte() {
-        use crate::ui::machine::Canon;
+        use plx_machine::machine::Canon;
         let probe = |outcome| SettledProbe { machine_id: "m".into(), outcome, tier: None, address: None };
         let bytes = |outcome| { let mut w = Canon::new(); write_probe(&mut w, &probe(outcome)); w.finish() };
         let insecure = bytes(Outcome::InsecureOnly);
@@ -479,7 +479,7 @@ mod insecure_only_outcome_tests {
     /// field that decides what gets published.
     #[test]
     fn write_probe_encodes_the_address_so_a_change_in_it_changes_the_canon() {
-        use crate::ui::machine::Canon;
+        use plx_machine::machine::Canon;
         let probe = |address: Option<&str>| SettledProbe {
             machine_id: "m".into(), outcome: Outcome::InsecureOnly,
             tier: Some(crate::plex::probe::Location::Local), address: address.map(str::to_owned),

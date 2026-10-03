@@ -12,7 +12,7 @@ use crate::metadata;
 use crate::ui::consts::{MARGIN_X, SCR_W};
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
@@ -111,7 +111,7 @@ impl ChaptersState {
         &mut self,
         ps: &crate::route::PlaybackSession,
         appear: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         meta: metadata::MetadataView<'_>,
     ) {
         let chs = chapters(meta);
@@ -354,7 +354,7 @@ where
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct HostFixture;
     impl Host for HostFixture {

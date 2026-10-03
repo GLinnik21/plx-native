@@ -1,7 +1,7 @@
 //! Pure text-measurement paths that bypass SDL2_ttf: diagnostic field wrapping and `StatusOverlay`/`Button` measured layout.
 
 use super::*;
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -302,7 +302,7 @@ fn a_busy_note_centres_its_spinner_and_text_as_one_group() {
 #[test]
 fn measured_status_without_action_does_not_consult_metrics() {
     struct Unused;
-    impl crate::ui::machine::Measure for Unused {
+    impl plx_machine::machine::Measure for Unused {
         fn width(&self, _: &core::ffi::CStr, _: i32, _: bool) -> f32 { panic!("no action") }
         fn cap_h(&self, _: i32) -> f32 { panic!("no action") }
         fn line_h(&self, _: i32) -> f32 { panic!("no action") }
@@ -346,7 +346,7 @@ fn localized_key_hint_omits_spacing_for_an_empty_sentence_run() {
 #[test]
 fn translated_tab_width_uses_glyph_advance_instead_of_character_count() {
     struct GlyphMetrics;
-    impl crate::ui::machine::Measure for GlyphMetrics {
+    impl plx_machine::machine::Measure for GlyphMetrics {
         fn width(&self, text: &core::ffi::CStr, _: i32, _: bool) -> f32 {
             text.to_str().unwrap().chars().map(|c| if c.is_ascii() { 7.0 } else { 23.0 }).sum()
         }

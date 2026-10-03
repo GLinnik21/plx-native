@@ -1206,7 +1206,7 @@ impl BrowseState {
             source.retry_cd = 0;
         }
         self.bump_source_facts_gen();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         true
     }
     fn kick_directory<T: Send + 'static>(
@@ -1377,7 +1377,7 @@ impl BrowseState {
         touched[index] = true;
         self.record_pins(true, &touched);
         self.bump_sections_gen();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         true
     }
     #[cfg(test)]
@@ -1644,13 +1644,13 @@ impl BrowseState {
     /// profile's RECORD (`apply_pins`). Both end in the same question — what does
     /// `pins::resolve` say about every row now — so they ask it the same way rather than each
     /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
-    /// `ui::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
+    /// `plx_machine::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
     /// shelves still drawing the previous resolve.
     fn reconcile_pins(&mut self, record: Option<crate::plex::session::HomePins>) -> bool {
         let moved = self.resolve_pins_with(record);
         if moved {
             self.bump_sections_gen();
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
         moved
     }
@@ -1689,7 +1689,7 @@ impl BrowseState {
             self.resolve_pins();
         }
         self.bump_sections_gen();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     /// Write this profile's answer down. `touched` is indexed like the section table and marks
     /// the rows the VIEWER answered — as the editor reported them, never as a comparison against
@@ -1776,7 +1776,7 @@ impl BrowseState {
         if changed {
             self.repoint_cur();
             self.bump_sections_gen();
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
         // Reconcile the pending selection immediately. Until its receipt lands, a captured
         // older session must not undo the viewer's edits. This is not a durability claim.
@@ -1797,7 +1797,7 @@ impl BrowseState {
                 source.retry_cd = 0;
             }
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     fn apply_discovery(
         &mut self,
@@ -1807,7 +1807,7 @@ impl BrowseState {
         preferences: Option<&crate::plex::session::Session>,
         adapter: &BrowseAdapter,
     ) -> crate::stores::StoreOutcome {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         if epoch != self.table_epoch() {
             return Default::default();
         }
@@ -1990,7 +1990,7 @@ impl BrowseState {
                     self.src_facts_gen = self.src_facts_gen.wrapping_add(changes);
                     if changes != 0 {
                         changed = true;
-                        crate::ui::idle::invalidate();
+                        plx_machine::idle::invalidate();
                     }
                 }
                 None => {
@@ -2055,7 +2055,7 @@ impl BrowseState {
             source.sections_done = false;
             source.counts_done = false;
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     pub(crate) fn run_owned(
         &mut self,
@@ -2157,7 +2157,7 @@ impl BrowseState {
     fn land_discovery_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
         let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2167,7 +2167,7 @@ impl BrowseState {
     }
     fn land_directory_owned_with_gate<T>(
         &mut self,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
         flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>,
         apply: impl FnOnce(&mut SecState, Vec<T>),
@@ -2176,7 +2176,7 @@ impl BrowseState {
             mail.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else { return false };
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
         if result.epoch != self.table_epoch() {
             return false;
@@ -2198,12 +2198,12 @@ impl BrowseState {
     #[cfg(test)]
     fn land_discovery_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.land_discovery_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+        self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
     #[cfg(test)]
     fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
-        self.land_directory_owned_with_gate(crate::ui::landgate::fixture_gate(), flag, mail, apply)
+        self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), flag, mail, apply)
     }
     fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>) {
         if adapter.fetching.load(Ordering::SeqCst) || self.retry_cd > 0 {
@@ -2273,7 +2273,7 @@ impl BrowseState {
     pub(crate) fn discover_pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
         let outcome = self.land_discovery_owned_with_gate(adapter, gate);
         self.maybe_discover_owned(adapter, &mut execute_discovery);
@@ -2282,12 +2282,12 @@ impl BrowseState {
     #[cfg(test)]
     pub(crate) fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.discover_pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
     pub(crate) fn pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
@@ -2317,7 +2317,7 @@ impl BrowseState {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(result) = page {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
             adapter.fetching.store(false, Ordering::SeqCst);
             if let Some(source) = self.sections.get(result.sec).map(|section| section.src) {
                 let client = result.client;
@@ -2383,7 +2383,7 @@ impl BrowseState {
     #[cfg(test)]
     pub(crate) fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+        self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
 }
 

@@ -39,7 +39,7 @@ use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use crate::ui::card_row::{CardRow, RowStyle};
 use crate::ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
     InstanceId, Key, LogicalState, Machine, MachineId,
 };
@@ -47,7 +47,7 @@ use crate::ui::master_detail::{
     Follow, MasterDetail, MasterDetailGroups, MasterDetailLayout, MasterDetailPolicy, MasterSide,
     Outcome as MasterOutcome, Region,
 };
-use crate::ui::present::Provenance;
+use plx_machine::present::Provenance;
 use crate::ui::screen::{
     At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable,
     GroupKind, GroupSpec, Link, Part, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step,
@@ -778,8 +778,8 @@ impl LibraryScreen {
                     self.sweep_down = true;
                 }
                 fx.push(Fx::Deliver(MachineId::Instance(self.instance), Delivery::Screen(
-                    ScreenEvent::Input(crate::ui::machine::InputEvent {
-                        at: cx.tick, source: crate::ui::machine::Source::Script,
+                    ScreenEvent::Input(plx_machine::machine::InputEvent {
+                        at: cx.tick, source: plx_machine::machine::Source::Script,
                         kind: InputKind::Key { key: if self.sweep_down { Key::Down } else { Key::Up },
                             sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
                     }))));
@@ -1251,7 +1251,7 @@ fn row_group(id: GroupId, len: usize, extent: Rect, elem: ElemKind) -> GroupSpec
 }
 
 impl<H: LibraryLike> Screen<H> for LibraryScreen {
-    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str { "library" }

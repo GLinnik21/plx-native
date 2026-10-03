@@ -7,7 +7,7 @@
 use std::ffi::CString;
 
 use crate::metadata::{Detail, Episode};
-use crate::ui::machine::GroupId;
+use plx_machine::machine::GroupId;
 use crate::ui::text_lift::{TextLift, TOP_CENTRE};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{self, PosterMark};
@@ -92,7 +92,7 @@ pub(crate) fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
     Rect::new(strip_x(i) - scroll, top, W, H)
 }
 
-pub(crate) fn meta_layout(ep: &Episode, measure: &dyn crate::ui::machine::Measure) -> (f32, f32, f32) {
+pub(crate) fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) -> (f32, f32, f32) {
     let title_h = TextView::new(&ep.title, theme::size::BODY, theme::TEXT_PRIMARY)
         .bold()
         .with_measure(measure)
@@ -125,7 +125,7 @@ pub(crate) fn meta_layout(ep: &Episode, measure: &dyn crate::ui::machine::Measur
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
 }
 
-pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn crate::ui::machine::Measure) -> Rect {
+pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (_, _, h) = meta_layout(ep, measure);
     Rect::new(
         strip_x(i) - scroll - TEXT_PAD_X,
@@ -135,7 +135,7 @@ pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: 
     )
 }
 
-pub(crate) fn block_h(d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn block_h(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
     H + d
         .episodes
         .iter()
@@ -206,7 +206,7 @@ pub(crate) fn draw(
     focused: Option<(usize, Row)>,
     scale: impl Fn(usize) -> f32,
     lift: impl Fn(usize) -> TextLift,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
     let stale = if meta.season_loading() {
@@ -235,7 +235,7 @@ pub(crate) fn draw_focused(
     scroll: f32,
     scale: f32,
     lift: &TextLift,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
     let Some(episode) = d.episodes.get(index) else {
@@ -272,7 +272,7 @@ fn draw_cell(
     scale: f32,
     lift: &TextLift,
     kicker_cap_top: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let x = strip_x(i);
     let still_focused = focused == Some((i, Row::Still));

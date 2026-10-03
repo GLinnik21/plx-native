@@ -21,7 +21,7 @@ use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use crate::ui::document_reader::DocumentReader;
 use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind,
     Key, LogicalState, Machine, MachineId, NavOp,
 };
@@ -267,7 +267,7 @@ impl ConsentPage {
     /// `Enter` in `row_commit` below.
     fn request_band_focus(fx: &mut Effects<'_, InnerHost>) {
         fx.push(Fx::Deliver(
-            MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            MachineId::Instance(plx_machine::machine::InstanceId(0)),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                 focus: FocusTarget::ContainerGroup(BAND_GROUP),
             })),
@@ -363,7 +363,7 @@ impl ConsentPage {
     }
 
     fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
-        labels: &[&std::ffi::CStr], measure: &dyn crate::ui::machine::Measure) -> RouteLayout {
+        labels: &[&std::ffi::CStr], measure: &dyn plx_machine::machine::Measure) -> RouteLayout {
         let action_w = labels.iter().map(|label|
             crate::ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
             + crate::ui::widgets::CONTROL_GAP;
@@ -487,14 +487,14 @@ impl ConsentPage {
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
-                    MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                    MachineId::Instance(plx_machine::machine::InstanceId(0)),
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                         focus: FocusTarget::ContainerGroup(ALERT_GROUP),
                     })),
                 ));
             }
         }
-        fx.invalidate(crate::ui::present::Provenance::Input);
+        fx.invalidate(plx_machine::present::Provenance::Input);
     }
 
     fn alert_answer(&mut self, destructive: bool, fx: &mut Effects<'_, InnerHost>) {
@@ -506,12 +506,12 @@ impl ConsentPage {
         }
         self.state.alert = false;
         fx.push(Fx::Deliver(
-            MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            MachineId::Instance(plx_machine::machine::InstanceId(0)),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                 focus: FocusTarget::ContainerGroup(TABLE_GROUP),
             })),
         ));
-        fx.invalidate(crate::ui::present::Provenance::Input);
+        fx.invalidate(plx_machine::present::Provenance::Input);
     }
 }
 
@@ -558,7 +558,7 @@ impl<'a> ConsentView<'a> {
             danger: None,
         })
     }
-    fn disclosure_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn disclosure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let top = self.screen().band.as_ref().map(|b| b.extent(measure).y).unwrap_or(self.layout.action.y);
         self.layout.narrative_copy_frame(self.has_crumb, self.title, top, measure)
     }
@@ -771,7 +771,7 @@ impl Machine<InnerHost> for ConsentPage {
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
-            }) if *edge != crate::ui::machine::Edge::Up && self.alert.is_open() => {
+            }) if *edge != plx_machine::machine::Edge::Up && self.alert.is_open() => {
                 self.state.alert_scroll = self.alert.scroll_by(
                     cx.measure,
                     if *key == Key::Up { -1 } else { 1 });
@@ -779,7 +779,7 @@ impl Machine<InnerHost> for ConsentPage {
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
-            }) if *edge != crate::ui::machine::Edge::Up
+            }) if *edge != plx_machine::machine::Edge::Up
                 && !self.alert.visible()
                 && cx.focus.current.is_some_and(|key| band_index(key.elem).is_some())
                 && matches!(self.mode, Mode::FirstRun { .. }) => {
@@ -793,7 +793,7 @@ impl Machine<InnerHost> for ConsentPage {
                 if moved { Handled::Yes } else { Handled::No }
             }
             ScreenEvent::Input(InputEvent {
-                kind: InputKind::Key { key, edge: crate::ui::machine::Edge::Down, at_edge, .. },
+                kind: InputKind::Key { key, edge: plx_machine::machine::Edge::Down, at_edge, .. },
                 ..
             }) => {
                 if self.alert.is_open() {
@@ -1096,7 +1096,7 @@ impl Machine<InnerHost> for PreviewPage {
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. },
                 ..
-            }) if *edge != crate::ui::machine::Edge::Up => {
+            }) if *edge != plx_machine::machine::Edge::Up => {
                 let inside = match key {
                     Key::Up => !self.reader.at_top(),
                     _ => !self.reader.at_end(),

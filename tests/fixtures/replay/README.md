@@ -76,7 +76,7 @@ not a memory bound. Confirmed local erasure retires this App's writer before swe
 recording/init/control namespace, never the arbitrary target named by `plxnative-recplay`.
 
 Historically, the phase-11 driver still fetched live but constrained the frame a result was
-observed on (`rust-modules/src/ui/landgate.rs`, spec §3.3 step 3). Every landing
+observed on (`rust-modules/machine/src/landgate.rs`, spec §3.3 step 3). Every landing
 SITE — Home's hubs and each legacy pump's mailbox take — consumes its mailbox through a schedule
 of `(frame, arrivals)` pairs per store, taken from the recording's `land` records: an arrival
 that is early WAITS for its frame, the frame a landing is due polls for a bounded moment, and one

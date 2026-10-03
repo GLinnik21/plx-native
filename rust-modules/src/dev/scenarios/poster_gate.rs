@@ -240,7 +240,7 @@ impl Scene {
             }
             return;
         }
-        use crate::ui::machine::{Key, Tick};
+        use plx_machine::machine::{Key, Tick};
         let key = match target {
             Target::Library(row) => Bridge::library_grid_position(&app.pages)
                 .map(|(current, _)| if current < row { Key::Down } else { Key::Up }),

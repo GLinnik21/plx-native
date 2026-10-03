@@ -104,7 +104,7 @@ pub(crate) fn surface_closing(cached: bool) {
     if cached {
         HOST_CLOSING.fetch_add(1, Relaxed);
     }
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// The surface left for good: release its host user (and its closing mark, if it was fading).
@@ -147,9 +147,9 @@ static HOST_CLOSING: AtomicU32 = AtomicU32::new(0);
 /// Attribute the spring motion of a popover's own `update` to the POPOVER rather than to the page
 /// it stands on — one line at the top of that `update`, held for the body.
 ///
-/// This is [`crate::ui::idle::MotionScope`], so the panel's springs never read as the PAGE's
+/// This is [`plx_machine::idle::MotionScope`], so the panel's springs never read as the PAGE's
 /// (`idle::PAGE_MOVING`, which [`host_refresh`] asks for a fading panel), plus an
-/// [`crate::ui::idle::OwnScope`] so that every `idle::invalidate` the update raises (the appear
+/// [`plx_machine::idle::OwnScope`] so that every `idle::invalidate` the update raises (the appear
 /// spring's, a marquee's) is the panel's own damage rather than the page's. Said once here so
 /// every panel's `update` is one line rather than six, and so that a panel added tomorrow inherits
 /// it.
@@ -158,15 +158,15 @@ static HOST_CLOSING: AtomicU32 = AtomicU32::new(0);
 /// this changes who the motion is ATTRIBUTED to, never whether it counts as motion.
 #[must_use = "the scope is only open for this guard's lifetime"]
 pub(crate) struct OwnMotion(
-    #[allow(dead_code)] crate::ui::idle::MotionScope,
-    #[allow(dead_code)] crate::ui::idle::OwnScope,
+    #[allow(dead_code)] plx_machine::idle::MotionScope,
+    #[allow(dead_code)] plx_machine::idle::OwnScope,
 );
 
 /// See [`OwnMotion`].
 pub(crate) fn own_motion() -> OwnMotion {
     OwnMotion(
-        crate::ui::idle::MotionScope::open(),
-        crate::ui::idle::OwnScope::open(),
+        plx_machine::idle::MotionScope::open(),
+        plx_machine::idle::OwnScope::open(),
     )
 }
 
@@ -385,7 +385,7 @@ impl Popover {
     /// read as the PAGE's — the distinction [`host_refresh`] rests on for a fading panel. Reports
     /// whether the spring moved.
     fn step_appear(&mut self, target: f32, dt: f32) -> bool {
-        let scope = crate::ui::idle::MotionScope::open();
+        let scope = plx_machine::idle::MotionScope::open();
         self.appear.step(target, K_APPEAR, dt);
         scope.close()
     }
@@ -404,7 +404,7 @@ impl Popover {
         self.release();
         self.closing = true;
         self.enter_closing();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -825,8 +825,8 @@ pub(crate) mod host {
     /// re-render Home behind it. NOT around lifecycle or window events, which are the app's and
     /// may change the page under the panel. `None` — no scope — once every holder is fading, when
     /// input has gone back to the page and its damage is the page's.
-    pub(crate) fn input_scope() -> Option<crate::ui::idle::OwnScope> {
-        (users() > 0 && !fading_only()).then(crate::ui::idle::OwnScope::open)
+    pub(crate) fn input_scope() -> Option<plx_machine::idle::OwnScope> {
+        (users() > 0 && !fading_only()).then(plx_machine::idle::OwnScope::open)
     }
 
     /// Is every one of them a dismissed panel still fading out? See [`super::host_refresh`].
@@ -938,7 +938,7 @@ pub(crate) mod host {
         // wash dithers on every frame now — `gfx::draw_ambient`.)
         // Taken every drawn frame, holder or not, so the count never carries over into the first
         // frame of the next panel to open.
-        let page_dirty = crate::ui::idle::take_page_damage();
+        let page_dirty = plx_machine::idle::take_page_damage();
         CAPTURE_OWED.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
         GROUND_DEFERRED.store(false, Relaxed);
@@ -949,7 +949,7 @@ pub(crate) mod host {
         // Modal snapshots contain chrome and possibly a dim. A page-only transition image
         // must never be mistaken for that prefix when a surface interrupts navigation.
         if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
-        let moving = crate::ui::idle::page_moving() || page_moving;
+        let moving = plx_machine::idle::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
         if super::host_refresh(fading_only(), page_dirty, moving) {
             invalidate();
@@ -969,7 +969,7 @@ pub(crate) mod host {
         /// picture the spinner reported from IS the snapshot being taken, so the snapshot pauses
         /// it, which is what the freeze has always done to a decoration nobody can reach.
         #[allow(dead_code)]
-        own: Option<crate::ui::idle::OwnScope>,
+        own: Option<plx_machine::idle::OwnScope>,
     }
 
     /// Begin a host-page draw. Draws the cached quad and arms the freeze when there is a snapshot;
@@ -1005,7 +1005,7 @@ pub(crate) mod host {
         }
         PagePass {
             was_frozen: crate::gfx::set_page_frozen(served),
-            own: Some(crate::ui::idle::OwnScope::open()),
+            own: Some(plx_machine::idle::OwnScope::open()),
         }
     }
 
@@ -1050,7 +1050,7 @@ pub(crate) mod host {
         /// Everything drawn under this guard is the panel's own: an `idle::invalidate` raised by
         /// its marquee or spinner must not read as page damage to `begin_frame`.
         #[allow(dead_code)]
-        own: crate::ui::idle::OwnScope,
+        own: plx_machine::idle::OwnScope,
     }
 
     /// See [`Live`].
@@ -1058,7 +1058,7 @@ pub(crate) mod host {
         if crate::ui::frame::backdrop::discovering() {
             return Live {
                 was_frozen: crate::gfx::page_frozen(),
-                own: crate::ui::idle::OwnScope::open(),
+                own: plx_machine::idle::OwnScope::open(),
             };
         }
         if crate::gfx::blur_source_pass() {
@@ -1066,7 +1066,7 @@ pub(crate) mod host {
             if ground && held_ceiling().is_some_and(crate::ui::frame::backdrop::claim_snapshot) { draw_held(); }
             return Live {
                 was_frozen: crate::gfx::set_page_frozen(ground && freezes_current_layer()),
-                own: crate::ui::idle::OwnScope::open(),
+                own: plx_machine::idle::OwnScope::open(),
             };
         }
         if matches!(held(), Held::Ground(_)) {
@@ -1077,7 +1077,7 @@ pub(crate) mod host {
             }
             return Live {
                 was_frozen: crate::gfx::set_page_frozen(freezes_current_layer()),
-                own: crate::ui::idle::OwnScope::open(),
+                own: plx_machine::idle::OwnScope::open(),
             };
         }
         if CAPTURE_OWED.swap(false, Relaxed) {
@@ -1089,7 +1089,7 @@ pub(crate) mod host {
         }
         Live {
             was_frozen: crate::gfx::set_page_frozen(false),
-            own: crate::ui::idle::OwnScope::open(),
+            own: plx_machine::idle::OwnScope::open(),
         }
     }
 

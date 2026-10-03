@@ -28,7 +28,7 @@ use crate::screens::family::SettingsPage;
 use std::sync::Arc;
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, ScreenId,
 };
 use crate::ui::screen::{Mounter, ReturnState, Screen};
@@ -269,15 +269,15 @@ pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LibraryMenuArg {
-    pub host: crate::ui::machine::InstanceId,
+    pub host: plx_machine::machine::InstanceId,
     pub target: crate::stores::browse::SectionAddress,
     pub kind: LibraryMenuKind,
     /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
     pub anchor: [u32; 4],
 }
 
-impl crate::ui::machine::LogicalState for LibraryMenuArg {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for LibraryMenuArg {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u32(self.host.0).u32(self.target.epoch).u32(u32::from(self.target.sid.raw()))
             .u64(self.target.section as u64).u32(match self.kind {
                 LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
@@ -307,10 +307,10 @@ pub(crate) struct ItemMenuArg {
     pub(crate) kind: ItemMenuKind,
     /// The PAGE entry the menu hangs off: its focused element is the anchor the panel sits beside
     /// and the tile lifted back out of the modal dim (`app::bridge::redraw_opener`).
-    pub(crate) host: crate::ui::machine::EntryId,
+    pub(crate) host: plx_machine::machine::EntryId,
     /// …and which element that is, as the host page's own focus at the press frame. The surface
     /// takes input the moment it is presented, so the host's live cursor is not the answer.
-    pub(crate) focus: Option<crate::ui::machine::FocusKey<u32>>,
+    pub(crate) focus: Option<plx_machine::machine::FocusKey<u32>>,
     /// The focused tile's drawn rect, bit-preserving so a canonical argument needs no float
     /// equality — [`LibraryMenuArg::anchor`]'s rule. The presenter resolves the centred fallback
     /// (`item_menu::fallback_anchor`) before storing it, so this is always a real rect.
@@ -372,8 +372,8 @@ impl PartialEq for ItemMenuArg {
 }
 impl Eq for ItemMenuArg {}
 
-impl crate::ui::machine::LogicalState for ItemMenuArg {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for ItemMenuArg {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u32(u32::from(self.sid.raw())).str(&self.rk);
         match &self.kind {
             ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
@@ -480,8 +480,8 @@ pub(crate) struct LibraryViewport {
     pub(crate) shelves: Vec<(String, f32)>,
 }
 
-impl crate::ui::machine::LogicalState for LibraryViewport {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for LibraryViewport {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         let Self { epoch, section, scroll, shelves } = self;
         c.u32(*epoch).u32(u32::from(section.sid.raw())).u64(section.key as u64).f32(*scroll);
         c.seq(shelves.len());
@@ -601,7 +601,7 @@ impl CardKeys {
 
     /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
     /// key, the order every card page and both [`PageMemory`] arms have always written.
-    fn write_keys(&self, c: &mut crate::ui::machine::Canon) {
+    fn write_keys(&self, c: &mut plx_machine::machine::Canon) {
         for key in &self.keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
     }
 }
@@ -616,7 +616,7 @@ pub(crate) struct CardPageMemory {
 
 impl CardPageMemory {
     /// `tag` is the [`PageMemory`] arm's canonical tag: 2 for Person, 7 for Collection.
-    fn write(&self, tag: u32, c: &mut crate::ui::machine::Canon) {
+    fn write(&self, tag: u32, c: &mut plx_machine::machine::Canon) {
         c.u32(tag).u32(self.cards.next).bool(self.header_marked).seq(self.cards.len());
         self.cards.write_keys(c);
     }
@@ -700,8 +700,8 @@ pub(crate) enum PageMemory {
     Search(crate::screens::search::Memory),
 }
 
-impl crate::ui::machine::LogicalState for DetailIdentity {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for DetailIdentity {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         match self {
             Self::Slot(local) => { c.u32(4).u32(*local); }
             Self::Season { sid, show, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(show).str(rk); }
@@ -715,8 +715,8 @@ impl crate::ui::machine::LogicalState for DetailIdentity {
     fn probe(&self, out: &mut String) { out.push_str("detail_identity"); }
 }
 
-impl crate::ui::machine::LogicalState for PageMemory {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for PageMemory {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         match self {
             Self::None => { c.u32(0); }
             Self::Detail(memory) => {
@@ -787,11 +787,11 @@ impl crate::ui::machine::LogicalState for PageMemory {
     fn probe(&self, out: &mut String) { out.push_str("page_memory"); }
 }
 
-fn write_library_section(section: &LibrarySectionIdentity, c: &mut crate::ui::machine::Canon) {
+fn write_library_section(section: &LibrarySectionIdentity, c: &mut plx_machine::machine::Canon) {
     c.u32(u32::from(section.sid.raw())).u64(section.key as u64);
 }
 
-fn write_library_identity(identity: &LibraryIdentity, c: &mut crate::ui::machine::Canon) {
+fn write_library_identity(identity: &LibraryIdentity, c: &mut plx_machine::machine::Canon) {
     match identity {
         LibraryIdentity::Library(section) => { c.u32(0); write_library_section(section, c); }
         LibraryIdentity::Shelf { section, hub, sid, rk } => {
@@ -815,7 +815,7 @@ fn write_library_identity(identity: &LibraryIdentity, c: &mut crate::ui::machine
     }
 }
 
-fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
+fn write_home_hub(hub: &HomeHubIdentity, c: &mut plx_machine::machine::Canon) {
     match hub {
         HomeHubIdentity::ContinueWatching => { c.u32(0); }
         HomeHubIdentity::Identifier { sid, id, key } => {
@@ -919,7 +919,7 @@ impl ContentPanel {
     /// `None` back means "this page cannot offer that panel", which the caller drops.
     pub(crate) fn surface(
         self,
-        host: crate::ui::machine::InstanceId,
+        host: plx_machine::machine::InstanceId,
         subject: Option<(crate::plex::ServerId, &str)>,
     ) -> Option<(crate::ui::containers::modal::Style, AppArg)> {
         use crate::ui::containers::modal::Style;
@@ -1688,7 +1688,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + CollectionLike + MetadataLike,
+    H: plx_machine::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + CollectionLike + MetadataLike,
 {
     fn mount(
         &mut self,
@@ -1699,7 +1699,7 @@ where
         fx: &mut Effects<'_, H>,
     ) -> Box<dyn Screen<H>> {
         let entry = match cx.owner {
-            crate::ui::machine::InputOwner::Entry(e) => e,
+            plx_machine::machine::InputOwner::Entry(e) => e,
             _ => EntryId(0),
         };
         match arg {
@@ -1771,7 +1771,7 @@ where
             AppArg::Login => Box::new(crate::screens::login::LoginScreen::new(entry, H::auth(cx))),
             AppArg::Profiles => {
                 let screen = crate::screens::profiles::ProfilesScreen::new(entry, H::auth(cx));
-                fx.push(crate::ui::machine::Fx::App(AppFx::Session(
+                fx.push(plx_machine::machine::Fx::App(AppFx::Session(
                     crate::auth::SessionCmd::DismissPinError,
                 )));
                 Box::new(screen)
@@ -1848,7 +1848,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
     use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
     let mut args = vec![
         AppArg::LibraryMenu(LibraryMenuArg {
-            host: crate::ui::machine::InstanceId(1),
+            host: plx_machine::machine::InstanceId(1),
             target: crate::stores::browse::SectionAddress {
                 epoch: 0, sid: crate::plex::ServerId::UNSET, section: 0,
             },
@@ -1872,7 +1872,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         // standing a real Detail page up first, would make this derivation depend on the
         // metadata store landing.
         AppArg::AltSources(crate::screens::alt_sources::AltSourcesArg {
-            host: crate::ui::machine::InstanceId(1),
+            host: plx_machine::machine::InstanceId(1),
             sid: crate::plex::ServerId::UNSET,
             rk: "1".into(),
             anchor: [0; 4],
@@ -2187,7 +2187,7 @@ mod arg_tests {
     #[test]
     fn the_collection_more_sheet_is_its_own_alert_surface() {
         let (style, arg) = ContentPanel::CollectionAbout
-            .surface(crate::ui::machine::InstanceId(1), None)
+            .surface(plx_machine::machine::InstanceId(1), None)
             .expect("a page with no item subject can still offer its summary");
         assert!(matches!(style, crate::ui::containers::modal::Style::Alert));
         assert!(matches!(arg, AppArg::CollectionAbout));

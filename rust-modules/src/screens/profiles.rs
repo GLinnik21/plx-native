@@ -96,11 +96,11 @@ use crate::ui::card_row;
 use crate::ui::frame::Budget;
 use crate::ui::geom;
 use crate::ui::icons;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
     LogicalState, Machine, Measure, Tick,
 };
-use crate::ui::present::Provenance;
+use plx_machine::present::Provenance;
 use crate::ui::route_screen::RouteGround;
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
@@ -388,7 +388,7 @@ fn pad_extent(measure: &dyn Measure) -> Rect {
 /// from directly above it runs off the bottom edge with nothing to land on — DOWN from '7' became
 /// a dead press, exactly the regression this function exists to not have).
 fn pad_neighbour(entry: EntryId, elem: u32, dir: Dir) -> Step<u32> {
-    use crate::ui::machine::FocusKey;
+    use plx_machine::machine::FocusKey;
     let Some((r, c)) = pad_rc(elem) else {
         return Step::Edge;
     };
@@ -470,8 +470,8 @@ fn pad_seat(
     measure: &dyn Measure,
     entry: EntryId,
     from: Placed,
-) -> crate::ui::machine::FocusKey<u32> {
-    use crate::ui::machine::FocusKey;
+) -> plx_machine::machine::FocusKey<u32> {
+    use plx_machine::machine::FocusKey;
     let (fx_, fy_) = (from.rect.cx(), from.rect.cy());
     let mut best: Option<(f32, usize, usize)> = None;
     for r in 0..PAD_ROWS {
@@ -495,9 +495,9 @@ fn pad_seat(
 
 fn pad_reconcile(
     entry: EntryId,
-    want: crate::ui::machine::FocusKey<u32>,
-) -> crate::ui::machine::FocusKey<u32> {
-    use crate::ui::machine::FocusKey;
+    want: plx_machine::machine::FocusKey<u32>,
+) -> plx_machine::machine::FocusKey<u32> {
+    use plx_machine::machine::FocusKey;
     if let Some((r, c)) = pad_rc(want.elem) {
         if KEYS[r][c].is_some() {
             return want;
@@ -691,7 +691,7 @@ pub(crate) struct ProfilesScreen {
     /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4): reports
     /// `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be, with
     /// `fx.note(Motion)` a separate, easy-to-forget line below it.
-    spin_phase: crate::ui::motion::Phase,
+    spin_phase: plx_machine::motion::Phase,
     ground: RouteGround,
     pad: Pad,
     users: Arc<[auth::UserTile]>,
@@ -728,7 +728,7 @@ impl ProfilesScreen {
             row_sty: card_row::RowStyle::PROFILES,
             footer_pop: CtlPop::new(),
             spin_ms: 0.0,
-            spin_phase: crate::ui::motion::Phase::default(),
+            spin_phase: plx_machine::motion::Phase::default(),
             ground: RouteGround::new(),
             pad: Pad::new(),
             users: Arc::clone(&snapshot.users),
@@ -829,8 +829,8 @@ impl ProfilesScreen {
     /// Advance the wrong-PIN flash by one frame, and invalidate on the phase FLIPS alone — the two
     /// halves `ui/CLAUDE.md` demands of anything that animates from a CLOCK rather than a spring
     /// (`Xfade::tick`/`Spinner::draw`'s own standing hazard). Ported from `ui/profiles.rs`'s
-    /// `step_pin_flash`, `ui::idle::invalidate()` replaced by `Effects::invalidate` — this screen
-    /// has no `ui::idle` gate to report to; the dispatcher's own `Present` is fed exclusively
+    /// `step_pin_flash`, `plx_machine::idle::invalidate()` replaced by `Effects::invalidate` — this screen
+    /// has no `plx_machine::idle` gate to report to; the dispatcher's own `Present` is fed exclusively
     /// through `Effects`/`fx.note`.
     fn step_pin_flash<H: AppLike>(pad: &mut Pad, dt: f32, fx: &mut Effects<'_, H>) {
         if pad.error_s <= 0.0 {
@@ -911,7 +911,7 @@ impl ProfilesScreen {
             fx.push(Fx::Deliver(
                 me,
                 Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                    focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
+                    focus: FocusTarget::Elem(plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: first,
                     }),
@@ -999,7 +999,7 @@ impl ProfilesScreen {
         fx.push(Fx::Deliver(
             me,
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
+                focus: FocusTarget::Elem(plx_machine::machine::FocusKey {
                     entry: self.entry,
                     elem: pad_elem(0, 0),
                 }),
@@ -1046,7 +1046,7 @@ impl ProfilesScreen {
         fx.push(Fx::Deliver(
             me,
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
+                focus: FocusTarget::Elem(plx_machine::machine::FocusKey {
                     entry: self.entry,
                     elem: target,
                 }),
@@ -1179,7 +1179,7 @@ impl ProfilesScreen {
     }
 
     fn allocate_reply<H: AppLike>(&mut self, fx: &Effects<'_, H>) -> Option<auth::owner::ReplyTo> {
-        let crate::ui::machine::MachineId::Instance(instance) = fx.from() else {
+        let plx_machine::machine::MachineId::Instance(instance) = fx.from() else {
             return None;
         };
         let correlation = self.next_correlation?;
@@ -1207,7 +1207,7 @@ impl ProfilesScreen {
         u: &auth::UserTile,
         cx: f32,
         focused: bool,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         let col = if focused {
             theme::TEXT_PRIMARY
@@ -1320,7 +1320,7 @@ impl ProfilesScreen {
                 f.stop(
                     p,
                     Stop {
-                        key: crate::ui::machine::FocusKey {
+                        key: plx_machine::machine::FocusKey {
                             entry: self.entry,
                             elem: pad_elem(r, c),
                         },
@@ -1407,7 +1407,7 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     }
     fn neighbour(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -1422,7 +1422,7 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
                 Dir::Up | Dir::Down => None,
             };
             return next.map_or(Step::Edge, |i| {
-                Step::Move(crate::ui::machine::FocusKey {
+                Step::Move(plx_machine::machine::FocusKey {
                     entry: key.entry,
                     elem: elems[i],
                 })
@@ -1463,9 +1463,9 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     }
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
+        want: plx_machine::machine::FocusKey<u32>,
         _cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         if self.pad.open {
             return pad_reconcile(self.entry, want);
         }
@@ -1473,7 +1473,7 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
             if self.readout_slot(want.elem).is_some() {
                 return want;
             }
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: readout_elems(self.back_resumes)[0],
             };
@@ -1483,31 +1483,31 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         }
         let n = self.n;
         if n == 0 {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: FOOTER,
             };
         }
         if (want.elem as usize) >= n {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: (n - 1) as u32,
             };
         }
         want
     }
-    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         if self.pad.open {
             return pad_seat(cx.measure, self.entry, from);
         }
         if g == READOUT_GROUP {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: readout_elems(self.back_resumes)[0],
             };
         }
         if g == FOOTER_GROUP {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: FOOTER,
             };
@@ -1526,7 +1526,7 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
     }
     fn neighbour(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -1537,9 +1537,9 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
     }
     fn reconcile(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         Focusable::<H>::reconcile(&self.focus_view(), key, cx)
     }
     fn seat(
@@ -1547,7 +1547,7 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
         group: GroupId,
         from: Placed,
         cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         Focusable::<H>::seat(&self.focus_view(), group, from, cx)
     }
 }
@@ -1654,14 +1654,14 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
                 Handled::No
             }
             ScreenEvent::Async(
-                crate::ui::machine::RequestId(request),
+                plx_machine::machine::RequestId(request),
                 AppMsg::BackReply {
                     correlation,
                     resumed: _resumed,
                 },
             ) if request == correlation => Handled::Yes,
             ScreenEvent::Async(
-                crate::ui::machine::RequestId(request),
+                plx_machine::machine::RequestId(request),
                 AppMsg::SelectionReply {
                     correlation,
                     accepted,
@@ -1757,7 +1757,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey {
+                    key: plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: i as u32,
                     },
@@ -1798,7 +1798,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey {
+                    key: plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: i as u32,
                     },
@@ -1815,7 +1815,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey {
+                    key: plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem,
                     },

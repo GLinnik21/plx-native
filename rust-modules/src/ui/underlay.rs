@@ -240,7 +240,7 @@ impl UnderlayField {
                 }
                 gfx::FieldRead::Pending => {
                     self.pending = Some(t);
-                    crate::ui::idle::wake();
+                    plx_machine::idle::wake();
                     return FrameLatch::Pending;
                 }
                 gfx::FieldRead::Lost => {}
@@ -250,7 +250,7 @@ impl UnderlayField {
             Some(t) => {
                 self.pending = Some(t);
                 // A frame for the read to land in, whether or not anything else moves.
-                crate::ui::idle::wake();
+                plx_machine::idle::wake();
                 FrameLatch::Pending
             }
             None => FrameLatch::Refused,
@@ -488,7 +488,7 @@ fn graded(c: [f32; 3], grade: Grade) -> [f32; 3] {
 }
 
 /// `exp(-d²/2σ²)` at `d = 0..=RADIUS` for [`SIGMA`], as literals: the transcendental surface
-/// outside `ui/motion.rs` is allow-listed and "shrink, never grow" (`ci/allow/libm.txt`), and a
+/// outside `machine/src/motion.rs` is allow-listed and "shrink, never grow" (`ci/allow/libm.txt`), and a
 /// fixed kernel has no business calling `exp` at run time. The host test
 /// `the_kernel_table_is_the_gaussian_at_sigma` recomputes it from the formula.
 const GAUSS: [f32; RADIUS + 1] =

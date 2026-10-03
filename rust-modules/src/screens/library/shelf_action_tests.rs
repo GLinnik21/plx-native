@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::focus::FocusEngine;
-use crate::ui::machine::{Host, InputOwner, PressId, PressRead, Tick};
+use plx_machine::machine::{Host, InputOwner, PressId, PressRead, Tick};
 
 struct TestHost;
 
@@ -97,7 +97,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         engine.set(owner, key, Some(page.shelves[row].group), By::Restore);
         for held in [false, true] {
             let mut out = Vec::new();
-            let mut present = crate::ui::present::Present::new();
+            let mut present = plx_machine::present::Present::new();
             let event = if held {
                 ScreenEvent::PressHold(PressId(7))
             } else {
@@ -207,7 +207,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     // OK opens the collection page.
     engine.set(owner, page.key(heading), Some(heading_group), By::Restore);
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let handled = page.step(&ScreenEvent::Activate(heading), &cx(&engine),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(21)), &mut present));
     assert_eq!(handled, Handled::Yes);

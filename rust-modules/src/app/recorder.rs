@@ -31,7 +31,7 @@
 //! stores fetched live during replay and the gate constrained when answers were observed.
 //! Every landing SITE — Home's hubs through `bridge::take_hubs_results`, and
 //! each legacy pump's mailbox take (`metadata` detail/season/alt-sources, `person`, `viewstate`,
-//! `browse`'s four, `search`'s per-source slot) — consumes its mailbox through `ui::landgate`,
+//! `browse`'s four, `search`'s per-source slot) — consumes its mailbox through `plx_machine::landgate`,
 //! which during a replay holds an EARLY arrival until the frame the recording consumed it on. A
 //! LATE arrival is delivered at once and counted, exactly as before: holding cannot manufacture a
 //! result that has not come. An arrival the recording never saw is `extra`; a recorded landing
@@ -63,7 +63,7 @@
 
 use serde_json::{json, Value};
 
-use crate::ui::machine::{Canon, LogicalState, Tick};
+use plx_machine::machine::{Canon, LogicalState, Tick};
 use crate::ui::rec::{DirSink, Header, Readiness, Recording, Writer};
 #[cfg(test)]
 use crate::ui::rec::RecError;
@@ -113,11 +113,16 @@ impl LogicalState for AppInit {
 
 /// Boot contents currently captured in addition to the coarse application probe. Other store,
 /// session and adapter initial conditions still need to join this before closed replay is wired.
+/// Only the test header builder constructs it today (`initial_header`), so it exists only there:
+/// `LogicalState` is the machine crate's trait now, and rustc no longer counts an impl of a
+/// foreign trait as a use of the type.
+#[cfg(test)]
 struct RecordedInit<'a> {
     app: &'a AppInit,
     hubs: &'a crate::pms::initial::Initial,
 }
 
+#[cfg(test)]
 impl LogicalState for RecordedInit<'_> {
     fn write(&self, w: &mut Canon) { self.app.write(w); self.hubs.write(w); }
     fn probe(&self, out: &mut String) { self.app.probe(out); }
@@ -257,7 +262,7 @@ pub(crate) struct Replay {
     present_diffs: u64,
     result_diffs: u64,
     /// Landings observed on a frame other than the one the recording observed them on, plus the
-    /// recorded landings this run never produced (`ui::landgate`, §3.3 step 3).
+    /// recorded landings this run never produced (`plx_machine::landgate`, §3.3 step 3).
     land_diffs: u64,
     result_at: usize,
     effect_at: usize,
@@ -305,9 +310,9 @@ enum ResolutionWire {
         activate: Option<(WireKey, u8)>, miss: bool },
 }
 
-fn wire_key(k: crate::ui::machine::FocusKey<u32>) -> WireKey { (k.entry.0, k.elem) }
-fn focus_key(k: WireKey) -> crate::ui::machine::FocusKey<u32> {
-    crate::ui::machine::FocusKey { entry:crate::ui::machine::EntryId(k.0), elem:k.1 }
+fn wire_key(k: plx_machine::machine::FocusKey<u32>) -> WireKey { (k.entry.0, k.elem) }
+fn focus_key(k: WireKey) -> plx_machine::machine::FocusKey<u32> {
+    plx_machine::machine::FocusKey { entry:plx_machine::machine::EntryId(k.0), elem:k.1 }
 }
 fn resolution_hash(value:&impl serde::Serialize)->u64 {
     let mut canon=Canon::new();
@@ -315,8 +320,9 @@ fn resolution_hash(value:&impl serde::Serialize)->u64 {
     canon.finish()
 }
 impl ResolutionWire {
-    fn focus(phase: u8, entry: crate::ui::machine::EntryId, answer: crate::ui::dispatch::FocusAnswer<u32>) -> Self {
-        use crate::ui::{focus::Outcome, screen::{By, EdgeRule}, machine::NavOpKind};
+    fn focus(phase: u8, entry: plx_machine::machine::EntryId, answer: crate::ui::dispatch::FocusAnswer<u32>) -> Self {
+        use crate::ui::{focus::Outcome, screen::{By, EdgeRule}};
+        use plx_machine::{machine::NavOpKind};
         let (outcome, from, to, by) = match answer.outcome {
             Outcome::Nothing => (0,None,None,0),
             Outcome::Moved { from, to, by } => (1, from.map(wire_key), Some(wire_key(to)),
@@ -328,7 +334,8 @@ impl ResolutionWire {
             outcome, from, to, by }
     }
     fn focus_answer(&self) -> Result<crate::ui::dispatch::FocusAnswer<u32>, &'static str> {
-        use crate::ui::{focus::Outcome, screen::{By, EdgeRule}, machine::{NavOpKind, GroupId}};
+        use crate::ui::{focus::Outcome, screen::{By, EdgeRule}};
+        use plx_machine::{machine::{NavOpKind, GroupId}};
         let Self::Focus { phase, entry, focus, group, outcome, from, to, by } = *self else { return Err("wrong resolution family"); };
         if phase > 2 || entry == 0 || [focus,from,to].into_iter().flatten().any(|k| k.0 != entry)
             || (focus.is_none() && group.is_some()) { return Err("invalid focus identity"); }
@@ -349,7 +356,7 @@ impl ResolutionWire {
         };
         Ok(crate::ui::dispatch::FocusAnswer { outcome, focus:focus.map(focus_key), group:group.map(GroupId) })
     }
-    fn hit(phase: u8, entry: Option<crate::ui::machine::EntryId>, answer: crate::ui::hit::Resolution<u32>) -> Self {
+    fn hit(phase: u8, entry: Option<plx_machine::machine::EntryId>, answer: crate::ui::hit::Resolution<u32>) -> Self {
         use crate::ui::screen::Activate;
         Self::Hit { phase, entry:entry.map(|e|e.0), hit:answer.hit.map(wire_key), focus:answer.focus.map(wire_key),
             activate:answer.activate.map(|(k,a)|(wire_key(k),match a { Activate::Press=>0,Activate::Immediate=>1,Activate::Direct=>2 })), miss:answer.miss }
@@ -444,7 +451,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
                 _ => return Err("unsupported controlled result family"),
             };
             if envelope.f != frame.f || envelope.t != "async" || envelope.req != req
-                || envelope.to != machine_name(crate::ui::machine::MachineId::Store(store.ord())) {
+                || envelope.to != machine_name(plx_machine::machine::MachineId::Store(store.ord())) {
                 return Err("mismatched controlled result address");
             }
             stores.insert(store.ord().0);
@@ -489,8 +496,8 @@ pub(crate) fn validate_resolution_recording(recording:&Recording) -> Result<(), 
         let hits:Vec<_>=frame.resolutions.iter().filter_map(|row|match ResolutionWire::decode(row["payload"].clone()).ok()? {
             ResolutionWire::Hit{hit,..}=>Some(hit.map(|k|k.1)), _=>None }).collect();
         let pointer_inputs:Vec<_>=frame.inputs.iter().filter_map(|row|match decode_input(row).ok()?.kind {
-            crate::ui::machine::InputKind::Pointer{hit,..}|crate::ui::machine::InputKind::Click{hit,..}
-                |crate::ui::machine::InputKind::Drag{hit,..}=>Some(hit), _=>None }).collect();
+            plx_machine::machine::InputKind::Pointer{hit,..}|plx_machine::machine::InputKind::Click{hit,..}
+                |plx_machine::machine::InputKind::Drag{hit,..}=>Some(hit), _=>None }).collect();
         // Legacy pointers have no rs rows; current product pages are all Engine pages. Runtime
         // observation accounting still protects generic legacy test doubles.
         if hits!=pointer_inputs { return Err("incoherent pointer truth"); }
@@ -528,13 +535,13 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     }
     fn resolution_active(&self) -> bool { !matches!(self,Self::Off) }
     fn resolution_error(&mut self, reason: &'static str) { self.refuse(reason); }
-    fn resolve_focus(&mut self, _f:u64, phase:u8, entry:crate::ui::machine::EntryId,
+    fn resolve_focus(&mut self, _f:u64, phase:u8, entry:plx_machine::machine::EntryId,
         actual:Option<crate::ui::dispatch::FocusAnswer<u32>>) -> Option<crate::ui::dispatch::FocusAnswer<u32>> {
         if matches!(self,Self::Off) { return actual; }
         self.resolve_observation((true,phase,Some(entry.0)), actual.map(|a|ResolutionWire::focus(phase,entry,a)))
             .and_then(|v|v.focus_answer().ok())
     }
-    fn resolve_hit(&mut self, _f:u64, kind:crate::ui::hit::PointerKind, entry:Option<crate::ui::machine::EntryId>,
+    fn resolve_hit(&mut self, _f:u64, kind:crate::ui::hit::PointerKind, entry:Option<plx_machine::machine::EntryId>,
         actual:Option<crate::ui::hit::Resolution<u32>>) -> Option<crate::ui::hit::Resolution<u32>> {
         if matches!(self,Self::Off) { return actual; }
         use crate::ui::hit::PointerKind;
@@ -563,14 +570,14 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             Self::Off=>{},
         }
     }
-    fn input(&mut self, _frame: u64, input: &crate::ui::machine::InputEvent<u32>) {
+    fn input(&mut self, _frame: u64, input: &plx_machine::machine::InputEvent<u32>) {
         if matches!(self,Self::Off) { return; }
         match super::bootstrap::effects::input(input) {
             Ok(encoded) => self.input(encoded),
             Err(reason) => self.refuse(reason),
         }
     }
-    fn result(&mut self, _frame: u64, addr: &crate::ui::machine::Addr, msg: &crate::screens::registry::AppMsg) {
+    fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &crate::screens::registry::AppMsg) {
         if let Self::Replaying(replay) = self {
             let payload = match msg {
                 crate::screens::registry::AppMsg::HubsResult(result) => Some(crate::pms::record::encode(result)),
@@ -607,9 +614,9 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         rec.events = true;
         rec.spent_ns += start.elapsed().as_nanos() as u64;
     }
-    fn effect(&mut self, _frame: u64, stamped: &crate::ui::machine::Stamped<super::bridge::AppHost>) {
+    fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<super::bridge::AppHost>) {
         if matches!(self,Self::Off) { return; }
-        use crate::ui::machine::{Delivery, Fx, MachineId};
+        use plx_machine::machine::{Delivery, Fx, MachineId};
         use crate::ui::screen::ScreenEvent;
         let name = match &stamped.fx {
             Fx::Nav(_) => "Nav", Fx::Mount(_) => "Mount", Fx::Unmount(_) => "Unmount",
@@ -636,8 +643,8 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     }
 }
 
-pub(crate) fn machine_name(id: crate::ui::machine::MachineId) -> String {
-    use crate::ui::machine::MachineId;
+pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {
+    use plx_machine::machine::MachineId;
     match id {
         MachineId::Instance(id) => format!("inst:{}", id.0),
         MachineId::Store(id) => format!("store:{}", id.0),
@@ -691,7 +698,7 @@ impl Recplay {
             let (store, req) = match crate::stores::tape::validate_result(&payload) {
                 Ok(v) => v, Err(e) => { self.refuse(e); return; }
             };
-            let to = machine_name(crate::ui::machine::MachineId::Store(store.ord()));
+            let to = machine_name(plx_machine::machine::MachineId::Store(store.ord()));
             match self {
                 Self::Recording(r) => { r.w.result(r.f, &to, req, payload); r.events = true; }
                 Self::Replaying(r) => {
@@ -710,7 +717,7 @@ impl Recplay {
         for request in requests { self.observe_effect("Cache", "App", request); }
         if let Some(reason) = failure { self.refuse(reason); }
     }
-    pub(crate) fn abort_startup(&mut self, gate: &crate::ui::landgate::Gate)
+    pub(crate) fn abort_startup(&mut self, gate: &plx_machine::landgate::Gate)
         -> Result<(), &'static str> {
         gate.disarm();
         match std::mem::replace(self,Self::Off) {
@@ -835,9 +842,9 @@ impl Recplay {
         }
     }
 
-    /// The loop's frame index, published to `ui::landgate` before any landing site runs. One
+    /// The loop's frame index, published to `plx_machine::landgate` before any landing site runs. One
     /// relaxed atomic load when neither trigger is armed.
-    pub(crate) fn begin_frame(&self, gate: &crate::ui::landgate::Gate) {
+    pub(crate) fn begin_frame(&self, gate: &plx_machine::landgate::Gate) {
         match self {
             Recplay::Recording(r) => gate.begin_frame(r.f),
             Recplay::Replaying(r) => gate.begin_frame(
@@ -847,7 +854,7 @@ impl Recplay {
         }
     }
 
-    pub(crate) fn arm_landgate(&self, gate: &crate::ui::landgate::Gate) {
+    pub(crate) fn arm_landgate(&self, gate: &plx_machine::landgate::Gate) {
         match self {
             Recplay::Recording(_) => gate.arm_recording(),
             Recplay::Replaying(r) => gate.arm_sparse_replay(r.rec.land_schedule()),
@@ -888,7 +895,7 @@ impl Recplay {
             if envelope.payload["kind"] == "content" { continue; }
             let discovery = envelope.payload["kind"] == "discovery";
             let store = if discovery { crate::stores::StoreId::Browse } else { crate::stores::StoreId::Hubs };
-            let to = crate::ui::machine::MachineId::Store(store.ord());
+            let to = plx_machine::machine::MachineId::Store(store.ord());
             if envelope.f != frame.f || envelope.t != "async" || envelope.to != machine_name(to) {
                 return Err("unsupported result envelope");
             }
@@ -902,7 +909,7 @@ impl Recplay {
                 if result.request_id() != envelope.req { return Err("result request mismatch"); }
                 crate::screens::registry::AppMsg::HubsResult(result)
             };
-            out.push((crate::ui::machine::Addr { to, req: crate::ui::machine::RequestId(envelope.req) },
+            out.push((plx_machine::machine::Addr { to, req: plx_machine::machine::RequestId(envelope.req) },
                 msg));
         }
         Ok(Some(out))
@@ -1018,14 +1025,14 @@ impl Recplay {
         hash: &dyn Fn() -> u64,
         store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
     ) -> bool {
-        self.end_frame_with_gate(hash, store_gen, crate::ui::landgate::fixture_gate())
+        self.end_frame_with_gate(hash, store_gen, plx_machine::landgate::fixture_gate())
     }
 
     pub(crate) fn end_frame_with_gate(
         &mut self,
         hash: &dyn Fn() -> u64,
         store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> bool {
         match self {
             Recplay::Off => false,
@@ -1119,7 +1126,7 @@ impl Recplay {
                         r.land_diffs += u64::from(count);
                         plx_base::eventlog::log(&format!(
                             "replay: land diverge f={frame} store={ord} reason={}",
-                            crate::ui::landgate::Diff::Missing.name()
+                            plx_machine::landgate::Diff::Missing.name()
                         ));
                     }
                     plx_base::eventlog::log(&format!(
@@ -1155,7 +1162,7 @@ impl Recplay {
         }
     }
 
-    pub(crate) fn finish(self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn finish(self, gate: &plx_machine::landgate::Gate) -> bool {
         let mut failed = self.outcome_failed();
         gate.disarm();
         if let Recplay::Recording(r) = self {
@@ -1213,8 +1220,8 @@ pub(crate) fn features() -> Vec<String> {
 
 /// Input encodings — the application's half of the codec (spec §5.5); `replay_inputs` hands
 /// these back to the loop, which re-injects them by kind.
-pub(crate) fn decode_input(value:&Value) -> Result<crate::ui::machine::InputEvent<u32>, &'static str> {
-    use crate::ui::machine::{InputEvent,InputKind,Source,Tick};
+pub(crate) fn decode_input(value:&Value) -> Result<plx_machine::machine::InputEvent<u32>, &'static str> {
+    use plx_machine::machine::{InputEvent,InputKind,Source,Tick};
     if value["body"]["kind"].is_null() {
         // Pointer-up already uses the product's synthetic OK-up envelope (sym/wcode zero).
         let tick=Tick { ms:value["ms"].as_u64().and_then(|n|n.try_into().ok()).ok_or("invalid input time")?,
@@ -1263,14 +1270,14 @@ pub(crate) fn enc_token(tok: &str) -> Value {
     json!({"kind": "token", "tok": tok})
 }
 
-pub(crate) fn enc_text(text: &str, panel: bool, at: crate::ui::machine::Tick, source: crate::ui::machine::Source) -> Value {
-    use crate::ui::machine::Source;
+pub(crate) fn enc_text(text: &str, panel: bool, at: plx_machine::machine::Tick, source: plx_machine::machine::Source) -> Value {
+    use plx_machine::machine::Source;
     let source = match source { Source::Sdl => 0, Source::RemoteFifo => 1, Source::Script => 2, Source::Replay => 3 };
     json!({"kind":"text", "text":text, "panel":panel, "ms":at.ms, "dt_us":at.dt_us, "source":source})
 }
 
-pub(crate) fn dec_text(v: &Value) -> Option<Vec<crate::ui::machine::InputEvent<u32>>> {
-    use crate::ui::machine::{Source, Tick};
+pub(crate) fn dec_text(v: &Value) -> Option<Vec<plx_machine::machine::InputEvent<u32>>> {
+    use plx_machine::machine::{Source, Tick};
     if v["kind"].as_str()? != "text" { return None; }
     let source = match v["source"].as_u64()? { 0 => Source::Sdl, 1 => Source::RemoteFifo,
         2 => Source::Script, 3 => Source::Replay, _ => return None };
@@ -1307,7 +1314,7 @@ mod tests {
     #[test]
     fn two_bridge_recorders_own_their_landing_lifecycle() {
         let _serial = plx_base::testlock::serial();
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
         let initial = super::super::bootstrap::Initial::synthetic_home(
             1, 32517, Some("root".into())).unwrap();
         let first_bridge = super::super::bridge::Bridge::for_test(|| 0);
@@ -1327,7 +1334,7 @@ mod tests {
         assert!(!first.end_frame_with_gate(&|| 0, &|_| 0, first_bridge.landgate()));
         assert_eq!(second_bridge.landgate().take_frame_lands(), vec![(browse, 1)],
             "ending one Bridge must not drain the other owner's StoreId cursor");
-        assert!(crate::ui::landgate::take_frame_lands().is_empty(),
+        assert!(plx_machine::landgate::take_frame_lands().is_empty(),
             "constructing or running an owned recorder must not arm the fixture gate");
 
         assert!(!first.finish(first_bridge.landgate()));
@@ -1380,7 +1387,7 @@ mod tests {
             Tap::<Product>::focus(&mut rec, 1, None);
             rec.end_frame(&|| 7);
         }
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let recording = Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
         for (mode, live, changed_present) in [
@@ -1426,7 +1433,7 @@ mod tests {
             Tap::<Product>::focus(&mut rec, 1, None);
             rec.end_frame(&|| 7);
         }
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let recording = Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
         for live in [false, true] {
@@ -1567,14 +1574,14 @@ mod tests {
         fn resolution_mode(&self)->Option<bool>{ crate::ui::dispatch::Tap::<Product>::resolution_mode(self.rec) }
         fn resolution_active(&self)->bool{crate::ui::dispatch::Tap::<Product>::resolution_active(self.rec)}
         fn resolution_error(&mut self,e:&'static str){ self.rec.refuse(e); }
-        fn resolve_focus(&mut self,f:u64,p:u8,e:crate::ui::machine::EntryId,mut a:Option<crate::ui::dispatch::FocusAnswer<u32>>)
+        fn resolve_focus(&mut self,f:u64,p:u8,e:plx_machine::machine::EntryId,mut a:Option<crate::ui::dispatch::FocusAnswer<u32>>)
             ->Option<crate::ui::dispatch::FocusAnswer<u32>> {
             if self.focus && p==1 {
                 if let Some(a)=&mut a { a.focus=None; a.group=None; a.outcome=crate::ui::focus::Outcome::Nothing; }
             }
             crate::ui::dispatch::Tap::<Product>::resolve_focus(self.rec,f,p,e,a)
         }
-        fn resolve_hit(&mut self,f:u64,p:crate::ui::hit::PointerKind,e:Option<crate::ui::machine::EntryId>,mut a:Option<crate::ui::hit::Resolution<u32>>)
+        fn resolve_hit(&mut self,f:u64,p:crate::ui::hit::PointerKind,e:Option<plx_machine::machine::EntryId>,mut a:Option<crate::ui::hit::Resolution<u32>>)
             ->Option<crate::ui::hit::Resolution<u32>> {
             if self.hit { if let Some(a)=&mut a { a.hit=None; a.focus=None; a.activate=None; } }
             crate::ui::dispatch::Tap::<Product>::resolve_hit(self.rec,f,p,e,a)
@@ -1583,9 +1590,9 @@ mod tests {
             crate::ui::dispatch::Tap::<Product>::focus_continuation(self.rec,f,e,a)
         }
         fn focus(&mut self,f:u64,a:Option<(u32,u32,Option<u32>)>){crate::ui::dispatch::Tap::<Product>::focus(self.rec,f,a);}
-        fn input(&mut self,f:u64,e:&crate::ui::machine::InputEvent<u32>){crate::ui::dispatch::Tap::<Product>::input(self.rec,f,e);}
-        fn effect(&mut self,f:u64,e:&crate::ui::machine::Stamped<Product>){crate::ui::dispatch::Tap::<Product>::effect(self.rec,f,e);}
-        fn result(&mut self,f:u64,a:&crate::ui::machine::Addr,m:&crate::screens::registry::AppMsg){crate::ui::dispatch::Tap::<Product>::result(self.rec,f,a,m);}
+        fn input(&mut self,f:u64,e:&plx_machine::machine::InputEvent<u32>){crate::ui::dispatch::Tap::<Product>::input(self.rec,f,e);}
+        fn effect(&mut self,f:u64,e:&plx_machine::machine::Stamped<Product>){crate::ui::dispatch::Tap::<Product>::effect(self.rec,f,e);}
+        fn result(&mut self,f:u64,a:&plx_machine::machine::Addr,m:&crate::screens::registry::AppMsg){crate::ui::dispatch::Tap::<Product>::result(self.rec,f,a,m);}
     }
 
     fn product_settings_run(rec:&mut Recplay, changed_focus:bool, changed_hit:bool) -> Vec<u64> {
@@ -1593,7 +1600,8 @@ mod tests {
     }
     fn product_settings_run_with_queries(rec:&mut Recplay, changed_focus:bool, changed_hit:bool,
         queries:&mut Vec<crate::ui::rec::MetricKey>) -> Vec<u64> {
-        use crate::ui::{dispatch::Dispatcher,machine::{Tick,Key,InputKind}};
+        use crate::ui::{dispatch::Dispatcher};
+        use plx_machine::{machine::{Tick,Key,InputKind}};
         use super::super::bridge;
         let mut d=Dispatcher::<Product>::new();
         let mut rig=bridge::Bridge::for_test(||0);
@@ -1654,7 +1662,7 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let expected=product_settings_run(&mut rec,false,false);
         assert_eq!(rec.failure(),None);
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         (recording,expected)
     }
@@ -1681,7 +1689,7 @@ mod tests {
                 assert_eq!(replay.failure(),Some("replay measurement table miss"));
             }
         }
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     #[test]
@@ -1694,14 +1702,14 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let mut queries=Vec::new();
         let expected=product_settings_run_with_queries(&mut rec,false,false,&mut queries);
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         let mut replay=replay_for_test(recording,ReplayMode::Resolve);
         let mut replay_queries=Vec::new();
         assert_eq!(product_settings_run_with_queries(&mut replay,false,false,&mut replay_queries),expected);
         assert_eq!(replay_queries,queries);
         assert!(!replay.outcome_failed());
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     #[test]
@@ -1729,7 +1737,8 @@ mod tests {
 
     #[test]
     fn product_recorded_continuations_preserve_cross_group_memory_without_avalanche() {
-        use crate::ui::{dispatch::Dispatcher,machine::{Tick,Key}};
+        use crate::ui::{dispatch::Dispatcher};
+        use plx_machine::{machine::{Tick,Key}};
         use super::super::bridge;
         let _serial=plx_base::testlock::serial();
         let run=|rec:&mut Recplay,changed:bool| {
@@ -1769,7 +1778,7 @@ mod tests {
         assert_eq!(focuses[1],focuses[3],"return must remember the trailing answer");
         assert_eq!(focuses[3],focuses[5],"second round trip");
         assert!(!queries.is_empty(),"real consent geometry queries the capability");
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         for mode in [ReplayMode::Targets,ReplayMode::Resolve] {
             for changed in [false,true] {
@@ -1783,7 +1792,7 @@ mod tests {
                 assert_eq!(r.same(),mode==ReplayMode::Targets || !changed);
             }
         }
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     #[test]
@@ -1808,7 +1817,7 @@ mod tests {
             assert_eq!(r.resolution.hit_diffs,u64::from(mode==ReplayMode::Resolve && changed_hit));
             assert_eq!(r.same(),mode==ReplayMode::Targets || (!changed_focus && !changed_hit));
         }
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     #[test]
@@ -1856,7 +1865,7 @@ mod tests {
             }
             assert!(validate_resolution_recording(&changed).is_err());
         }
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     #[test]
@@ -1874,7 +1883,7 @@ mod tests {
         rec.tick(16, 0.016);
         Tap::focus(&mut rec, 2, Some((1, 2, Some(3))));
         rec.end_frame(&|| 8);
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         let rows: Vec<Value> = segments.borrow().iter().flat_map(|s| s.split(|b| *b == b'\n'))
             .filter(|s| !s.is_empty()).map(|s| serde_json::from_slice(s).unwrap()).collect();
         let focus: Vec<_> = rows.iter().filter(|v| v["t"] == "fo").collect();
@@ -1900,7 +1909,7 @@ mod tests {
         pages.frame_with(&mut bridge, Tick::default(), Vec::new(), Vec::new(), &mut rec, false);
         rec.tick(1, 0.016);
         rec.end_frame(&||0);
-        rec.finish(crate::ui::landgate::fixture_gate());
+        rec.finish(plx_machine::landgate::fixture_gate());
         assert_eq!(*segments.borrow(), bytes, "later frames/shutdown cannot recreate recording bytes");
         assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
     }
@@ -1927,7 +1936,7 @@ mod tests {
             rec.end_frame(&||0);
             assert_eq!(rec.failure().is_some(), midwrite, "midwrite failure reaches the production frame tail");
             assert!(super::super::finish_recording(
-                &mut rec, crate::ui::landgate::fixture_gate()),
+                &mut rec, plx_machine::landgate::fixture_gate()),
                 "storage error must fail application outcome");
             assert!(matches!(rec, Recplay::Off), "failed writer is still retired");
             let mut rec = Recplay::recording_with_sink(&initial, Box::new(Disk(midwrite))).unwrap();
@@ -1943,7 +1952,7 @@ mod tests {
 
     #[test]
     fn text_records_preserve_commit_boundaries_clock_source_and_panel_observation() {
-        use crate::ui::machine::{Canon, InputEvent, Source, Tick};
+        use plx_machine::machine::{Canon, InputEvent, Source, Tick};
         let digest = |events: &[InputEvent<u32>]| {
             let mut c = Canon::new(); c.seq(events.len());
             for event in events { event.write_with(&mut c, &|elem, c| { c.u32(*elem); }); }
@@ -1974,7 +1983,7 @@ mod tests {
         use crate::ui::dispatch::Tap;
         let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
-        let event = super::super::bridge::script_key(crate::ui::machine::Key::Down,
+        let event = super::super::bridge::script_key(plx_machine::machine::Key::Down,
             Tick { ms: 16, dt_us: 0 }).remove(0);
         let payloads = [enc_token("diag"), super::super::bootstrap::effects::input(&event).unwrap(), enc_token("pat:0")];
         let expected: Vec<_> = payloads.iter().map(|payload| {
@@ -2022,7 +2031,7 @@ mod tests {
     #[test]
     fn replay_rejects_missing_duplicate_changed_and_extra_script_inputs() {
         use crate::ui::dispatch::Tap;
-        use crate::ui::machine::{Edge, InputEvent, InputKind, Key, Source};
+        use plx_machine::machine::{Edge, InputEvent, InputKind, Key, Source};
         let event = |key, ms| InputEvent { at:Tick { ms, dt_us:0 }, source:Source::Script,
             kind:InputKind::Key { key, sym:0, wcode:0, edge:Edge::Down, at_edge:false } };
         let expected_events = vec![event(Key::Down, 10), event(Key::Ok, 20)];
@@ -2084,7 +2093,7 @@ mod tests {
     #[test]
     fn replay_grades_result_payloads_addresses_order_and_missing_or_extra_arrivals() {
         use crate::ui::dispatch::Tap;
-        use crate::ui::machine::{Addr, MachineId, RequestId};
+        use plx_machine::machine::{Addr, MachineId, RequestId};
         use crate::screens::registry::AppMsg;
         let _guard = plx_base::testlock::serial();
         let mut state = crate::pms::PmsState::default();
@@ -2364,7 +2373,7 @@ mod tests {
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
     /// the worker produced before its recorded frame is not observed until that frame, and the
-    /// verdict says so. Without `ui::landgate` this is the flow-12 defect measured 2026-09-10 —
+    /// verdict says so. Without `plx_machine::landgate` this is the flow-12 defect measured 2026-09-10 —
     /// the recording's one `async` record on frame 1, every replay observing it on frame 0, and
     /// 927 of 928 frames diverging because a spring started a frame early never re-converges.
     #[test]
@@ -2407,7 +2416,7 @@ mod tests {
         assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
             rig.landgate().take_diffs(),
-            vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
+            vec![(5, crate::stores::StoreId::Hubs.ord().0, plx_machine::landgate::Diff::Extra)]
         );
     }
 
@@ -2625,7 +2634,7 @@ mod tests {
     #[test]
     fn unsupported_codec_stops_the_actual_writer() {
         use crate::ui::dispatch::Tap;
-        use crate::ui::machine::{Fx, MachineId, NavOp, Stamped};
+        use plx_machine::machine::{Fx, MachineId, NavOp, Stamped};
         let init = AppInit { route:"home",session:false,servers:0,consent_asked:0,
             consent_errors:false,consent_usage:false,seed:0 };
         let sink = crate::ui::rec::MemSink::default();

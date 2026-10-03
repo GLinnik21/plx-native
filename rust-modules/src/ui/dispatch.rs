@@ -26,12 +26,12 @@ use super::frame::{Budget, RenderSet};
 use super::geom::IndexElem;
 use super::hit::PointerKind;
 use super::input::{InputMachine, PressEvent};
-use super::machine::{
+use plx_machine::machine::{
     Addr, Cx, Delivery, Edge, Effects, EntryId, FocusKey, FocusRead, Fx, GroupId, Handled, Host,
     InputEvent, InputKind, InputOwner, InstanceId, Key, MachineId, Measure, NavOp, PressArm,
     PressFrom, PresentHandle, PressRead, RequestId, Stamped, StoreOrd, SystemInput, Tick, TimerId,
 };
-use super::present::Present;
+use plx_machine::present::Present;
 use super::screen::{
     Activate, At, Dir, DrawFrame, EdgeRule, ElemKind, Enter, Focusable, FocusSource, FocusTarget,
     GroupSpec, HitSource, Mounter, Placed, ReturnState, Screen, ScreenArg, ScreenEvent, Step, Stop,
@@ -161,7 +161,7 @@ pub trait Tap<H: Host> {
     fn input(&mut self, _f: u64, _ev: &InputEvent<H::Elem>) {}
     fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
     fn effect(&mut self, _f: u64, _s: &Stamped<H>) {}
-    fn present(&mut self, _f: u64, _bit: bool, _why: Option<super::present::Provenance>) {}
+    fn present(&mut self, _f: u64, _bit: bool, _why: Option<plx_machine::present::Provenance>) {}
     /// After the frame's drains, on a frame that had events: the logical-state hash.
     fn state(&mut self, _f: u64, _hash: u64) {}
     /// After the drains: the engine's resolved focus for the input owner, as
@@ -299,7 +299,7 @@ impl<K: Copy> CxParts<K> {
 pub struct FrameReport {
     pub presented: bool,
     /// The frame presented ONLY because the video plane is bound: nothing changed on it. The
-    /// simulator's ingest does not report such a frame to `ui::idle` as damage, which would read,
+    /// simulator's ingest does not report such a frame to `plx_machine::idle` as damage, which would read,
     /// to the settled capture, as a screen that never comes to rest under a paused player.
     pub video_only: bool,
     pub steps_pre: u32,
@@ -591,7 +591,7 @@ where
     }
 
     /// …and its `ScreenId`, the identity every argument of one screen shares.
-    pub fn top_id(&self) -> Option<super::machine::ScreenId> {
+    pub fn top_id(&self) -> Option<plx_machine::machine::ScreenId> {
         use super::screen::ScreenArg;
         self.top_arg().map(|a| a.id())
     }
@@ -702,7 +702,7 @@ where
     /// TWO terms, and both are required. The top page must ANSWER
     /// [`RenderStrategy::VideoPlane`] — a declaration about what it draws, not about where it is —
     /// and the plane must actually be BOUND, which arrives as the gate's
-    /// [`PresentEvent::VideoPlane`](super::present::PresentEvent::VideoPlane) input from the one
+    /// [`PresentEvent::VideoPlane`](plx_machine::present::PresentEvent::VideoPlane) input from the one
     /// machine that owns that bit. Either term alone is wrong: the player page is up for the whole
     /// pre-bind spinner and the whole post-unbind read-out, where our surface holds an ordinary
     /// picture. A bound plane under the detail page is the trailer preview, which stays
@@ -929,10 +929,10 @@ where
             let Dispatcher { nav, present, .. } = self;
             let mut ph = PresentHandle::of(present);
             nav.tabs.stack.tick(tick, &mut ph);
-            present.set_scope(super::present::Scope::Surface);
+            present.set_scope(plx_machine::present::Scope::Surface);
             let mut ph = PresentHandle::of(present);
             nav.modals.tick(tick, &mut ph);
-            present.set_scope(super::present::Scope::Page);
+            present.set_scope(plx_machine::present::Scope::Page);
         }
         let (host_update, host_render) = self.nav.modals.host_policy();
         report.host_update = Some(host_update);
@@ -1092,7 +1092,7 @@ where
         let why = self.present.why();
         report.underlay_moving = self.present.page_moving();
         self.page_quiescent = !report.underlay_moving
-            && !crate::ui::idle::page_layout_moving()
+            && !plx_machine::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         report.video_only = self.present.video_plane()
             && !self.present.changed()
@@ -1284,7 +1284,7 @@ where
         let page_quiescent = self.page_quiescent
             && !crate::text::prewarm_pending()
             && !self.present.page_moving()
-            && !crate::ui::idle::page_layout_moving()
+            && !plx_machine::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         let mut image = self.page_image;
         let paint = if eligible {
@@ -1304,10 +1304,10 @@ where
                 // The held-image compositor needs another present, but it is not PAGE-owned
                 // motion. Attributing it to Page would make the quiescence predicate observe its
                 // own hold and keep the image forever.
-                self.present.set_scope(super::present::Scope::Surface);
-                PresentHandle::of(&mut self.present).note(super::present::PresentEvent::Motion);
-                self.present.set_scope(super::present::Scope::Page);
-                crate::ui::idle::invalidate();
+                self.present.set_scope(plx_machine::present::Scope::Surface);
+                PresentHandle::of(&mut self.present).note(plx_machine::present::PresentEvent::Motion);
+                self.present.set_scope(plx_machine::present::Scope::Page);
+                plx_machine::idle::invalidate();
             }
         }
         let Dispatcher { nav, input, page_snapshot, page_image, page_stops, .. } = self;
@@ -1435,7 +1435,7 @@ where
                     }
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
-                    if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
+                    if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == plx_machine::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
                         let mut chrome_parts = parts.clone();
                         chrome_parts.owner = InputOwner::Entry(e.id);
@@ -1585,7 +1585,7 @@ where
     /// and queued press/input/keyboard-request payloads, in a fixed order. Incremental hashing is the optimisation
     /// the spec names; this is the definition it must equal.
     pub fn state_hash(&self) -> u64 {
-        let mut c = super::machine::Canon::new();
+        let mut c = plx_machine::machine::Canon::new();
         self.nav.write(&mut c);
         self.input.write_with(&mut c, &|k, c| {
             c.u32(k.index().unwrap_or(u32::MAX));
@@ -1823,9 +1823,9 @@ where
                 let back = matches!(
                     ev,
                     ScreenEvent::Input(InputEvent {
-                        kind: super::machine::InputKind::Key {
-                            key: super::machine::Key::Back,
-                            edge: super::machine::Edge::Down,
+                        kind: plx_machine::machine::InputKind::Key {
+                            key: plx_machine::machine::Key::Back,
+                            edge: plx_machine::machine::Edge::Down,
                             ..
                         },
                         ..
@@ -1847,17 +1847,17 @@ where
                     .iter()
                     .any(|s| s.entry.inst.as_ref().map_or(false, |i| i.id == id));
                 present.set_scope(if is_surface {
-                    super::present::Scope::Surface
+                    plx_machine::present::Scope::Surface
                 } else {
-                    super::present::Scope::Page
+                    plx_machine::present::Scope::Page
                 });
-                // …and the `ui::idle` half of the same attribution, which is the one a screen's
+                // …and the `plx_machine::idle` half of the same attribution, which is the one a screen's
                 // OWN springs reach: an owned screen animates through `gfx::spring`, which reports
-                // to `ui::idle` and not to this gate (the Library notes no `Motion` at all). Held
+                // to `plx_machine::idle` and not to this gate (the Library notes no `Motion` at all). Held
                 // for the body — a guard, so the early return below cannot leak the scope.
                 let _own = is_surface.then(crate::ui::popover::own_motion);
                 let Some(inst) = nav.instance_mut(id) else {
-                    present.set_scope(super::present::Scope::Page);
+                    present.set_scope(plx_machine::present::Scope::Page);
                     report.dropped_deliveries += 1;
                     return;
                 };
@@ -1867,7 +1867,7 @@ where
                 let handled = plx_base::diag::spans::span("dstep", || inst.screen.step(&ev, &cx, &mut fx));
                 drop(fx);
                 drop(cx);
-                present.set_scope(super::present::Scope::Page);
+                present.set_scope(plx_machine::present::Scope::Page);
                 // §7.3 step 1: the owner had first refusal; an unhandled BACK is the container's.
                 // This is the ONE place a BACK becomes `pending_back`, and it is reached by two
                 // roads: the physical key, and an `EdgeRule::Nav(NavOpKind::Back)` that
@@ -2031,7 +2031,7 @@ where
                         //    the same provenance; `sym`/`wcode` are 0 because no hardware key
                         //    produced this event and inventing a code would let a screen match
                         //    on one that never came off the remote.
-                        Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Back)) => {
+                        Outcome::Edge(EdgeRule::Nav(plx_machine::machine::NavOpKind::Back)) => {
                             if let ScreenEvent::Input(iev) = ev {
                                 out.push(Stamped {
                                     from: MachineId::Input,
@@ -2052,7 +2052,7 @@ where
                                 });
                             }
                         }
-                        Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Dismiss)) => {
+                        Outcome::Edge(EdgeRule::Nav(plx_machine::machine::NavOpKind::Dismiss)) => {
                             self.park(Stamped {
                                 from: MachineId::Input,
                                 fx: Fx::Nav(NavOp::Dismiss(entry)),
@@ -2546,7 +2546,7 @@ mod product_resolution_contract_tests {
             d.input.hit.fill(vec![Stop {key:FocusKey{entry:owner,elem:88},rect:Rect::FULL,rest_rect:Rect::FULL,
                 clip:Rect::FULL,hover:super::super::screen::Hover::Focus,activate:Activate::Press}]);
             d.input.hit.swap();
-            d.frame_with(&mut rig,Tick::default(),vec![InputEvent{at:Tick::default(),source:super::super::machine::Source::Replay,
+            d.frame_with(&mut rig,Tick::default(),vec![InputEvent{at:Tick::default(),source:plx_machine::machine::Source::Replay,
                 kind:InputKind::Pointer{x:10.0,y:10.0,hit:Some(77)}}],vec![],&mut tap,false);
             assert_eq!(tap.pointers,1);
             assert_eq!(d.focus(),Some(FocusKey{entry:owner,elem:77}));
@@ -2561,7 +2561,7 @@ mod product_resolution_contract_tests {
 mod cold_open_tests {
     use super::*;
     use crate::ui::fixture::{tick, FixtureArg, FixtureHost, FixtureRig};
-    use crate::ui::machine::MachineId;
+    use plx_machine::machine::MachineId;
 
     #[test]
     fn one_mount_produces_exactly_one_cold_open_line_naming_that_screen() {
@@ -2594,8 +2594,8 @@ mod cold_open_tests {
         assert_eq!(r2.mounted.len(), 1);
         assert!(!r2.presented && r2.drawn.is_empty(), "the mount frame drew nothing");
         assert!(d.take_cold_open_lines().is_empty(), "a mount that has not drawn owes no line");
-        d.present.note(crate::ui::present::PresentEvent::Damage(
-            crate::ui::present::Provenance::Input,
+        d.present.note(plx_machine::present::PresentEvent::Damage(
+            plx_machine::present::Provenance::Input,
         ));
         let r3 = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
         assert!(r3.presented, "damage opened the gate");
@@ -2613,7 +2613,7 @@ mod edge_back_tests {
     use super::*;
     use crate::ui::containers::modal::{Phase, Style};
     use crate::ui::fixture::{key, tick, FixtureArg, FixtureFx, FixtureHost, FixtureMeasure, FixtureMsg, FixtureView, FixtureViews};
-    use crate::ui::machine::{Canon, LogicalState, Machine, NavOpKind};
+    use plx_machine::machine::{Canon, LogicalState, Machine, NavOpKind};
     use crate::ui::screen::{AxisMask, GroupKind, RenderStrategy, Seat};
 
     /// The one group the test screen contributes.
@@ -2873,7 +2873,7 @@ mod edge_back_tests {
         d.input.engine.remember_projected(modal, GroupId(901), 29);
         let id = d.nav.instance_of(home).unwrap();
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(id),
-            Delivery::Screen(ScreenEvent::WillLeave(super::super::machine::Leave::Deeper))));
+            Delivery::Screen(ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper))));
         d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
         assert!(probe(&d, home).contains("read_memory=Some(17)"), "covered page must not read modal memory");
         d.request(MachineId::Nav, NavOp::Replace(FixtureArg::Page(1)));

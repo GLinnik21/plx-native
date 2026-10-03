@@ -64,8 +64,8 @@ pub(crate) struct Xfade {
     t: f32,
 }
 
-impl crate::ui::machine::LogicalState for Xfade {
-    fn write(&self, w: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for Xfade {
+    fn write(&self, w: &mut plx_machine::machine::Canon) {
         w.u8(match self.phase {
             Phase::Idle => 0,
             Phase::Out => 1,
@@ -143,7 +143,7 @@ impl Xfade {
     /// A `dt` of 0 on a sub-millisecond frame simply leaves `Out` unadvanced for that frame; it
     /// cannot latch, because `SDL_GetTicks` is ms-resolution and the loop is ≥ 1 ms.
     pub(crate) fn tick(&mut self, dt: f32, ready: bool) -> bool {
-        // This ramp integrates MILLISECONDS, not a spring — so `ui::idle`'s spring instrumentation
+        // This ramp integrates MILLISECONDS, not a spring — so `plx_machine::idle`'s spring instrumentation
         // is structurally blind to it, and before this line a route dip largely did not play: the
         // present gate froze the panel on the last presented frame (the OUTGOING page at alpha≈1)
         // until the 2 s keepalive hard-cut to the destination. BACK is the worst case, because it
@@ -154,7 +154,7 @@ impl Xfade {
         // would pin the loop forever. `Hold` is excluded because it is a genuine wait on data
         // (Library's deferred reload) where the screen is legitimately static.
         if matches!(self.phase, Phase::Out | Phase::In) {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
         match self.phase {
             Phase::Idle => {
@@ -218,9 +218,9 @@ impl Xfade {
 #[cfg(test)]
 mod tests {
     //! Pure value semantics — with ONE exception that costs these tests their parallelism:
-    //! `tick` reports to `ui::idle`'s process-global dirty flag (a ms ramp is invisible to the
+    //! `tick` reports to `plx_machine::idle`'s process-global dirty flag (a ms ramp is invisible to the
     //! spring instrumentation, so it must say so itself). Driving an `Xfade` therefore mutates a
-    //! crate global that `ui::idle`'s own "a settled screen does not repaint" assertions read, so
+    //! crate global that `plx_machine::idle`'s own "a settled screen does not repaint" assertions read, so
     //! every test here holds `plx_base::testlock::serial()` — the rule in `lib.rs::testlock`, not a
     //! precaution. Without it these would intermittently fail *other modules'* tests, which is the
     //! worst shape a flake can take.
@@ -239,9 +239,9 @@ mod tests {
     /// this thread nor the 2 s keepalive can answer in the fader's place — this must isolate the
     /// fader's own report and nothing else.
     fn asked_to_repaint() -> bool {
-        crate::ui::idle::frame_begin(DT);
-        crate::ui::idle::note_present(0);
-        crate::ui::idle::should_present(0)
+        plx_machine::idle::frame_begin(DT);
+        plx_machine::idle::note_present(0);
+        plx_machine::idle::should_present(0)
     }
 
     /// A running ramp MUST report, in both directions. This is the regression that shipped: the

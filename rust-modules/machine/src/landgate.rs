@@ -123,7 +123,7 @@ enum Phase {
 }
 
 /// The fast path's only cost: `false` in every ordinary build and every ordinary boot.
-pub(crate) struct Gate {
+pub struct Gate {
     armed: AtomicBool,
     state: Mutex<State>,
 }
@@ -155,7 +155,7 @@ pub fn arm_recording(&self) {
 
 /// Arm the REPLAY half with the recorded schedule: `sched[ord]` is that ordinal's recorded
 /// `(frame, arrivals on it)` pairs, in order.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn arm_replay(&self, sched: Vec<Vec<(u64, u32)>>) {
     self.arm_sparse_replay(sched.into_iter().enumerate().map(|(i,queue)| (i as u32,queue)).collect());
 }
@@ -340,7 +340,7 @@ pub fn take_diffs(&self) -> Vec<(u64, u32, Diff)> {
 }
 
 /// REPLAY, at the end: every recorded landing this run never produced.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn unmatched(&self) -> Vec<(u32, u64)> {
     self.unmatched_counts().into_iter().flat_map(|(ord,frame,count)| std::iter::repeat_n((ord,frame),count as usize)).collect()
 }
@@ -364,44 +364,44 @@ pub fn unmatched_counts(&self) -> Vec<(u32,u64,u32)> {
 
 // Compatibility owner for focused gate tests and data-layer fixtures that do not construct a
 // production `Stores` aggregate. The application never routes Bridge landings through this value.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static FIXTURE_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::default);
-#[cfg(test)]
-pub(crate) fn fixture_gate() -> &'static Gate { &FIXTURE_GATE }
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_gate() -> &'static Gate { &FIXTURE_GATE }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn arm_recording() { FIXTURE_GATE.arm_recording(); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) { FIXTURE_GATE.arm_replay(sched); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) { FIXTURE_GATE.arm_sparse_replay(sched); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn disarm() { FIXTURE_GATE.disarm(); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn begin_frame(f: u64) { FIXTURE_GATE.begin_frame(f); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn held(ord: StoreOrd) -> bool { FIXTURE_GATE.held(ord) }
 #[cfg(test)]
 fn phase(ord: StoreOrd) -> Phase { FIXTURE_GATE.phase(ord) }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn landed(ord: StoreOrd) { FIXTURE_GATE.landed(ord); }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn take<T>(ord: StoreOrd, f: impl FnMut() -> Option<T>) -> Option<T> { FIXTURE_GATE.take(ord, f) }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn take_all<T>(ord: StoreOrd, f: impl FnMut() -> Vec<T>) -> Vec<T> { FIXTURE_GATE.take_all(ord, f) }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn take_frame_lands() -> Vec<(StoreOrd, u32)> { FIXTURE_GATE.take_frame_lands() }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn take_diffs() -> Vec<(u64, u32, Diff)> { FIXTURE_GATE.take_diffs() }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn unmatched() -> Vec<(u32, u64)> { FIXTURE_GATE.unmatched() }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn unmatched_counts() -> Vec<(u32,u64,u32)> { FIXTURE_GATE.unmatched_counts() }
 
 /// A fixture's promise that its compatibility gate is disarmed again even if assertions panic.
-#[cfg(test)]
-pub(crate) struct Armed;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+pub struct Armed;
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for Armed {
     fn drop(&mut self) {
         disarm();

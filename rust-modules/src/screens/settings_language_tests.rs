@@ -3,8 +3,8 @@ use super::*;
 use super::test_support::*;
 use crate::i18n::Preference;
 use crate::ui::form::FormId;
-use crate::ui::machine::{Edge, InputEvent, InputKind, Source};
-use crate::ui::present::Present;
+use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
+use plx_machine::present::Present;
 
 fn activate(page: &mut LanguagePage, row: u32) -> Vec<Stamped<InnerHost>> {
     let mut out = Vec::new();
@@ -83,7 +83,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
         );
         let effects = step(&mut surface, ScreenEvent::Mount, None);
         let mut engine = crate::ui::focus::FocusEngine::new();
-        let owner = crate::ui::machine::InputOwner::Entry(entry);
+        let owner = plx_machine::machine::InputOwner::Entry(entry);
         // The modal lifecycle seats its generic group before draining queued mount effects.
         // Merely remembering another row after this does not move the current focus.
         engine.enter(owner, &surface, FocusTarget::ContainerGroup(GroupId(0)), None, &cx(None));

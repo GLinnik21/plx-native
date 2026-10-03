@@ -614,7 +614,7 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 ///
 /// The measured width is memoised per label, avoiding repeated capability calls and string
 /// preparation for fixed labels in addition to the native font-metric cache.
-pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> Rect {
+pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {
         Some((_, w)) => *w,
@@ -632,11 +632,11 @@ pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate
 
 /// [`ctrl_slot`]'s width without writing the memo — the cached width when the draw has measured
 /// `label`, else the same measurement it would cache.
-pub(crate) fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     row.widths.iter().find(|(l, _)| l == label).map_or_else(|| ctrl_slot_measure(label, measure), |(_, w)| *w)
 }
 
-fn ctrl_slot_measure(label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     const PAD_X: f32 = 34.0;
     (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(CTRL_ROW_W)
 }
@@ -702,7 +702,7 @@ impl ControlSlot {
     ///
     /// Read-only over `row`'s label-width memo ([`ctrl_slot_w`]): `place` is `&self`, and a width
     /// the draw has not cached yet is measured the same way the draw measures it.
-    pub(crate) fn item_rect(self, row: &TransportRow, idx: c_int, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+    pub(crate) fn item_rect(self, row: &TransportRow, idx: c_int, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         if idx < 0 || idx >= self.items() {
             return None;
         }
@@ -1017,7 +1017,7 @@ pub(crate) fn draw_readout(
     busy: Busy,
     now: u32,
     failure_focus: usize,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let Busy::Readout(kind, caption) = busy else {
         return;
@@ -1195,12 +1195,12 @@ impl FailureReadout {
     }
 
     /// Each control's rect, by row index — the geometry the draw uses.
-    pub(crate) fn frames(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; crate::ui::widgets::STATUS_ROW_MAX] {
+    pub(crate) fn frames(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; crate::ui::widgets::STATUS_ROW_MAX] {
         let labels = self.labels();
         self.overlay(&labels, None).row_frames_measured(measure)
     }
 
-    fn draw(&self, p: Painter, focus: usize, measure: &dyn crate::ui::machine::Measure) {
+    fn draw(&self, p: Painter, focus: usize, measure: &dyn plx_machine::machine::Measure) {
         let labels = self.labels();
         self.overlay(&labels, Some(focus.min(labels.len().saturating_sub(1))))
             .draw_measured(&hud_env(), p, measure);
@@ -1262,7 +1262,7 @@ pub(crate) fn ctrl_row_hit_rect() -> Rect {
 }
 
 /// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
-pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
     let tabs: &[&str] = if has_chapters { &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()] } else { &[crate::i18n::msg::widgets_player_info()] };
     let label = *tabs.get(idx as usize)?;
     let ph = BTN_S;
@@ -1303,7 +1303,7 @@ fn draw_failed_readout(
     ps: &crate::route::PlaybackSession,
     p: Painter,
     focus: usize,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     // The GROUND, first: a full-bleed opaque black, one quad. Without it the read-out stood on
     // whatever the video plane happened to be holding: `app.rs` clears the graphics plane to alpha
@@ -1387,7 +1387,7 @@ fn draw_clock(
     col: [f32; 4],
     lo: f32,
     hi: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> (f32, f32) {
     let template: String = text
         .chars()
@@ -1591,7 +1591,7 @@ impl Playbar {
 
 /// The playbar: scrubber, playhead knob, elapsed/remaining clocks and the state read-out. The
 /// player HUD and the detail page's full-trailer transport both draw it, so the two cannot drift.
-pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn crate::ui::machine::Measure) {
+pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine::Measure) {
     let e = hud_env();
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
@@ -1776,7 +1776,7 @@ pub(crate) fn draw_hud(
     tab: i32,
     now: u32,
     transport: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,

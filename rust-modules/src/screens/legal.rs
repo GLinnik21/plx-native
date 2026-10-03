@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use crate::ui::document_reader::DocumentReader;
 use crate::ui::frame::Budget;
 use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::machine::{Canon, Cx, Effects, EntryId, GroupId, Handled, Key, LogicalState, Machine};
+use plx_machine::machine::{Canon, Cx, Effects, EntryId, GroupId, Handled, Key, LogicalState, Machine};
 use crate::ui::route_screen::RouteLayout;
 use crate::ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use crate::ui::table::Row;
@@ -231,8 +231,8 @@ impl Machine<InnerHost> for LegalIndex {
                 form_activate(&self.form, *key, fx);
                 Handled::Yes
             }
-            ScreenEvent::Input(crate::ui::machine::InputEvent {
-                kind: crate::ui::machine::InputKind::Key { key: Key::Right, at_edge: true, .. },
+            ScreenEvent::Input(plx_machine::machine::InputEvent {
+                kind: plx_machine::machine::InputKind::Key { key: Key::Right, at_edge: true, .. },
                 ..
             }) => {
                 if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
@@ -404,10 +404,10 @@ impl Machine<InnerHost> for DocumentPage {
                 self.reader.update(t.dt());
                 Handled::Yes
             }
-            ScreenEvent::Input(crate::ui::machine::InputEvent {
-                kind: crate::ui::machine::InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. },
+            ScreenEvent::Input(plx_machine::machine::InputEvent {
+                kind: plx_machine::machine::InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. },
                 ..
-            }) if *edge != crate::ui::machine::Edge::Up => {
+            }) if *edge != plx_machine::machine::Edge::Up => {
                 // a document scrolls INSIDE on UP/DOWN and leaves at its ends (spec §7.3 step 2):
                 // the one element cannot MOVE, so the scroll is the page's own arm, and at an end
                 // the key goes back to the engine, whose `neighbour` answers `Edge` there
@@ -514,11 +514,11 @@ mod tests {
 
     use crate::ui::fixture::FixtureMeasure;
     use crate::ui::hit::{HitMap, PointerKind};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Edge, FocusKey, FocusRead, Fx, InputEvent, InputKind, InputOwner, MachineId, NavOp, NavOpKind,
         PressRead, Source, Stamped, Tick,
     };
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
     use crate::ui::screen::{Activate, By, EdgeRule, Focusable, Hover, Stop};
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
     /// is what decides it, and this is the contract `DocumentPage::step` has to honour against it).
     #[test]
     fn a_document_scrolls_on_up_down_and_leaves_only_at_its_ends() {
-        // `DocumentReader::move_by` reports to `ui::idle`'s process-global gate, so — like that
+        // `DocumentReader::move_by` reports to `plx_machine::idle`'s process-global gate, so — like that
         // module's own scroll tests — this one takes the crate-wide lock rather than racing
         // another test's read of the same `DIRTY`/`DAMAGE_GEN` statics.
         let _guard = plx_base::testlock::serial();
@@ -1076,7 +1076,7 @@ mod tests {
                 "the index answers the delivered Activate"
             );
         }
-        // `Fx`/`Stamped` derive no `Debug` (`ui/machine.rs`), so a mismatch here is named in the
+        // `Fx`/`Stamped` derive no `Debug` (`machine/src/machine.rs`), so a mismatch here is named in the
         // panic text rather than interpolated off the value itself.
         assert_eq!(buf.len(), 1, "a click-activated row must push exactly one effect");
         match &buf[0].fx {

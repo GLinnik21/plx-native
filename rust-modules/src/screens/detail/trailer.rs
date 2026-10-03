@@ -82,7 +82,7 @@ pub(super) enum TrailerKey {
 /// own admitted-reload accounting rather than this key ladder routing around it — see
 /// `player/preview.rs`'s module doc for the budget/breaker rules a commit now goes through.
 pub(super) fn trailer_key(
-    key: crate::ui::machine::Key,
+    key: plx_machine::machine::Key,
     sym: u32,
     wcode: u32,
 ) -> Option<TrailerKey> {
@@ -446,7 +446,7 @@ impl Transport {
         film_title: &str,
         extra_title: &str,
         paused: bool,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         if self.alpha <= 0.01 {
             return;
@@ -487,7 +487,7 @@ impl Transport {
     /// line's own centre (the logo/title row) rather than sitting under the action row, so the
     /// hint reads as a third element on that line — logo, hint, whatever else shares it — and not
     /// as page furniture pushed down over the video.
-    pub(super) fn draw_hint(&self, p: Painter, cy: f32, measure: &dyn crate::ui::machine::Measure) {
+    pub(super) fn draw_hint(&self, p: Painter, cy: f32, measure: &dyn plx_machine::machine::Measure) {
         if self.hint <= 0.01 {
             return;
         }
@@ -517,7 +517,7 @@ pub(super) fn hint_cy(row_top: f32, row_h: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::machine::Key as MKey;
+    use plx_machine::machine::Key as MKey;
 
     /// **The "Trailer / Trailer" duplicate case.** When the extra's own PMS title is the
     /// boilerplate "Trailer" (however it's cased/spaced — most servers scan trailers this way),

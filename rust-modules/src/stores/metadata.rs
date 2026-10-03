@@ -122,7 +122,7 @@
 //! **Phase 12 (D1) made that split literal**: the trail is deleted, the identity is
 //! `ContentArg::Detail{sid, rk}` and the `Spot` is `PageMemory::Detail`'s, on the entry.
 //!
-//! **The mechanism** (landed this phase, in `ui/machine.rs`/`ui/screen.rs`, NOT this module — this
+//! **The mechanism** (landed this phase, in `machine/src/machine.rs`/`ui/screen.rs`, NOT this module — this
 //! module owns the DECISION and the DATA SHAPE, not the generic plumbing): the layer rule still
 //! forbids `ui::screen::ReturnState<K>` from naming `metadata::Spot` directly, so `ReturnState`
 //! gained a second, DEFAULTED type parameter — `ReturnState<K, M = ()>` — mirroring `Host::Init`'s
@@ -144,7 +144,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 
 use super::StoreEv;
 
@@ -275,7 +275,7 @@ impl MetadataStore {
 
     /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same
     /// three pumps `Machine::step`'s `StoreEv::Pump` arm already drives.
-    pub(crate) fn pump(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let detail = self.pump_detail_with_gate(gate);
         let season = self.pump_season_with_gate(gate);
         let alt = crate::metadata::pump_alt_sources_with_gate(&mut self.state, &self.adapter, gate);
@@ -284,7 +284,7 @@ impl MetadataStore {
     }
 
     /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
-    pub(crate) fn pump_detail_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump_detail_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_detail_with_gate(&mut self.state, &self.adapter, gate);
         if changed { self.bump(); }
         changed
@@ -292,11 +292,11 @@ impl MetadataStore {
 
     #[cfg(test)]
     pub(crate) fn pump_detail(&mut self) -> bool {
-        self.pump_detail_with_gate(crate::ui::landgate::fixture_gate())
+        self.pump_detail_with_gate(plx_machine::landgate::fixture_gate())
     }
 
     /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
-    pub(crate) fn pump_season_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump_season_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_season_with_gate(&mut self.state, &self.adapter, gate);
         if changed { self.bump(); }
         changed
@@ -306,7 +306,7 @@ impl MetadataStore {
     pub(crate) fn pump_alt_sources_with_directory(
         &mut self,
         directory: crate::stores::browse::DirectoryView<'_>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> bool {
         let changed = crate::metadata::pump_alt_sources_with_directory_and_gate(
             &mut self.state, &self.adapter, directory, gate);
@@ -328,7 +328,7 @@ impl<H: Host> Machine<H> for MetadataStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump(&crate::ui::landgate::Gate::default());
+                self.pump(&plx_machine::landgate::Gate::default());
             }
         }
         Handled::Yes

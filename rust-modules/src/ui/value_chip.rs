@@ -2,7 +2,8 @@
 //! Factored from Library's existing toolbar; callers own the strings, state and menu action.
 
 use std::ffi::CStr;
-use super::{Env, Painter, Rect, View, icons::{self, Icon}, machine::Measure, theme};
+use super::{Env, Painter, Rect, View, icons::{self, Icon}, theme};
+use plx_machine::{machine::Measure};
 
 const PAD: f32 = 24.0;
 const ICON_SIZE: f32 = 22.0;

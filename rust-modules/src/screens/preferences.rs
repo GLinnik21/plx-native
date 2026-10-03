@@ -22,7 +22,7 @@ use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest,
 use crate::route::{DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
 use crate::ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
+use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
     Handled, InputEvent, InputKind, InstanceId, Key, LogicalState, Machine, MachineId};
 use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, RenderStrategy,
     Screen, ScreenEvent};
@@ -372,7 +372,7 @@ impl PreferencesPage {
                 if let Some(update) = self.txn.retry.clone() { self.txn.start_account(&mut self.state.io, Some(update), fx); }
                 else { self.txn.load(&mut self.state.io, fx); }
                 self.rebuild_keeping();
-                fx.invalidate(crate::ui::present::Provenance::Input);
+                fx.invalidate(plx_machine::present::Provenance::Input);
             }
             Some(Action::Open) | None => {}
         }
@@ -528,7 +528,7 @@ impl Machine<InnerHost> for PreferencesPage {
                 // A return from a picker: its save may have confirmed a new snapshot.
                 let adopted = self.txn.adopt_shared();
                 if self.start_initial_load(fx) || adopted {
-                    self.rebuild_keeping(); fx.invalidate(crate::ui::present::Provenance::Input);
+                    self.rebuild_keeping(); fx.invalidate(plx_machine::present::Provenance::Input);
                 }
                 Handled::No
             }
@@ -551,7 +551,7 @@ impl Machine<InnerHost> for PreferencesPage {
                     if !had_rows && self.form.table.n_rows() > 0 && cx.focus.current.is_none() {
                         self.focus(fx);
                     }
-                    fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                    fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes

@@ -35,7 +35,7 @@ use crate::app::App;
 use crate::app::run::Frame;
 use crate::screens::registry::AppArg;
 use crate::screens::registry::HomeCmd;
-use crate::ui::machine::{Key, Tick};
+use plx_machine::machine::{Key, Tick};
 use std::os::raw::c_int;
 
 pub(crate) mod bench;
@@ -330,7 +330,7 @@ pub(crate) fn arm_cpuprof() {
 /// `/tmp/plxnative-noidle` — turn the whole-frame present gate off.
 pub(crate) fn arm_noidle() {
     if plx_base::devtrig::flag("noidle") {
-        crate::ui::idle::set_enabled(false);
+        plx_machine::idle::set_enabled(false);
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
     }
@@ -603,7 +603,7 @@ pub(crate) fn detailplay_forces_headless_hud() -> bool {
 pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     use crate::app::bridge;
     use crate::screens::registry::{AppArg, ContentArg};
-    use crate::ui::machine::{Delivery, Fx, MachineId, NavOp};
+    use plx_machine::machine::{Delivery, Fx, MachineId, NavOp};
     use crate::ui::screen::ScreenEvent;
 
     let Some(mut boot) = app.scenarios.content_boot.take() else { return };
@@ -1499,7 +1499,7 @@ fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
     }
-    crate::ui::idle::wake();
+    plx_machine::idle::wake();
     if fr.now.wrapping_sub(app.scenarios.submenu_osc.last) < period {
         return;
     }
@@ -1546,7 +1546,7 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
     }
-    crate::ui::idle::wake();
+    plx_machine::idle::wake();
     if fr.now.wrapping_sub(app.scenarios.more_osc.last) < period {
         return;
     }
@@ -1574,7 +1574,7 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
 #[cfg(test)]
 mod moreosc_script_tests {
     use super::moreosc_next;
-    use crate::ui::machine::Key;
+    use plx_machine::machine::Key;
 
     #[test]
     fn the_root_pushes_the_quality_row_and_the_page_pops() {
@@ -1734,7 +1734,7 @@ fn open_timing(app: &mut App) {
 #[cfg(test)]
 mod submenuosc_script_tests {
     use super::submenuosc_next;
-    use crate::ui::machine::Key;
+    use plx_machine::machine::Key;
 
     /// Follow the script against a model of the menu (RIGHT on a seated Nav row pushes, LEFT pops
     /// or, at the root, goes to Audio, RIGHT on Audio goes back): it must exercise a push, a pop
@@ -2073,7 +2073,7 @@ pub(crate) fn search_osc_tick(app: &mut App, now: u32) {
 /// `/tmp/plxnative-acctosc` — drive the profile menu's own TableView.
 pub(crate) fn account_osc_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.account_osc && crate::app::bridge::account_menu_up(&app.pages) {
-        crate::ui::idle::wake();
+        plx_machine::idle::wake();
         if now.wrapping_sub(app.scenarios.account_osc_last) > 520 {
             app.scenarios.account_osc_last = now;
             // The surface's own focus engine moves the selection now, so the oscillator presses a
@@ -2508,7 +2508,7 @@ pub(crate) fn alert_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-settingsosc` — hold Settings open under a continuous focus sweep.
 pub(crate) fn settings_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.settings_osc && crate::app::bridge::settings_up(&app.pages) {
-        crate::ui::idle::wake();
+        plx_machine::idle::wake();
         if now.wrapping_sub(app.scenarios.settings_osc_last) > 520 {
             app.scenarios.settings_osc_last = now;
             let key = if app.scenarios.settings_osc_down { Key::Down } else { Key::Up };
@@ -2522,7 +2522,7 @@ pub(crate) fn settings_osc_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-consentosc` — sweep the first-run consent question's focus.
 pub(crate) fn consent_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.consent_osc && crate::app::bridge::consent_up(&app.pages) {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         if now.wrapping_sub(app.scenarios.consent_osc_last) > 520 {
             app.scenarios.consent_osc_last = now;
             let key = if app.scenarios.consent_osc_down { Key::Down } else { Key::Up };
@@ -2536,7 +2536,7 @@ pub(crate) fn consent_osc_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-onboardosc` — sweep the first-run sources editor's focus.
 pub(crate) fn onboard_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.onboard_osc && matches!(app.route(), AppArg::Onboard) {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         if now.wrapping_sub(app.scenarios.onboard_osc_last) > 520 {
             app.scenarios.onboard_osc_last = now;
             let key = if app.scenarios.onboard_osc_right { Key::Right } else { Key::Left };

@@ -45,7 +45,7 @@ use crate::appkit::chapters_panel::{chapter_count, ChaptersPart};
 use crate::ui::consts;
 use crate::ui::frame::Budget;
 use crate::appkit::info_panel::InfoPanelPart;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };

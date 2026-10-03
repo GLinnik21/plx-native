@@ -142,7 +142,7 @@ pub(crate) fn armed(&self) -> bool {
 /// `app.rs` uses for its deferred-refresh deadline.
 ///
 /// While the screenshot pipeline holds the free-running clocks (`stillclock`,
-/// [`crate::ui::motion::held_clock_ms`]) the countdown holds with them, at that much elapsed: its
+/// [`plx_machine::motion::held_clock_ms`]) the countdown holds with them, at that much elapsed: its
 /// fill then draws one fixed picture and it never runs out. Never in a build without
 /// `devtriggers`.
 fn remaining_ms(&self, now: u32) -> u32 {
@@ -150,7 +150,7 @@ fn remaining_ms(&self, now: u32) -> u32 {
     if d == 0 {
         return 0;
     }
-    if let Some(held) = crate::ui::motion::held_clock_ms() {
+    if let Some(held) = plx_machine::motion::held_clock_ms() {
         return COUNTDOWN_MS.saturating_sub(held).max(1);
     }
     let left = d.wrapping_sub(now);
@@ -249,7 +249,7 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// deliberately NOT a second `ctrl_slot`, because that floor exists to hold the row's right edge
 /// steady, which is the primary's job, and two equal capsules would say the two choices are
 /// equivalent.
-pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::appkit::player_hud::ctrl_slot(row, crate::i18n::msg::widgets_next_episode(), measure).w,
         crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
@@ -260,7 +260,7 @@ pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure:
 /// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
 /// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
 /// one is how a stray click starts an episode the user did not ask for.
-pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::appkit::player_hud::ctrl_slot_w(row, crate::i18n::msg::widgets_next_episode(), measure),
         crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
@@ -288,7 +288,7 @@ pub(crate) fn draw(
     focused: bool,
     btn: c_int,
     now: u32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let Some(u) = crate::route::up_next(ps) else {
         return;
@@ -345,13 +345,13 @@ pub(crate) fn draw(
         .ground(ControlGround::Unkeyed)
         .scale(pop_next);
     if up.armed() {
-        // It animates from a CLOCK, so `ui::idle`'s spring instrumentation cannot see it — the trap
+        // It animates from a CLOCK, so `plx_machine::idle`'s spring instrumentation cannot see it — the trap
         // `Xfade::tick` and `Spinner::draw` both shipped frozen in. The player route bypasses the
         // frame gate outright today, so this changes nothing now; it is what keeps that reversible.
         // A HELD clock (`remaining_ms`) draws one fixed fill, so there is nothing to redraw — the
         // same exception `widgets::Spinner` makes.
-        if !crate::ui::motion::phase_clocks_held() {
-            crate::ui::idle::invalidate();
+        if !plx_machine::motion::phase_clocks_held() {
+            plx_machine::idle::invalidate();
         }
         b = b.progress(1.0 - (up.remaining_ms(now) as f32 / COUNTDOWN_MS as f32).clamp(0.0, 1.0));
     }

@@ -168,7 +168,7 @@ pub(crate) fn set(spec: &str) -> bool {
     let p = match spec {
         "off" | "" => {
             unsafe { *addr_of_mut!(CURRENT) = None };
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
             return true;
         }
         "ramp" => Pattern::Ramp,
@@ -208,7 +208,7 @@ pub(crate) fn set(spec: &str) -> bool {
     unsafe { *addr_of_mut!(CURRENT) = Some(p) };
     // A pattern change is discrete damage: nothing is moving, so without this the present gate
     // would hold the old ground on screen until something else asked for a frame.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     true
 }
 

@@ -50,7 +50,7 @@ fn every_library_kind_offers_the_type_selector_and_it_opens_its_own_menu() {
     }
     assert!(right < layout::GRID_RIGHT);
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.activate(TYPE, false, &fixture.cx(Some(page.key(TYPE))),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(output.iter().any(|effect| matches!(effect.fx,
@@ -74,7 +74,7 @@ fn episode_navigation_and_page_jumps_follow_four_columns() {
     let rect = <LibraryScreen as Focusable<HostFixture>>::place(&page, &focused.elem, &fixture.cx(Some(focused)), At::SpringTarget).unwrap().rect;
     assert!((rect.w / rect.h - 16.0 / 9.0).abs() < 0.01);
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.command(LibraryCmd::Page(1), &fixture.cx(Some(focused)),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(output.iter().any(|effect| matches!(&effect.fx,
@@ -104,7 +104,7 @@ fn type_menu_command_preserves_plaintext_alert_control_keys() {
     let fixture = tv_fixture(LibraryType::Primary, 36);
     let mut page = tv_page(&fixture);
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     assert_eq!(page.command(LibraryCmd::OpenMenu(crate::screens::registry::LibraryMenuKind::Type),
         &fixture.cx(None),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)), Handled::Yes);
@@ -172,7 +172,7 @@ fn ok_on_a_collection_card_requests_its_page() {
     page.initial = false;
     let elem = page.pair.detail.elems[1];
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     assert_eq!(page.activate(elem, false, &fixture.cx(Some(page.key(elem))),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)), Handled::Yes);
     assert!(output.iter().any(|effect| matches!(&effect.fx,
@@ -188,7 +188,7 @@ fn the_set_type_command_is_the_menu_rows_edit() {
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     assert_eq!(page.command(LibraryCmd::SetType(LibraryType::Collections), &fixture.cx(None),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)), Handled::Yes);
     assert!(matches!(page.pending.grid(), Some((_, GridAction::LibraryType(LibraryType::Collections)))),

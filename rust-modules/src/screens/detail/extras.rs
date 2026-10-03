@@ -6,7 +6,7 @@
 use crate::metadata::{extra_play_context, Detail, Extra};
 use crate::screens::registry::PlayIntent;
 use crate::ui::card_row::{self, CardRow, RowStyle, TileLabel};
-use crate::ui::machine::GroupId;
+use plx_machine::machine::GroupId;
 use crate::ui::widgets::Art;
 use crate::ui::{theme, Painter, Rect};
 
@@ -84,7 +84,7 @@ pub(crate) fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let n = len(d);
     if n == 0 {
@@ -137,7 +137,7 @@ pub(crate) fn draw_focused(
     index: usize,
     top: f32,
     press: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let Some(extra) = d.extras.get(index) else {
         return;

@@ -594,7 +594,7 @@ fn capenc() {
                                             // The newest frame's pixels, kept by SWAP with the pool rather than copied, so the idle
                                             // keepalive below can re-encode the picture we ALREADY have instead of asking the UI to
                                             // render an identical one. Re-rendering a still screen to feed a dev stream would hand back
-                                            // exactly the cost `ui::idle` exists to remove.
+                                            // exactly the cost `plx_machine::idle` exists to remove.
     let mut last_rgba: Vec<u8> = Vec::new();
     let mut last_flip = false;
 

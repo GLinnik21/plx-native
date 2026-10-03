@@ -66,7 +66,7 @@
 #![allow(non_upper_case_globals)]
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
 use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::page_stack::{
@@ -331,7 +331,7 @@ impl MoreMenuState {
 
     /// **The replay canon**: the page path (each pushed page and the row that opened it) and the
     /// selected row's [`RowKey`] — not its index, which two pages share.
-    pub(crate) fn canon(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn canon(&self, c: &mut plx_machine::machine::Canon) {
         self.pages.canon(c, MorePage::code, |r| r.key().0);
         c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
     }
@@ -451,7 +451,7 @@ impl MoreMenuState {
     /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
     /// other does not make the panel hop. This is the NATURAL (layout) rect, cached against the
     /// table's `layout_rev`; [`Self::shown_rect`] is what is on screen while the card resizes.
-    fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
             let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
@@ -480,7 +480,7 @@ impl MoreMenuState {
     }
 
     /// The card as drawn this frame: top and left on their springs toward [`Self::panel_rect`].
-    fn shown_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn shown_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.shown(self.panel_rect(measure))
     }
 
@@ -492,11 +492,11 @@ impl MoreMenuState {
 
     /// The opening page's strings (the root, or the Quality page for a quality entry), queued on
     /// the frame the panel mounts — see `TrackMenuState::warm_open`, which this mirrors.
-    pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
-    pub(crate) fn update(&mut self, dt: f32, measure: &dyn crate::ui::machine::Measure, ps: &crate::route::PlaybackSession) {
+    pub(crate) fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &crate::route::PlaybackSession) {
         self.refresh(ps);
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let natural = self.panel_rect(measure);
@@ -505,7 +505,7 @@ impl MoreMenuState {
         self.motion.prewarm_text(natural, &self.form.table, measure);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
         // rises INTO place from below, toward the disc that opened it. The dim under it is the
         // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
         // end of the player's page pass — not here.
@@ -1124,7 +1124,7 @@ mod tests {
     /// another: the same index on the two pages must not hash alike.
     #[test]
     fn the_canon_tells_the_root_and_the_page_apart() {
-        use crate::ui::machine::Canon;
+        use plx_machine::machine::Canon;
         let fp = |st: &MoreMenuState| {
             let mut c = Canon::new();
             st.canon(&mut c);
@@ -1148,9 +1148,9 @@ mod tests {
         let ps = crate::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
-            crate::ui::idle::frame_begin(DT);
+            plx_machine::idle::frame_begin(DT);
             st.update(DT, &m, &ps);
-            crate::ui::idle::present_moving()
+            plx_machine::idle::present_moving()
         };
         let mut st = menu(false, crate::route::quality());
         st.motion.step(DT, st.panel_rect(&m));
@@ -1191,9 +1191,9 @@ mod tests {
         let ps = crate::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
-            crate::ui::idle::frame_begin(DT);
+            plx_machine::idle::frame_begin(DT);
             st.update(DT, &m, &ps);
-            crate::ui::idle::present_moving()
+            plx_machine::idle::present_moving()
         };
         // opened under Force Direct Play: no Quality row, a short panel
         let mut st = menu(true, crate::route::quality());
@@ -1226,7 +1226,7 @@ mod tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct HostFixture;
     impl Host for HostFixture {

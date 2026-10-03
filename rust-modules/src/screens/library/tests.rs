@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::machine::{Host, InputOwner, FocusRead, PressRead, Tick};
+use plx_machine::machine::{Host, InputOwner, FocusRead, PressRead, Tick};
 use crate::ui::screen::ScreenArg;
 
 #[derive(Clone)]
@@ -11,8 +11,8 @@ impl LogicalState for Arg {
     fn probe(&self, _: &mut String) {}
 }
 impl ScreenArg for Arg {
-    fn chrome(&self) -> crate::ui::machine::Chrome { crate::ui::machine::Chrome::None }
-    fn id(&self) -> crate::ui::machine::ScreenId { crate::ui::machine::ScreenId(1) }
+    fn chrome(&self) -> plx_machine::machine::Chrome { plx_machine::machine::Chrome::None }
+    fn id(&self) -> plx_machine::machine::ScreenId { plx_machine::machine::ScreenId(1) }
     fn title(&self) -> Option<&str> { None }
     fn same_instance(&self, _: &Self) -> bool { true }
 }
@@ -139,7 +139,7 @@ fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
     });
     let mut page = fixture.screen();
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     assert!(page.seed_cursor(&fixture.cx(None),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)));
     assert_eq!(page.scroll.pos, saved_scroll);
@@ -614,7 +614,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
     page.page_fade.mount();
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     for i in 0..40 {
         page.step(&ScreenEvent::Tick(Tick { ms: i * 20, dt_us: 20_000 }), &fixture.cx(None),
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
@@ -636,7 +636,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
 fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     use crate::ui::hit::PointerKind;
     use crate::ui::input::{InputMachine, PressEvent};
-    use crate::ui::machine::{PressArm, PressFrom};
+    use plx_machine::machine::{PressArm, PressFrom};
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
@@ -668,7 +668,7 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     assert!(matches!(held.as_slice(), [PressEvent::Hold(_, _, key)] if *key == chosen));
     let PressEvent::Hold(id, _, _) = held[0] else { unreachable!() };
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.step(&ScreenEvent::PressHold(id), &fixture.cx(input.engine.current(OWNER)),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(out.iter().any(|effect| matches!(&effect.fx,
@@ -690,7 +690,7 @@ fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
         anchor: [0; 4] };
     let mut menu = menu::LibraryMenu::new(entry, arg);
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     menu.step(&ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), &fixture.cx(None),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present));
     let mut engine = FocusEngine::new();
@@ -711,7 +711,7 @@ fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
     page.wanted_kind = None;
     let target = page.address(&fixture.cx(None)).unwrap();
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
     page.step(&ScreenEvent::Cover, &fixture.cx(None), &mut fx);
     page.step(&ScreenEvent::App(AppMsg::LibraryEdit { target,
@@ -819,7 +819,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     assert_eq!(page.readout, Readout::Failed);
     assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can\u{2019}t reach Cinema server");
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.activate(RETRY, false, &fixture.cx(Some(page.key(RETRY))),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(out.iter().any(|effect| matches!(&effect.fx,
@@ -851,7 +851,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
             eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
     let tick = |page: &mut LibraryScreen| {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     };
@@ -868,13 +868,13 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
     assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(connect()));
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.activate(RETRY, false, &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(!out.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Store(..)))), "Connect asks; it does not retry");
     assert!(page.plaintext_alert.is_open());
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
-    page.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &fixture.cx(Some(page.key(PLAINTEXT_CONNECT))),
+    let mut present = plx_machine::present::Present::new();
+    page.step(&ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &fixture.cx(Some(page.key(PLAINTEXT_CONNECT))),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     let answers: Vec<_> = out.iter().filter_map(|e| match &e.fx {
         Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: target }))
@@ -1066,7 +1066,7 @@ impl Fixture {
 /// One Tick through the screen: whether it damaged the frame.
 fn tick_damaged(page: &mut LibraryScreen, fixture: &Fixture) -> bool {
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     present.take(0);
     page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
@@ -1074,7 +1074,7 @@ fn tick_damaged(page: &mut LibraryScreen, fixture: &Fixture) -> bool {
 }
 fn deliver(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, event: ScreenEvent<HostFixture>) -> usize {
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.step(&event, &fixture.cx(engine.current(OWNER)),
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
     let mut remembers = 0;
@@ -1229,7 +1229,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
             row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present);
     page.activate(page.libraries[1].0, false, &fixture.cx(None), &mut fx);
     page.activate(SORT, false, &fixture.cx(None), &mut fx);
@@ -1243,7 +1243,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut fx = Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present);
     page.step(&ScreenEvent::App(AppMsg::LibraryEdit { target,
         edit: crate::stores::browse::QueryEdit::Sort { key: "titleSort".into(), desc: true } }), &fixture.cx(None), &mut fx);
-    page.step(&ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper), &fixture.cx(None), &mut fx);
+    page.step(&ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper), &fixture.cx(None), &mut fx);
     drop(fx);
     assert!(output.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
@@ -1357,7 +1357,7 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     let grid = page.key(page.pair.detail.elem_at(0).unwrap());
     let request = |page: &mut LibraryScreen| {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(Some(grid)),
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
         out.into_iter().find_map(|effect| match effect.fx {

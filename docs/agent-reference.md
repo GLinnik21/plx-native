@@ -114,7 +114,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `check-cargo-lint` (clippy + the lab-diagnostics type-check), `check-cargo-unit-default` and
   `check-cargo-unit-hostsim`, and CI runs those three plus `check-python` as four parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`) behind an aggregator named
-  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base`
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
@@ -130,7 +130,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   SDL event loop where no host test can see it. Needs the **clippy component on nightly** (rustup's
   default profile ships it; a `--profile minimal` nightly does not).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
-  `cargo test --lib -p plxnative-modules -p plx_base` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
   forwards a test-name filter; the `test result:` line is cargo's own. Use it for a long series of
   small edits in one lane: an edit-rebuild is ~10 s against 31-32 s non-incremental, flat across
@@ -145,12 +145,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
-    `cargo test --lib -p plxnative-modules -p plx_base --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine --no-run --timings`, then `make check-cargo-unit-default` runs against what that
     built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -189,10 +189,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
   a machine-readable document (git sha, `rustc +nightly -V`, host, per-run load and swap). Rows:
-  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base --no-run`; it reports from cargo's JSON `fresh`
+  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
-  leaf file (`cbuf.rs`) and to a hub (`ui/mod.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
+  leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, the application's `coldstart.rs`) and to a hub (`ui/mod.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
   default `target`) and incremental (`CARGO_INCREMENTAL=1`, `target-fast`; skipped with a note when
   that tree is absent unless `--cold`); the **unit suite** run on a warm tree with its `test
   result:` counts; the **ARM staticlib** line after touching `lib.rs` plus the archive's size and
@@ -603,7 +603,7 @@ The intended layering is gfx/text/i18n < ui < screens < app and plex < route/pla
 few thin upward references once closed one strongly connected component of top-level modules
 holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13 by step L14
 (`ci/module-cycle-baseline.json` has the current set), which is this tool's coarse view of edges
-the layer gate allows: it sees `ui` and `diag` as one node each, while `ui::machine`/`ui::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
+the layer gate allows: it sees `ui` and `diag` as one node each, while `plx_machine::machine`/`plx_machine::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
 layers. The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
 module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
 strings blanked; the docstring lists what it cannot see), compares the cycle's members with
@@ -1267,7 +1267,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base` (a bare `cargo test --lib` runs the application crate only and skips `plx_base`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine` (a bare `cargo test --lib` runs the application crate only and skips `plx_base` and `plx_machine`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
 `--features hostsim`, because the host feed seam only exists there and the tests that need it are
 compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
@@ -1276,7 +1276,7 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
@@ -1399,7 +1399,7 @@ last where the header puts it before `type`, so `type_` read `flags` and on 64-b
 one word past the end of the struct.
 **Two macOS-host traps that read as your change being broken.** (1) **`make sim-macos-shot` HANGS on a
 settled screen** — `SIM_FRAME` is a count of *presented* frames (`shot.rs`, and `app.rs` says the
-same at the `shot` token: "presented frames only accrue when something repaints"), and `ui::idle`
+same at the `shot` token: "presented frames only accrue when something repaints"), and `plx_machine::idle`
 gates presents, so a screen that settles before frame N never reaches N. Arm
 `plxnative-noidle` in the instance root first; three agents lost time to this in one day. (2) macOS
 `libSDL2` is **sdl2-compat forwarding into SDL3**, so pushing a synthetic **`SDL_TEXTINPUT`** through
@@ -1416,7 +1416,7 @@ owner's standing directive, restated 2026-09-07):** the television's PANEL is **
 is OFF for EVERY device run** — the playback tiers, the fps scenes, `shot` and capture alike; the
 set is in a living room. The owner's statement is that rendering continues with the LCD off, so an
 fps scene graded under `screen off` is a real measurement; the 2026-09-06 form of this rule (panel
-ON for fps, on the reasoning that `ui::idle` gates presents on what the panel shows) is SUPERSEDED,
+ON for fps, on the reasoning that `plx_machine::idle` gates presents on what the panel shows) is SUPERSEDED,
 and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
 screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
 in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
@@ -1551,13 +1551,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   nothing (verified live; `time=1` too), which is exactly what makes this look already handled.
   Don't make the reset conditional again to save the pre-seed close: the wandering seek-tier
   failures were this, not the player.
-- **A settled non-player screen STOPS PRESENTING** (`ui::idle`, the whole-frame present gate). The
+- **A settled non-player screen STOPS PRESENTING** (`plx_machine::idle`, the whole-frame present gate). The
   loop keeps running at full rate — input, pumps and every `*_update` are untouched, so key latency
   and timers are unchanged — but `glViewport`…`SDL_GL_SwapWindow` is skipped while nothing is
   moving, and a 2s keepalive bounds staleness. This is NOT the dirty-RECTANGLE tracking
   `ui/mod.rs` rejects: when a frame does run it is the same immediate-mode full redraw it always
   was. Motion is detected exactly (both `gfx::spring*` integrators report), and discrete changes
-  call `ui::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
+  call `plx_machine::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
   it: `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
@@ -1805,7 +1805,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   drive it over committed product fixtures. Supported stores receive recorded results with
   resource execution denied; unsupported domains fail closed. The historical phase-11 driver
   instead fetched live while constraining the frame a result was OBSERVED on
-  (`ui::landgate`, spec §3.3 step 3): every landing SITE —
+  (`plx_machine::landgate`, spec §3.3 step 3): every landing SITE —
   Home's hubs and each legacy pump's mailbox take — consumes through a schedule of `(frame,
   arrivals)` pairs per store, an early arrival WAITS for its frame, the due frame polls for a
   bounded moment, and late/extra/missing ride the summary as `land_diffs`. Before it, flow 12's

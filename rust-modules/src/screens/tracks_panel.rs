@@ -634,8 +634,8 @@ pub(crate) struct TracksPanelArg {
     pub(crate) page: c_int,
 }
 
-impl crate::ui::machine::LogicalState for TracksPanelArg {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for TracksPanelArg {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u32(self.page as u32);
     }
     fn probe(&self, out: &mut String) {
@@ -644,7 +644,7 @@ impl crate::ui::machine::LogicalState for TracksPanelArg {
 }
 
 pub(crate) struct TracksPanelScreen {
-    entry: crate::ui::machine::EntryId,
+    entry: plx_machine::machine::EntryId,
     /// 1-based page. The panel's whole cursor: it has no focusable control, so there is nothing else
     /// a key press can move.
     page: c_int,
@@ -659,7 +659,7 @@ pub(crate) struct TracksPanelScreen {
 }
 
 impl TracksPanelScreen {
-    pub(crate) fn new(entry: crate::ui::machine::EntryId, arg: TracksPanelArg) -> Self {
+    pub(crate) fn new(entry: plx_machine::machine::EntryId, arg: TracksPanelArg) -> Self {
         Self {
             entry,
             page: arg.page.max(1),
@@ -728,7 +728,7 @@ struct Flow<'a> {
     /// The text-measurement capability (spec §4.3, D4) — named `tm` rather than `measure` because
     /// this struct's own `measure` field already means "measuring pass, not drawing" (see the doc
     /// above); the two are unrelated booleans-vs-capability and sharing a name would read as one.
-    tm: &'a dyn crate::ui::machine::Measure,
+    tm: &'a dyn plx_machine::machine::Measure,
 }
 
 impl Flow<'_> {
@@ -919,7 +919,7 @@ fn body_flow(
     edges: (bool, bool),
     p: Painter,
     measure: bool,
-    tm: &dyn crate::ui::machine::Measure,
+    tm: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let mut f = Flow {
         p,
@@ -984,7 +984,7 @@ impl TracksPanelScreen {
         &mut self,
         d: &Detail,
         appear: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         field: Option<&crate::ui::underlay::UnderlayField>,
     ) {
         let r = panel_rect();
@@ -1092,15 +1092,15 @@ impl TracksPanelScreen {
 
 // ---- the Screen contract --------------------------------------------------------------------
 
-impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for TracksPanelScreen {
+impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for TracksPanelScreen {
     type Ev = crate::ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-        fx: &mut crate::ui::machine::Effects<'_, H>,
-    ) -> crate::ui::machine::Handled {
-        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        _cx: &plx_machine::machine::Cx<'_, H>,
+        fx: &mut plx_machine::machine::Effects<'_, H>,
+    ) -> plx_machine::machine::Handled {
+        use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
         use crate::ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Tick(t) => {
@@ -1128,7 +1128,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Tr
                     ..
                 } => {
                     if self.step_page(sym as c_int) {
-                        fx.invalidate(crate::ui::present::Provenance::Input);
+                        fx.invalidate(plx_machine::present::Provenance::Input);
                     }
                     Handled::Yes
                 }
@@ -1151,9 +1151,9 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Tr
 /// `Handled::Yes`), so the engine's own direction/OK arms in `after_step` never fire for this
 /// screen — the mechanism swap changes nothing this sheet's keys or clicks do.
 impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for TracksPanelScreen {
-    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
         out.push(crate::ui::screen::GroupSpec {
-            id: crate::ui::machine::GroupId(0),
+            id: plx_machine::machine::GroupId(0),
             kind: crate::ui::screen::GroupKind::Document,
             seat: crate::ui::screen::Seat::First,
             reachable: crate::ui::screen::AxisMask::BOTH,
@@ -1163,14 +1163,14 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
             elem: crate::ui::screen::ElemKind::Control,
         });
     }
-    fn group_of(&self, key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
-        (*key == 0).then_some(crate::ui::machine::GroupId(0))
+    fn group_of(&self, key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
+        (*key == 0).then_some(plx_machine::machine::GroupId(0))
     }
     fn neighbour(
         &self,
-        _key: crate::ui::machine::FocusKey<u32>,
+        _key: plx_machine::machine::FocusKey<u32>,
         _dir: crate::ui::screen::Dir,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> crate::ui::screen::Step<u32> {
         // The one element never MOVES — paging is the screen's own arm, not the engine's (see the
         // impl doc) — so every direction answers `Edge`, which `EdgeRule::Stop` turns into "stay
@@ -1180,7 +1180,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
     fn place(
         &self,
         key: &u32,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
         _at: crate::ui::screen::At,
     ) -> Option<crate::ui::screen::Placed> {
         (*key == 0).then(|| crate::ui::screen::Placed {
@@ -1192,13 +1192,13 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
     }
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+        want: plx_machine::machine::FocusKey<u32>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
         if want.elem == 0 {
             want
         } else {
-            crate::ui::machine::FocusKey {
+            plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: 0,
             }
@@ -1206,19 +1206,19 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
     }
     fn seat(
         &self,
-        _g: crate::ui::machine::GroupId,
+        _g: plx_machine::machine::GroupId,
         _from: crate::ui::screen::Placed,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey {
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem: 0,
         }
     }
 }
 
-impl crate::ui::machine::LogicalState for TracksPanelScreen {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for TracksPanelScreen {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u32(self.page as u32)
             .f32(self.scroll.pos)
             .f32(self.scroll.vel)
@@ -1233,13 +1233,13 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn name(&self) -> &'static str {
         "tracks"
     }
-    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+    fn state(&self) -> &dyn plx_machine::machine::LogicalState {
         self
     }
-    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+    fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at the PANEL role
     /// ([`theme::underlay::DIM_PANEL`]). Nothing is lifted: this sheet replaces the middle of the frame and holds no
     /// control, so there is no element under it the dim must spare.
@@ -1833,7 +1833,7 @@ mod tests {
     // `Outcome::Nothing`). These tests pin exactly that bookkeeping, plus the unchanged step()
     // contract, against ANY future regression that tries to grow this sheet a second cursor.
     use crate::screens::registry::{AppFx, AppMsg};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Edge, EntryId, FocusKey, FocusRead, GroupId, Handled, Host, InputEvent, InputKind,
         InputOwner, Key, LogicalState, Machine, PressRead, Source, Tick,
     };
@@ -1842,15 +1842,15 @@ mod tests {
     #[derive(Clone)]
     struct FixtureArg;
     impl LogicalState for FixtureArg {
-        fn write(&self, _: &mut crate::ui::machine::Canon) {}
+        fn write(&self, _: &mut plx_machine::machine::Canon) {}
         fn probe(&self, _: &mut String) {}
     }
     impl ScreenArg for FixtureArg {
-        fn chrome(&self) -> crate::ui::machine::Chrome {
-            crate::ui::machine::Chrome::None
+        fn chrome(&self) -> plx_machine::machine::Chrome {
+            plx_machine::machine::Chrome::None
         }
-        fn id(&self) -> crate::ui::machine::ScreenId {
-            crate::ui::machine::ScreenId(1)
+        fn id(&self) -> plx_machine::machine::ScreenId {
+            plx_machine::machine::ScreenId(1)
         }
         fn title(&self) -> Option<&str> {
             None
@@ -1881,12 +1881,12 @@ mod tests {
     }
 
     impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
             test_store().view()
         }
     }
-    fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
-        crate::ui::machine::Cx {
+    fn fixture_cx(focus: Option<FocusKey<u32>>) -> plx_machine::machine::Cx<'static, HostFixture> {
+        plx_machine::machine::Cx {
             views: (),
             tick: Tick::default(),
             measure: &crate::ui::fixture::FixtureMeasure,
@@ -1981,31 +1981,31 @@ mod tests {
         let mut p = panel(entry);
         let cx = fixture_cx(Some(FocusKey { entry, elem: 0 }));
         let mut buf = Vec::new();
-        let mut present = crate::ui::present::Present::default();
+        let mut present = plx_machine::present::Present::default();
 
         {
-            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
             let back = key_event(Key::Back, 0);
             assert_eq!(Machine::step(&mut p, &back, &cx, &mut fx), Handled::Yes);
         }
         assert!(
             matches!(
                 buf.last().map(|s| &s.fx),
-                Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+                Some(plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Dismiss(e))) if *e == entry
             ),
             "BACK dismisses the sheet exactly as it always did"
         );
         buf.clear();
 
         {
-            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
             let ok = key_event(Key::Ok, 0);
             assert_eq!(Machine::step(&mut p, &ok, &cx, &mut fx), Handled::Yes);
         }
         assert!(
             matches!(
                 buf.last().map(|s| &s.fx),
-                Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+                Some(plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Dismiss(e))) if *e == entry
             ),
             "OK dismisses too — there is nothing here to commit"
         );
@@ -2014,7 +2014,7 @@ mod tests {
         p.content_h = body_rect().h * 3.0; // several pages of content
         assert_eq!(p.page, 1);
         {
-            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
             let down = key_event(Key::Down, SDLK_DOWN);
             assert_eq!(Machine::step(&mut p, &down, &cx, &mut fx), Handled::Yes);
         }

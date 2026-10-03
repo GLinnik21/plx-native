@@ -25,7 +25,7 @@
 //! [`BandReach::MasterOnly`]. It is opt-in; ordinary toolbar/band geometry is otherwise untouched.
 
 use super::frame::Budget;
-use super::machine::{Canon, Cx, FocusKey, GroupId, Host, LogicalState};
+use plx_machine::machine::{Canon, Cx, FocusKey, GroupId, Host, LogicalState};
 use super::screen::{
     At, Dir, DrawFrame, EdgeRule, Focusable, GroupSpec, Link, Part, Placed, Seat, Step,
 };
@@ -446,11 +446,11 @@ mod tests {
     use super::*;
     use crate::ui::fixture::{FixtureFx, FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
     use crate::ui::focus::{FocusEngine, Outcome as FocusOutcome};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Effects, EntryId, FocusRead, Fx, Handled, InputOwner, InstanceId, Machine, MachineId,
         PressRead, Tick,
     };
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
     use crate::ui::screen::{AxisMask, ElemKind, GroupKind};
     use crate::ui::Painter;
 
