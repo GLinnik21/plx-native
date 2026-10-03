@@ -1,4 +1,4 @@
-{"updated":"2026-10-03T22:04:38Z",
+{"updated":"2026-10-03T22:14:27Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -436,5 +436,6 @@
 {"id":37114701235,"at":"2026-10-03T09:56:01Z","sha":"56a839b9a","title":"Make the Rust module graph layered and acyclic, and fence the webOS port (module-layers L1-L15)","pr":397,"jobs":{"Linux simulator build + launch":212,"Windows launcher syntax":16,"macOS simulator build + launch":847}},
 {"id":37138698817,"at":"2026-10-03T16:56:36Z","sha":"b1bfa1f26","title":"Split: the base layer is its own crate (plx_base)","pr":398,"jobs":{"macOS simulator build + launch":970,"Windows launcher syntax":21,"Linux simulator build + launch":138}},
 {"id":37148757226,"at":"2026-10-03T19:40:49Z","sha":"b131c1810","title":"Split: the machine layer is its own crate (plx_machine)","pr":400,"jobs":{"macOS simulator build + launch":1010,"Windows launcher syntax":16,"Linux simulator build + launch":231}},
-{"id":37154965636,"at":"2026-10-03T21:24:00Z","sha":"940bb8d1f","title":"Split: the platform layer is its own crate (plx_platform)","pr":403,"jobs":{"Windows launcher syntax":14,"macOS simulator build + launch":1024,"Linux simulator build + launch":161}}
+{"id":37154965636,"at":"2026-10-03T21:24:00Z","sha":"940bb8d1f","title":"Split: the platform layer is its own crate (plx_platform)","pr":403,"jobs":{"Windows launcher syntax":14,"macOS simulator build + launch":1024,"Linux simulator build + launch":161}},
+{"id":37156900483,"at":"2026-10-03T21:59:08Z","sha":"2ed544882","title":"Home: per-frame cost no longer follows the row count","pr":405,"jobs":{"macOS simulator build + launch":906,"Windows launcher syntax":22,"Linux simulator build + launch":200}}
 ]}
