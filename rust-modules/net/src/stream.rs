@@ -232,14 +232,14 @@ fn short_body_line(
 /// [`short_body_line`] applied to a finished stream — call it after the read loop, before or after
 /// [`http_close`] (the fields it reads are counters, which `http_close` does not touch).
 ///
-/// `pub(crate)` because the one-shot wrappers that used to call it are gone. They folded away half
+/// `pub` because the one-shot wrappers that used to call it are gone. They folded away half
 /// of every answer — `http_get`/`http_post` dropped the status, `http_put` dropped the body — and
 /// the control plane needs both (a `401` is a token problem and a refusal is a reachability one;
 /// `plex::probe::Outcome` exists to keep those apart). Their replacement composes this module's
 /// primitives directly: [`crate::http`]'s plaintext arm, which is now this function's only caller
 /// and the reason it did not go with them. The three fields it reads are private, so the notice
 /// could not have been reproduced from outside.
-pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
+pub fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
     if let Some(line) = short_body_line(
         method,
         path,
@@ -254,22 +254,22 @@ pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_er
 
 /// crate-internal accessors (fields are private) — the player engine reads these.
 #[inline]
-pub(crate) fn hs_content_length(hs: *const HttpStream) -> i64 {
+pub fn hs_content_length(hs: *const HttpStream) -> i64 {
     unsafe { (*hs).content_length }
 }
 #[inline]
-pub(crate) fn hs_status(hs: *const HttpStream) -> c_int {
+pub fn hs_status(hs: *const HttpStream) -> c_int {
     unsafe { (*hs).status }
 }
 
 /// Internal read result reserved for a caller-owned wall-clock deadline. Ordinary callers never
 /// see it: [`http_read`] has no deadline and retains its historical `-1` error result.
-pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
+pub const HTTP_READ_DEADLINE: c_int = -2;
 
 /// Internal read result for a caller whose [`Checkpoint`] answered
 /// [`Flow::Stop`](plx_base::checkpoint::Flow::Stop). Distinct from `-1` and [`HTTP_READ_DEADLINE`]: it is neither a
 /// transport failure nor a clock this module owns, so nothing here redials or closes on it.
-pub(crate) const HTTP_READ_STOPPED: c_int = -3;
+pub const HTTP_READ_STOPPED: c_int = -3;
 
 /// What ended a [`wait_fd`].
 enum FdWait {
@@ -723,7 +723,7 @@ const MEDIA_SEND_TIMEOUT_MS: c_int = 10_000;
 
 /// The ordinary plaintext media inactivity contract. Candidate reserve projections may wake a
 /// read earlier, but retrying an obsolete projection must never renew this physical stall bound.
-pub(crate) fn media_stall_budget() -> std::time::Duration {
+pub fn media_stall_budget() -> std::time::Duration {
     std::time::Duration::from_millis(MEDIA_RECV_TIMEOUT_MS as u64)
 }
 
@@ -734,7 +734,7 @@ pub(crate) fn media_stall_budget() -> std::time::Duration {
 /// HTTP response even if that caller is descheduled across the boundary after this function
 /// returns.  This type preserves every cause the raw transport can prove at the point it occurs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HttpOpenError {
+pub enum HttpOpenError {
     /// The supplied absolute deadline stopped the connect/send/header operation. The caller which
     /// selected that instant still owns its meaning (transaction reserve versus liveness).
     Deadline,
@@ -1102,7 +1102,7 @@ unsafe fn set_socket_timeouts(fd: c_int, recv_timeout_ms: c_int, send_timeout_ms
     );
 }
 
-pub(crate) fn http_open(
+pub fn http_open(
     hs: *mut HttpStream,
     host: *const c_char,
     port: c_int,
@@ -1129,7 +1129,7 @@ pub(crate) fn http_open(
 /// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
 /// Candidate discovery is the one caller that knows whether a connection is local or remote; the
 /// ordinary request path keeps [`CONNECT_TIMEOUT_MS`] and never infers a tier from an address.
-pub(crate) fn http_open_probe(
+pub fn http_open_probe(
     hs: *mut HttpStream,
     host: *const c_char,
     port: c_int,
@@ -1163,7 +1163,7 @@ pub(crate) fn http_open_probe(
 ///
 /// `checkpoint` is consulted before and during every blocking connect/send/header wait (not DNS,
 /// which is a synchronous `getaddrinfo`); [`HttpOpenError::Stopped`] is its answer, never a redial.
-pub(crate) fn http_open_until_result(
+pub fn http_open_until_result(
     hs: *mut HttpStream,
     host: *const c_char,
     port: c_int,
@@ -1614,7 +1614,7 @@ fn remember_location(hs: &mut HttpStream, hdr_end: usize) {
 }
 
 /// The `Location` of the last redirect response on this stream, if it had a usable one.
-pub(crate) fn hs_redirect_location(hs: *const HttpStream) -> Option<String> {
+pub fn hs_redirect_location(hs: *const HttpStream) -> Option<String> {
     if hs.is_null() {
         return None;
     }
@@ -1623,7 +1623,7 @@ pub(crate) fn hs_redirect_location(hs: *const HttpStream) -> Option<String> {
     (n > 0).then(|| String::from_utf8_lossy(&hs.location[..n]).into_owned())
 }
 
-pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
+pub fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
     http_read_until(hs, dst, n, None, &mut NoCheckpoint)
 }
 
@@ -1634,7 +1634,7 @@ pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_i
 /// `checkpoint` is consulted only when this read would block for fresh bytes (buffered bytes and a
 /// proven end are returned without asking); a stop returns [`HTTP_READ_STOPPED`] with the socket
 /// and any partial chunk framing left as they were.
-pub(crate) fn http_read_until(
+pub fn http_read_until(
     hs: *mut HttpStream,
     dst: *mut c_uchar,
     n: c_int,
@@ -1814,14 +1814,14 @@ unsafe fn close_owned(hs: &HttpStream) {
     }
 }
 
-pub(crate) fn http_close(hs: *mut HttpStream) {
+pub fn http_close(hs: *mut HttpStream) {
     if hs.is_null() {
         return;
     }
     unsafe { close_owned(&*hs) }
 }
 
-pub(crate) fn http_body_done(hs: *const HttpStream) -> bool {
+pub fn http_body_done(hs: *const HttpStream) -> bool {
     if hs.is_null() {
         return true;
     }
@@ -1833,23 +1833,23 @@ pub(crate) fn http_body_done(hs: *const HttpStream) -> bool {
 /// A body is complete when it is RECEIVED, not when FFmpeg has read it: PMS bursts a paused
 /// remainder, and a burst sitting in a buffer is already paid for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BodyReceipt {
+pub struct BodyReceipt {
     /// Body bytes received and not yet read — never framing, never past a declared length.
-    pub(crate) ahead: i64,
+    pub ahead: i64,
     /// The transport proved the body's end: every declared byte, the chunked terminator, or a
     /// successful transfer. Never a failure, which is not an end.
-    pub(crate) finished: bool,
+    pub finished: bool,
     /// Answering took a transfer step (curl's `perform`): bytes were received — on https,
     /// decrypted — by the query itself, and the read that later copies them out will not see
     /// that work. The caller counts the query's time as body transfer time exactly then.
-    pub(crate) stepped: bool,
+    pub stepped: bool,
 }
 
 /// [`BodyReceipt`] for the plaintext socket. `recv` reads straight into the caller's buffer, so
 /// what it holds ahead is the header block's leftover bytes plus the kernel's receive queue
 /// (`FIONREAD`). A chunked body counts nothing ahead: its buffered bytes are interleaved with
 /// framing, and its end is the terminator [`finish_body`] records.
-pub(crate) fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
+pub fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
     let nothing = BodyReceipt {
         ahead: 0,
         finished: false,
@@ -2024,7 +2024,7 @@ unsafe fn hs_finish_chunked_trailers_dontwait(hs: &mut HttpStream) -> c_int {
 /// Payload copies already-buffered bytes plus at most one `MSG_DONTWAIT` recv. Trailer skip
 /// may add one more dontwait fill. Never `http_read`, never `SO_RCVTIMEO`.
 /// Returns bytes copied, `0` when the peer has nothing ready, or a negative transport error.
-pub(crate) fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int {
+pub fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int {
     if hs.is_null() || dst.is_empty() {
         return 0;
     }
@@ -2142,7 +2142,7 @@ pub(crate) fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int
 /// the point. A `connect_any` walk between two attempts holds no descriptor, so a teardown landing
 /// in that window has nothing to shut down and would otherwise be lost entirely; the latch is what
 /// stops the next address from being dialled. See [`HttpStream::interrupted`].
-pub(crate) fn http_shutdown(hs: *mut HttpStream) {
+pub fn http_shutdown(hs: *mut HttpStream) {
     if hs.is_null() {
         return;
     }
@@ -2184,7 +2184,7 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
 // Their replacement is `crate::http`, the one door that dispatches a control-plane request on its
 // origin's SCHEME — this module for plaintext, `net.rs`/libcurl for TLS — and returns the status
 // AND the body over either. Its plaintext arm is the same composition the wrappers were, so
-// nothing about the bytes on the wire moved; `note_short_body` above went `pub(crate)` to keep the
+// nothing about the bytes on the wire moved; `note_short_body` above went `pub` to keep the
 // short-body notice on that path.
 
 /// A boxed HttpStream in the CLOSED state (fd = -1, never 0 — a stray close on a zeroed box
@@ -2195,7 +2195,7 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
 /// and free fd 0 for a later socket() to reuse and be wrongly closed. The zero fill is written
 /// directly into the heap allocation: spelling this as `Box::new(mem::zeroed())` materialises a
 /// 64 KiB temporary on debug-build worker stacks before moving it into the box.
-pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
+pub fn http_stream_boxed() -> Box<HttpStream> {
     let mut slot = Box::<HttpStream>::new_uninit();
     // SAFETY: every HttpStream field has an all-zero valid representation (integers, bytes and
     // AtomicI32), and the allocation is exclusively owned and still MaybeUninit here. Writing the
@@ -2208,7 +2208,7 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 }
 
 #[path = "stream_redirect.rs"]
-pub(crate) mod redirect;
+pub mod redirect;
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]

@@ -67,9 +67,9 @@ fn observe(owner: &mut SessionMachine, progress: LoginProgress, terminal: bool) 
     step(owner, SessionEvent::Result(envelope))
 }
 
-fn dns() -> crate::net::RequestFailure {
-    crate::net::RequestFailure {
-        cause: crate::net::RequestError::Transport,
+fn dns() -> plx_net::net::RequestFailure {
+    plx_net::net::RequestFailure {
+        cause: plx_net::net::RequestError::Transport,
         status: None,
         body_limit: None,
         curl_rc: Some(6),

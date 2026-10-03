@@ -64,9 +64,9 @@ PLATFORM_CRATE = "plx_platform"
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 
 
-# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features
+# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_net --features
 # lab-diagnostics"); identical arguments and CARGO_INCREMENTAL make the first run here a reuse.
-LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "--features", "lab-diagnostics"]
+LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_net", "--features", "lab-diagnostics"]
 
 
 def cargo_env():

@@ -11,7 +11,7 @@
 //! The fact is SYNTHETIC and says so in the log (`keypin::plant`): it is filed under a host no
 //! session binds, so no projection clears it. Read once at boot; absent from shipping builds.
 
-use crate::net::keypin::{self, Blocked, Planted};
+use plx_net::net::keypin::{self, Blocked, Planted};
 
 /// The fact a trigger value names, or `None` for anything else.
 pub(crate) fn parse(value: &str) -> Option<Planted> {

@@ -31,7 +31,7 @@
 //! keymanager stages and a bounded array of candidate errno numbers (never candidate paths).
 
 use super::consent::{self, Permission, ONBOARDING_REPORT_SCOPE};
-use crate::net::{RequestError, RequestFailure};
+use plx_net::net::{RequestError, RequestFailure};
 use crate::plex::session::async_persistence::{CompletionOutcome, Failure};
 use plx_platform::storage::wire::KeymanagerStage;
 use serde_json::Value;

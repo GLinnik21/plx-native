@@ -34,7 +34,6 @@ mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 mod img;
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
-mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
 mod collection; // collection page model: tag resolution, header metadata and paged members
 mod player; // buffer-feed video engine (was playback.c) — step 5
@@ -55,7 +54,6 @@ mod search; // Search data layer: /hubs/search fanned out across every source, m
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
-mod stream;
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats

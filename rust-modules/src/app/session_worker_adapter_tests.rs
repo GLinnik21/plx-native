@@ -203,7 +203,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
 /// refusal says so; a request that got no answer keeps the connection wording.
 #[test]
 fn a_refused_profile_resources_request_does_not_blame_the_connection() {
-    use crate::net::{RequestError, RequestFailure};
+    use plx_net::net::{RequestError, RequestFailure};
 
     struct FailingResourcesIo(Option<CallEvidence>);
     impl ProfileWorkIo for FailingResourcesIo {

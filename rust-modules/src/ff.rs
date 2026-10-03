@@ -14,7 +14,7 @@
 use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
-use crate::stream::HttpStream;
+use plx_net::stream::HttpStream;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1677,11 +1677,11 @@ enum Src {
 impl Src {
     /// What the transport has RECEIVED of the current body beyond what FFmpeg has read — the
     /// one completion question both sources answer (`stream::BodyReceipt`).
-    fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+    fn body_receipt(&mut self) -> plx_net::stream::BodyReceipt {
         match self {
-            Src::Socket { hs, .. } => crate::stream::http_body_receipt(*hs),
+            Src::Socket { hs, .. } => plx_net::stream::http_body_receipt(*hs),
             Src::Curl(cs) => cs.body_receipt(),
-            Src::Idle => crate::stream::BodyReceipt {
+            Src::Idle => plx_net::stream::BodyReceipt {
                 ahead: 0,
                 finished: false,
                 stepped: false,
@@ -2093,7 +2093,7 @@ impl TransportWatchdog {
         let inactivity = if origin.is_tls() {
             crate::curlio::media_stall_budget()
         } else {
-            crate::stream::media_stall_budget()
+            plx_net::stream::media_stall_budget()
         };
         Self::with_inactivity(inactivity)
     }
@@ -2388,7 +2388,7 @@ impl AvioState {
     fn transfer_finished(&self) -> bool {
         match &self.src {
             Src::Idle => true,
-            Src::Socket { hs, .. } => crate::stream::http_body_done(*hs),
+            Src::Socket { hs, .. } => plx_net::stream::http_body_done(*hs),
             Src::Curl(cs) => cs.body_complete(),
         }
     }
@@ -2430,7 +2430,7 @@ impl AvioState {
             let read_started = std::time::Instant::now();
             let n = match &mut self.src {
                 Src::Socket { hs, .. } => {
-                    crate::stream::http_drain_available(*hs, &mut self.bounce[start..])
+                    plx_net::stream::http_drain_available(*hs, &mut self.bounce[start..])
                 }
                 Src::Curl(cs) => cs.drain_available(&mut self.bounce[start..]),
                 Src::Idle => 0,
@@ -2603,7 +2603,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 None => &mut unarmed,
             };
             let r = match &mut s.src {
-                Src::Socket { hs, .. } => crate::stream::http_read_until(
+                Src::Socket { hs, .. } => plx_net::stream::http_read_until(
                     *hs,
                     dst as *mut c_uchar,
                     n,
@@ -2620,7 +2620,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 Src::Idle => return AVERROR_EOF,
             };
             let wake =
-                if r == crate::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
+                if r == plx_net::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
                     let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
                     match (blocking_deadline, s.transport_watchdog.as_ref()) {
                         (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
@@ -2660,7 +2660,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     }
                 }
             }
-            if r == crate::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
+            if r == plx_net::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
                 return avio_stopped(s);
             }
             if let Some(wake) = wake {
@@ -2751,10 +2751,10 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 port,
                 path,
             } => {
-                crate::stream::http_close(*hs);
+                plx_net::stream::http_close(*hs);
                 let origin = crate::plex::Origin::http(&host.to_string_lossy(), *port);
                 let from = path.to_string_lossy().into_owned();
-                let req = crate::stream::redirect::Request {
+                let req = plx_net::stream::redirect::Request {
                     origin: &origin,
                     path: &from,
                     credentials: None,
@@ -2763,12 +2763,12 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     same_origin_only: false,
                     credential_gate: crate::http::credential_transport_allowed,
                 };
-                match crate::stream::redirect::open_following(
+                match plx_net::stream::redirect::open_following(
                     *hs,
                     &req,
                     &mut plx_base::checkpoint::NoCheckpoint,
                 ) {
-                    Ok(crate::stream::redirect::Opened::Socket(t)) => {
+                    Ok(plx_net::stream::redirect::Opened::Socket(t)) => {
                         if let (Ok(h), Ok(p)) =
                             (CString::new(t.origin.host()), CString::new(t.path))
                         {
@@ -2778,7 +2778,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                         }
                         true
                     }
-                    Ok(crate::stream::redirect::Opened::Tls(t)) => {
+                    Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
                         match open_curl_hop(&t.url(), target, aq) {
                             Ok(cs) => {
                                 hopped_to_tls = Some(cs);
@@ -3405,13 +3405,13 @@ fn hls_prefetch_is_fatal(err: &HlsExit) -> bool {
     matches!(err, HlsExit::Aborted)
 }
 
-fn classify_plaintext_open_failure(error: crate::stream::HttpOpenError) -> HlsExit {
+fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> HlsExit {
     match error {
-        crate::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
-        crate::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
-        crate::stream::HttpOpenError::Aborted => HlsExit::Aborted,
-        crate::stream::HttpOpenError::Stopped => UNLATCHED_STOP,
-        crate::stream::HttpOpenError::Status(_) | crate::stream::HttpOpenError::Transport => {
+        plx_net::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
+        plx_net::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
+        plx_net::stream::HttpOpenError::Aborted => HlsExit::Aborted,
+        plx_net::stream::HttpOpenError::Stopped => UNLATCHED_STOP,
+        plx_net::stream::HttpOpenError::Status(_) | plx_net::stream::HttpOpenError::Transport => {
             HlsExit::Failed("HTTP request failed")
         }
     }
@@ -3551,13 +3551,13 @@ fn hls_open_plain(
     deadline: Option<std::time::Instant>,
     checkpoint: &mut dyn plx_base::checkpoint::Checkpoint,
 ) -> Result<(Src, i64, crate::hls::Resource), HlsExit> {
-    use crate::stream::redirect::{FollowError, Opened};
+    use plx_net::stream::redirect::{FollowError, Opened};
     let hs = net.hs;
     if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
         return Err(HlsExit::PrimeExpired);
     }
     // Keep-alive: `http_open` reuses the live fd when the previous body was drained.
-    let req = crate::stream::redirect::Request {
+    let req = plx_net::stream::redirect::Request {
         origin,
         path: request_path,
         credentials: None,
@@ -3567,7 +3567,7 @@ fn hls_open_plain(
         same_origin_only: true,
         credential_gate: crate::http::credential_transport_allowed,
     };
-    let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
+    let opened = plx_net::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
     }
@@ -3578,7 +3578,7 @@ fn hls_open_plain(
         Err(error) => {
             SHARED
                 .dg_http_status
-                .store(crate::stream::hs_status(hs), Ordering::Relaxed);
+                .store(plx_net::stream::hs_status(hs), Ordering::Relaxed);
             return Err(match error {
                 FollowError::Open(error) => classify_plaintext_open_failure(error),
                 FollowError::TooManyHops
@@ -3595,8 +3595,8 @@ fn hls_open_plain(
     let port = target.origin.port() as c_int;
     let path =
         CString::new(target.path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
-    let status = crate::stream::hs_status(hs);
-    let size = crate::stream::hs_content_length(hs);
+    let status = plx_net::stream::hs_status(hs);
+    let size = plx_net::stream::hs_content_length(hs);
     SHARED.dg_http_status.store(status, Ordering::Relaxed);
     SHARED.file_size.store(size, Ordering::Release);
     Ok((
@@ -3642,9 +3642,9 @@ fn open_plain_progressive(
     path: &str,
     aq_p: *mut AuQueue,
 ) -> Result<(Src, i64), MediaOpenFail> {
-    use crate::stream::redirect::Opened;
-    crate::stream::http_close(hs_p);
-    let req = crate::stream::redirect::Request {
+    use plx_net::stream::redirect::Opened;
+    plx_net::stream::http_close(hs_p);
+    let req = plx_net::stream::redirect::Request {
         origin,
         path,
         credentials: None,
@@ -3653,12 +3653,12 @@ fn open_plain_progressive(
         same_origin_only: false,
         credential_gate: crate::http::credential_transport_allowed,
     };
-    match crate::stream::redirect::open_following(hs_p, &req, &mut plx_base::checkpoint::NoCheckpoint)
+    match plx_net::stream::redirect::open_following(hs_p, &req, &mut plx_base::checkpoint::NoCheckpoint)
     {
         Ok(Opened::Socket(t)) => {
-            let size = crate::stream::hs_content_length(hs_p);
+            let size = plx_net::stream::hs_content_length(hs_p);
             SHARED.file_size.store(size, Ordering::Release);
-            let st = crate::stream::hs_status(hs_p);
+            let st = plx_net::stream::hs_status(hs_p);
             SHARED.dg_http_status.store(st, Ordering::Relaxed);
             crate::player::log(&format!("ff: open status={st} clen={size}"));
             let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
@@ -3695,7 +3695,7 @@ fn open_plain_progressive(
             if unsafe { crate::aq::aq_is_aborted(aq_p) } {
                 return Err(MediaOpenFail::Aborted);
             }
-            let st = crate::stream::hs_status(hs_p);
+            let st = plx_net::stream::hs_status(hs_p);
             SHARED.dg_http_status.store(st, Ordering::Relaxed);
             crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
             Err(MediaOpenFail::Failed)
@@ -3716,7 +3716,7 @@ fn hls_source_read(
         return Err(HlsExit::Aborted);
     }
     let read = match src {
-        Src::Socket { hs, .. } => crate::stream::http_read_until(
+        Src::Socket { hs, .. } => plx_net::stream::http_read_until(
             *hs,
             dst.as_mut_ptr(),
             dst.len() as c_int,
@@ -3735,7 +3735,7 @@ fn hls_source_read(
         }
         return Err(HlsExit::Aborted);
     }
-    if read == crate::stream::HTTP_READ_DEADLINE || read == crate::curlio::READ_DEADLINE {
+    if read == plx_net::stream::HTTP_READ_DEADLINE || read == crate::curlio::READ_DEADLINE {
         Err(HlsExit::PrimeExpired)
     } else if read < 0 {
         Err(HlsExit::Failed("HLS response body failed"))

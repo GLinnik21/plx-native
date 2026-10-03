@@ -228,7 +228,7 @@ terms. The bundled FFmpeg cannot help — it is built `--disable-network`,
 is down resolves no `plex.direct` name, and the plaintext twin cannot carry a token in a store
 build (a consented plaintext grant needs a fresh plex.tv resource list, which an offline boot does
 not have), so the household's own server used to be unreachable exactly when it was the only thing
-left. `rust-modules/src/net/origin.rs`'s `ResolvePin` (re-exported as `plex::ResolvePin`) keeps the https origin and hands libcurl the
+left. `rust-modules/net/src/net/origin.rs`'s `ResolvePin` (re-exported as `plex::ResolvePin`) keeps the https origin and hands libcurl the
 `address` plex.tv advertised beside it through `CURLOPT_RESOLVE`, on both the control and the media
 plane; the certificate is still validated against the name. `rust-modules/src/plex/CLAUDE.md` has
 the rules, and `/tmp/plxnative-nowan` is the reproduction.

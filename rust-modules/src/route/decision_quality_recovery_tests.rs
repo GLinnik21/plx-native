@@ -1750,7 +1750,7 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
     use std::io::{BufRead, BufReader, Write};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1862,7 +1862,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     use std::io::{BufRead, BufReader, Write};
 
     let _g = fresh_registry(&mut ps);
-    if !crate::net::global_init() || !crate::curlio::available() {
+    if !plx_net::net::global_init() || !crate::curlio::available() {
         return;
     }
     let plan = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS).unwrap();
