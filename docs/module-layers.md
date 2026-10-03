@@ -384,7 +384,16 @@ on. Each extraction:
   `impl … for …` in the layers above whose trait and self type both live in other crates;
 - watches `#[macro_export]`. `dynlib!` and the `focusable_via_*!` macros keep working through
   `$crate`, but a macro body that names another layer's path needs that layer as a dependency of
-  the macro's crate.
+  the macro's crate;
+- sweeps the workflows. CI-only steps are not in `make check`: list every `run:` step of
+  `.github/workflows/*.yml` and `.github/actions/*/action.yml` and every script they invoke, and
+  look in each for a path under `rust-modules/src/` that the moved files left, a `cargo` command
+  without the full `-p` list, and a `--src` list missing the new crate. Splits 4 and 5 shipped red
+  on two such steps: `tools/font-hint-audit.py` still opened `rust-modules/src/gfx/tokens.rs`
+  (cross-build job), and the build-budget graph step counted `plx_net`'s `test-support` optional
+  dependencies because `cargo metadata` unifies features across dependency kinds (host-lint job;
+  the tool now reads `cargo tree`). Then
+  `grep -rn "rust-modules/src/" tools ci tests Makefile .github` for each moved module name.
 
 ### Split 1: base
 

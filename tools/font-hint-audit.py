@@ -37,7 +37,7 @@ except ImportError:
     sys.exit("freetype-py not installed — run: pip install freetype-py")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-THEME = os.path.join(REPO, "rust-modules", "src", "gfx", "tokens.rs")
+THEME = os.path.join(REPO, "rust-modules", "gfx", "src", "gfx", "tokens.rs")
 FONTS = {
     "bold": os.path.join(REPO, "pkg", "appfont-bold.ttf"),
     "regular": os.path.join(REPO, "pkg", "appfont.ttf"),
@@ -53,8 +53,14 @@ ACCEPTED = {("regular", 22), ("regular", 26)}
 
 def ladder():
     """size -> rung name, parsed from gfx/tokens.rs `mod size`."""
+    if not os.path.isfile(THEME):
+        sys.exit(f"font-hint-audit: the size ladder's home is missing: {THEME}\n"
+                 "  (it lives in the plx_gfx crate; if the file moved again, update THEME at the top of this script)")
     src = open(THEME).read()
-    mod = re.search(r"pub mod size \{(.*?)\n\}", src, re.S).group(1)
+    found = re.search(r"pub mod size \{(.*?)\n\}", src, re.S)
+    if not found:
+        sys.exit(f"font-hint-audit: no `pub mod size {{ ... }}` block in {THEME}")
+    mod = found.group(1)
     return {int(m.group(2)): m.group(1)
             for m in re.finditer(r"pub const (\w+): c_int = (\d+);", mod)}
 

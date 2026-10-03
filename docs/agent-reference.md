@@ -166,13 +166,16 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     `arm-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
     default features and with `--no-default-features`, which is what ships), and the number of crate
     names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
-    prints). The graph budgets run in `host-lint` from `cargo metadata`, which compiles nothing. A
-    fourth, the line count of `rust-modules/src`, only warns. Each entry records the value it was set
+    prints). The graph budgets run in `host-lint` from `cargo tree`, which compiles nothing and resolves
+    features the way a build does: `cargo metadata` unifies them across dependency kinds, so it
+    counted the layer crates' `test-support` optional dependencies (rcgen, rustls, ...) that only a
+    `[dev-dependencies]` entry switches on. A fourth, the line count of `rust-modules/src` and every
+    layer crate's `src`, only warns. Each entry records the value it was set
     from and the date (10% headroom on sizes, +3 on counts). **To raise a budget deliberately, edit
     the json in the same PR, update `measured`/`measured_on`, and justify the growth in the PR body**;
     the failing message says the same. Run it locally with
-    `python3 ci/check-build-budgets.py --graph --src rust-modules/src` (add `--binary <path>` to grade
-    a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
+    `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
+    as `ci.yml` spells it (add `--binary <path>` to grade a stripped binary); `ci/test_build_budgets.py` covers pass, fail, warn and the json schema.
   - *Live chart.* https://plxnative.com/ci/ (`site/ci/index.html`, noindex, not linked from the
     landing page) plots every CI job's minutes per successful `main` push, with a 7-run median and
     numbered markers on pushes titled `Build:` / `CI:` / `Check:`. It reads `ci-history.json` from

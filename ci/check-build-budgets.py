@@ -3,8 +3,8 @@
 
 usage: check-build-budgets.py [--budgets ci/build-budgets.json]
            [--binary PATH]                  stripped ARM binary (cross-build job)
-           [--graph]                        run `cargo metadata` for both shipping feature sets
-           [--metadata-default FILE --metadata-no-default FILE]   canned metadata (tests)
+           [--graph]                        run `cargo tree` for both shipping feature sets
+           [--tree-default FILE --tree-no-default FILE]   canned {"all": ..., "normal": ...} listings (tests)
            [--src rust-modules/src ...]       count Rust source lines of each --src (informational budget)
 
 Every budget lives in ci/build-budgets.json with the value it was set from and the date, so a
@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -101,54 +102,74 @@ def schema_problems(doc) -> list[str]:
     return problems
 
 
-def graph_metrics(metadata: dict) -> dict[str, int]:
-    """(third-party packages, duplicate crate names) for the root package's resolved graph.
+TREE_LINE = re.compile(r"^(\S+) v(\S+)(.*)$")
 
-    Packages: everything reachable over normal + build edges (what gets compiled for the shipping
-    build), dev-dependencies excluded, workspace members excluded (`source` is null for them).
-    Duplicates: crate names present in more than one version over NORMAL edges alone, which is the
-    set `cargo tree -d --edges normal` prints.
+
+def tree_packages(tree: str, workspace: Path) -> set[tuple[str, str]]:
+    """(name, version) of every third-party package a `cargo tree --prefix none` listing names.
+
+    Third-party means not built from a path inside `workspace`: the crates of this repository's own
+    layer split are path packages under rust-modules/ and are not counted, however many of them
+    there are. `cargo tree` prints `name vX.Y.Z`, then optional `(/abs/path)`, `(proc-macro)` and
+    `(*)` (already printed) markers.
     """
-    resolve = metadata.get("resolve")
-    if not resolve or not resolve.get("root"):
-        raise BudgetError("cargo metadata has no resolved root package (run it from the app crate)")
-    packages = {p["id"]: p for p in metadata["packages"]}
-    nodes = {n["id"]: n for n in resolve["nodes"]}
+    root = workspace.resolve()
+    found = set()
+    for line in tree.splitlines():
+        m = TREE_LINE.match(line.strip())
+        if not m:
+            continue
+        marks = re.findall(r"\(([^)]*)\)", m.group(3))
+        local = any(os.path.isabs(x) and Path(x).resolve().is_relative_to(root) for x in marks)
+        if not local:
+            found.add((m.group(1), m.group(2)))
+    return found
 
-    def reachable(kinds):
-        seen, stack = {resolve["root"]}, [resolve["root"]]
-        while stack:
-            for dep in nodes[stack.pop()]["deps"]:
-                if dep["pkg"] in seen:
-                    continue
-                if any(k.get("kind") in kinds for k in dep.get("dep_kinds", [])):
-                    seen.add(dep["pkg"])
-                    stack.append(dep["pkg"])
-        return {i for i in seen if packages[i].get("source")}
 
-    third_party = reachable({None, "build"})
-    normal = reachable({None})
-    names = Counter((packages[i]["name"], packages[i]["version"]) for i in normal)
-    by_name = Counter(name for name, _ in names)
+def graph_metrics(trees: dict, workspace: Path) -> dict[str, int]:
+    """(third-party packages, duplicate crate names) for the graph the SHIPPING build resolves.
+
+    `trees["all"]` is `cargo tree -e normal,build` (what gets compiled for the target build,
+    dev-dependencies excluded) and `trees["normal"]` is `cargo tree -e normal`, the set whose
+    duplicates `cargo tree -d --edges normal` prints.
+
+    It is `cargo tree` and not `cargo metadata` on purpose: metadata unifies features across every
+    dependency kind, so a layer crate's `test-support` feature (which the app crate switches on in
+    its `[dev-dependencies]` only) pulls that feature's optional crates (rcgen, rustls, ...) into
+    the "resolved graph" of a build that never compiles them. `cargo tree` resolves features the
+    way a build does, and a dev-dependency's features stay out of a non-test build.
+    """
+    for key in ("all", "normal"):
+        if not isinstance(trees.get(key), str) or not trees[key].strip():
+            raise BudgetError(f"cargo tree listing {key!r} is empty (run it from the app crate)")
+    names = Counter(name for name, _ in tree_packages(trees["normal"], workspace))
     return {
-        "packages": len(third_party),
-        "duplicates": sum(1 for n in by_name.values() if n > 1),
+        "packages": len(tree_packages(trees["all"], workspace)),
+        "duplicates": sum(1 for n in names.values() if n > 1),
     }
 
 
-def run_cargo_metadata(no_default_features: bool) -> dict:
+def run_cargo_tree(no_default_features: bool) -> dict:
     toolchain = os.environ.get("RUST_NIGHTLY", "nightly")
-    cmd = ["cargo", f"+{toolchain}", "metadata", "--format-version", "1", "--locked",
-           "--filter-platform", TARGET]
-    if no_default_features:
-        cmd.append("--no-default-features")
+    return cargo_trees(ROOT / "rust-modules", toolchain, no_default_features)
+
+
+def cargo_trees(manifest_dir: Path, toolchain: str, no_default_features: bool) -> dict:
     env = dict(os.environ, CARGO_INCREMENTAL="0")
-    try:
-        out = subprocess.run(cmd, cwd=ROOT / "rust-modules", env=env, check=True,
-                             capture_output=True, text=True, timeout=300).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise BudgetError(f"`{' '.join(cmd)}` failed: {exc}") from exc
-    return json.loads(out)
+    trees = {}
+    for key, edges in (("all", "normal,build"), ("normal", "normal")):
+        cmd = ["cargo", f"+{toolchain}", "tree", "--prefix", "none", "--edges", edges,
+               "--target", TARGET, "--format", "{p}"]
+        if (manifest_dir / "Cargo.lock").exists():
+            cmd.append("--locked")  # a drifted lockfile is a failure, never a silent re-resolve
+        if no_default_features:
+            cmd.append("--no-default-features")
+        try:
+            trees[key] = subprocess.run(cmd, cwd=manifest_dir, env=env, check=True,
+                                        capture_output=True, text=True, timeout=300).stdout
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BudgetError(f"`{' '.join(cmd)}` failed: {exc}") from exc
+    return trees
 
 
 def source_lines(src: Path) -> int:
@@ -192,16 +213,16 @@ def collect(args, budgets: dict) -> dict[str, int]:
     measured: dict[str, int] = {}
     if args.binary:
         measured["binary_bytes"] = binary_size(args.binary)
-    if args.graph or args.metadata_default or args.metadata_no_default:
-        for suffix, canned, no_default in (("default", args.metadata_default, False),
-                                           ("no_default_features", args.metadata_no_default, True)):
+    if args.graph or args.tree_default or args.tree_no_default:
+        for suffix, canned, no_default in (("default", args.tree_default, False),
+                                           ("no_default_features", args.tree_no_default, True)):
             if canned:
-                metadata = json.loads(Path(canned).read_text())
+                trees = json.loads(Path(canned).read_text())
             elif args.graph:
-                metadata = run_cargo_metadata(no_default)
+                trees = run_cargo_tree(no_default)
             else:
                 continue
-            m = graph_metrics(metadata)
+            m = graph_metrics(trees, ROOT / "rust-modules")
             measured[f"packages_{suffix}"] = m["packages"]
             measured[f"duplicate_versions_{suffix}"] = m["duplicates"]
     if args.src:
@@ -214,8 +235,8 @@ def main(argv=None) -> int:
     ap.add_argument("--budgets", default=str(DEFAULT_BUDGETS))
     ap.add_argument("--binary")
     ap.add_argument("--graph", action="store_true")
-    ap.add_argument("--metadata-default")
-    ap.add_argument("--metadata-no-default")
+    ap.add_argument("--tree-default")
+    ap.add_argument("--tree-no-default")
     ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src)")
     args = ap.parse_args(argv)
     try:
