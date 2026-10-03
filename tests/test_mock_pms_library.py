@@ -209,6 +209,36 @@ class LibraryRail(unittest.TestCase):
             server.server_close()
 
 
+class HomeHubsFlag(unittest.TestCase):
+    """#395: `--home-hubs N` makes `/hubs` answer exactly N hubs, so the app's Home row cap can be
+    exercised at 18 and 170 rows."""
+    PATH = "/hubs?count=12&excludeContinueWatching=1"
+
+    def test_home_hubs_flag_serves_the_requested_number_of_hubs(self):
+        pms = MockPms(Library())
+        pms.home_hubs = 18
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual(len(hubs), 18)
+        for h in hubs[1:]:
+            self.assertTrue(h["Metadata"])
+            for it in h["Metadata"]:
+                self.assertTrue(it["title"] and it["thumb"])
+            self.assertEqual(h["size"], len(h["Metadata"]))
+        self.assertEqual(len({h["hubIdentifier"] for h in hubs}), 18)
+        self.assertEqual(len({h["title"] for h in hubs}), 18)
+        shelf = next(h for h in hubs if h["hubIdentifier"] == "mock.shelf.3")
+        self.assertEqual(get(pms, shelf["key"])["Metadata"][:12], shelf["Metadata"])
+        self.assertLessEqual(len(get(pms, "/hubs?count=2")["Hub"][-1]["Metadata"]), 2)
+
+    def test_home_hubs_default_leaves_the_response_unchanged(self):
+        pms = MockPms(Library())
+        self.assertEqual(pms.home_hubs, 0)
+        before = pms.handle("GET", self.PATH)
+        hubs = json.loads(before[2])["MediaContainer"]["Hub"]
+        self.assertEqual([h["hubIdentifier"] for h in hubs],
+                         ["home.continue", "home.movies.recent", "home.television.recent"])
+
+
 class DoviAndExtraMedia(unittest.TestCase):
     """The DOVI*/container derivation `--extra-media` relies on — the field NAMES a real PMS
     sends (docs/pms-api.md, verified live 2026-08-21), mapped from ffprobe's own "DOVI

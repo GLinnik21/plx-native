@@ -1432,6 +1432,8 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 class MockPms:
     def __init__(self, lib):
         self.lib = lib
+        # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
+        self.home_hubs = 0
         self.lock = threading.Lock()
         self.requests = []  # (path, status) in arrival order, for the harness
         self.unknown = []
@@ -1733,9 +1735,19 @@ class MockPms:
                 hubs[0]["title"] = "Continue Watching"
             if q.get("excludeContinueWatching") != "1":
                 hubs[0]["Metadata"] = lib.continue_watching()[:12]
+            if self.home_hubs:
+                # #395: pad Home with synthetic shelves up to exactly `--home-hubs` hubs.
+                rows = lib.recent("movie", int(q.get("count", 12)))
+                for i in range(1, self.home_hubs - len(hubs) + 1):
+                    hubs.append({"title": f"Mock Shelf {i}", "type": "movie",
+                                 "hubIdentifier": f"mock.shelf.{i}", "key": f"/hubs/mock/shelf/{i}",
+                                 "more": False, "Metadata": rows})
             for h in hubs:
                 h["size"] = len(h["Metadata"])
             return j(self.container(Hub=hubs))
+        if len(segs) == 4 and segs[:3] == ["hubs", "mock", "shelf"] and self.home_hubs:
+            page, extra = paged(lib.recent("movie", 1000))
+            return j(self.container(Metadata=page, **extra))
         if catalog and p == "/hubs/continueWatching":
             rows = lib.continue_watching()[:int(q.get("count", 12))]
             return j(self.container(Hub=[{"title": "Continue Watching", "type": "mixed",
@@ -2049,7 +2061,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None,
           plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
-          refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None):
+          refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
+          home_hubs=0):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2081,6 +2094,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
                       extra_media=extra_media, loudness_analysis=loudness_analysis)
     pms = MockPms(lib)
     pms.plex_pass = plex_pass
+    pms.home_hubs = home_hubs
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
@@ -2396,6 +2410,9 @@ def main():
                     help="serve the demo library (tests/demo_library/catalog.json) instead of a seed")
     ap.add_argument("--catalog-cache", type=pathlib.Path,
                     help="the demo library cache (default $PLXNATIVE_DEMO_CACHE or ~/.cache/plxnative-demo)")
+    ap.add_argument("--home-hubs", type=int, default=0, metavar="N",
+                    help="#395: make /hubs answer exactly N hubs (synthetic 'Mock Shelf i' rows pad "
+                         "the library's own); 0 (default) leaves them as they are")
     ap.add_argument("--hero", help="with --catalog: the film at the head of Continue Watching (the hero)")
     ap.add_argument("--plaintext-only-lan", action="store_true",
                     help="PLX-NATIVE-10: /api/v2/resources answers with ONE owned server, no "
@@ -2444,6 +2461,8 @@ def main():
     a = ap.parse_args()
     if a.hero and a.catalog is None:
         ap.error("--hero needs --catalog")
+    if a.home_hubs < 0:
+        ap.error("--home-hubs must not be negative")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
@@ -2463,7 +2482,7 @@ def main():
                          loudness_analysis=not a.no_loudness_analysis,
                          refuse_enhancements=a.refuse_enhancements,
                          ignore_enhancements=a.ignore_enhancements,
-                         transcode_fixture=a.transcode_fixture)
+                         transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"
