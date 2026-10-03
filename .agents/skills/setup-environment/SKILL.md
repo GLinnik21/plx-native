@@ -56,6 +56,28 @@ Now build:
 make                  # -> pkg/plxnative
 ```
 
+### With a TV but no Plex account or token
+
+The build needs no private data, and neither does driving the TV: the app can run against the
+synthetic `tests/mock_pms.py`, which accepts any non-empty token.
+
+```bash
+echo '<tv-host>' > .tv-host      # the TV's address, one line (gitignored)
+echo '<tv-mac>'  > .tv-mac       # optional: only Wake-on-LAN needs it (cached from ARP once the TV is up)
+printf '#define PMS_HOST  "<this-mac-lan-ip>"\n#define PMS_PORT  32499\n' > src/config.local.h   # gitignored; no PMS_TOKEN
+make                             # PMS_HOST/PMS_PORT are compiled in; nothing else is read from config.local.h
+python3 tests/mock_pms.py --host 0.0.0.0 --port 32499     # LAN-reachable; the default binds loopback only
+make FLAVOR=debug install        # once per TV; later runs use `make deploy` inside the same TV lease
+tools/tv-session.sh up --guest --mock --screen home       # debug flavor only; boots the synthetic identity
+```
+
+`--mock` makes `--guest` use `tools/mock-guest.py`, which refuses any server that is not the
+synthetic mock, instead of resolving a managed user through plex.tv. Take the TV lock first
+(`tv-lock` skill). `mock_pms.py --home-hubs N` makes Home serve exactly N hubs, for work on Home
+with many rows. Without a TV, `make check`, `make sim` and the synthetic `./tests/run.py` tier
+need no account either; the `--server` tier and `--fps` read `PMS_TOKEN` and
+`tests/manifest.local.json`, which the mock path above does not provide.
+
 That's the whole setup. The sections below explain what each piece is, how to
 verify it, and how to fix it when it goes wrong — read them when the fast path
 doesn't Just Work.
