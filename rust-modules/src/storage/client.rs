@@ -74,15 +74,15 @@ impl std::fmt::Debug for Load {
 }
 
 pub(crate) fn flavor() -> Result<Flavor, ClientError> {
-    Flavor::from_app_id(crate::paths::app_id()).ok_or(ClientError::Invalid)
+    Flavor::from_app_id(plx_base::paths::app_id()).ok_or(ClientError::Invalid)
 }
 
 fn service_name() -> String {
-    format!("{}.storage", crate::paths::app_id())
+    format!("{}.storage", plx_base::paths::app_id())
 }
 
 fn runtime_path() -> PathBuf {
-    PathBuf::from(format!("/tmp/{}.storage-runtime", crate::paths::app_id()))
+    PathBuf::from(format!("/tmp/{}.storage-runtime", plx_base::paths::app_id()))
 }
 
 fn generation_text(generation: Generation) -> String {
@@ -282,7 +282,7 @@ fn activate(service: &str) -> failure::Detail {
 
 #[cfg(not(target_os = "linux"))]
 fn transact(_command: Request) -> Result<Response, ClientError> {
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("storage helper transact") });
     failure::clear();
     let _report = TransactionReport::new();
     Err(failed(Stage::Unsupported, None, ClientError::Unavailable))
@@ -352,7 +352,7 @@ static START_GATE: std::sync::Mutex<StartGate> = std::sync::Mutex::new(StartGate
 
 #[cfg(target_os = "linux")]
 fn transact(command: Request) -> Result<Response, ClientError> {
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("storage helper transact") });
     failure::clear();
     let mut report = TransactionReport::new();
     let until = Instant::now() + START_DEADLINE;
@@ -442,7 +442,7 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             } else {
                 // The native fallback hint itself waits for LS2. A memoized failure must
                 // return immediately even when that hint needs another platform round trip.
-                let _ = crate::storage_worker::submit(activate_helper);
+                let _ = plx_base::storage_worker::submit(activate_helper);
             }
             hinted = true;
         }
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "main-thread block: storage helper transact")]
     fn a_helper_call_inside_a_frame_is_rejected() {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         let _ = load();
     }
 

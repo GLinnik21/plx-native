@@ -399,7 +399,7 @@ mod tests {
     /// whole-pixel advances in the bold face `draw` uses.
     #[test]
     fn the_capsule_sentence_fits_its_block_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{LocaleContext, Preference};
         use crate::ui::machine::Measure;

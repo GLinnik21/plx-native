@@ -884,7 +884,7 @@ pub(crate) fn busy(ps: &crate::route::PlaybackSession) -> Busy {
     // sampler, rather than in `player::state()`: the pump acts on that state, and a dev switch
     // that made the engine believe it had failed would be testing a different thing than the
     // screen. `busy_surface` stays pure and ungated, so what draws is still the real rule.
-    if crate::devtrig::flag("failtest") {
+    if plx_base::devtrig::flag("failtest") {
         return Busy::Readout(StatusKind::Failed, crate::player::error_caption(ps));
     }
     busy_surface(ps, crate::player::state(ps), crate::player::seen_frame())
@@ -1935,7 +1935,7 @@ mod tests {
     /// the presenting side's (`app::run::prepare_window`), ahead of the clear.
     #[test]
     fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::text::reset_prewarm_for_test();
         let sz = theme::size::CAPTION;
         let mut warm = ClockWarm::default();
@@ -2558,7 +2558,7 @@ mod tests {
     /// footer never meets the row.
     #[test]
     fn the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         let verdict = crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text().to_owned();
         let e = crate::player::failtest_policy_shape_for_test(&verdict);
         let r = readout_of(&e);
@@ -2576,7 +2576,7 @@ mod tests {
     /// draw, measured with the device's advances, stays inside the read-out's width.
     #[test]
     fn every_failure_row_fits_the_screen_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, Preference};
         use crate::player::FailureAction as A;
@@ -2606,7 +2606,7 @@ mod tests {
     /// Every Force verdict fits the read-out's two-line reason slot, in every shipped language.
     #[test]
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();

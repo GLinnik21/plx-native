@@ -5,7 +5,7 @@
 //! far below that: `ui::consts::is_bound` has to know whether a press is the configured trigger,
 //! and the account menu and the player overflow have to know whether to show the *Send
 //! diagnostics* row. Both are functions of one thing, `lab.json`, whose reader names nothing above
-//! `crate::paths`. That reader and those two answers are therefore here, in `platform`, beside
+//! `plx_base::paths`. That reader and those two answers are therefore here, in `platform`, beside
 //! the other things this television keeps (`webos`, `devcaps`, `keymanager`); `crate::lab` reads
 //! the same `config` from above.
 //!

@@ -29,7 +29,7 @@ fn read_n(src: &mut crate::curlio::CurlSource, n: usize) -> Vec<u8> {
 
 #[test]
 fn a_media_open_on_an_expired_leaf_reads_bytes_when_its_remembered_key_is_known() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-open");
@@ -43,7 +43,7 @@ fn a_media_open_on_an_expired_leaf_reads_bytes_when_its_remembered_key_is_known(
 
 #[test]
 fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_mismatch() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-mismatch");
@@ -65,7 +65,7 @@ fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_misma
 
 #[test]
 fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-nokey");
@@ -87,7 +87,7 @@ fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before()
 /// host's LATEST strict outcome, so a strict failure that is not the date ends NoKey.
 #[test]
 fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_media_plane() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let ca = TestCaGuard::install(&cert.pem, "clock-later-media");
@@ -108,7 +108,7 @@ fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_media_plane() 
 /// at all. Both planes end the fact.
 #[test]
 fn a_refused_connection_ends_no_key_on_both_planes() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let closed_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     for plane in ["control", "media"] {
@@ -131,7 +131,7 @@ fn a_refused_connection_ends_no_key_on_both_planes() {
 
 #[test]
 fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-latch");
@@ -148,7 +148,7 @@ fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
     assert_eq!(served.accepted(), 3, "exactly one handshake");
     assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
 
-    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
+    src.reopen_until(&media_url(served.port), None, &mut plx_base::checkpoint::NoCheckpoint)
         .expect("a reopen in key mode");
     assert_eq!(served.accepted(), 4, "exactly one handshake");
     assert_eq!(read_n(&mut src, 16), media_body()[..16]);
@@ -168,7 +168,7 @@ fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
 /// The `Connection: close` double used above cannot see that, so this one keeps connections alive.
 #[test]
 fn media_key_mode_never_reuses_a_kept_alive_connection() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-media-keepalive");
@@ -198,7 +198,7 @@ fn media_key_mode_never_reuses_a_kept_alive_connection() {
     assert_eq!(served.accepted(), 3, "its own handshake, not the cached connection");
     assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
 
-    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
+    src.reopen_until(&media_url(served.port), None, &mut plx_base::checkpoint::NoCheckpoint)
         .expect("a reopen in key mode");
     assert_eq!(served.accepted(), 4, "its own handshake, not the cached connection");
     assert_eq!(read_n(&mut src, 16), media_body()[..16]);

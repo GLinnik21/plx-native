@@ -11,7 +11,7 @@ use super::test_support::*;
 /// can see, and the spinner must stop.
 #[test]
 fn a_failed_first_page_leaves_the_section_failed_and_not_loading() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page(&mut browse, -1, 0);
     assert_eq!(browse.fetch_state(), SecFetch::Failed);
@@ -28,7 +28,7 @@ fn a_failed_first_page_leaves_the_section_failed_and_not_loading() {
 /// A served page is Ready, and stays the plain "here are your items" state.
 #[test]
 fn a_served_page_leaves_the_section_ready() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page(&mut browse, 3, 3);
     assert_eq!(browse.fetch_state(), SecFetch::Ready);
@@ -41,7 +41,7 @@ fn a_served_page_leaves_the_section_ready() {
 /// rule, stated in the state machine so a screen cannot get it wrong.
 #[test]
 fn an_empty_but_successful_listing_is_ready_not_failed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page(&mut browse, 0, 0);
     assert_eq!(browse.fetch_state(), SecFetch::Ready);
@@ -54,7 +54,7 @@ fn an_empty_but_successful_listing_is_ready_not_failed() {
 /// otherwise the read-out would blame a listing the user has already replaced.
 #[test]
 fn a_requery_clears_a_previous_failure() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page(&mut browse, -1, 0);
     assert_eq!(browse.fetch_state(), SecFetch::Failed);
@@ -68,7 +68,7 @@ fn a_requery_clears_a_previous_failure() {
 /// out. A source that did not answer must be a state the screen can SEE.
 #[test]
 fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, true, false);
     assert_eq!(
@@ -88,7 +88,7 @@ fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
 /// same two `unwrap_or` defaults as a failure and so used to spin identically.
 #[test]
 fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, true, true);
     assert_eq!(
@@ -102,7 +102,7 @@ fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
 /// the state is read off the SECTION's source rather than off the current server.
 #[test]
 fn a_served_table_clears_the_failure_and_seeds_its_states() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, false, false);
     assert_eq!(browse.state.cur_source_state(), SecFetch::Failed);
@@ -127,7 +127,7 @@ fn a_served_table_clears_the_failure_and_seeds_its_states() {
 /// names two things, so every row carries its source and the two rows coexist.
 #[test]
 fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![
         a_source("mac-mini", "", true),
@@ -166,7 +166,7 @@ fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
 /// APPEND-ONLY now provides for every source rather than only for the second call.
 #[test]
 fn a_source_arriving_late_appends_and_moves_no_existing_index() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // A landing re-derives every row's favourite and, since 2026-09-05, REPOINTS `cur`
     // when that takes the current section's away — so this test's own subject (an index
     // holding still) is only well-defined against a known favourite set. Without a
@@ -241,7 +241,7 @@ fn a_source_arriving_late_appends_and_moves_no_existing_index() {
 /// to descending (most-played first) — the direction the feature exists for.
 #[test]
 fn a_movie_section_without_a_server_advertised_plays_sort_gains_exactly_one_descending_entry() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source(); // section 0 is SecKind::Movie
     land_page_with_sorts(&mut browse, vec![SortEntry {
         key: "titleSort".into(), desc_key: String::new(),
@@ -262,7 +262,7 @@ fn a_movie_section_without_a_server_advertised_plays_sort_gains_exactly_one_desc
 /// their episodes'), so a show section gains the same client-side entry.
 #[test]
 fn a_show_section_without_a_server_advertised_plays_sort_gains_it_too() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Show);
     land_page_with_sorts(&mut browse, vec![SortEntry {
         key: "titleSort".into(), desc_key: String::new(),
@@ -282,7 +282,7 @@ fn a_show_section_without_a_server_advertised_plays_sort_gains_it_too() {
 /// A section that ALREADY advertises `viewCount` (a future PMS) must not gain a duplicate row.
 #[test]
 fn a_section_that_already_advertises_view_count_gains_no_duplicate() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page_with_sorts(&mut browse, vec![
         SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
@@ -301,7 +301,7 @@ fn a_section_that_already_advertises_view_count_gains_no_duplicate() {
 /// query is built from.
 #[test]
 fn selecting_the_plays_sort_builds_the_proven_viewcount_desc_query() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page_with_sorts(&mut browse, vec![SortEntry {
         key: "titleSort".into(), desc_key: String::new(),
@@ -335,7 +335,7 @@ fn artist_and_photo_sections_have_no_seckind_and_so_cannot_reach_the_plays_sort_
 
 #[test]
 fn season_and_episode_lists_use_only_their_server_advertised_sorts() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for library_type in [LibraryType::Seasons, LibraryType::Episodes] {
         let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Show);
         assert!(browse.state.set_library_type(library_type));

@@ -418,7 +418,7 @@ pub(crate) fn take_local_damage() -> u32 {
 }
 
 /// Drain leftover gate state so another module's spring test can assert a quiet frame.
-/// Callers still take [`crate::testlock::serial`] first — this is not the lock.
+/// Callers still take [`plx_base::testlock::serial`] first — this is not the lock.
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     set_enabled(true);
@@ -727,8 +727,8 @@ mod tests {
     /// The gate's statics are reached from `gfx::spring`, which every other module's spring tests
     /// also drive — so this contends across modules, not just within this file. `testlock`, not a
     /// module-local mutex (see `lib.rs::testlock`).
-    fn fresh() -> crate::testlock::Serial {
-        let g = crate::testlock::serial();
+    fn fresh() -> plx_base::testlock::Serial {
+        let g = plx_base::testlock::serial();
         reset_for_test();
         g
     }

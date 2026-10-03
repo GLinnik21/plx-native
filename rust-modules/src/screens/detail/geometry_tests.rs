@@ -180,8 +180,8 @@ fn fixture(sid: ServerId) -> Detail {
     }
 }
 
-fn install(d: Detail) -> crate::testlock::Serial {
-    let guard = crate::testlock::serial();
+fn install(d: Detail) -> plx_base::testlock::Serial {
+    let guard = plx_base::testlock::serial();
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }

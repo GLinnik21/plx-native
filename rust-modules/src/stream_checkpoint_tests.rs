@@ -4,7 +4,7 @@
 //! checks rather than spinning.
 
 use super::*;
-use crate::checkpoint::TestCheckpoint;
+use plx_base::checkpoint::TestCheckpoint;
 use std::sync::mpsc;
 use std::time::Duration;
 

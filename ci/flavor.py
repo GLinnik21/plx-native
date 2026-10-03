@@ -184,9 +184,9 @@ def _selftest() -> int:
           "nightly control Version is the bumped nightly package version")
 
     # The same string, in three languages that cannot see each other.
-    rust = (ROOT / "rust-modules/src/paths.rs").read_text()
+    rust = (ROOT / "rust-modules/base/src/paths.rs").read_text()
     check(f'STABLE_APP_ID: &str = "{STABLE_ID}"' in rust,
-          "rust-modules/src/paths.rs STABLE_APP_ID agrees")
+          "rust-modules/base/src/paths.rs STABLE_APP_ID agrees")
     mk = (ROOT / "Makefile").read_text()
     check(re.search(rf"(?m)^APPID_STABLE\s*=\s*{re.escape(STABLE_ID)}\s*$", mk) is not None,
           "Makefile APPID_STABLE agrees")

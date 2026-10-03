@@ -228,9 +228,9 @@ impl Rung {
 ///
 /// Compiled out with `devtriggers`, so a release build cannot be pinned at all. A typed trigger
 /// (its value is a [`Rung`]), so it is parsed here, beside the one consumer, from the base-layer
-/// `crate::devtrig::read` rather than living with the primitives.
+/// `plx_base::devtrig::read` rather than living with the primitives.
 pub(crate) fn abr_pin() -> Option<Rung> {
-    let raw = crate::devtrig::read("abrpin")?;
+    let raw = plx_base::devtrig::read("abrpin")?;
     let kbps: u32 = raw.trim().parse().ok()?;
     Rung::from_request_kbps(kbps)
 }

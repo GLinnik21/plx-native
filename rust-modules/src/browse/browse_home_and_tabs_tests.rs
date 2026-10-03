@@ -16,12 +16,12 @@ fn a_failed_pin_write_keeps_the_choice_for_this_run() {
 }
 
 fn pin_choice_survives_refresh(fail: bool) {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let t = TempPins::new("pending-pin-refresh");
     t.watching("u-owner");
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let _blocker = crate::storage_worker::submit(move || {
+    let _blocker = plx_base::storage_worker::submit(move || {
         entered_tx.send(()).unwrap();
         let _ = release_rx.recv();
     }).unwrap();
@@ -29,7 +29,7 @@ fn pin_choice_survives_refresh(fail: bool) {
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
     {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         browse.state.apply_pins(&[(2, true)]);
         assert!(browse.pinned(2), "the pending choice is visible immediately");
         if !fail {
@@ -41,7 +41,7 @@ fn pin_choice_survives_refresh(fail: bool) {
         std::fs::write(t.path(), br#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#).unwrap();
     }
     release_tx.send(()).unwrap();
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     browse.state.resolve_pins();
     assert!(browse.pinned(2));
 }
@@ -55,7 +55,7 @@ fn pin_choice_survives_refresh(fail: bool) {
 /// that screen SHOWS before anybody touches it.
 #[test]
 fn your_own_libraries_start_on_home_and_a_friends_does_not() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("defaults");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
@@ -71,18 +71,18 @@ fn your_own_libraries_start_on_home_and_a_friends_does_not() {
         browse.state.toggle_pin(2),
         "…and a friend's can be turned on, which is what makes it a decision"
     );
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(browse.state.pinned_count(), 3);
     assert!(
         browse.state.toggle_pin(0) && browse.state.toggle_pin(1),
         "your own can be unpinned — a preference, not a mistake"
     );
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(browse.state.pinned_count(), 1);
 
     assert!(browse.pinned(2) && browse.state.pinned_count() == 1);
     assert!(!browse.state.toggle_pin(2), "the last pinned library is refused");
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert!(browse.pinned(2), "…and refused means UNCHANGED, not toggled twice");
     assert_eq!(browse.state.pinned_count(), 1);
 }
@@ -103,7 +103,7 @@ fn your_own_libraries_start_on_home_and_a_friends_does_not() {
 /// with the Movies pill missing, in exactly the way those two were.
 #[test]
 fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("fixture-owns-its-pins");
     t.watching("u-fixture-owns-its-pins");
     let user = crate::plex::session::current_profile_key();
@@ -156,7 +156,7 @@ fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
 /// this app one write and one generation bump, exactly as it costs one press of Done.
 #[test]
 fn apply_pins_writes_the_whole_batch_in_one_record() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("apply-pins");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
@@ -164,7 +164,7 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, false));
 
     browse.state.apply_pins(&[(2, true), (1, false)]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
         (true, false, true),
@@ -193,7 +193,7 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
 /// did not.
 #[test]
 fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("answer-agrees");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
@@ -206,7 +206,7 @@ fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
     // The one commit, carrying the one row the viewer answered: Off, which is what the live pin
     // already reads because a roster correction got there first.
     browse.state.apply_pins(&[(2, false)]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     let user = crate::plex::session::current_profile_key();
     assert_eq!(
@@ -239,7 +239,7 @@ fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
 /// A plain account owner, three of their own machines, and no share anywhere near it.
 #[test]
 fn a_commit_leaves_the_table_showing_what_it_saved() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("commit-reconcile");
     t.watching("u-owner");
     let user = crate::plex::session::current_profile_key();
@@ -283,7 +283,7 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
 
     // The viewer switches the other one on and leaves the raised row alone.
     browse.state.apply_pins(&[(1, true)]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     let saved = crate::plex::session::peek();
     let recorded = saved.pins_for(&user).and_then(|r| r.answer("mac-mini", 1));
@@ -312,7 +312,7 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
 /// is the first thing entitled to move the row again.
 #[test]
 fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("refused-commit");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
@@ -336,7 +336,7 @@ fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
 
     // One of them switched off, and Done pressed.
     browse.state.apply_pins(&[(1, false)]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
@@ -356,13 +356,13 @@ fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
 /// not working rather than as nothing having been written down.
 #[test]
 fn a_selection_survives_the_table_being_rebuilt() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("persist");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1)); // the share On, one of ours Off
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
     // …and now the table is wiped and re-discovered, which is what a profile switch, a
@@ -383,7 +383,7 @@ fn a_selection_survives_the_table_being_rebuilt() {
 /// before. `library_pins` is the join, and the recorded answer is the other half of it.
 #[test]
 fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("unenumerated");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
@@ -392,7 +392,7 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     // default it happens to agree with. Only a row somebody moved is written down now
     // (`plex::pins::answers`), so a fixture that wants a record has to make the decision.
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(2));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert!(!browse.pinned(2), "back where it started, but now on the record");
 
     // the next boot, before the share's section worker has landed
@@ -430,7 +430,7 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     t.watching("u-owner");
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2)); // the toggle IS the write; nothing else is needed
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     boot(&mut browse);
     assert!(
         browse.state.library_pins().contains(&(1, 1, true)),
@@ -457,13 +457,13 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
 /// default came back for a library the user had already decided about.
 #[test]
 fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("merge");
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2), "the friend's library goes on Home");
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, true));
 
     // a boot the share missed entirely, on which one of our own is turned off
@@ -479,7 +479,7 @@ fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
         ],
     );
     assert!(browse.state.toggle_pin(1));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert!(
         browse.state.library_pins().contains(&(1, 1, true)),
         "the absent share is still recorded On"
@@ -501,7 +501,7 @@ fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
 /// assertion: a managed profile's per-profile selection behaves exactly as the admin's does.
 #[test]
 fn two_profiles_keep_their_own_home_selections_across_a_switch() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("profiles");
     let mut browse = TestBrowse::default();
 
@@ -509,7 +509,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
     t.watching("u-dad");
     seed_two_servers_managed(&mut browse);
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
     // The kid switches in. Never asked, so the defaults — NOT dad's answer.
@@ -521,7 +521,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
         "a switch switches the shelves"
     );
     assert!(browse.state.toggle_pin(0), "…and the kid answers for themselves");
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (false, true, false));
 
     // …and back, with dad's answer intact rather than overwritten by the kid's.
@@ -537,7 +537,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
 /// for that profile — while the person beside them is still owed the question.
 #[test]
 fn the_first_run_question_is_asked_once_per_profile() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("gate");
     t.watching("u-dad");
     let mut browse = TestBrowse::default();
@@ -550,7 +550,7 @@ fn the_first_run_question_is_asked_once_per_profile() {
     // What `Start watching` — and BACK, which commits the same thing — does with nothing touched:
     // it records that the question was PUT, and no answers, because the viewer gave none.
     browse.state.record_pins(true, &[]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert!(!browse.first_run_asks(), "asked once, never again");
     t.watching("u-kid");
     assert!(
@@ -585,7 +585,7 @@ fn the_first_run_question_is_asked_once_per_profile() {
 /// same head opens.
 #[test]
 fn two_libraries_behind_one_pill_have_a_position_and_a_lone_one_has_none() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempPins::new("kind-position");
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![a_source("mac-mini", "", true)]);
@@ -646,7 +646,7 @@ fn two_libraries_behind_one_pill_have_a_position_and_a_lone_one_has_none() {
 /// is the layer at which the shared decision is reachable at all.
 #[test]
 fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempPins::new("rows-for-section");
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![a_source("mac-mini", "", true)]);
@@ -692,7 +692,7 @@ fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() 
 /// may not be derived from the current section's kind the way [`source_rows`] is.
 #[test]
 fn a_position_is_scoped_to_the_type_of_the_library_it_is_asked_about() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempPins::new("kind-position-scope");
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![a_source("mac-mini", "", true)]);
@@ -728,7 +728,7 @@ fn a_position_is_scoped_to_the_type_of_the_library_it_is_asked_about() {
 /// correct, and the app ignored it.
 #[test]
 fn switching_a_librarys_favourite_off_repoints_its_tab_at_the_one_that_is_left() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempPins::new("tab-follows-favourite");
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![a_source("mac-mini", "", true)]);
@@ -763,7 +763,7 @@ fn switching_a_librarys_favourite_off_repoints_its_tab_at_the_one_that_is_left()
 }
 #[test]
 fn switching_off_a_types_last_favourite_takes_its_pill_and_renumbers_the_rest() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -811,7 +811,7 @@ fn switching_off_a_types_last_favourite_takes_its_pill_and_renumbers_the_rest() 
 /// capsule for a borrowed library rests on its TYPE's pill, so nothing is ever homeless.
 #[test]
 fn the_tab_strip_grows_by_types_and_never_by_people() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -858,7 +858,7 @@ fn the_tab_strip_grows_by_types_and_never_by_people() {
 /// for, and a test may not be the last place a deleted feature survives.
 #[test]
 fn a_friends_library_of_a_type_you_do_not_own_gets_its_own_pill() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -919,7 +919,7 @@ fn a_friends_library_of_a_type_you_do_not_own_gets_its_own_pill() {
 /// which is what measured 2133px against a 1540px track at three friends.
 #[test]
 fn the_strip_is_the_same_row_at_one_friend_and_at_three() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -996,7 +996,7 @@ fn the_strip_is_the_same_row_at_one_friend_and_at_three() {
 /// happened to change the row.
 #[test]
 fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_pills() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -1037,7 +1037,7 @@ fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_p
 /// the strip once per source, on Home's hot path, for a strip that had not moved.
 #[test]
 fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -1093,7 +1093,7 @@ fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
 /// server's shows do.
 #[test]
 fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // The strip reads the favourite set, and the favourite set is resolved against the
     // RECORDED per-profile answer — so this test needs a session of its own, or it
     // grades whatever the host machine happens to have on disk.
@@ -1175,7 +1175,7 @@ fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
 /// Animes are being displayed"* — still open for every profile but the admin's.
 #[test]
 fn the_movies_tab_prefers_the_households_library_over_a_friends() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempPins::new("tab-household");
     t.watching("u-managed");
     let mut browse = TestBrowse::default();
@@ -1191,7 +1191,7 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
     // deliberately — a recorded answer, so the re-resolve below cannot take it back off.
     assert!(browse.pinned(1), "the household's films default On");
     assert!(browse.state.toggle_pin(0), "…and the friend's is switched on");
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     let tab = browse.state.tab_of_kind(SecKind::Movie).expect("a Movies pill");
     assert_eq!(
@@ -1236,13 +1236,13 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
 /// `discovery_needs_pump` answering `true` can only be the roster.
 #[test]
 fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
         }
     }
-    let _g = Fresh(crate::testlock::serial());
+    let _g = Fresh(plx_base::testlock::serial());
     let t = TempPins::new("late-roster");
     t.watching("u-managed");
     crate::plex::reset_servers_for_test();
@@ -1278,7 +1278,7 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
 
     // The viewer answers ONE row: the household's TV shows, off. Everything else is a default.
     assert!(browse.state.toggle_pin(1));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     // Observe the completed preference publication before isolating the later roster arrival.
     browse.sync_roster();

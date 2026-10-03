@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn a_query_slice_is_consumed_before_replacing_its_publication() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut fx = Fixture::new();
         fx.set_query("wallace");
         let prefix = fx.state.query()[..2].to_string();
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn captures_share_published_buffers_and_whitespace_preserves_the_result_identity() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut fx, old) = publish_fixture();
         let another = fx.snapshot();
         assert!(old.same_publication(&another));
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn query_replacement_and_profile_reset_cannot_rewrite_a_retained_view() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut fx, old) = publish_fixture();
         fx.set_query("gromit");
         let next = fx.snapshot();
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn optimistic_edits_copy_on_write_and_preserve_the_old_item() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut fx, old) = publish_fixture();
         let watched = |snapshot: &SearchSnapshot| match &snapshot.view().shelves()[0].items[0] {
             Item::Media(item) => item.watched,
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn rebuilding_a_source_answer_replaces_only_the_new_publication() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         struct RegistryReset;
         impl Drop for RegistryReset { fn drop(&mut self) { crate::plex::reset_servers_for_test(); } }
         let _registry = RegistryReset;

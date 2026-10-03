@@ -5,9 +5,9 @@
 //! not the rest of the sentence. The Spanish and Belarusian "found your server, but not over HTTPS"
 //! and "none of your servers answered" reasons lost their remedy — the half of the read-out that
 //! says what to do — to that ellipsis while the English fitted. Measured with
-//! [`crate::fontcov::advances::ShippedMeasure`], the device's own whole-pixel advances.
+//! [`plx_base::fontcov::advances::ShippedMeasure`], the device's own whole-pixel advances.
 
-use crate::fontcov::advances::ShippedMeasure;
+use plx_base::fontcov::advances::ShippedMeasure;
 use crate::ui::fit::HEADROOM;
 use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
 use crate::ui::widgets::StatusOverlay;

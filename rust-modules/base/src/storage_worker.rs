@@ -9,24 +9,24 @@ use std::sync::Mutex;
 
 /// Shared persistence queue bound. Domain adapters must submit immutable snapshots and never
 /// perform disk I/O inline on the caller.
-pub(crate) const CAPACITY: usize = 8;
+pub const CAPACITY: usize = 8;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SubmitError {
+pub enum SubmitError {
     Full,
     Stopped,
     StartFailed,
 }
 
-pub(crate) struct TypedTicket<R> {
+pub struct TypedTicket<R> {
     result: Receiver<R>,
     worker: Receiver<()>,
 }
 
 impl<R> TypedTicket<R> {
-    pub(crate) fn try_recv(&self) -> Result<R, TryRecvError> {
+    pub fn try_recv(&self) -> Result<R, TryRecvError> {
         match self.result.try_recv() {
             Err(TryRecvError::Disconnected)
                 if matches!(self.worker.try_recv(), Err(TryRecvError::Empty)) =>
@@ -40,8 +40,8 @@ impl<R> TypedTicket<R> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
         match self.result.recv() {
             Ok(result) => Ok(result),
             Err(error) => {
@@ -52,13 +52,13 @@ impl<R> TypedTicket<R> {
     }
 }
 
-pub(crate) struct Executor {
+pub struct Executor {
     writer: Writer<Job, ()>,
 }
 
 static SHARED: Mutex<Option<Executor>> = Mutex::new(None);
 
-pub(crate) fn submit<R: Send + 'static>(
+pub fn submit<R: Send + 'static>(
     operation: impl FnOnce() -> R + Send + 'static,
 ) -> Result<TypedTicket<R>, SubmitError> {
     submit_shared(&SHARED, || Executor::start(CAPACITY), operation)
@@ -94,7 +94,7 @@ static RETAINED: Mutex<Retained> = Mutex::new(Retained {
     jobs: std::collections::VecDeque::new(), retry_at: None,
 });
 
-pub(crate) fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R + Send + 'static)
+pub fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R + Send + 'static)
     -> TypedTicket<R> {
     let (reply, result) = mpsc::channel();
     let (done, worker) = mpsc::channel();
@@ -108,7 +108,7 @@ pub(crate) fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R +
     TypedTicket { result, worker }
 }
 
-pub(crate) fn pump_retained() {
+pub fn pump_retained() {
     pump_retained_locked(&mut RETAINED.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
@@ -139,8 +139,8 @@ fn pump_retained_locked(retained: &mut Retained) {
 /// Wait until every job accepted before this call has finished. Test redirects are process-wide;
 /// draining before moving one prevents a detached persistence callback from following the next
 /// test's root. Production has no exit-time flush promise and never calls this.
-#[cfg(test)]
-pub(crate) fn drain_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn drain_for_test() {
     loop {
         pump_retained();
         match submit(|| ()) {
@@ -155,7 +155,7 @@ pub(crate) fn drain_for_test() {
 }
 
 impl Executor {
-    pub(crate) fn start(capacity: usize) -> Result<Self, std::io::Error> {
+    pub fn start(capacity: usize) -> Result<Self, std::io::Error> {
         Self::from_writer(Writer::start("persistence", capacity, |job: Job| job()))
     }
 
@@ -165,7 +165,7 @@ impl Executor {
         result.map(|writer| Self { writer })
     }
 
-    pub(crate) fn submit<R: Send + 'static>(
+    pub fn submit<R: Send + 'static>(
         &self,
         operation: impl FnOnce() -> R + Send + 'static,
     ) -> Result<TypedTicket<R>, SubmitError> {
@@ -190,26 +190,26 @@ impl Executor {
 }
 
 // Keep the generic Writer's command error distinct from the typed executor's public result.
-pub(crate) struct Writer<C, R> {
+pub struct Writer<C, R> {
     sender: SyncSender<(C, mpsc::Sender<R>)>,
 }
 
-pub(crate) enum SubmitErrorGeneric<C> {
+pub enum SubmitErrorGeneric<C> {
     Full(C),
     Stopped(C),
 }
 
-pub(crate) struct Ticket<R>(Receiver<R>);
+pub struct Ticket<R>(Receiver<R>);
 
 impl<R> Ticket<R> {
-    #[cfg(test)]
-    pub(crate) fn try_recv(&self) -> Result<R, TryRecvError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn try_recv(&self) -> Result<R, TryRecvError> {
         self.0.try_recv()
     }
 
     /// Only background callers and tests may wait; the SDL thread polls `try_recv` instead.
-    #[cfg(test)]
-    pub(crate) fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
         self.0.recv()
     }
 }
@@ -224,7 +224,7 @@ impl<C, R> Clone for Writer<C, R> {
 
 impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
     /// Capacity bounds queued commands, plus at most one command executing in the callback.
-    pub(crate) fn start(
+    pub fn start(
         name: &str,
         capacity: usize,
         mut handle: impl FnMut(C) -> R + Send + 'static,
@@ -259,13 +259,13 @@ impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
         Ok(Self { sender })
     }
 
-    #[cfg(test)]
-    pub(crate) fn submit(&self, command: C) -> Result<(), SubmitErrorGeneric<C>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn submit(&self, command: C) -> Result<(), SubmitErrorGeneric<C>> {
         let (tx, _rx) = mpsc::channel();
         self.submit_with_reply(command, tx)
     }
 
-    pub(crate) fn submit_ticket(&self, command: C) -> Result<Ticket<R>, SubmitErrorGeneric<C>> {
+    pub fn submit_ticket(&self, command: C) -> Result<Ticket<R>, SubmitErrorGeneric<C>> {
         let (tx, rx) = mpsc::channel();
         self.submit_with_reply(command, tx).map(|()| Ticket(rx))
     }

@@ -35,7 +35,7 @@ impl LibraryLike for TestHost {
 
 #[test]
 fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-actions");
     session.watching("u-library-shelf-actions");
     let stores = crate::stores::Stores::default();
@@ -147,7 +147,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
 fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection() {
     use crate::ui::focus::Outcome;
     use crate::ui::screen::{DrawFrame, Hover};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-linked-heading");
     session.watching("u-library-linked-heading");
     let stores = crate::stores::Stores::default();

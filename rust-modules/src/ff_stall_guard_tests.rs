@@ -17,7 +17,7 @@ use super::test_support::*;
 /// physical reserve has spent nothing and therefore cannot.
 #[test]
 fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
     crate::player::SHARED
         .playpos_ns
@@ -78,7 +78,7 @@ fn an_existing_terminal_hold_arms_no_second_abort() {
 /// playback is paused or re-priming without consuming one millisecond of queued media.
 #[test]
 fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
     crate::player::SHARED
         .playpos_ns
@@ -101,7 +101,7 @@ fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
 /// reserve exactly as before, and a fetch that provably cannot land still aborts.
 #[test]
 fn a_fetch_the_playhead_is_consuming_still_aborts() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
     let guard = StallGuard {
         reserve_ms_at_start: 2_000,
@@ -140,7 +140,7 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
 fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_policy() {
     use std::io::{Read, Write};
 
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     crate::player::SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
@@ -311,7 +311,7 @@ fn for_cursor_with_no_controller_is_unarmed() {
 /// `read_cb` would have produced for an armed guard under a published hold.
 #[test]
 fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_armed() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
 
     // Live inputs `SegmentAcquisition::for_cursor` samples for ITSELF — a real reserve, no
     // existing hold — so it is the constructor's own evaluation, not a test-supplied bool, that
@@ -429,7 +429,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
 /// Starfish was paused.
 #[test]
 fn a_terminal_hold_aborts_only_an_incomplete_response() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     crate::player::SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
@@ -506,7 +506,7 @@ impl ScriptedPms {
         let acceptor = std::thread::spawn(move || {
             let mut handlers = Vec::new();
             while !st.load(Ordering::Acquire) {
-                let socket = match crate::testnet::accept(&listener) {
+                let socket = match plx_base::testnet::accept(&listener) {
                     Ok((socket, _)) => socket,
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -724,13 +724,13 @@ fn demux_against(
 
 /// Wait on the runtime's answers for the `n`th `Continue` in `phase`.
 fn await_continue(
-    answers: &std::sync::mpsc::Receiver<(Phase, crate::checkpoint::Flow)>,
+    answers: &std::sync::mpsc::Receiver<(Phase, plx_base::checkpoint::Flow)>,
     phase: Phase,
     n: usize,
 ) -> bool {
     let mut seen = 0;
     while let Ok((at, flow)) = answers.recv_timeout(std::time::Duration::from_secs(5)) {
-        if at == phase && matches!(flow, crate::checkpoint::Flow::Continue { .. }) {
+        if at == phase && matches!(flow, plx_base::checkpoint::Flow::Continue { .. }) {
             seen += 1;
             if seen == n {
                 return true;
@@ -840,7 +840,7 @@ fn assert_prompt_zero_byte_stall_abort(run: &DemuxRun, leg: &str) {
 /// transport watchdog with the picture frozen.
 #[test]
 fn a_hold_accepted_while_the_open_waits_for_headers_abandons_the_fetch() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
     let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
@@ -852,7 +852,7 @@ fn a_hold_accepted_while_the_open_waits_for_headers_abandons_the_fetch() {
 /// fetch started with.
 #[test]
 fn a_playhead_that_spends_the_reserve_during_the_open_abandons_the_fetch() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
     let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false);
@@ -874,7 +874,7 @@ fn a_playhead_that_spends_the_reserve_during_the_open_abandons_the_fetch() {
 /// back to the server for the object it has just abandoned.
 #[test]
 fn a_hold_accepted_during_the_not_ready_wait_abandons_the_fetch_without_another_get() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms =
         ScriptedPms::start(|_| Reply::Send(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
@@ -895,7 +895,7 @@ struct BlockedRead {
     latched: bool,
     torn_down: bool,
     /// The runtime's answers AFTER the hold was published.
-    after_hold: Vec<(Phase, crate::checkpoint::Flow)>,
+    after_hold: Vec<(Phase, plx_base::checkpoint::Flow)>,
     /// A third `read_cb`, when the second returned bytes.
     third: Option<c_int>,
     accepts: usize,
@@ -993,7 +993,7 @@ fn blocked_body_read(
 /// with the abort latched, not by bytes or the watchdog.
 #[test]
 fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
@@ -1014,7 +1014,7 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
     );
     assert_eq!(
         run.after_hold.first(),
-        Some(&(Phase::Body, crate::checkpoint::Flow::Stop)),
+        Some(&(Phase::Body, plx_base::checkpoint::Flow::Stop)),
         "a check after the published hold is what stopped it"
     );
 }
@@ -1025,7 +1025,7 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
 /// stall abort, never as a transport failure.
 #[test]
 fn a_hold_before_a_body_reads_short_deadline_settles_as_a_stall_abort() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
@@ -1047,7 +1047,7 @@ fn a_hold_before_a_body_reads_short_deadline_settles_as_a_stall_abort() {
 /// keeps the transport classification.
 #[test]
 fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
@@ -1071,7 +1071,7 @@ fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification()
 /// waiting on the same connection, and returns the rest when PMS sends it.
 #[test]
 fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::PrefixThenRelease(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD", b"EFGH"),
@@ -1114,7 +1114,7 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
 /// observable is the second GET, not the connection count.
 #[test]
 fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|n| {
         Reply::Send(if n == 0 {
@@ -1145,7 +1145,7 @@ fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
 /// deadline's own classification.
 #[test]
 fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
     let acquisition = SegmentAcquisition::for_test_with_deadline(
@@ -1163,7 +1163,7 @@ fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
 /// deadline's own classification.
 #[test]
 fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
     let acquisition = SegmentAcquisition::for_test_with_deadline(
@@ -1193,7 +1193,7 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
 /// "invalid segment timing".
 #[test]
 fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     SHARED
         .hls_video_tail_ns
@@ -1276,7 +1276,7 @@ fn runtime_for(acquisition: SegmentAcquisition, aq: &mut AuQueue) -> Acquisition
 }
 
 fn stops(runtime: &mut AcquisitionRuntime) -> bool {
-    crate::checkpoint::Checkpoint::check(runtime) == crate::checkpoint::Flow::Stop
+    plx_base::checkpoint::Checkpoint::check(runtime) == plx_base::checkpoint::Flow::Stop
 }
 
 /// At the ladder floor the boundary asks for the hold exactly once and the SAME open carries on:
@@ -1285,7 +1285,7 @@ fn stops(runtime: &mut AcquisitionRuntime) -> bool {
 /// the host does not bind.
 #[test]
 fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| {
         Reply::AfterRelease(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nABCD")
@@ -1363,7 +1363,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
 
 #[test]
 fn a_floor_runtime_requests_the_hold_once_then_disarms() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
@@ -1377,8 +1377,8 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
         "asked once"
     );
     assert_eq!(
-        crate::checkpoint::Checkpoint::check(&mut runtime),
-        crate::checkpoint::Flow::Continue { next_check: None },
+        plx_base::checkpoint::Checkpoint::check(&mut runtime),
+        plx_base::checkpoint::Flow::Continue { next_check: None },
         "disarmed: nothing left to check"
     );
     assert!(
@@ -1392,7 +1392,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
 /// stop them; an armed runtime re-asks no later than one slice.
 #[test]
 fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut armed = runtime_for(
@@ -1400,8 +1400,8 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
         &mut aq,
     );
     let before = std::time::Instant::now();
-    match crate::checkpoint::Checkpoint::check(&mut armed) {
-        crate::checkpoint::Flow::Continue {
+    match plx_base::checkpoint::Checkpoint::check(&mut armed) {
+        plx_base::checkpoint::Flow::Continue {
             next_check: Some(at),
         } => assert!(
             at <= before + acquisition::CHECK_SLICE + std::time::Duration::from_millis(50),
@@ -1424,8 +1424,8 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
         .store(PLAYHEAD_NS + 60_000_000_000, Ordering::Relaxed);
     for (role, runtime) in [("candidate", &mut candidate), ("already held", &mut held)] {
         assert_eq!(
-            crate::checkpoint::Checkpoint::check(runtime),
-            crate::checkpoint::Flow::Continue { next_check: None },
+            plx_base::checkpoint::Checkpoint::check(runtime),
+            plx_base::checkpoint::Flow::Continue { next_check: None },
             "{role}: never stops, never polls"
         );
     }
@@ -1435,7 +1435,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
 /// A hold accepted AND released between two checks still moved the epoch: it is seen.
 #[test]
 fn a_hold_that_came_and_went_between_checks_is_still_seen() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
@@ -1455,7 +1455,7 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
 /// complete only at its confirmed end.
 #[test]
 fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let armed = || SegmentAcquisition::for_test(Some(6_000), false, false);
@@ -1481,7 +1481,7 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
 /// Teardown outranks a simultaneous hold: the fetch ends as `Aborted`, never as recovery evidence.
 #[test]
 fn teardown_outranks_a_simultaneous_hold() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
@@ -1502,7 +1502,7 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let wait = std::time::Duration::from_millis(120);
     let mut rechecking =
-        crate::checkpoint::TestCheckpoint::every(std::time::Duration::from_millis(10));
+        plx_base::checkpoint::TestCheckpoint::every(std::time::Duration::from_millis(10));
     let started = std::time::Instant::now();
     assert!(hls_wait(&mut *aq, wait, None, &mut rechecking).is_ok());
     assert!(
@@ -1514,7 +1514,7 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
         "the wait re-asked as its checks fell due"
     );
     let mut stopping =
-        crate::checkpoint::TestCheckpoint::stopping_after(1, std::time::Duration::from_millis(10));
+        plx_base::checkpoint::TestCheckpoint::stopping_after(1, std::time::Duration::from_millis(10));
     let started = std::time::Instant::now();
     let stopped = hls_wait(
         &mut *aq,
@@ -1570,7 +1570,7 @@ fn read_across_a_hold_with_the_body(
 ) -> Option<HeldBodyRead> {
     use std::io::{Read, Write};
     let _serial = match transport {
-        HeldTransport::Socket => crate::testlock::serial(),
+        HeldTransport::Socket => plx_base::testlock::serial(),
         HeldTransport::Curl => curl_gate()?,
     };
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
@@ -1830,7 +1830,7 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
 #[test]
 fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
     use std::io::{Read, Write};
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
     let port = listener.local_addr().unwrap().port();

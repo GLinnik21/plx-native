@@ -19,7 +19,7 @@ extern "C" {
     fn free(ptr: *mut c_void);
 }
 
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 
 /// The decode budget, sized for THIS device. `image`'s defaults are not one: `max_image_width` and
 /// `max_image_height` default to `None` — no dimension cap at all — and `max_alloc` to **512 MiB**,
@@ -60,7 +60,7 @@ fn decode_limits() -> image::Limits {
     l.max_alloc = Some(32 * 1024 * 1024);
     // The simulator's supersampled renders request up to 4x these boxes, on a host with the memory.
     #[cfg(feature = "hostsim")]
-    if crate::surface::render_scale() > 1 {
+    if plx_base::surface::render_scale() > 1 {
         l.max_image_width = Some(16384);
         l.max_image_height = Some(16384);
         l.max_alloc = Some(512 * 1024 * 1024);

@@ -1445,7 +1445,7 @@ mod tests {
     fn discovery_and_text_recording_keep_visible_cards_when_gl_is_suppressed() {
         use crate::ui::frame::backdrop::{self, Sources};
         use std::{cell::RefCell, rc::Rc};
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         sources.borrow_mut().begin(vec![]);
         let _walk = backdrop::discover(sources);
@@ -1460,7 +1460,7 @@ mod tests {
 
     #[test]
     fn card_paint_culling_keeps_shadow_and_pressed_caption_at_viewport_edges() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let p = super::Painter::root();
         let just_above = super::Rect::new(100.0, -250.0, 400.0, 220.0);
         assert!(super::paint_visible(p, just_above, 1.0, false), "the shadow reaches the panel");
@@ -2008,7 +2008,7 @@ mod tests {
     /// one that is only ever caught here.
     #[test]
     fn the_label_band_reports_while_it_opens_and_goes_quiet_once_it_has() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut row = CardRow::new();
         let sty = RowStyle::HOME;
 

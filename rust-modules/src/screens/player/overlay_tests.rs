@@ -299,7 +299,7 @@ fn more_open(page: &mut PlayerOverlayScreen, row: MoreRow) -> (Handled, Vec<Play
 #[test]
 fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
     use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
@@ -344,7 +344,7 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
 #[test]
 fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     use crate::ui::screen::{DrawFrame, Screen};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
@@ -552,7 +552,7 @@ fn tracks_selected(page: &PlayerOverlayScreen) -> Option<TrackRow> {
 /// still commits and closes. OK on a Nav row pushes a page and asks for nothing.
 #[test]
 fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
-    let _g = crate::testlock::serial(); // the panel seeds its tone from the player's global
+    let _g = plx_base::testlock::serial(); // the panel seeds its tone from the player's global
     crate::player::restore_subtitle_tone(crate::plex::session::SubtitleTone::White);
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
@@ -592,7 +592,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
 #[test]
 fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
     use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
@@ -630,7 +630,7 @@ fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
 #[test]
 fn clicking_the_title_band_pops_one_page() {
     use crate::ui::screen::DrawFrame;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
@@ -667,7 +667,7 @@ fn clicking_the_title_band_pops_one_page() {
 #[test]
 fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     use crate::ui::screen::{DrawFrame, Screen};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
@@ -708,7 +708,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
 #[test]
 fn the_replay_canon_includes_the_page_path_and_return_ids() {
     use crate::ui::machine::{Canon, LogicalState};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let fp = |page: &PlayerOverlayScreen| {
@@ -744,7 +744,7 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
 /// panel would throw away the viewer's place for no effect at all.
 #[test]
 fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -789,7 +789,7 @@ fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<crate::
 /// about to hide would be dead motion.
 #[test]
 fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -832,7 +832,7 @@ fn timings_word_and_slot() {
 /// both.
 #[test]
 fn timing_left_and_right_commit_subtitle_offset() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -860,7 +860,7 @@ fn timing_left_and_right_commit_subtitle_offset() {
 /// every way the surface can close).
 #[test]
 fn timing_ok_and_back_close_and_keep_the_offset() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(300);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -878,7 +878,7 @@ fn timing_ok_and_back_close_and_keep_the_offset() {
 /// checked before the Timing branch in `key()` so the capsule never swallows it.
 #[test]
 fn timing_forwards_transport_and_leaves_the_capsule_up() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -894,7 +894,7 @@ fn timing_forwards_transport_and_leaves_the_capsule_up() {
 /// read time would fight that.
 #[test]
 fn timing_ticks_do_not_extend_the_hud() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
@@ -1037,7 +1037,7 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
 fn a_pointer_click_activates_the_row_it_hit_by_key() {
     use crate::ui::hit::HitMap;
     use crate::ui::screen::DrawFrame;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::sidecar::reset();
     let ps = crate::route::PlaybackSession::IDLE;
     let mut store = crate::stores::metadata::MetadataStore::default();
@@ -1096,7 +1096,7 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
 fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     use crate::ui::hit::{pointer_gaps, HitMap};
     use crate::ui::screen::DrawFrame;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     for kind in [
         OverlayKind::Tracks { tab: 0 },

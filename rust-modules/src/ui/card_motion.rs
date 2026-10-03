@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn scopes_exclude_hero_work_restore_on_exit_and_unknown_misses_wake() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         assert!(!declines_request());
         {
             let _scope = Scope::moving_for_test();

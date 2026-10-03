@@ -53,7 +53,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 
 /// The listener's port for the app users install. A flavoured install steps off it — see
 /// [`default_port`].
@@ -80,7 +80,7 @@ const STABLE_PORT: u16 = 8910;
 /// compares the two. A FOURTH flavour needs its own decision in both places, the same way nightly
 /// just did, and the selftest is what will say so.
 pub(crate) fn default_port() -> u16 {
-    match crate::paths::flavour() {
+    match plx_base::paths::flavour() {
         None => STABLE_PORT,
         Some("debug") => STABLE_PORT + 1,
         Some("nightly") => STABLE_PORT + 2,
@@ -144,15 +144,15 @@ static CYC_N: AtomicU32 = AtomicU32::new(0);
 /// create a file in a world-writable `/tmp`. The gate is `devtrig::read` below being compile-time
 /// `None` without the `devtriggers` feature, which makes the two `spawn`s unreachable.
 pub(crate) fn init() {
-    let Some(content) = crate::devtrig::read("capture") else {
+    let Some(content) = plx_base::devtrig::read("capture") else {
         return;
     };
     let port: u16 = content.parse().unwrap_or_else(|_| default_port());
     let mut hs = HANDLES.lock().unwrap();
     // Both halves are required — a listener with no encoder serves an empty stream — but whatever
     // did spawn still goes into HANDLES (Option is IntoIterator) so `shutdown` joins it either way.
-    let listener = crate::task::spawn("cap-listen", move || caplisten(port));
-    let encoder = crate::task::spawn("cap-encode", capenc);
+    let listener = plx_base::task::spawn("cap-listen", move || caplisten(port));
+    let encoder = plx_base::task::spawn("cap-encode", capenc);
     let both = listener.is_some() && encoder.is_some();
     hs.extend(listener);
     hs.extend(encoder);
@@ -186,7 +186,7 @@ pub(crate) fn shutdown() {
     for h in HANDLES.lock().unwrap().drain(..) {
         // one aggregate name: the Vec mixes cap-listen and cap-encode, and which one stalled is a
         // question for the next person who sees a number here at all
-        crate::task::join("capture", h);
+        plx_base::task::join("capture", h);
     }
 }
 
@@ -219,7 +219,7 @@ pub(crate) fn tick(now: u32) {
     // A GL downscale and readback: GL work, labelled so for the hang watchdog.
     let cycle = {
         #[cfg(feature = "threadcheck")]
-        let _readback = crate::task::watchdog::readback_scope();
+        let _readback = plx_base::task::watchdog::readback_scope();
         crate::gfx::cap_cycle(want_960, &mut buf)
     };
     match cycle {
@@ -469,7 +469,7 @@ struct TurboJpeg {
 fn tj_load() -> Option<TurboJpeg> {
     unsafe {
         let path = std::ffi::CString::new(
-            crate::paths::in_app_dir("libturbojpeg.so.0")
+            plx_base::paths::in_app_dir("libturbojpeg.so.0")
                 .into_os_string()
                 .into_string()
                 .ok()?,

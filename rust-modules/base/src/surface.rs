@@ -38,8 +38,8 @@ extern "C" {
 /// five independent literals that agreed only because they were all typed the same; a module whose
 /// whole premise is "do not assume the drawable equals the canvas" should not leave four other
 /// answers to what the canvas is. Not a guess about any device.
-pub(crate) const LOGICAL_W: f32 = 1920.0;
-pub(crate) const LOGICAL_H: f32 = 1080.0;
+pub const LOGICAL_W: f32 = 1920.0;
+pub const LOGICAL_H: f32 = 1080.0;
 
 /// The real drawable, in pixels. Starts at the logical size so any reader before [`probe`] gets
 /// today's behaviour rather than a zero.
@@ -89,7 +89,7 @@ fn drawable() -> (i32, i32) {
 /// through the same shaders. The compositor's upscale, by contrast, is free and in hardware. A
 /// sharper interface at 20 fps is not a better interface.
 #[inline]
-pub(crate) fn scale() -> f32 {
+pub fn scale() -> f32 {
     f32::from_bits(SCALE_BITS.load(Ordering::Relaxed))
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn scale() -> f32 {
 /// this rect is the entire logical->physical mapping; nothing else in the renderer knows the
 /// drawable size at all.
 #[inline]
-pub(crate) fn viewport() -> (i32, i32, i32, i32) {
+pub fn viewport() -> (i32, i32, i32, i32) {
     (
         VX.load(Ordering::Relaxed),
         VY.load(Ordering::Relaxed),
@@ -134,7 +134,7 @@ fn recompute() {
 /// (glyphs, icon masks, poster requests) consult this to rasterise at `n`x and draw at the same
 /// logical size; layout never sees it.
 #[cfg(feature = "hostsim")]
-pub(crate) fn render_scale() -> i32 {
+pub fn render_scale() -> i32 {
     static S: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *S.get_or_init(|| {
         std::env::var("PLXNATIVE_RENDER_SCALE")
@@ -146,7 +146,7 @@ pub(crate) fn render_scale() -> i32 {
 }
 #[cfg(not(feature = "hostsim"))]
 #[inline]
-pub(crate) const fn render_scale() -> i32 {
+pub const fn render_scale() -> i32 {
     1
 }
 
@@ -154,7 +154,7 @@ pub(crate) const fn render_scale() -> i32 {
 /// of a literal 0. A page being rendered straight into a snapshot ([`PageTarget`]) first, then the
 /// supersampling target when [`render_scale`] is above 1, else 0.
 #[inline]
-pub(crate) fn default_fb() -> u32 {
+pub fn default_fb() -> u32 {
     match PAGE_TARGET.load(Ordering::Relaxed) {
         0 => frame_fb(),
         fbo => fbo,
@@ -164,12 +164,12 @@ pub(crate) fn default_fb() -> u32 {
 /// The framebuffer the frame is PRESENTED from — [`default_fb`] without the page redirect.
 #[cfg(feature = "hostsim")]
 #[inline]
-pub(crate) fn frame_fb() -> u32 {
+pub fn frame_fb() -> u32 {
     SS_FBO.load(Ordering::Relaxed)
 }
 #[cfg(not(feature = "hostsim"))]
 #[inline]
-pub(crate) const fn frame_fb() -> u32 {
+pub const fn frame_fb() -> u32 {
     0
 }
 
@@ -183,13 +183,13 @@ static PAGE_TARGET: AtomicU32 = AtomicU32::new(0);
 /// snapshot rather than to the frame, and the page lands in the texture the modal is then served
 /// from. Dropping it binds the frame's own framebuffer again. The texture behind `fbo` has to be
 /// the drawable's size, so the viewport and every scissor mean the same pixels in both.
-pub(crate) struct PageTarget {
+pub struct PageTarget {
     _private: (),
 }
 
 impl PageTarget {
     /// Bind `fbo` and make it the page's target. `fbo` must be complete; the caller checked.
-    pub(crate) fn enter(fbo: u32) -> Self {
+    pub fn enter(fbo: u32) -> Self {
         debug_assert!(fbo != 0, "a page target is an FBO, never the window");
         debug_assert_eq!(PAGE_TARGET.load(Ordering::Relaxed), 0, "page targets do not nest");
         PAGE_TARGET.store(fbo, Ordering::Relaxed);
@@ -289,7 +289,7 @@ unsafe fn create_supersample_fb(w: c_int, h: c_int) -> Option<u32> {
 /// look at, then rebind the offscreen target for the next frame. Call after the shot, before the
 /// swap. A no-op unless supersampling.
 #[cfg(feature = "hostsim")]
-pub(crate) fn present_supersampled() {
+pub fn present_supersampled() {
     let fbo = frame_fb();
     if fbo == 0 {
         return;
@@ -342,7 +342,7 @@ fn pointer_map() -> (f32, i32, i32) {
 /// and Magic-Remote click in the wrong place, which reads as "the pointer is broken" rather than
 /// as a resolution problem.
 #[inline]
-pub(crate) fn to_logical(px: f32, py: f32) -> (f32, f32) {
+pub fn to_logical(px: f32, py: f32) -> (f32, f32) {
     let (s, vx, vy) = pointer_map();
     ((px - vx as f32) / s, (py - vy as f32) / s)
 }
@@ -352,7 +352,7 @@ pub(crate) fn to_logical(px: f32, py: f32) -> (f32, f32) {
 /// pushes them onto SDL's own queue, where the ordinary handler picks them up and converts them
 /// back. Without this the synthetic path would be transformed once too often on a scaled surface.
 #[inline]
-pub(crate) fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
+pub fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
     let (s, vx, vy) = pointer_map();
     (lx * s + vx as f32, ly * s + vy as f32)
 }
@@ -362,7 +362,7 @@ pub(crate) fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
 /// `SDL_GL_GetDrawableSize` is the authority — on a HiDPI-style surface it and `SDL_GetWindowSize`
 /// disagree, and it is the former that `glViewport` speaks. Both are logged because the pair is
 /// what tells you which situation you are in.
-pub(crate) fn probe(win: *mut c_void) {
+pub fn probe(win: *mut c_void) {
     unsafe {
         let (mut ww, mut wh) = (0, 0);
         SDL_GetWindowSize(win, &mut ww, &mut wh);

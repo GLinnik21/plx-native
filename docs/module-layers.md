@@ -8,7 +8,8 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split.
+up the split. **The split has started: `base` is its own crate, `plx_base`** (`rust-modules/base/`,
+"Split 1: base" below); the other thirteen layers are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -379,6 +380,57 @@ on. Each extraction:
 - watches `#[macro_export]`. `dynlib!` and the `focusable_via_*!` macros keep working through
   `$crate`, but a macro body that names another layer's path needs that layer as a dependency of
   the macro's crate.
+
+### Split 1: base
+
+`base` was extracted first: `rust-modules/base/` is the workspace member `plx_base` (an `rlib`, in
+the workspace beside the storage helper), `plxnative-modules` depends on it by path and is still
+the one crate the Makefile links as a `staticlib`. Its members are the `[base]` list in
+`ci/module-layers.ini`; `diag::{heartbeat, spans, zlib}` left `diag` and are `plx_base::diag::*`
+(`base/src/diag.rs` holds only those three, and the application's own `diag` is a different module
+of the same name). Every `crate::<member>::` in the application became `plx_base::<member>::`,
+written by a script, not by hand; the only hand edits were `lib.rs`'s two simulator accessors.
+What the extraction taught, beyond what the recipe above predicted:
+
+- **`--report`'s 8 items were not the whole `cfg(test)` surface.** Behaviour hangs on `cfg(test)`
+  in `base` too: the watchdog disarms itself (`task::watchdog`), `assert_may_block` panics instead of
+  aborting (`task::blocking`), `persistent_state_root` resolves to a per-process scratch directory
+  (`paths`), `diag::heartbeat` stubs the two SDL clock calls so a test binary links no SDL, and
+  `devtrig` arms its readers. A dependent's tests build `plx_base` without `cfg(test)`, so all of
+  those would have silently run in their shipping form. Each is now `cfg(any(test, feature =
+  "test-support"))` (and `cfg(not(...))` for the shipping arm), so a dependent that enables the
+  feature gets the behaviour its tests had before. The gate cannot see this class: it reads
+  `cfg(test)` on *items named from another layer*, not `cfg!(test)` inside a body.
+- **`pub(crate)` became `pub` across the whole layer**, except inside `macro_rules!` bodies, where
+  `dynlib!` expands `pub(crate) mod`/`fn` into the *calling* crate and must keep doing so.
+  `devtrig::latched_flag!` could not stay a `pub(crate) use` re-export of a private macro; it is a
+  `#[macro_export]`ed `__latched_flag` re-exported as `devtrig::latched_flag`. `dynlib!`'s
+  `$crate` paths already pointed at the defining crate, so no macro body changed.
+- **Tests that read the source tree or the repository** moved with their crate and needed a root:
+  `eventlog::scrub`'s "no log call interpolates viewing content" scan walks `base/src` *and*
+  `../src` (it would otherwise have stopped reading the application, silently, and still passed:
+  every later layer must be added to its root list); `paths` and `fontcov` climb one more `..`.
+- **No orphan-rule hazard appeared**: no `impl` in the application has both its trait and its type
+  in `plx_base` (`ShippedMeasure`'s impl is `ui::machine`'s trait on a `plx_base` type, which is
+  legal in the application crate and will be legal in the `machine` crate).
+- **The tooling that knew the tree's shape**: `ci/module_graph.py` reads every sibling
+  `rust-modules/<layer>/` package named `plx_*` as part of the same module tree (so the layer gate
+  and `check-module-cycle` keep one graph and `base uses nothing` is still enforced; the cycle
+  baseline shrank by `diag`, which was in the big cycle only through `diag::heartbeat`), the
+  `cargo test/check` recipes pass `-p plxnative-modules -p plx_base` (a bare `cargo test --lib`
+  would run the application's tests only), `ci/check-deps.sh` and `ci/check-build-budgets.py`
+  scan `base/src` as well, `tools/cargo-seed.py` keys on the layer's manifest, and
+  `ci/test_no_host_staticlib.py` holds the layer to `rlib`. The remaining layers each need the
+  same list walked again; `SRC_BASE` in `ci/check-deps.sh` is where a second crate is added.
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs, median; the baseline runs
+logged a host load above the core count, the later ones did not, so read single seconds as noise):
+an edit that only touches the application crate went from 34.9 s (the old one-crate "leaf" edit)
+to 31.9 s with `plx_base` fresh, an edit inside `plx_base` costs 33.2 s (it rebuilds the layer and
+then the application behind it), the hub edit 35.5 s to 34.2 s, and the unit suite 59.8 s to 61.8 s
+with the same 5603 tests. That is the expected size: `base` is 6.7k of 450k lines, so the split
+buys about the 2-3 s that crate cost per edit. The leverage is in the layers above it, which are
+the other crates' worth of lines an edit stops recompiling.
 
 ## Limits of the analysis
 

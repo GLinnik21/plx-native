@@ -373,7 +373,7 @@ impl Dial {
                         }
                     })
                     .collect();
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "GLASSLOAD armed hold={}ms steps=[{}]",
                     s.hold_ms,
                     list.join(" ")
@@ -382,7 +382,7 @@ impl Dial {
                 self.step = 0;
                 self.publish();
             }
-            None => crate::eventlog::log(&format!(
+            None => plx_base::eventlog::log(&format!(
                 "GLASSLOAD spec {spec:?} not understood — dial disarmed"
             )),
         }
@@ -407,7 +407,7 @@ pub(crate) fn parse_navblur(spec: &str) -> Option<(u32, u32, bool)> {
 impl Dial {
     pub(crate) fn configure_navblur(&mut self, spec: &str) {
         let Some((mode, cad, pin)) = parse_navblur(spec) else {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "NAVBLUR spec {spec:?} not understood — prototype off"
             ));
             return;
@@ -419,7 +419,7 @@ impl Dial {
         // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
         // riding form replaces the dip.
         crate::ui::nav::set_blur_dissolve(!pin);
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
         ));
     }
@@ -488,7 +488,7 @@ impl Dial {
             self.presents = 0;
             self.publish();
             crate::ui::popover::host::blur_invalidate();
-            crate::eventlog::log(&format!("GLASSLOAD step={idx}"));
+            plx_base::eventlog::log(&format!("GLASSLOAD step={idx}"));
             return;
         }
         self.presents = self.presents.wrapping_add(1);

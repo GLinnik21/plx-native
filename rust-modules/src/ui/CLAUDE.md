@@ -136,7 +136,7 @@ can follow.
 
 | layer | may name |
 |---|---|
-| `ui/` — the LIBRARY | `crate::{gfx,text,paths,task,i18n,tile}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
+| `ui/` — the LIBRARY | `crate::{gfx,text,i18n}` plus `plx_base::{paths,task,tile}` — **never an application type**. Except `machine`, `present`, `idle`, `landgate`, `landing` and `motion`, which `ci/module-layers.ini` places BELOW the library (`docs/module-layers.md`): they name only base modules (`paths`, `task`, …) and each other, never `gfx`/`text`/`i18n` or the rest of `ui/` |
 | `appkit/` — widgets several screens share (`player_hud`, `track_menu`, `more_menu`, `info_panel`, `up_next`, `chapters_panel`, `timing_capsule`, `skip_pill`, `source_list`) | `ui/`, `stores/`, `plex/` types, `player/`, `route/` — never `screens/` or `app/`. They are compositions of `ui/` components over application types; they cannot live under `screens/` because the `sibling` gate forbids one screen family naming another |
 | `screens/` — the application's screens | `ui/`, `appkit/`, `stores/`, `plex/` types, `player/` — never a sibling screen |
 | `stores/` | data crates and `ui::machine` only — never `screens/` |

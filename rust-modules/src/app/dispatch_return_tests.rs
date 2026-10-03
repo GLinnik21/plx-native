@@ -134,7 +134,7 @@ fn drain(d: &mut Dispatcher<ProbeHost>, rig: &mut ProbeRig, max: u32) {
 
 #[test]
 fn housekeeping_never_captures_page_memory_at_emission_or_execution() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for absorb in [false, true] {
         let (mut d, mut rig) = booted();
         rig.probe.value.set(525);
@@ -147,7 +147,7 @@ fn housekeeping_never_captures_page_memory_at_emission_or_execution() {
 
 #[test]
 fn interleaved_housekeeping_keeps_navigation_bookmarks_at_emission_time_across_carry() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for absorb in [false, true] {
         let (mut d, mut rig) = booted();
         rig.probe.value.set(11);

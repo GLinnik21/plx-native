@@ -178,6 +178,6 @@ pub(super) fn span_of(w: &[f32], i: usize) -> (f32, f32) {
 /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
 /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
 /// failed OTHER modules' "a settled screen asks for nothing" assertions.
-pub(super) fn serial_for_motion() -> crate::testlock::Serial {
-    crate::testlock::serial()
+pub(super) fn serial_for_motion() -> plx_base::testlock::Serial {
+    plx_base::testlock::serial()
 }

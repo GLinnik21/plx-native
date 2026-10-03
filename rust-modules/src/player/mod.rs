@@ -37,7 +37,7 @@ pub(crate) mod sim_video; // the simulator's decoded picture, for screenshots (s
 pub(crate) mod threads;
 pub(crate) mod video_geometry;
 
-use crate::task::MainThread;
+use plx_base::task::MainThread;
 pub(crate) use shared::HlsAutomaticTransition;
 pub(crate) use shared::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
@@ -86,7 +86,7 @@ fn sink() -> &'static dyn crate::tv::sink::VideoSink {
 /// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
 /// file's.
 pub(crate) fn seed_dev_track_names() {
-    let Some(spec) = crate::devtrig::read("tracknames") else {
+    let Some(spec) = plx_base::devtrig::read("tracknames") else {
         return;
     };
     // The real subtitle names of a nine-track MP4 whose PMS record carries none — the file this
@@ -112,7 +112,7 @@ pub(crate) fn seed_dev_track_names() {
     let (a, sub) = spec.split_once(';').unwrap_or(("", spec));
     let (audio, subs) = (list(a), list(sub));
     #[cfg(feature = "devtriggers")]
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "player: DEV track names seeded (a={} s={}) — /tmp/plxnative-tracknames",
         audio.len(),
         subs.len()
@@ -1113,7 +1113,7 @@ const FAILTEST_VERDICT: &str =
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
 fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
-    let arm = crate::devtrig::read("failtest")?;
+    let arm = plx_base::devtrig::read("failtest")?;
     let sub = playing_subscription(&ps);
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),
@@ -1144,7 +1144,7 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
 /// dev: the `policy` arm of `/tmp/plxnative-failtest` stands for a Force Direct Play session, so
 /// the action table sees the Force the arm's shape claims.
 fn failtest_forced() -> bool {
-    crate::devtrig::read("failtest").is_some_and(|a| a.trim() == "policy")
+    plx_base::devtrig::read("failtest").is_some_and(|a| a.trim() == "policy")
 }
 
 /// Publish the jail read-out fixture on the same session fact the owned confirmation reads.
@@ -1152,7 +1152,7 @@ fn failtest_forced() -> bool {
 /// It lives beside [`failtest_arm`], the other reader of `/tmp/plxnative-failtest`, because it
 /// only reads that trigger and writes a `PlaybackSession` field — nothing of the app's.
 pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
-    if crate::devtrig::read("failtest").is_some_and(|arm| arm.trim() == "jail") {
+    if plx_base::devtrig::read("failtest").is_some_and(|arm| arm.trim() == "jail") {
         session.jail_load_blocked = true;
     }
 }
@@ -1170,7 +1170,7 @@ pub(crate) fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
 /// `pb_state` is the pump's field and `shared` is a private module, so a host test that needs the
 /// app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that made the `…` disc
 /// unreachable while stalled — sets it through here rather than widening the module for a test.
-/// Callers must hold `crate::testlock::serial()`: this is a crate global.
+/// Callers must hold `plx_base::testlock::serial()`: this is a crate global.
 #[cfg(test)]
 pub(crate) fn swap_state_for_test(s: shared::PlaybackState) -> u8 {
     let prev = SHARED.pb_state.load(Relaxed);
@@ -1740,7 +1740,7 @@ pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, 
 }
 
 fn persist_audio_enhancements(a: crate::plex::AudioEnhancements) {
-    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_audio_enhancements(a));
+    let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::set_audio_enhancements(a));
 }
 
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
@@ -1754,7 +1754,7 @@ pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
 /// the draws read the atomic — so there is nothing to reload and no cue store to touch.
 pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
-    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
+    let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
     // the picker's checkmark moves on this — see `route::persist_quality_choice`
     crate::ui::idle::invalidate();
 }
@@ -2042,7 +2042,7 @@ fn sub_text(payload: &[u8]) -> String {
     out.trim().to_string()
 }
 
-pub(crate) use crate::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
+pub(crate) use plx_base::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
 fn find(h: &[u8], n: &[u8]) -> bool {
     !n.is_empty() && h.windows(n.len()).any(|w| w == n)
@@ -2538,7 +2538,7 @@ mod tests {
 
     #[test]
     fn callback_after_native_session_retirement_cannot_mutate_the_idle_session() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
 
         sf_on_event(1, 0, 7_000_000_000, std::ptr::null());
@@ -2560,7 +2560,7 @@ mod tests {
     /// never `seen_frame` (the trap player/CLAUDE.md names).
     #[test]
     fn a_type_18_before_any_picture_publishes_load_failed_and_after_one_does_not() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let refusal = c"Resource Allocation Error".as_ptr();
         let refuse = |epoch: u32| sf_on_event(epoch, 18, 601, refusal);
         let failed = || SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
@@ -2655,7 +2655,7 @@ mod tests {
 
     #[test]
     fn late_native_callback_cannot_cross_into_the_next_session() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
         let retired = SHARED.begin_native_session().expect("session A");
         assert!(SHARED.retire_native_session(retired));
@@ -2678,7 +2678,7 @@ mod tests {
 
     #[test]
     fn native_epoch_retirement_drains_a_callback_already_inside_the_reducer() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
         let epoch = SHARED.begin_native_session().expect("native session");
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
@@ -2716,7 +2716,7 @@ mod tests {
 
     #[test]
     fn unload_completed_is_an_explicit_terminal_native_session_transition() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
         let epoch = SHARED.begin_native_session().expect("native session");
 
@@ -2743,7 +2743,7 @@ mod tests {
 
     #[test]
     fn pre_seek_presentation_cannot_certify_the_post_seek_timeline() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
         let epoch = SHARED.begin_native_session().expect("native session");
         assert!(SHARED.begin_native_media_discontinuity(epoch));
@@ -2773,7 +2773,7 @@ mod tests {
 
     #[test]
     fn post_seek_feed_commits_or_discards_callbacks_that_race_its_reply() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SHARED.reset_session();
         let epoch = SHARED.begin_native_session().expect("native session");
         assert!(SHARED.begin_native_media_discontinuity(epoch));
@@ -2813,7 +2813,7 @@ mod tests {
     #[cfg(feature = "hostsim")]
     #[test]
     fn user_resume_cannot_bypass_an_internal_hls_rebuffer_hold() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old_paused = TX.paused.load(std::sync::atomic::Ordering::Acquire);
         SHARED.reset_hls_clock_for_test();
         let pause = SHARED
@@ -2837,7 +2837,7 @@ mod tests {
         }
         let _restore = Restore(old_paused);
         let before = ffi_host::play_calls_for_test();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
 
         assert!(resume(&mut pa));
 
@@ -2854,7 +2854,7 @@ mod tests {
 
     #[test]
     fn an_abandoned_paused_seek_keeps_user_pause_and_closes_only_its_feed_override() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         TX.reset();
         TX.commit_paused(true);
         TX.resume_pend
@@ -2890,7 +2890,7 @@ mod tests {
     /// read the playback state.
     #[test]
     fn an_abandoned_seek_disarms_the_spinner_and_the_frozen_playhead() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let was_seeking = SHARED.seeking.load(Relaxed);
         let was_display = SHARED.seek_display_ns.load(Relaxed);
 
@@ -3226,14 +3226,14 @@ mod tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
         struct Fresh {
-            _g: crate::testlock::Serial,
+            _g: plx_base::testlock::Serial,
         }
         impl Drop for Fresh {
             fn drop(&mut self) {
                 crate::plex::reset_servers_for_test();
             }
         }
-        let g = crate::testlock::serial();
+        let g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let _fresh = Fresh { _g: g };
         crate::route::swap_cur_sid_for_test(&mut ps, crate::plex::ServerId::UNSET);
@@ -3333,7 +3333,7 @@ mod tests {
     /// A positive offset draws a cue later, a negative one earlier, by exactly the offset.
     #[test]
     fn subtitle_offset_shifts_text_lookup_in_both_directions() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.playpos_ns.store(0, Relaxed);
         SHARED.desired_sub_idx.store(0, Relaxed);
@@ -3366,7 +3366,7 @@ mod tests {
     /// thrown away when the next cue arrived.
     #[test]
     fn a_delayed_cue_survives_the_prune_until_the_offset_has_shown_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
@@ -3399,7 +3399,7 @@ mod tests {
     /// current offset kept 2 s of history at 0 and blanked every raised delay.
     #[test]
     fn raising_the_delay_mid_playback_finds_the_cues_already_read() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
@@ -3434,7 +3434,7 @@ mod tests {
     /// must not shift the next film's captions.
     #[test]
     fn a_new_item_starts_with_no_subtitle_offset() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         set_subtitle_offset(2_000);
         assert_eq!(subtitle_offset_ms(), 2_000);
         reset_subtitle();
@@ -3448,7 +3448,7 @@ mod tests {
     /// clamp follows whichever kind is selected, including a negative offset left from a sidecar.
     #[test]
     fn an_embedded_track_takes_no_advance_and_a_sidecar_takes_sixty_seconds() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         sidecar::reset();
         set_subtitle_offset(-1_000);
         assert_eq!(subtitle_offset_ms(), 0, "an embedded track (or Off) takes no advance");
@@ -3476,7 +3476,7 @@ mod tests {
     /// setter clamps to the Timing rows' range.
     #[test]
     fn the_subtitle_clock_saturates_and_the_offset_clamps() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         sidecar::select_without_fetch_for_test(42);
         set_subtitle_offset(60_000);
         assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
@@ -3493,7 +3493,7 @@ mod tests {
     /// Evicting "the far end" dropped exactly those.
     #[test]
     fn a_delayed_selected_set_outlives_every_other_tracks_set() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
         set_subtitle_offset(30_000);
@@ -3542,7 +3542,7 @@ mod tests {
     /// 3840x2160 canvas.
     #[test]
     fn a_delayed_window_of_4k_canvas_sets_fits_the_budget() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
         set_subtitle_offset(SUBTITLE_OFFSET_LATEST_MS);
@@ -3567,7 +3567,7 @@ mod tests {
     /// Takes the crate-wide `testlock` — `SHARED` is a process-global the whole player shares.
     #[test]
     fn an_image_display_set_round_trips_whole_and_is_superseded_as_a_unit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.playpos_ns.store(0, Relaxed);
         SHARED.desired_sub_idx.store(0, Relaxed);
@@ -3660,12 +3660,12 @@ mod native_failure_regressions {
     }
     #[test]
     fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _guard = JailGuard;
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         SHARED.reset_session();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         crate::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
@@ -3681,7 +3681,7 @@ mod native_failure_regressions {
     }
     #[test]
     fn timeout_is_distinct_from_pipeline_refusal_and_resets_per_session() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
         assert_eq!(runtime_failure(false, false, true, false), RuntimeFailure::TvPipeline);
         SHARED.load_timed_out.store(true, Relaxed);
@@ -3703,7 +3703,7 @@ mod seek_hud_regressions {
     /// `reset_session` and the first assertion reads 0.
     #[test]
     fn a_reload_keeps_the_files_duration_and_a_stop_does_not() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         SHARED.reset_session();
         SHARED.duration_ns.store(5_400_000_000_000, Relaxed);
         SHARED.playpos_ns.store(1_200_000_000_000, Relaxed);
@@ -3720,7 +3720,7 @@ mod seek_hud_regressions {
     /// one frame of the pre-seek position before freezing on the target.
     #[test]
     fn a_requested_seek_reads_as_seeking_before_the_pump_republishes() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         SHARED.reset_session();

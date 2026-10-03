@@ -23,7 +23,7 @@
 //! # The libcurl contract is FROZEN to the OLDEST supported television
 //!
 //! This module's [`dynlib!`] table is a SECOND table, separate from `net.rs`'s, and that is the
-//! whole point: [`crate::dynlib::load_into`] is **all-or-nothing**, so one missing symbol empties
+//! whole point: [`plx_base::dynlib::load_into`] is **all-or-nothing**, so one missing symbol empties
 //! the table it is in. If the multi symbols shared net's table, a television without them would
 //! lose **plex.tv sign-in** — the app would not merely fail to play, it would fail to log in. Two
 //! tables means a set that cannot stream over https can still sign in and browse.
@@ -128,7 +128,7 @@ use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use crate::checkpoint::{self, Checkpoint, NoCheckpoint, Pacer};
+use plx_base::checkpoint::{self, Checkpoint, NoCheckpoint, Pacer};
 
 pub(crate) type CURL = c_void;
 pub(crate) type CURLM = c_void;
@@ -139,7 +139,7 @@ pub(crate) type CURLM = c_void;
 // tables against the same library. The macOS name is last for the same reason it is there: the
 // host simulator and `PlxNative.app` run this code, and the host suite below drives real libcurl
 // over plain loopback HTTP.
-crate::dynlib! {
+plx_base::dynlib! {
     /// The seven multi-interface symbols, frozen to webOS's oldest libcurl (7.53.1). See this
     /// module's doc before adding an eighth — `curl_multi_poll`/`curl_multi_wakeup` are absent on
     /// the dev television and present on the Mac.
@@ -234,7 +234,7 @@ const WAIT_MS: c_int = 200;
 /// retain the public three-way contract (>0 bytes, 0 EOF, -1 failure/teardown).
 pub(crate) const READ_DEADLINE: c_int = -2;
 /// Internal result of a read whose caller's [`Checkpoint`] answered
-/// [`Flow::Stop`](crate::checkpoint::Flow::Stop): neither a transport failure nor teardown. The
+/// [`Flow::Stop`](plx_base::checkpoint::Flow::Stop): neither a transport failure nor teardown. The
 /// transfer is left attached and unlatched, for the caller to retire.
 pub(crate) const READ_STOPPED: c_int = -3;
 
@@ -422,15 +422,15 @@ static LOAD_ONCE: Once = Once::new();
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
         match curlmulti::load(None) {
-            crate::dynlib::Loaded::Ok(soname) => {
-                crate::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
+            plx_base::dynlib::Loaded::Ok(soname) => {
+                plx_base::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);
             }
-            crate::dynlib::Loaded::NoLibrary => {
-                crate::eventlog::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
+            plx_base::dynlib::Loaded::NoLibrary => {
+                plx_base::eventlog::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
             }
-            crate::dynlib::Loaded::Incomplete(soname, n) => {
-                crate::eventlog::log(&format!(
+            plx_base::dynlib::Loaded::Incomplete(soname, n) => {
+                plx_base::eventlog::log(&format!(
                     "curlio: {soname} is missing {n} curl_multi_* symbol(s) — https streaming unavailable \
                      (sign-in is unaffected; this table is separate from net.rs's for exactly that reason)"
                 ));
@@ -447,7 +447,7 @@ pub(crate) fn boot() {
 
 /// Is `net.rs`'s **easy** table live? Read directly rather than duplicated into this module's
 /// table: see the module doc. `curl_easy_init` stands for the whole table because
-/// [`crate::dynlib::load_into`] is all-or-nothing — one live cell means every cell is live.
+/// [`plx_base::dynlib::load_into`] is all-or-nothing — one live cell means every cell is live.
 ///
 /// This deliberately does NOT call `net::global_init` itself. `curl_global_init` is not
 /// thread-safe and net's doc requires it on the main thread at boot; a demux thread calling it
@@ -1972,8 +1972,8 @@ mod tests {
     /// So: hold the crate-wide lock for the WHOLE test (`lib.rs`'s `testlock`, not a local mutex —
     /// `ff.rs`'s curl-backed AVIO tests contend on the same registry from another module).
     /// `None` on a host with no libcurl at all, where these tests are vacuous and skip.
-    fn curl_gate() -> Option<crate::testlock::Serial> {
-        let g = crate::testlock::serial();
+    fn curl_gate() -> Option<plx_base::testlock::Serial> {
+        let g = plx_base::testlock::serial();
         if crate::net::global_init() && available() {
             Some(g)
         } else {
@@ -2069,7 +2069,7 @@ mod tests {
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    match crate::testnet::accept(&srv) {
+                    match plx_base::testnet::accept(&srv) {
                         Ok((s, _)) => {
                             // Bumped BEFORE the reply, so it is already final by the time any
                             // open against this listener can return — every assertion is causally
@@ -2970,7 +2970,7 @@ mod tests {
     /// easy table — the one sign-in runs on — untouched.
     #[test]
     fn an_unavailable_multi_table_refuses_cleanly_and_leaves_sign_in_alone() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_eq!(
             CurlSource::open_gated("http://127.0.0.1:9/f.mkv", 0, false).err(),
             Some(OpenErr::Unavailable),
@@ -2979,12 +2979,12 @@ mod tests {
         let net_ok = crate::net::global_init();
         // A load that finds nothing publishes nothing (dynlib's own contract), so this cannot
         // disturb a table that is already live — which is precisely the claim being made.
-        let v = crate::dynlib::load_into(
+        let v = plx_base::dynlib::load_into(
             None,
             &["libplxnative-no-such-curl.so.99"],
             &[("curl_multi_init", &curlmulti::curl_multi_init)],
         );
-        assert!(matches!(v, crate::dynlib::Loaded::NoLibrary));
+        assert!(matches!(v, plx_base::dynlib::Loaded::NoLibrary));
         if net_ok {
             assert!(
                 easy_ready(),
@@ -3154,7 +3154,7 @@ mod tests {
     /// to plex.tv at all. Install libcurl rather than deleting this.
     #[test]
     fn libcurl_binds_on_this_host_so_the_tests_above_are_not_vacuous() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert!(
             crate::net::global_init(),
             "net.rs could not bind any libcurl candidate on this host"

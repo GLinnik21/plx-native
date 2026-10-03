@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn withdrawal_stops_collection_before_the_native_backend() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         use crate::telemetry::consent::{self, Consent};
         let previous = consent::current();
         let step = Observation::step(Stage::WillBackground, Some(true));

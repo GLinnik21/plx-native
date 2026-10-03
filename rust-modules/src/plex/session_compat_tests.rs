@@ -98,7 +98,7 @@ fn profile_plex_tv_credential_stays_only_in_the_protected_canonical_half() {
 
 #[test]
 fn plex_tv_credential_never_borrows_owner_or_pms_tokens_for_a_managed_profile() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _temp = super::test_support::TempSession::new("managed-plex-tv-credential");
     let mut stored = dialable_home(2, "u-1", false);
     stored.account_token = "owner-account".into();
@@ -119,7 +119,7 @@ fn plex_tv_credential_never_borrows_owner_or_pms_tokens_for_a_managed_profile() 
 
 #[test]
 fn legacy_owner_credential_fallback_requires_admin_scope_and_the_same_stored_user() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _temp = super::test_support::TempSession::new("legacy-owner-plex-tv-credential");
     let mut stored = dialable_home(2, "u-0", false);
     stored.account_token = "owner-account".into();
@@ -134,7 +134,7 @@ fn legacy_owner_credential_fallback_requires_admin_scope_and_the_same_stored_use
 
 #[test]
 fn legacy_single_user_owner_with_no_identity_fields_uses_the_account_credential() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _temp = super::test_support::TempSession::new("legacy-zero-id-owner-plex-tv-credential");
     let mut stored = dialable_home(0, "", false);
     stored.account_token = "owner-account".into();

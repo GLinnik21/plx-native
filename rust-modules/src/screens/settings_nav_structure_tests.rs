@@ -99,7 +99,7 @@ fn root_items() -> Vec<(u32, SettingsPage)> {
 
 #[test]
 fn every_root_nav_item_pushes_exactly_its_dest_signed_out() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-root-out");
     let items = root_items();
     assert!(items.iter().any(|(_, d)| *d == SettingsPage::Playback), "{items:?}");
@@ -108,7 +108,7 @@ fn every_root_nav_item_pushes_exactly_its_dest_signed_out() {
 
 #[test]
 fn every_root_nav_item_pushes_exactly_its_dest_signed_in() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("nav-structure-root-in");
     let items = root_items();
     assert!(items.iter().any(|(_, d)| *d == SettingsPage::AudioSubtitles), "{items:?}");
@@ -117,7 +117,7 @@ fn every_root_nav_item_pushes_exactly_its_dest_signed_in() {
 
 #[test]
 fn every_playback_field_pushes_its_picker() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-playback");
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
@@ -129,7 +129,7 @@ fn every_playback_field_pushes_its_picker() {
 
 #[test]
 fn every_audio_and_subtitles_field_pushes_its_picker() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-audio");
     let previous = crate::plex::session::current_snapshot();
     struct Restore(std::sync::Arc<crate::plex::session::CurrentProfile>);
@@ -159,7 +159,7 @@ fn every_audio_and_subtitles_field_pushes_its_picker() {
 /// code, which the host test build has no GL context for.
 #[test]
 fn every_language_nav_item_pushes_exactly_its_dest() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-language");
     let items = nav_items(&LanguagePage::new(EntryId(0)).form);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
@@ -185,7 +185,7 @@ fn every_language_nav_item_pushes_exactly_its_dest() {
 
 #[test]
 fn every_legal_index_row_pushes_its_own_document() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-legal");
     let items = super::super::legal::nav_items_for_test();
     assert_eq!(items.len(), 6, "{items:?}");
@@ -195,7 +195,7 @@ fn every_legal_index_row_pushes_its_own_document() {
 
 #[test]
 fn every_consent_settings_preview_row_pushes_its_preview() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-consent");
     let items = super::super::consent::nav_items_for_test(None);
     assert_eq!(items.len(), 5, "{items:?}");

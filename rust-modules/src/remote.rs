@@ -17,10 +17,10 @@ use libc::c_void;
 use std::os::unix::io::RawFd;
 
 /// The control FIFO. Kept in the `plxnative-*` dev namespace for consistency — and resolved
-/// through [`crate::paths`] rather than a literal, so a host build running several simulators at
+/// through [`plx_base::paths`] rather than a literal, so a host build running several simulators at
 /// once gives each its own FIFO instead of all of them draining one.
 fn fifo_path() -> std::path::PathBuf {
-    crate::paths::in_runtime_dir("plxnative-remote")
+    plx_base::paths::in_runtime_dir("plxnative-remote")
 }
 
 pub struct Remote {
@@ -58,8 +58,8 @@ impl HangProbe {
         let _guard = if self.raw {
             None
         } else {
-            Some(crate::task::assert_may_block(
-                const { &crate::task::BlockingLabel::new("dev hang probe") },
+            Some(plx_base::task::assert_may_block(
+                const { &plx_base::task::BlockingLabel::new("dev hang probe") },
             ))
         };
         std::thread::sleep(std::time::Duration::from_millis(self.ms));
@@ -88,7 +88,7 @@ impl Remote {
         // pointer handler. Not a theoretical hole: `ck:X,Y` clicks replay through the same path
         // as a physical remote. It was ungated on every boot, before the event loop, with no
         // trigger file required to arm it.
-        if !crate::devtrig::ENABLED {
+        if !plx_base::devtrig::ENABLED {
             return None;
         }
         // Exact bytes, not `to_string_lossy`: an instance root comes from the environment, and a
@@ -121,7 +121,7 @@ impl Remote {
                 // local BEFORE the path is rebuilt for the message, so nothing runs between the
                 // failed call and the read.
                 let err = std::io::Error::last_os_error();
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "remote: open {} failed ({err}) — no remote control this run",
                     fifo_path().display()
                 ));
@@ -238,7 +238,7 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn drain_passes_hang_probes_through_without_running_them() {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         let (tokens, tail) = drain_buffer("down\nhang:1\nhang-raw:1\nup\n");
         assert_eq!(tokens, ["down", "hang:1", "hang-raw:1", "up"]);
         assert!(tail.is_empty());

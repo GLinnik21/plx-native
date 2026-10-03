@@ -566,6 +566,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_base"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "rcgen",
+]
+
+[[package]]
 name = "plxnative-modules"
 version = "0.7.0"
 dependencies = [
@@ -577,6 +585,7 @@ dependencies = [
  "icu_provider",
  "image",
  "libc",
+ "plx_base",
  "qrcodegen",
  "rcgen",
  "rustls",

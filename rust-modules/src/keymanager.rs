@@ -13,7 +13,7 @@
 //! development and retail sets; the retail LS2 entitlement itself is capability-probed at runtime
 //! and denial selects the mode-0600 fallback.
 
-use crate::b64;
+use plx_base::b64;
 use crate::tv::secure::{Backend, Sealed};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -39,12 +39,12 @@ pub(crate) fn seal(plain: &[u8]) -> Option<Sealed> {
     if modern_key_ready() {
         if let Some(sealed) = modern_crypt(plain, None) {
             SELECTED.store(MODERN, Ordering::Relaxed);
-            crate::eventlog::log("session protection: keymanager3");
+            plx_base::eventlog::log("session protection: keymanager3");
             return Some(sealed);
         }
     }
     SELECTED.store(UNAVAILABLE, Ordering::Relaxed);
-    crate::eventlog::log("session protection: no usable key manager; using the 0600 file fallback");
+    plx_base::eventlog::log("session protection: no usable key manager; using the 0600 file fallback");
     None
 }
 
@@ -83,7 +83,7 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
-    crate::eventlog::log("session protection: host tests use the 0600 plaintext fixture");
+    plx_base::eventlog::log("session protection: host tests use the 0600 plaintext fixture");
 }
 
 // Synthetic LS2 transport for host persistence tests; never compiled into a device build.
@@ -182,13 +182,13 @@ fn abort_modern(client: &mut platform::Client, handle: &str) {
 }
 
 fn call(uri: &str, payload: &Value) -> Option<Value> {
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("keymanager round trip") });
     let mut client = platform::Client::new().ok()?;
     call_with(&mut client, uri, payload)
 }
 
 fn call_with(client: &mut platform::Client, uri: &str, payload: &Value) -> Option<Value> {
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("keymanager round trip") });
     client
         .call(uri, &payload.to_string())
         .ok()
@@ -245,7 +245,7 @@ mod platform {
                     dead: false,
                 })
                 .map_err(|e| {
-                    crate::eventlog::log(&format!("keymanager: LS2 {e}"));
+                    plx_base::eventlog::log(&format!("keymanager: LS2 {e}"));
                 })
         }
 
@@ -258,14 +258,14 @@ mod platform {
                 Ok(reply) => Ok(reply),
                 Err(crate::webos::ls2::Fail::Timeout) => {
                     self.dead = true;
-                    crate::eventlog::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "keymanager: no reply in {} ms — this client asks nothing more",
                         started.elapsed().as_millis()
                     ));
                     Err(())
                 }
                 Err(crate::webos::ls2::Fail::Setup { stage, detail, .. }) => {
-                    crate::eventlog::log(&format!("keymanager: call failed stage={stage} ({detail})"));
+                    plx_base::eventlog::log(&format!("keymanager: call failed stage={stage} ({detail})"));
                     Err(())
                 }
             }
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn removing_the_key_invalidates_the_backend_cache() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         SELECTED.store(MODERN, Ordering::Relaxed);
         remove(&Backend::Keymanager3, super::KEY_NAME);
         assert_eq!(SELECTED.load(Ordering::Relaxed), UNKNOWN);
@@ -318,7 +318,7 @@ mod tests {
     /// walk generateKey, begin and finish in order and agree on the envelope.
     #[test]
     fn a_synthetic_keymanager3_round_trips_through_seal_and_open() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset_for_test();
         RPC_FOR_TEST.with(|hook| hook.set(Some(|uri, payload| {
             let payload: serde_json::Value = serde_json::from_str(payload).unwrap();

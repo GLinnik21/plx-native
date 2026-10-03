@@ -46,9 +46,9 @@ const FRAME_BYTES: usize = W * H * 4;
 fn armed() -> bool {
     static ONCE: OnceLock<bool> = OnceLock::new();
     *ONCE.get_or_init(|| {
-        let on = crate::devtrig::flag("simvideo");
+        let on = plx_base::devtrig::flag("simvideo");
         if on {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "simvideo: ARMED — video AUs are also decoded by a system ffmpeg and composited \
                  under the UI. A screenshot facility: nothing here measures the television.",
             );
@@ -160,7 +160,7 @@ fn spawn() -> Option<Session> {
     let mut child = match spawned {
         Ok(child) => child,
         Err(e) => {
-            crate::eventlog::log(&format!("simvideo: could not start ffmpeg ({e}); no picture this session"));
+            plx_base::eventlog::log(&format!("simvideo: could not start ffmpeg ({e}); no picture this session"));
             return None;
         }
     };
@@ -197,13 +197,13 @@ fn spawn() -> Option<Session> {
                 Some((seq, Arc::new(std::mem::replace(&mut buf, vec![0u8; FRAME_BYTES]))));
             frames += 1;
             if frames == 1 {
-                crate::eventlog::log("simvideo: first picture decoded");
+                plx_base::eventlog::log("simvideo: first picture decoded");
             }
             crate::ui::idle::invalidate();
         }
     });
     if writer.is_err() || reader.is_err() {
-        crate::eventlog::log("simvideo: could not spawn the pipe threads; no picture this session");
+        plx_base::eventlog::log("simvideo: could not spawn the pipe threads; no picture this session");
         let _ = child.kill();
         let _ = child.wait();
         return None;

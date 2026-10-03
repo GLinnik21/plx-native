@@ -269,7 +269,10 @@ def rust_src_target(payload, root, cwd=None):
     path = os.path.realpath(path)
 
     src = os.path.realpath(os.path.join(root, "rust-modules", "src"))
-    if not path.startswith(src + os.sep):
+    # The layer crates split out of `src` (docs/module-layers.md) are compiled by the same
+    # `cargo check --lib` as a dependency, so an edit there is a release-configuration risk too.
+    layer_srcs = [os.path.realpath(os.path.join(root, "rust-modules", layer, "src")) for layer in ("base",)]
+    if not any(path.startswith(s + os.sep) for s in [src] + layer_srcs):
         return None
     # `--lib` compiles no bin target, and `sim.rs` needs `hostsim`, which the release set never has.
     if path.startswith(os.path.join(src, "bin") + os.sep):
@@ -357,9 +360,9 @@ def nightly(root):
 def has_latched_flag(root):
     """Whether `devtrig::latched_flag!` is really in this tree — the message must not cite a ghost."""
     try:
-        with open(os.path.join(root, "rust-modules", "src", "devtrig.rs"),
+        with open(os.path.join(root, "rust-modules", "base", "src", "devtrig.rs"),
                   encoding="utf-8", errors="replace") as f:
-            return "macro_rules! latched_flag" in f.read()
+            return "macro_rules! __latched_flag" in f.read()
     except OSError:
         return False
 
@@ -454,8 +457,8 @@ def report(root, edited, diags, default_also_broken, toolchain):
             "in between an attribute and its `fn` swallowed the neighbour's gate (E0428, only under\n"
             "--no-default-features, 786/786 tests green). Most such pairs are unnecessary —\n"
             "`devtrig::flag` is already compile-time `false` and `devtrig::read` `None` without the feature,\n"
-            "so a helper that only wraps them needs no cfg at all. Prefer `crate::devtrig::latched_flag!`\n"
-            "(rust-modules/src/devtrig.rs) over hand-rolling a pair.\n")
+            "so a helper that only wraps them needs no cfg at all. Prefer `plx_base::devtrig::latched_flag!`\n"
+            "(rust-modules/base/src/devtrig.rs) over hand-rolling a pair.\n")
     return msg
 
 

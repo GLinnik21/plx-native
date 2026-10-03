@@ -90,7 +90,7 @@ const PLAYS_PAGE: &str = r#"{"MediaContainer":{"totalSize":2,"Metadata":[{"ratin
 #[cfg(feature = "devtriggers")]
 #[test]
 fn a_chosen_sort_survives_a_restart() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory");
     session.watching("u-sorter");
     crate::plex::reset_servers_for_test();
@@ -112,14 +112,14 @@ fn a_chosen_sort_survives_a_restart() {
     pump_until_landed(&mut browse);
     let first_run: Vec<String> = (0..2).map(|_| pms.requests.recv().unwrap()).collect();
     assert!(first_run[1].contains("sort=viewCount%3Adesc"), "{}", first_run[1]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     drop(browse);
 
     // ---- the restart: a cold session cache read from disk, and a brand-new store -------------
     crate::plex::reset_servers_for_test();
     crate::plex::session::redirect_for_test(Some(session.path()));
     let _ = crate::plex::session::peek();
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     session.watching("u-sorter");
     let pms = loopback_pms("sort-machine", vec![MENU_PAGE, PLAYS_PAGE]);
     let mut browse = movies_on(&pms, "sort-machine");
@@ -143,7 +143,7 @@ fn a_chosen_sort_survives_a_restart() {
 #[cfg(feature = "devtriggers")]
 #[test]
 fn a_remembered_sort_the_menu_no_longer_offers_falls_back_to_the_default() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory-gone");
     session.watching("u-sorter");
     crate::plex::reset_servers_for_test();
@@ -171,7 +171,7 @@ fn a_remembered_sort_the_menu_no_longer_offers_falls_back_to_the_default() {
 /// the default order, and a profile switch (a store reset) drops the previous person's memory.
 #[test]
 fn a_remembered_sort_belongs_to_the_profile_that_chose_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory-profile");
     session.watching("u-sorter");
     crate::plex::session::update(|current| {
@@ -197,7 +197,7 @@ fn a_remembered_sort_belongs_to_the_profile_that_chose_it() {
 /// view (Episodes of a show library) is never remembered.
 #[test]
 fn choosing_the_default_order_forgets_the_entry() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = TempPins::new("sort-memory-default");
     session.watching("u-sorter");
     let (_cleanup, mut browse, sid, _) = registered_page_source();
@@ -213,7 +213,7 @@ fn choosing_the_default_order_forgets_the_entry() {
                 select: false, choice: false,
                 query: Some(crate::stores::browse::QueryEdit::Sort { key: key.into(), desc }),
             }));
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
     };
     let held = |browse: &TestBrowse| {
         let machine = browse.state.sources()[0].machine_id.clone();

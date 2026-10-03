@@ -419,7 +419,7 @@ mod tests {
     /// recorded frame is NOT observed until that frame comes round.
     #[test]
     fn a_landing_is_delivered_on_its_recorded_frame_during_replay() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(3, 1)]]);
         // ONE result, in the mailbox since frame 0 — the worker finished long before its frame
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn a_late_landing_is_delivered_and_counted_as_a_divergence() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(3, 1)]]);
         for f in 0..=5u64 {
@@ -457,7 +457,7 @@ mod tests {
     /// every frame after that diverged.
     #[test]
     fn a_landing_that_arrives_during_its_due_frame_is_still_taken_on_that_frame() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(2, 1)]]);
         let mailbox = std::sync::Arc::new(Mutex::new(None::<&'static str>));
@@ -481,7 +481,7 @@ mod tests {
     /// site that will never produce it cannot spend the budget twice on one frame.
     #[test]
     fn the_due_frame_wait_is_spent_once_per_store_per_frame() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(1, 1)]]);
         begin_frame(1);
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn an_unrecorded_landing_is_extra_and_a_never_arriving_one_is_missing() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(2, 1)], vec![], vec![(4, 1)]]);
         begin_frame(0);
@@ -512,7 +512,7 @@ mod tests {
     /// the rest of the run.
     #[test]
     fn a_frames_recorded_arrival_count_is_what_a_store_may_take_on_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_replay(vec![vec![], vec![(1, 2), (2, 1)]]);
         begin_frame(1);
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn recording_stamps_each_frames_landings_and_drains_them_once() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _armed = Armed;
         arm_recording();
         begin_frame(7);
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn a_disarmed_gate_is_a_pass_through() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         disarm();
         assert!(!held(A));
         assert!(take(A, || Some(9)).is_some());

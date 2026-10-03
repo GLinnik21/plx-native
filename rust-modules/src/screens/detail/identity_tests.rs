@@ -175,7 +175,7 @@ fn land(d: &mut Dispatcher<TestHost>, rig: &mut TestRig, data: Detail, ms: u32) 
 
 #[test]
 fn repeated_detail_keys_follow_items_through_all_four_group_reorders() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for group in [season::SEASON_GROUP, episodes::EPISODES_GROUP, related::RELATED_GROUP, cast::CAST_GROUP] {
         let (mut d, mut rig) = boot();
         let key = first(&d, group);
@@ -191,7 +191,7 @@ fn repeated_detail_keys_follow_items_through_all_four_group_reorders() {
 
 #[test]
 fn a_removed_detail_item_is_not_reinterpreted_as_its_slot_replacement() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
@@ -204,7 +204,7 @@ fn a_removed_detail_item_is_not_reinterpreted_as_its_slot_replacement() {
 
 #[test]
 fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -237,7 +237,7 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
 
 #[test]
 fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     let old_instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -264,7 +264,7 @@ fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
 
 #[test]
 fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let mut second = item("a", false);
     second.cur_season = 1;
@@ -296,7 +296,7 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
 
 #[test]
 fn reordered_detail_keys_activate_the_same_related_cast_and_episode_text_targets() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for (located, expected) in [
         (Located::Related(0), ContentArg::Detail { sid: ServerId::UNSET, rk: "r1".into() }),
         (Located::Cast(0), ContentArg::Person { sid: ServerId::UNSET, key: "1".into(),
@@ -318,7 +318,7 @@ fn reordered_detail_keys_activate_the_same_related_cast_and_episode_text_targets
 
 #[test]
 fn a_failed_addressed_return_retires_the_intent_and_falls_back() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
@@ -343,7 +343,7 @@ fn a_failed_addressed_return_retires_the_intent_and_falls_back() {
 
 #[test]
 fn a_live_return_does_not_rewind_ids_minted_after_its_request_snapshot() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let saved = d.return_state().memory;
     let mut newer = item("a", false);
@@ -362,7 +362,7 @@ fn a_live_return_does_not_rewind_ids_minted_after_its_request_snapshot() {
 
 #[test]
 fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = boot();
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
@@ -427,7 +427,7 @@ fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
 
 #[test]
 fn every_app_owned_run_on_a_show_page_comes_from_the_catalog() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stray = stray_runs(item("a", false),
         &["Season", "Episode", "Person", "Actor"]);
     assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
@@ -435,7 +435,7 @@ fn every_app_owned_run_on_a_show_page_comes_from_the_catalog() {
 
 #[test]
 fn every_app_owned_run_on_a_film_page_comes_from_the_catalog() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stream = |codec: &str| crate::metadata::Stream {
         lang: "Deutsch".into(), lang_code: "deu".into(), codec: codec.into(), channels: 6,
         ..Default::default()
@@ -493,7 +493,7 @@ fn census(detail: Detail) -> std::collections::BTreeMap<(u64, bool), usize> {
 /// primitives per frame, 40 = 44 (the row filling up), the same page as a film = 16.
 #[test]
 fn a_show_pages_draw_does_not_grow_with_seasons_off_the_row() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let full = census(show(16));
     assert_eq!(census(show(64)), full, "draw census grew with off-screen seasons");
     assert!(full.get(&(100, false)).copied().unwrap_or(0) > 0, "the page drew text: {full:?}");

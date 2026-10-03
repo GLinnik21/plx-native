@@ -645,7 +645,7 @@ pub(crate) mod host {
     /// Exclusive borrower of the existing texture. It never allocates another FrameCache.
     #[derive(Default)]
     pub(crate) struct TransitionSnapshot {
-        target: Option<crate::surface::PageTarget>,
+        target: Option<plx_base::surface::PageTarget>,
     }
     static TRANSITION_OWNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -724,7 +724,7 @@ pub(crate) mod host {
     /// The page being drawn straight INTO [`CACHE`] this frame (`gfx::FrameCache::render_into`),
     /// opened by [`page_pass`] when it owes a capture and closed by [`capture_now`] at the instant
     /// the capture would otherwise have been copied. `None` on every other frame.
-    static mut TARGET: Option<crate::surface::PageTarget> = None;
+    static mut TARGET: Option<plx_base::surface::PageTarget> = None;
 
     /// Is the ground already on this frame's framebuffer, either drawn live and captured or
     /// served from the cache? A popover reaches [`live`] twice (its scrim and its panel), and a
@@ -1140,7 +1140,7 @@ pub(crate) mod host {
         use super::*;
         #[test]
         fn layers_above_a_frozen_prefix_remain_live_in_both_draw_walks() {
-            let _guard=crate::testlock::serial();
+            let _guard=plx_base::testlock::serial();
             let old=held(); let drawn=GROUND_DRAWN.swap(true,Relaxed);
             unsafe {HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0));}
             let mut frozen=Vec::new();
@@ -1155,7 +1155,7 @@ pub(crate) mod host {
         }
         #[test]
         fn promoting_a_ground_does_not_repaint_over_later_foreground() {
-            let _guard=crate::testlock::serial();
+            let _guard=plx_base::testlock::serial();
             let old=held(); let drawn=GROUND_DRAWN.swap(false,Relaxed);
             hold_ground();
             let already_present=GROUND_DRAWN.load(Relaxed);
@@ -1165,7 +1165,7 @@ pub(crate) mod host {
 
         #[test]
         fn a_frozen_ground_records_the_last_layer_it_contains() {
-            let _guard=crate::testlock::serial();
+            let _guard=plx_base::testlock::serial();
             let old=held();
             let drawn=GROUND_DRAWN.load(Relaxed);
             let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
@@ -1188,7 +1188,7 @@ pub(crate) mod host {
 
         #[test]
         fn a_source_walk_preserves_the_frozen_ground_and_its_visible_draw_ledger() {
-            let _guard=crate::testlock::serial();
+            let _guard=plx_base::testlock::serial();
             let old=held();
             let drawn=GROUND_DRAWN.swap(false,Relaxed);
             unsafe { HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0)); }
@@ -1217,7 +1217,7 @@ mod tests {
         // `open`/`close` touch the shared `OPEN_COUNT` static — the same reason the round-trip
         // test below takes this lock, and for the same reason this one must not skip it: two
         // popovers opening at once on different threads would otherwise race that counter.
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut pop = Popover::new();
         pop.open();
         assert!(!pop.appear_settled(), "a fresh open has not ramped in yet");
@@ -1239,7 +1239,7 @@ mod tests {
     /// was the report (2026-09-02); every popover took the mechanism.
     #[test]
     fn dismiss_fades_out_over_frames_while_close_hides_at_once() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut pop = Popover::new();
         pop.open();
         for _ in 0..240 {
@@ -1283,7 +1283,7 @@ mod tests {
     /// register at all, however many times it is opened.
     #[test]
     fn only_a_caching_popover_registers_a_frozen_host_and_the_count_round_trips() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let base = HOST_USERS.load(Relaxed);
         let users = || HOST_USERS.load(Relaxed) - base;
 
@@ -1317,7 +1317,7 @@ mod tests {
     /// property worth pinning is the whole round trip, not a single call.
     #[test]
     fn the_open_count_survives_re_opens_redundant_closes_and_overlap() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // Whatever the process arrived with (a static, and other tests may have moved it), the
         // assertions below are all RELATIVE to it — the invariant is the round trip, not zero.
         let base = OPEN_COUNT.load(Relaxed);
@@ -1358,7 +1358,7 @@ mod tests {
     /// the live path — the laggy dismissal every cached panel had.
     #[test]
     fn a_cached_popover_holds_its_frozen_host_through_the_fade_and_releases_at_the_end() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let base = HOST_USERS.load(Relaxed);
         let closing_base = HOST_CLOSING.load(Relaxed);
         let users = || HOST_USERS.load(Relaxed) - base;

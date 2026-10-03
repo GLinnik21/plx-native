@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn event_measurement_preserves_blank_lines_indentation_and_long_tokens() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let _no_live = crate::ui::text_view::ForbidLive::enter();
         let measure = crate::ui::fixture::FixtureMeasure;
         let mut reader = DocumentReader::new().with_size(theme::size::BODY);
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn document_scroll_moves_on_a_spring_and_reaches_rest() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut reader = DocumentReader::new();
         reader.max_scroll = 1000.0;
         reader.move_by(1);
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn reset_clears_position_velocity_and_document_bounds() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut reader = DocumentReader::new();
         reader.max_scroll = 600.0;
         reader.move_by(1);

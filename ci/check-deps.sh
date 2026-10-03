@@ -93,6 +93,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
+# The layer crates already split out of $SRC (docs/module-layers.md, ci/module-layers.ini). The
+# rules below that read the WHOLE tree read these too: moving a file into one must not move it out
+# of a gate. Rules scoped to a directory of $SRC (ui/, screens/, app/ ...) cannot reach a layer
+# below them and stay as they are.
+SRC_BASE=rust-modules/base/src
 fails=0
 fail() { echo "::error::check-deps: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
@@ -534,7 +539,7 @@ fi
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
 # test's reference colour maths is not logical state.
-libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
+libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" "$SRC_BASE" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
 libm_bad=0
 while IFS= read -r line; do
@@ -545,7 +550,7 @@ while IFS= read -r line; do
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
 
-gate ticks 'SDL_GetTicks\(' "$SRC"
+gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE"
 #   wall (widened phase 12, D4): the scope grows from ui/+app/+route/plan.rs to also cover
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
@@ -559,7 +564,7 @@ else ok "fpflags"; fi
 n=$(grep -cE '^static [A-Z_]+: Atomic' "$SRC/ui/present.rs"); d=$(grep -c 'pub fn wake_from_worker' "$SRC/ui/present.rs")
 if [ "$n" -eq 1 ] && [ "$d" -eq 1 ]; then ok "present: one worker door"; else fail "present: $n atomic statics, $d doors (one of each)"; fi
 
-if [ -n "$(grep_code '\bEffect::' "$SRC")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
+if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
 
 # mutators: production lines of ui/, screens/ and app/ (everything before the file's first
 # `#[cfg(test)]` + `mod` pair, which is where every screen keeps its tests) — PLUS, since D3, every
@@ -686,7 +691,7 @@ gate uistorage '(crate|super)::storage::' "$SRC/ui"
 
 # legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
 # a hit as a declaration, which is the point (nothing compiles the prose either).
-legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" 2>/dev/null || true)
+legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" "$SRC_BASE" 2>/dev/null || true)
 if [ -z "$legacy_hits" ]; then ok "legacypage"; else
   echo "$legacy_hits" | sed 's/^/    /'
   fail "legacypage: $(echo "$legacy_hits" | wc -l | tr -d ' ') mention(s) — the type is retired (§15.2)"
@@ -829,7 +834,7 @@ while IFS= read -r f; do
 # REMOVES matches, so a file with no raw hit cannot fail this gate — and running its `awk` plus a
 # `grep` over all 420 files, to reach the two that mention the shape, was the single most expensive
 # rule in this script (4.8 s of its 17 s).
-done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" "$SRC_BASE" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
@@ -928,7 +933,7 @@ while IFS= read -r f; do
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
 # ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
 # below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.
-done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" 2>/dev/null | grep -v "^$SRC/task.rs\$" | sort)
+done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" "$SRC_BASE" 2>/dev/null | grep -v "^$SRC_BASE/task.rs\$" | sort)
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi
@@ -957,13 +962,14 @@ else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared 
 # path through `paths::in_runtime_dir("plxnative-…")`, a bare filename with no `/tmp/` prefix, so
 # neither one is a `/tmp/plxnative-` literal in the first place and there is no second file to
 # name here (re-verify this if a log sink is ever given a hardcoded `/tmp/` path).
-tmp_hits=$(python3 - "$SRC" <<'PY'
+tmp_hits=$(python3 - "$SRC" "$SRC_BASE" <<'PY'
 import os, sys
 
 src = sys.argv[1]
+roots = sys.argv[1:]
 exempt_files = {os.path.join(src, "dev.rs")}
 needle = "/tmp/plxnative-"
-log_names = {"log", "crate::eventlog::log", "log!"}
+log_names = {"log", "crate::eventlog::log", "plx_base::eventlog::log", "log!"}
 
 def scan(path, text):
     hits = []
@@ -1022,7 +1028,8 @@ def scan(path, text):
     return hits
 
 bad = 0
-for root, _dirs, files in os.walk(src):
+for tree in roots:
+  for root, _dirs, files in os.walk(tree):
     for fn in sorted(files):
         if not fn.endswith(".rs"):
             continue

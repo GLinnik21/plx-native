@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn session_refresh_rebuilds_the_profile_chip_without_a_profile_switch() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("chrome-session-refresh");
         let mut snapshot = ChromeSnapshot::default();
         let directory = directory(&[]);

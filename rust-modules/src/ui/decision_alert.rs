@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn belarusian_delete_question_and_complete_scope_wrap_at_the_existing_text_sizes() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let measure = DisclosureMeasure;
         let locale = crate::i18n::LocaleContext::resolve(crate::i18n::Preference::Be, None, None, None, None);
         let question = crate::i18n::msg::settings_consent_delete_question_in(&locale);
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn oversized_disclosure_scrolls_to_its_end_while_both_answers_stay_inside_the_safe_area() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let measure = DisclosureMeasure;
         let mut alert = DecisionAlert::new();
         alert.open_card(c"A future translated question", vec![
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn reconciling_a_card_preserves_motion_and_valid_focus_and_is_quiet_when_unchanged() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut alert = DecisionAlert::new();
         alert.open_card(c"Details", vec!["old".into()], Answers::Two);
         alert.set_choice(Choice::Destructive);
@@ -560,7 +560,7 @@ mod tests {
     }
     #[test]
     fn owned_multi_paragraph_card_scrolls_with_one_visible_answer_without_live_measurement() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _no_live = crate::ui::text_view::ForbidLive::enter();
         let measure = DisclosureMeasure;
         let mut alert = DecisionAlert::new();
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn reopening_with_a_question_alone_clears_the_previous_body() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut alert = DecisionAlert::new();
         alert.open_with_body(c"First question?", "Consequences of the first question.");
         assert!(!alert.body.is_empty());
@@ -685,7 +685,7 @@ mod tests {
         assert!((one.cancel.cx() - one.panel.cx()).abs() < 1e-3);
         assert_eq!(one.cancel.y, two.cancel.y);
         assert_eq!(one.destructive.w, 0.0);
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut alert = DecisionAlert::new();
         alert.open_card(c"Details", vec!["A".into(), "B".into()], Answers::One);
         assert_eq!((alert.answers(), alert.body.len()), (Answers::One, 2));

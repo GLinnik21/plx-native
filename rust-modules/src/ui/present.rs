@@ -207,7 +207,7 @@ mod tests {
     /// main thread's `take` consumes the wake exactly once.
     #[test]
     fn a_worker_wakes_the_present_gate_through_the_one_door() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         super::clear_worker_wake();
         let mut p = super::Present::global();
         assert!(p.take(0), "the first frame always draws");

@@ -110,7 +110,7 @@ impl PlaintextQuestion {
     pub(crate) fn answer(&mut self, alert: &mut DecisionAlert, allow: bool) -> Option<SessionCmd> {
         alert.dismiss();
         let subject = self.subject.take()?;
-        crate::eventlog::log(if allow {
+        plx_base::eventlog::log(if allow {
             "plaintext: user allowed an unencrypted connection on this network"
         } else {
             "plaintext: user declined an unencrypted connection"
@@ -473,7 +473,7 @@ mod tests {
     /// the UI library cannot name them.)
     #[test]
     fn every_answer_fits_its_pill_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();

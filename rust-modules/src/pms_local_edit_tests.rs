@@ -10,7 +10,7 @@ use super::test_support::*;
 /// old `viewOffset` wears its old bar and no tick, which reads as the press having done nothing.
 #[test]
 fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_bar() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
@@ -47,7 +47,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
 /// reading one. A bare-key match here would tick a friend's film because you finished yours.
 #[test]
 fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
@@ -68,7 +68,7 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
 /// would throw the position away, which is the mistake that endpoint exists to avoid.
 #[test]
 fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
@@ -114,7 +114,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
 /// deck loses a card and the shelf behind it must still draw exactly its own items.
 #[test]
 fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let build = SourceBuild {
@@ -157,7 +157,7 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
 /// reason at all.
 #[test]
 fn an_item_on_no_shelf_reports_no_edit_and_recommits_nothing() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
@@ -168,7 +168,7 @@ fn an_item_on_no_shelf_reports_no_edit_and_recommits_nothing() {
 
 #[test]
 fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let sid = sid(0);

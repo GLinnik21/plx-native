@@ -1,7 +1,7 @@
 //! person — the actor/person page's data layer (the store `ui/person.rs` draws).
 //!
 //! Sibling of `metadata.rs` (the detail page's item store) and `browse.rs` (the Library's paged
-//! catalog), and built on the same three pieces: [`crate::task::spawn_small`] + a `Mutex` mailbox
+//! catalog), and built on the same three pieces: [`plx_base::task::spawn_small`] + a `Mutex` mailbox
 //! + a generation, applied on the MAIN thread by [`PersonState::pump`] once a frame. One
 //! `PersonState` and rotated `Arc<PersonAdapter>` belong to each production Bridge; screens borrow
 //! a `PersonView` through their frame `Cx`, so neither reads nor workers select process state.
@@ -841,7 +841,7 @@ fn open(
 /// `None` at compile time without `devtriggers`).
 #[allow(unused_variables)]
 fn seed_dev_profile(p: &mut Person) {
-    let Some(text) = crate::devtrig::read("personbio") else {
+    let Some(text) = plx_base::devtrig::read("personbio") else {
         return;
     };
     p.bio = if text.is_empty() {
@@ -864,7 +864,7 @@ fn seed_dev_profile(p: &mut Person) {
     }
     p.profiled = true;
     #[cfg(feature = "devtriggers")]
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "person: DEV bio seeded ({}B) — /tmp/plxnative-personbio",
         p.bio.len()
     ));
@@ -1046,7 +1046,7 @@ impl PersonState {
 fn seed_dev_credits(state: &mut PersonState) -> bool {
     let arg = if crate::stores::tape::active() {
         crate::stores::tape::credits().map(|v| v.to_string())
-    } else { crate::devtrig::read("personcredits") };
+    } else { plx_base::devtrig::read("personcredits") };
     let Some(arg) = arg else {
         return false;
     };
@@ -1134,7 +1134,7 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
     // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still
     // have shipped in the bytes regardless of whether the branch ever ran.
     #[cfg(feature = "devtriggers")]
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
         p.credits.len(),
         held.len()
@@ -1209,7 +1209,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             p.birthplace = prof.birth_place;
             p.profiled = true;
             p.profile_tried = true;
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "person: profile guid={} roles='{}' born={} died={} bio={}B",
                 p.guid,
                 p.roles.join(", "),
@@ -1230,7 +1230,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             }
             // The SLOT, never the handle or the address: a plex.tv username is the friend's, and
             // the event log is what users send us.
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "person: source {} resolve '{}' -> {}",
                 sid.raw(),
                 p.name,
@@ -1251,7 +1251,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             };
             {
                 let s = &mut p.srcs[si];
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "person: source {} '{}' movies={}/{} shows={}/{} joinable={}",
                     sid.raw(),
                     p.name,
@@ -1275,7 +1275,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             true
         }
         Landing::Credits(Some(groups)) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "person: credits guid={} groups={} rows={}",
                 p.guid,
                 groups.len(),
@@ -1425,7 +1425,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         let worker_adapter = Arc::clone(adapter);
         let spawned = crate::stores::tape::admit(serde_json::json!({
             "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
-            crate::task::spawn_small("person", move || {
+            plx_base::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
             // as an empty biography / an empty filmography
             let what = if profile {
@@ -1465,7 +1465,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::stores::tape::admit(serde_json::json!({
         "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
-        "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || crate::task::spawn_small("person", move || {
+        "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || plx_base::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an empty filmography / a source silently written off / no captions
         let what = match kind {
@@ -1989,7 +1989,7 @@ mod tests {
 
     #[test]
     fn controlled_person_ignores_ambient_session_recovery() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         struct ResetTape;
         impl Drop for ResetTape {
             fn drop(&mut self) { crate::stores::tape::reset_for_test(); }
@@ -2023,7 +2023,7 @@ mod tests {
 
     #[test]
     fn session_refresh_retries_person_metadata_after_storage_recovers() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("person-session-refresh");
         crate::plex::reset_servers_for_test();
         let saved = crate::plex::session::peek();
@@ -2043,7 +2043,7 @@ mod tests {
     #[test]
     fn filmography_preserves_provider_identity_without_a_local_library_copy() {
         let mut owner = Owner::default();
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         owner.reset();
         owner.open(S0, "1001", "", "s00000001", "");
@@ -2061,7 +2061,7 @@ mod tests {
     #[test]
     fn an_open_person_rebuilds_exact_sources_when_the_profile_roster_changes() {
         let mut owner = Owner::default();
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         owner.reset();
         let a = crate::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
@@ -2184,7 +2184,7 @@ mod tests {
     #[test]
     fn per_source_media_resolution_stays_pending_across_failure_until_an_answer() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.reset();
         owner.open(S0, "6059", "guid", "Somebody", "");
         assert!(media_resolving(owner.current().unwrap(), S0));
@@ -2506,7 +2506,7 @@ mod tests {
     #[test]
     fn a_take_releases_the_claim_and_an_empty_mailbox_leaves_it_alone() {
         let owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let f = &owner.adapter.fetch[at(S0, K_ROLES)];
         f.clear();
 
@@ -2537,7 +2537,7 @@ mod tests {
     #[test]
     fn a_landing_from_the_previous_person_is_discarded_but_still_releases_the_fetch() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
         let stale = owner.gen();
         owner.open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
@@ -2570,7 +2570,7 @@ mod tests {
     #[test]
     fn a_failed_fetch_keeps_the_shelves_and_backs_off_instead_of_publishing_empty() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
         let gen = owner.gen();
         // seed a populated, landed page the honest way (through the pump)
@@ -2606,7 +2606,7 @@ mod tests {
     #[test]
     fn close_clears_every_single_flight_flag_and_retry_backoff() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
         for i in 0..NFETCH {
             owner.adapter.fetch[i].claim();
@@ -2631,7 +2631,7 @@ mod tests {
     #[test]
     fn a_profile_landing_fills_the_header_without_touching_the_shelves() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = owner.gen();
         owner.land(
@@ -2679,7 +2679,7 @@ mod tests {
     #[test]
     fn an_unknown_person_settles_the_profile_while_a_failure_backs_off() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
         let gen = owner.gen();
         owner.hold_off();
@@ -2773,7 +2773,7 @@ mod tests {
     #[test]
     fn a_roles_landing_captions_by_key_and_a_media_landing_resets_it() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = owner.gen();
         let (fm, fr) = (at(S0, K_MEDIA), at(S0, K_ROLES));
@@ -2851,14 +2851,14 @@ mod tests {
     /// Empty the registry around a test that needs real slots in it, and hand it back empty — the
     /// discipline `plex::servers`' own tests document: a client left registered at a port that
     /// closed is one another module's pump will dial on a background thread.
-    struct FreshRegistry(#[allow(dead_code)] crate::testlock::Serial);
+    struct FreshRegistry(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for FreshRegistry {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
         }
     }
     fn fresh_registry() -> FreshRegistry {
-        let g = crate::testlock::serial();
+        let g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         FreshRegistry(g)
     }
@@ -3128,7 +3128,7 @@ mod tests {
     #[test]
     fn the_header_stops_sweeping_once_the_profile_has_actually_been_asked() {
         let mut owner = Owner::default();
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         owner.open(ServerId::from_raw(0), "1", "guid", "Somebody", "");
         let p = owner.state.current.as_mut().expect("open mounts a person");
         assert!(facts_pending(p), "before any attempt, the band is genuinely waiting");

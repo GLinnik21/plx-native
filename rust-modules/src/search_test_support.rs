@@ -84,7 +84,7 @@ impl Owner {
 /// reason since [`slots`] became a window: a test that signs out leaves the registry's FLOOR
 /// raised, and the next module to register a server without resetting first would find its own
 /// slot numbering shifted under it.
-pub(super) struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+pub(super) struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
 
 impl Drop for Fresh {
     fn drop(&mut self) {
@@ -93,7 +93,7 @@ impl Drop for Fresh {
 }
 
 pub(super) fn fresh() -> Fresh {
-    let g = crate::testlock::serial();
+    let g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     Fresh(g)
 }

@@ -263,7 +263,7 @@ impl ConsentMachine {
             (usage, next.usage, "usage analytics"),
         ] {
             if asked && !got {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "consent: no /dev/urandom — refusing {channel} rather than inventing an identifier"
                 ));
             }
@@ -399,7 +399,7 @@ impl Bridge {
         }
     }
     pub(crate) fn controlled_home(now_us: fn() -> u64, initial: &super::bootstrap::Initial,
-        mt: &crate::task::MainThread, replay: bool) -> Self {
+        mt: &plx_base::task::MainThread, replay: bool) -> Self {
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
@@ -429,7 +429,7 @@ impl Bridge {
         bridge
     }
     pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
-        consent: crate::telemetry::consent::Consent, mt: &crate::task::MainThread) -> Self {
+        consent: crate::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
@@ -1350,7 +1350,7 @@ impl Rig<AppHost> for Bridge {
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
             if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
-                crate::eventlog::log(&line);
+                plx_base::eventlog::log(&line);
             }
             return handled;
         }
@@ -1364,7 +1364,7 @@ impl Rig<AppHost> for Bridge {
             return Handled::No;
         };
         if StoreId::from_ord(ord) != Some(store) {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "stores: a {} event was addressed to store ordinal {} — dropped",
                 store.name(),
                 ord.0
@@ -1476,7 +1476,7 @@ impl Rig<AppHost> for Bridge {
         self.app_effect(from, fx, out);
     }
     fn log(&mut self, line: &str) {
-        crate::eventlog::log(line);
+        plx_base::eventlog::log(line);
     }
     fn system_keyboard(&mut self, up: bool) {
         #[cfg(test)]
@@ -1699,7 +1699,7 @@ pub(crate) fn frame_with_tap(
     inputs: Vec<InputEvent<u32>>,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
-    let _frame_scope = crate::task::FrameScope::enter();
+    let _frame_scope = plx_base::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
         execute_session_command(d, crate::auth::SessionCmd::TakeReady);
     }
@@ -1734,7 +1734,7 @@ impl Bridge {
     pub(crate) fn settle_session_io_for_test(&mut self, d: &mut Dispatcher<AppHost>) {
         for _ in 0..32 {
             if !self.session_adapter.persistence_pending() { return; }
-            crate::storage_worker::drain_for_test();
+            plx_base::storage_worker::drain_for_test();
             frame_with_tap(d, self, Tick::default(), Vec::new(), &mut NoTap);
         }
         panic!("session persistence did not settle");
@@ -1825,15 +1825,15 @@ fn frame_ingest(
     take: impl FnOnce(&mut Bridge) -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
-    let _frame_scope = crate::task::FrameScope::enter();
+    let _frame_scope = plx_base::task::FrameScope::enter();
     #[cfg(test)]
-    crate::testlock::assert_held("the store pump behind an app::bridge frame");
+    plx_base::testlock::assert_held("the store pump behind an app::bridge frame");
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
     // owner work from its Tick, but Tick runs after views are captured; land the roster first so
     // a discovery result and the directory publication are observed in one frame. Controlled
     // execution instead recaptures at its addressed result delivery above, preserving recording.
     if rig.home_io.is_none() {
-        crate::storage_worker::pump_retained();
+        plx_base::storage_worker::pump_retained();
         rig.land_session_cache();
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
@@ -1878,9 +1878,9 @@ fn frame_ingest(
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
-    let report = crate::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
+    let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
     d.prune(&report.unmounted);
-    crate::diag::spans::span("dsync", || rig.sync_host(d));
+    plx_base::diag::spans::span("dsync", || rig.sync_host(d));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
     // loop's gate presents it on its own video-plane term anyway, and the report would keep the
     // settled-capture clock (`ui::idle::last_change_ms`) from ever seeing a paused player at rest
@@ -2557,12 +2557,12 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
         if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
-            crate::eventlog::log("login: server installed — asking which sources feed Home");
+            plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
             nav_root_if_unsettled(pages, AppArg::Onboard);
         } else {
-            crate::eventlog::log("login: server installed — entering Home");
+            plx_base::eventlog::log("login: server installed — entering Home");
             nav_root_if_unsettled(pages, AppArg::Home);
         }
     } else if bridge.auth_read().0.persistence_warning.is_some() {
@@ -3406,8 +3406,8 @@ mod preference_effect_tests {
 
     #[test]
     fn controlled_preferences_are_rejected_before_capture_or_persistence() {
-        let _serial = crate::testlock::serial();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let _serial = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         let temp = crate::plex::session::TempSession::new("controlled-preference-effects");
         let before = std::fs::read(temp.path()).unwrap();
         let quality = crate::route::quality();

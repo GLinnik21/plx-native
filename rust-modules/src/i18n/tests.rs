@@ -94,7 +94,7 @@ fn settings_replies_are_typed_and_refusals_do_not_look_like_success() {
 #[test]
 fn all_catalog_glyphs_exist_in_both_shipped_text_faces() {
     for name in ["appfont.ttf", "appfont-bold.ttf"] {
-        let cov = crate::fontcov::shipped(name).as_ref().unwrap();
+        let cov = plx_base::fontcov::shipped(name).as_ref().unwrap();
         for s in msg::CORPUS.iter().copied().chain(["ІіЎўЁё’"]) {
             for ch in s.chars().filter(|c| !c.is_control()) {
                 assert!(

@@ -1030,9 +1030,9 @@ impl Measure for BareMeasure {
 /// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
 /// the one place the orphan rule lets it sit once the layers are crates.
 #[cfg(test)]
-impl Measure for crate::fontcov::advances::ShippedMeasure {
+impl Measure for plx_base::fontcov::advances::ShippedMeasure {
     fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
-        crate::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
+        plx_base::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
     }
     fn cap_h(&self, sz: i32) -> f32 {
         sz as f32 * 0.73

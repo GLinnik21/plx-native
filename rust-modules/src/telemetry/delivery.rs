@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn only_a_watched_report_is_tracked_and_a_settled_one_stays_settled() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         forget();
         settle("never-watched", DeliveryState::Delivered);
         assert_eq!(state("never-watched"), None, "the flush reports every record; only watched ones are kept");
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn a_build_that_can_send_nothing_fails_what_is_still_unsettled() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         forget();
         let t = tenure();
         assert!(watch("done", DeliveryState::Queued, t));
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_stale_tenure_cannot_watch_or_settle() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         forget();
         let old = tenure();
         assert!(watch("r", DeliveryState::Sending, old));
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn the_table_is_bounded_and_never_evicts_a_report_on_the_network() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         forget();
         let t = tenure();
         for i in 0..MAX_WATCHED {

@@ -175,7 +175,7 @@ fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else(
     }
 }
 
-struct ResourceCleanup<'a>(&'a crate::task::MainThread);
+struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for ResourceCleanup<'_> {
     fn drop(&mut self) {
         crate::plex::reset_servers_for_test();
@@ -184,8 +184,8 @@ impl Drop for ResourceCleanup<'_> {
 }
 
 fn live_detachment() {
-    let _lock = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _lock = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     let tmp = session::TempSession::new("picker-owner-detachment");
     let _cleanup = ResourceCleanup(&mt);
     tmp.assert_only_target();
@@ -322,13 +322,13 @@ fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
 #[test]
 fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     use super::test_support::tick;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved_consent = crate::telemetry::consent::current();
     crate::telemetry::consent::install(crate::telemetry::consent::Consent::default());
     // Any `plxnative-*` file in the runtime root suppresses the question (`dev::any_trigger_present`);
     // run under `--features hostsim` with a private `PLXNATIVE_RUNTIME_DIR`, as `make check` does.
     assert!(!crate::dev::any_trigger_present(), "a stray trigger in {:?} suppresses the consent question",
-        crate::paths::runtime_dir());
+        plx_base::paths::runtime_dir());
     assert!(crate::dev::scenarios::consent_override().is_none());
 
     let mut account = stored(true);
@@ -409,7 +409,7 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
 #[test]
 fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
     use super::test_support::tick;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
 
     let mut init = SessionInit::captured(Session::default());
     init.phase = Phase::Waiting;

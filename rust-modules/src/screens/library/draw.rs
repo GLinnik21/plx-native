@@ -40,7 +40,7 @@ fn document_band_visible(p: crate::ui::Painter, y: f32, height: f32, pop: f32) -
 mod layer_tests {
     #[test]
     fn document_band_culling_preserves_partial_labels_focus_and_shadow_edges() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let p = crate::ui::Painter::root();
         let height = crate::ui::widgets::StatusOverlay::CTRL_H;
         let pad = crate::ui::theme::CONTROL_CAST_FOCUS.iter()
@@ -59,7 +59,7 @@ mod layer_tests {
 
     #[test]
     fn document_band_culling_keeps_visible_controls_during_backdrop_discovery() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let _discovery = crate::ui::frame::backdrop::discover(
             std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
         assert!(crate::gfx::culled(0.0, 0.0, 100.0, 100.0),

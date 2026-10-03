@@ -52,7 +52,7 @@ impl std::ops::DerefMut for SessionGround {
 pub(crate) fn pre_home_ground(hubs: crate::pms::HubsView<'_>) -> SessionGround {
     let live = hubs.hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
     if let Some(blur) = live {
-        let _ = crate::storage_worker::submit_retained(move || crate::plex::session::record_last_hero(blur));
+        let _ = plx_base::storage_worker::submit_retained(move || crate::plex::session::record_last_hero(blur));
     }
     let seed = live.or_else(crate::plex::session::last_hero);
     SessionGround { ground: crate::ui::route_screen::RouteGround::for_home(seed),
@@ -388,7 +388,7 @@ mod tests {
 mod session_tests {
     #[test]
     fn session_refresh_restores_first_run_ground() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("first-run-seed-refresh");
         let mut saved = (*crate::plex::session::peek()).clone();
         saved.last_hero_blur = Some([[0.2, 0.3, 0.4]; 4]);

@@ -11,9 +11,9 @@
 //! feeds. Nothing here paints a screen directly.
 //!
 //! They lived in `dev::scenarios` and were reached UP from `auth`. They only read a trigger file
-//! (through `crate::devtrig`) and build values of the account, net and telemetry layers, all of
+//! (through `plx_base::devtrig`) and build values of the account, net and telemetry layers, all of
 //! which `auth` may name, so the reads moved down here instead of `auth` naming the app-layer
-//! `dev` module. With `devtriggers` off, `crate::devtrig::read` is `None` at compile time and
+//! `dev` module. With `devtriggers` off, `plx_base::devtrig::read` is `None` at compile time and
 //! every function below answers "no script", exactly as before.
 
 /// `/tmp/plxnative-readout=<case>` — boot straight into a chosen page-filling `Failed` read-out
@@ -48,7 +48,7 @@ pub(crate) enum ReadoutCase {
 }
 
 pub(crate) fn readout_case() -> Option<ReadoutCase> {
-    crate::devtrig::read("readout").and_then(|s| match s.trim() {
+    plx_base::devtrig::read("readout").and_then(|s| match s.trim() {
         "pin_create" => Some(ReadoutCase::PinCreate),
         "pin_expired" => Some(ReadoutCase::PinExpired),
         "authorization" => Some(ReadoutCase::Authorization),
@@ -76,7 +76,7 @@ impl ReadoutCase {
     /// `discovery_no_servers` has one.
     pub(crate) fn canned_account(self) -> Option<String> {
         if self != Self::DiscoveryNoServers { return None; }
-        Some(crate::devtrig::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
+        Some(plx_base::devtrig::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
             .filter(|name| !name.trim().is_empty())
     }
     /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
@@ -165,7 +165,7 @@ fn synthetic_dns_failure() -> crate::net::RequestFailure {
 
 fn signinfail_spec() -> Option<String> {
     if cfg!(test) { return None; }
-    crate::devtrig::read("signinfail")
+    plx_base::devtrig::read("signinfail")
 }
 
 /// `/tmp/plxnative-signinfail[=error]` — every sign-in code request fails as an unresolvable
@@ -175,7 +175,7 @@ pub(crate) fn signin_trouble_create()
     -> Option<Result<crate::plex::account::Pin, crate::plex::account::CallEvidence>> {
     match signinfail_spec()?.as_str() {
         "" | "error" => {
-            crate::eventlog::log("dev: signinfail — the sign-in code request fails (synthetic DNS failure)");
+            plx_base::eventlog::log("dev: signinfail — the sign-in code request fails (synthetic DNS failure)");
             Some(Err(Err(synthetic_dns_failure())))
         }
         _ => None,

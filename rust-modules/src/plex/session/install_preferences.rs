@@ -19,7 +19,7 @@ fn candidates() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if !cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))
         && !redirected {
-        paths.push(crate::paths::persistent_state_root().join("language.json"));
+        paths.push(plx_base::paths::persistent_state_root().join("language.json"));
     }
     paths.extend(auth_paths().into_iter().map(|path| path.with_extension("language.json")));
     paths

@@ -148,7 +148,7 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
     let mut ignored = 0;
     unsafe { glGetIntegerv(GL_GPU_DISJOINT_EXT, &mut ignored) };
 
-    let path = crate::paths::in_runtime_dir(crate::paths::runtime_file::GPU_TIME);
+    let path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::GPU_TIME);
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -181,7 +181,7 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
         state.samples_since_log = 0;
     });
     ON.store(true, Ordering::Relaxed);
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "PROFILE GPU timer on: phase={selected} bits={bits} queries={QUERY_COUNT} raw={}",
         path.display()
     ));
@@ -376,9 +376,9 @@ pub(crate) fn frame_end() {
         (messages, disjoint != 0)
     });
     if disjoint_message {
-        crate::eventlog::log("PROFILE timer: GPU disjoint; pending timer results discarded");
+        plx_base::eventlog::log("PROFILE timer: GPU disjoint; pending timer results discarded");
     }
     for message in messages {
-        crate::eventlog::log(&message);
+        plx_base::eventlog::log(&message);
     }
 }

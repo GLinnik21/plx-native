@@ -45,7 +45,7 @@ const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 /// return position or its canonical state.
 #[test]
 fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let sid = crate::plex::ServerId::from_raw(1);
     let section = LibrarySectionIdentity { sid, key: 7 };
     let mut page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
@@ -107,7 +107,7 @@ fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
 
 #[test]
 fn all_grid_caption_band_restores_with_the_saved_viewport() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let key = page.key(page.pair.detail.elem_at(35).unwrap());
@@ -131,7 +131,7 @@ fn all_grid_caption_band_restores_with_the_saved_viewport() {
 
 #[test]
 fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let saved_scroll = fixture.screen().layout.with_grid_focus(Some(5)).max_scroll();
     fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
@@ -150,7 +150,7 @@ fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
 
 #[test]
 fn all_grid_moves_open_only_the_destination_band_and_use_settled_reveal() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     page.initial = false;
@@ -175,7 +175,7 @@ fn all_grid_moves_open_only_the_destination_band_and_use_settled_reveal() {
 
 #[test]
 fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let layout = page.layout;
@@ -200,7 +200,7 @@ fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
 
 #[test]
 fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     let movie = |i| crate::pms::PmsMovie { sid, rk: format!("duplicate-test-{i}"), ..Default::default() };
@@ -269,7 +269,7 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
 
 #[test]
 fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     const TOTAL: usize = 10_000;
     const PAGE: usize = 60;
     let mut fixture = Fixture::new();
@@ -299,7 +299,7 @@ fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page(
 
 #[test]
 fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let original = fixture.listing.clone();
     let mut page = fixture.screen();
@@ -339,7 +339,7 @@ fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
 
 #[test]
 fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
@@ -357,7 +357,7 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
 
 #[test]
 fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-rail-layer");
     session.watching("u-library-rail-layer");
     let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
@@ -397,7 +397,7 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
 
 #[test]
 fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for n in [9, 30] {
         let mut fixture = Fixture::new();
         let sid = crate::plex::ServerId::from_raw(0);
@@ -416,7 +416,7 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
 
 #[test]
 fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
         fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
@@ -448,7 +448,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     use crate::net::keypin::{self, Blocked};
     use crate::ui::icons::Icon;
     use crate::ui::widgets::StatusOverlay;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let key = keypin::key_of("library-clock.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("library-clock-machine", &key);
@@ -533,7 +533,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
 fn a_failed_source_ignores_a_clock_fact_about_another_server() {
     use crate::net::keypin;
     use crate::ui::icons::Icon;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     crate::plex::reset_servers_for_test();
     let here = keypin::key_of("library-here.invalid", 32400);
@@ -572,7 +572,7 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
 #[test]
 fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     use crate::ui::widgets::{StatusKind, StatusOverlay};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
         .page(crate::ui::icons::Icon::ServerBadgeMinus)
         .action(c"Try again");
@@ -605,7 +605,7 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
 
 #[test]
 fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
         crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
@@ -637,7 +637,7 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     use crate::ui::hit::PointerKind;
     use crate::ui::input::{InputMachine, PressEvent};
     use crate::ui::machine::{PressArm, PressFrom};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     page.initial = false;
@@ -680,7 +680,7 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
 
 #[test]
 fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let page = fixture.screen();
     let entry = EntryId(99);
@@ -705,7 +705,7 @@ fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
 
 #[test]
 fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     page.wanted_kind = None;
@@ -727,7 +727,7 @@ fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
 
 #[test]
 fn published_library_projection_and_layout_enter_canonical_state() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let hash = |page: &LibraryScreen| { let mut c = Canon::new(); page.write(&mut c); c.finish() };
     let mut page = fixture.screen();
@@ -807,7 +807,7 @@ pub(super) struct Fixture {
 
 #[test]
 fn discovery_failure_retry_targets_the_source_without_a_section() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(7);
     fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
@@ -836,7 +836,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
 fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
     use crate::plex::session::PlaintextChoice;
     use super::super::plaintext_question::connect;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
@@ -888,7 +888,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
 
 #[test]
 fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let original = fixture.listing.clone();
     // An empty answer keeps the heading row (its TYPE chip is how the reader leaves the empty
@@ -923,7 +923,7 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
 
 #[test]
 fn foreign_section_replacement_upgrades_a_grid_fade_once() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     page.grid_fade.reload();
@@ -940,7 +940,7 @@ fn foreign_section_replacement_upgrades_a_grid_fade_once() {
 
 #[test]
 fn toolbar_stops_use_the_shared_value_chip_measurement() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let page = fixture.screen();
     let cx = fixture.cx(None);
@@ -953,7 +953,7 @@ fn toolbar_stops_use_the_shared_value_chip_measurement() {
 
 #[test]
 fn section_grid_memories_do_not_overwrite_one_another() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let first = fixture.listing.clone();
     let mut page = fixture.screen();
@@ -982,7 +982,7 @@ fn section_grid_memories_do_not_overwrite_one_another() {
 
 #[test]
 fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let first = fixture.listing.clone();
     let mut page = fixture.screen();
@@ -1097,7 +1097,7 @@ fn direction(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &
 
 #[test]
 fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-return");
     session.watching("u-library-shelf-return");
     let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
@@ -1121,7 +1121,7 @@ fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
 
 #[test]
 fn shelf_return_follows_the_film_then_its_last_published_slot() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-removal");
     session.watching("u-library-shelf-removal");
     for evict in [false, true] {
@@ -1154,7 +1154,7 @@ fn shelf_return_follows_the_film_then_its_last_published_slot() {
 
 #[test]
 fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
@@ -1174,7 +1174,7 @@ fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps(
 
 #[test]
 fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
@@ -1190,7 +1190,7 @@ fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
 
 #[test]
 fn removed_grid_key_keeps_its_typed_master_detail_reconciliation_path() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     let original = page.key(page.pair.detail.elem_at(17).unwrap());
@@ -1206,7 +1206,7 @@ fn removed_grid_key_keeps_its_typed_master_detail_reconciliation_path() {
 
 #[test]
 fn direct_rail_activation_jumps_even_when_the_letter_was_already_selected() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
@@ -1221,7 +1221,7 @@ fn direct_rail_activation_jumps_even_when_the_letter_was_already_selected() {
 
 #[test]
 fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
@@ -1268,7 +1268,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
 /// has nothing to vary, so this now asserts the one remaining case directly.
 #[test]
 fn a_single_favourite_library_draws_no_selector() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
         crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
@@ -1291,7 +1291,7 @@ fn a_single_favourite_library_draws_no_selector() {
 
 #[test]
 fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
@@ -1318,7 +1318,7 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
 
 #[test]
 fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-geometry");
     session.watching("u-library-shelf-geometry");
     let fixture = Fixture::shelves(&["s0", "s1", "s2"], 12);
@@ -1350,7 +1350,7 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
 
 #[test]
 fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_focus() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     page.initial = false;
@@ -1388,7 +1388,7 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
 #[test]
 fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     use crate::ui::widgets::StatusOverlay;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
     assert_eq!(tab_strip_bottom, 254.0, "the tab strip band moved — re-measure the fix against it");
 

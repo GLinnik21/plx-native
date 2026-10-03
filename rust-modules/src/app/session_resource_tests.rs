@@ -7,7 +7,7 @@ mod tests {
     use crate::auth::{Phase, SessionCmd};
     use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 
-    struct ResourceCleanup<'a>(&'a crate::task::MainThread);
+    struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
     impl Drop for ResourceCleanup<'_> {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
@@ -97,8 +97,8 @@ mod tests {
 
     #[test]
     fn held_online_roster_uses_real_disk_registry_and_cannot_resurrect_after_erase() {
-        let _lock = crate::testlock::serial();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let _lock = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         for erase_before_roster in [false, true] {
             let tmp = session::TempSession::new("owner-native-held-roster");
             let _cleanup = ResourceCleanup(&mt);
@@ -390,8 +390,8 @@ mod tests {
 
     #[test]
     fn real_offline_worker_preserves_native_client_and_file_until_owner_handoff_and_erase() {
-        let _lock = crate::testlock::serial();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let _lock = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         for erase_before_apply in [false, true] {
             let tmp = session::TempSession::new("owner-native-profile");
             let _cleanup = ResourceCleanup(&mt);
@@ -582,7 +582,7 @@ mod tests {
         use super::*;
         const EPOCH: u64 = u32::MAX as u64 + 120;
 
-        fn live(saved: Session, mt: &crate::task::MainThread) -> Bridge {
+        fn live(saved: Session, mt: &plx_base::task::MainThread) -> Bridge {
             let mut init = crate::auth::SessionInit::captured(saved);
             init.epoch = EPOCH;
             let mut rig = Bridge::for_session_test(init);
@@ -600,8 +600,8 @@ mod tests {
 
         #[test]
         fn accepted_activation_preserves_https_and_resolve_pin() {
-            let _lock = crate::testlock::serial();
-            let mt = unsafe { crate::task::MainThread::assume() };
+            let _lock = plx_base::testlock::serial();
+            let mt = unsafe { plx_base::task::MainThread::assume() };
             let tmp = session::TempSession::new("native-owner-activation");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
@@ -658,8 +658,8 @@ mod tests {
 
         #[test]
         fn kid_seated_refresh_activation_does_not_install_the_account_grant() {
-            let _lock = crate::testlock::serial();
-            let mt = unsafe { crate::task::MainThread::assume() };
+            let _lock = plx_base::testlock::serial();
+            let mt = unsafe { plx_base::task::MainThread::assume() };
             let _cleanup = ResourceCleanup(&mt);
             crate::plex::reset_servers_for_test();
             let mut rig = live(stored(), &mt);
@@ -686,8 +686,8 @@ mod tests {
 
         #[test]
         fn endpoint_result_from_a_replaced_client_incarnation_cannot_overwrite_its_route() {
-            let _lock = crate::testlock::serial();
-            let mt = unsafe { crate::task::MainThread::assume() };
+            let _lock = plx_base::testlock::serial();
+            let mt = unsafe { plx_base::task::MainThread::assume() };
             let tmp = session::TempSession::new("native-owner-endpoint-incarnation");
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();

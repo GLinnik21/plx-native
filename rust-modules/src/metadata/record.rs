@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn p2_real_spawn_refusal_replays_exactly_once() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         use crate::stores::tape;
         controlled(false);
         request("refused", false, false);
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn p2_refusal_sequence_follows_worker_completion_and_cancel_consumes_once() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         use crate::stores::tape;
         for cancelled in [false, true] {
             controlled(false);
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn p2_cancellation_validator_handles_result_before_later_same_frame_effect() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         use crate::stores::tape;
         controlled(false);
         let first = request("first", true, false);
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn p2_publication_before_cancel_frees_capacity_before_next_pump() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         use crate::stores::tape;
         controlled(false);
         let mut workers = Vec::new();
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn malformed_detail_terminal_batches_are_rejected() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let valid = dropped(1, 7);
         let value = serde_json::to_value(&vec![valid]).unwrap();
         validate(&value).unwrap();
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn detail_terminal_roundtrip_preserves_float_bits_and_reservations() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset(true);
         let sid = crate::plex::ServerId::from_raw(0);
         for seq in 1..=8 {

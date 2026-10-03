@@ -229,7 +229,7 @@ fn slow_live_logged(delay: std::time::Duration) -> (Live, RequestLog) {
     let shared = log.clone();
     let server = std::thread::spawn(move || {
         loop {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
                     shared.lock().unwrap_or_else(|e| e.into_inner()).push(line.clone());
@@ -309,7 +309,7 @@ fn always_refusing_live() -> Live {
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         loop {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
                     if line.contains("/decision?") && line.contains("hasMDE=1") {
@@ -607,7 +607,7 @@ fn claim_frees_the_frame_thread_pms_call_runs_on_a_worker() {
     assert!(toggle(&mut ps, PREF));
     let action = claim_route_action().expect("a queued user action");
 
-    let _frame = crate::task::FrameScope::enter();
+    let _frame = plx_base::task::FrameScope::enter();
     let dispatch = execute_retranscode_claim(&mut ps, &action, 60, -1, 0);
     assert!(
         matches!(dispatch, RetranscodeClaimDispatch::Pending),
@@ -1871,7 +1871,7 @@ fn commit_track_inside_a_frame_does_not_trip_the_blocking_guard() {
     let _g = fresh_registry(&mut ps);
     let live = Live::start(EnhMode::Honor("ac3"));
     install(&mut ps, &live, Delivery::Direct, a5(), Some(candidate(true, a5(), None)), 0);
-    let _frame = crate::task::FrameScope::enter();
+    let _frame = plx_base::task::FrameScope::enter();
     commit_audio_selection(&mut ps, a3()); // native pick: PUT must not run inline here
     drop(_frame);
     wait_until("the selection worker to drain", selection_queue_idle);
@@ -2144,7 +2144,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     // the encoder stop the discard owes the landing must not block it (`FrameScope` panics a
     // blocking call outside `allow_blocking`).
     {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         begin_engine_teardown(false);
         assert!(begin_playback_request());
     }
@@ -2203,7 +2203,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Stable;
     post_claim_landing(landing("stale-phase-session", worker_ticket(), 1));
     {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         assert!(take_ready_retranscode_claim(&mut ps).is_none());
     }
     wait_until("the stale-phase encoder stop", || stop_seen(&log, "stale-phase-session"));
@@ -2215,7 +2215,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
     PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Applying(2);
     post_claim_landing(landing("stale-ticket-session", stale, 2));
     {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         let (_, tail, ..) = take_ready_retranscode_claim(&mut ps).expect("the landing posted above");
         assert_eq!(tail, ClaimTail::Rejected(RETRANSCODE_REJECTED));
     }
@@ -2371,7 +2371,7 @@ fn a_deferred_audio_pick_replayed_from_settle_route_start_does_not_trip_the_bloc
         },
     ));
 
-    let _frame = crate::task::FrameScope::enter();
+    let _frame = plx_base::task::FrameScope::enter();
     assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
     drop(_frame);
 

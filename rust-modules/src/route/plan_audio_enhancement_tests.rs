@@ -293,7 +293,7 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
 fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let log_path = crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS);
+    let log_path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::EVENTS);
     let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
         |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),

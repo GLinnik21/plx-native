@@ -32,7 +32,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
             }
         }
     }
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

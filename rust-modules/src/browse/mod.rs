@@ -9,7 +9,7 @@
 //! main loop. Data model: one [`SecItems`] per section — a PAGE-CHUNKED table sized to the
 //! listing's `totalSize`, a page (`PAGE` items) allocated only when it lands (restructure phase
 //! 4's O(result) rule) — filled page-by-page by ONE background fetch at a
-//! time using the season-switch idiom from `metadata.rs` — [`crate::task::spawn_small`] + a
+//! time using the season-switch idiom from `metadata.rs` — [`plx_base::task::spawn_small`] + a
 //! `Mutex` mailbox + generation atomics (a re-query supersedes in-flight landings), applied
 //! on the main thread by [`pump`] once a frame while the Library screen is up.
 //!
@@ -696,7 +696,7 @@ pub(crate) struct BrowseState {
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
 /// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
 struct PinWrite {
-    ticket: crate::storage_worker::TypedTicket<bool>,
+    ticket: plx_base::storage_worker::TypedTicket<bool>,
     saved: Option<bool>,
 }
 impl PinWrite {
@@ -1237,7 +1237,7 @@ impl BrowseState {
         let metadata_type = library_type.plex_type(self.sections[current].kind);
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
-        let spawned = crate::task::spawn_small("directory", move || {
+        let spawned = plx_base::task::spawn_small("directory", move || {
             let list = catch_unwind(|| {
                 let mut values = Vec::new();
                 if let Some(container) = client.section_directory(key, dir, metadata_type) {
@@ -1785,7 +1785,7 @@ impl BrowseState {
                 self.reconcile_pins(Some(record));
             }
             // A missing identity or full queue cannot justify undoing the visible selection.
-            None => crate::eventlog::log(
+            None => plx_base::eventlog::log(
                 "browse: the session refused this commit — the selection stands for this run, \
                  and nothing was recorded",
             ),
@@ -1841,7 +1841,7 @@ impl BrowseState {
                         if !answered {
                             let who = self.sources.get(source_index)
                                 .map(|source| source.name.clone()).unwrap_or_default();
-                            crate::eventlog::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "browse: source {source_index} ({who}) did not answer — its group reads unreachable"
                             ));
                         }
@@ -2025,7 +2025,7 @@ impl BrowseState {
             }
         }
         if self.sources.len() != known {
-            crate::eventlog::log(&format!("browse: roster now {} source(s)", self.sources.len()));
+            plx_base::eventlog::log(&format!("browse: roster now {} source(s)", self.sources.len()));
         }
         if reclassified || session_changed {
             // **A source changed sides, so the WHOLE pin table is re-resolved** — `pins::resolve`
@@ -2245,7 +2245,7 @@ impl BrowseState {
         let token_gen = client.token_gen();
         adapter.fetching.store(true, Ordering::SeqCst);
         let worker_adapter = Arc::clone(adapter);
-        let spawned = crate::task::spawn_small("page", move || {
+        let spawned = plx_base::task::spawn_small("page", move || {
             let page = catch_unwind(|| {
                 let query = SectionQuery {
                     section_key: key, sort: &sort, filters: &filters,
@@ -3001,7 +3001,7 @@ fn spawn_discovery(job: impl FnOnce() + Send + 'static) -> bool {
     if REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.get()) {
         return false;
     }
-    crate::task::spawn_small("sources", job)
+    plx_base::task::spawn_small("sources", job)
 }
 
 #[cfg(test)]
@@ -3030,7 +3030,7 @@ pub(crate) fn queue_discovery_for_owner_test(
     token_gen: u32,
     ok: bool,
 ) {
-    crate::testlock::assert_held("discovery observation fixture");
+    plx_base::testlock::assert_held("discovery observation fixture");
     let _ = state.sync_roster_owned();
     let si = state.sources.iter().position(|source| source.sid == client.id()).unwrap();
     let what = SrcWhat::Sections(ok.then(Vec::new));
@@ -3048,7 +3048,7 @@ pub(crate) fn queue_discovery_for_owner_test(
 
 #[cfg(test)]
 pub(crate) fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
-    crate::testlock::assert_held("browse's section table (seed_items_for_test)");
+    plx_base::testlock::assert_held("browse's section table (seed_items_for_test)");
     let c = state.cur();
     let sid = state.section_sid(c).unwrap_or_default();
     if let Some(st) = state.state_mut(c) {
@@ -3076,7 +3076,7 @@ pub(crate) fn seed_sources_for_owner_test(
     n: usize,
     reachable: bool,
 ) {
-    crate::testlock::assert_held("an owned browse section table (seed_sources_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_sources_for_test)");
     state.reset_with(|| {});
     let current = crate::plex::current_server();
     state.sources = (0..n)
@@ -3118,7 +3118,7 @@ pub(crate) fn seed_sources_for_owner_test(
 
 #[cfg(test)]
 pub(crate) fn seed_pins_for_owner_test(state: &mut BrowseState, pinned: &[bool]) {
-    crate::testlock::assert_held("an owned browse section table (seed_pins_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_pins_for_test)");
     state.reset_with(|| {});
     state.sources = vec![BrowseSource {
         sid: crate::plex::current_server(),
@@ -3155,7 +3155,7 @@ pub(crate) fn seed_pins_for_owner_test(state: &mut BrowseState, pinned: &[bool])
 
 #[cfg(test)]
 pub(crate) fn set_pinned_for_owner_test(state: &mut BrowseState, index: usize, on: bool) {
-    crate::testlock::assert_held("an owned browse section table (set_pinned_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (set_pinned_for_test)");
     if let Some(section) = state.sections.get_mut(index) {
         section.pinned = on;
     }
@@ -3163,7 +3163,7 @@ pub(crate) fn set_pinned_for_owner_test(state: &mut BrowseState, index: usize, o
 
 #[cfg(test)]
 pub(crate) fn land_pin_for_owner_test(state: &mut BrowseState, pinned: bool) {
-    crate::testlock::assert_held("an owned browse section table (land_pin_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (land_pin_for_test)");
     let key = state.sections.len() as i64 + 1;
     state.sections.push(BrowseSection {
         src: 0,
@@ -3179,7 +3179,7 @@ pub(crate) fn land_pin_for_owner_test(state: &mut BrowseState, pinned: bool) {
 
 #[cfg(test)]
 pub(crate) fn seed_two_source_table_for_owner_test(state: &mut BrowseState) {
-    crate::testlock::assert_held("an owned browse section table (seed_two_source_table_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_two_source_table_for_test)");
     crate::plex::session::forget_pins_for_test(&crate::plex::session::current_profile_key());
     state.reset_with(|| {});
     state.sources = vec![
@@ -3209,7 +3209,7 @@ pub(crate) fn seed_registered_table_for_owner_test(
     state: &mut BrowseState,
     sids: [ServerId; 2],
 ) {
-    crate::testlock::assert_held("an owned browse section table (seed_registered_table_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_registered_table_for_test)");
     seed_two_source_table_for_owner_test(state);
     for (index, sid) in sids.into_iter().enumerate() {
         let client = crate::plex::client_for(sid).expect("registered fixture source");
@@ -3236,7 +3236,7 @@ pub(crate) fn append_section_for_owner_test(
     title: &str,
     kind: SecKind,
 ) {
-    crate::testlock::assert_held("an owned browse section table (append_section_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (append_section_for_test)");
     state.append_sections_with(source, vec![(key, title.into(), kind)], None);
 }
 
@@ -3245,7 +3245,7 @@ pub(crate) fn seed_letter_counts_for_owner_test(
     state: &mut BrowseState,
     letters: &[(&str, i64)],
 ) {
-    crate::testlock::assert_held("an owned browse section table (seed_letter_counts_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_letter_counts_for_test)");
     let current = state.cur();
     if let Some(section) = state.state_mut(current) {
         section.letters = Arc::new(
@@ -3264,7 +3264,7 @@ pub(crate) fn seed_query_choices_for_owner_test(
     sorts: Vec<SortEntry>,
     genres: Vec<GenreEntry>,
 ) {
-    crate::testlock::assert_held("an owned browse section table (seed_query_choices_for_test)");
+    plx_base::testlock::assert_held("an owned browse section table (seed_query_choices_for_test)");
     let current = state.cur();
     if let Some(section) = state.state_mut(current) {
         section.sorts = Arc::new(sorts);
@@ -3365,7 +3365,7 @@ pub(crate) fn spawn_owned_page_for_test(
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
     adapter.fetching.store(true, Ordering::SeqCst);
-    assert!(crate::task::spawn_small("browse-owner-test", move || {
+    assert!(plx_base::task::spawn_small("browse-owner-test", move || {
         release_rx.recv().expect("test releases worker");
         *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(PageResult {

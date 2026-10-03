@@ -150,7 +150,7 @@ impl Publication {
 
 #[test]
 fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_viewport_once() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-foreign-replacement");
     session.watching("u-library-foreign-replacement");
     struct Cleanup;

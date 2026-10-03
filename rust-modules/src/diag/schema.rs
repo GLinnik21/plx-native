@@ -300,7 +300,7 @@ pub(crate) struct UsageContext {
     #[serde(default = "rtkmem_default")]
     pub rtkmem: String,
     /// issue #74: which of the two webOS install prefixes this process runs from — `devmode` /
-    /// `homebrew` / `unknown` — from [`crate::paths::install_kind`]. Never the path itself.
+    /// `homebrew` / `unknown` — from [`plx_base::paths::install_kind`]. Never the path itself.
     #[serde(default = "install_default")]
     pub install: String,
 }
@@ -383,7 +383,7 @@ impl UsageContext {
             server_connection: connection.map(|(c, _)| c.to_string()),
             ip_version: connection.map(|(_, ip)| ip.to_string()),
             rtkmem: crate::tv::sandbox::context().into(),
-            install: crate::paths::install_kind().into(),
+            install: plx_base::paths::install_kind().into(),
         }
     }
 

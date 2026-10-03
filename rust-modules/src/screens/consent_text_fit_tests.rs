@@ -1,7 +1,7 @@
 //! **Every Privacy & data row fits its column, in every shipped language.** The same guard as
 //! `settings_text_fit_tests.rs` for the Settings root, owned here because a screen never names a
 //! sibling screen: rows elide to `TableView::label_width`, and the device rounds each glyph to a
-//! whole pixel, so [`crate::fontcov::advances::ShippedMeasure`] measures what the television draws.
+//! whole pixel, so [`plx_base::fontcov::advances::ShippedMeasure`] measures what the television draws.
 
 use super::*;
 use super::test_support::*;

@@ -153,7 +153,7 @@ mod root_back_tests {
     /// and asked webOS for nothing: `left: 0, right: 1`.
     #[test]
     fn back_at_home_root_shows_the_platform_home() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::tv::home::release_root_press();
         let before = crate::tv::home::home_requests();
         back_at_root();
@@ -203,7 +203,7 @@ mod root_back_tests {
     /// torn down, and the container's root fallback is not accidentally entered a second time.
     #[test]
     fn owned_home_root_back_reaches_platform_home_without_moving_the_root() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::tv::home::release_root_press();
         let before = crate::tv::home::home_requests();
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
@@ -235,7 +235,7 @@ mod root_back_tests {
     /// without recreating its alphabet.
     #[test]
     fn nonroot_owned_page_back_never_reaches_platform_home() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::tv::home::release_root_press();
         let before = crate::tv::home::home_requests();
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
@@ -271,7 +271,7 @@ mod root_back_tests {
     /// The emitted enum stays live across the actual match arm; there is no copied route oracle.
     #[test]
     fn onboard_back_request_mounts_the_owned_profiles_screen() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Onboard);

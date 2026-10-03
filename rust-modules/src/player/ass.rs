@@ -231,7 +231,7 @@ pub(crate) fn request(
     };
     let started = *runtime()
         .started
-        .get_or_init(|| crate::task::spawn("styled subtitles", worker).is_some());
+        .get_or_init(|| plx_base::task::spawn("styled subtitles", worker).is_some());
     if !started {
         let mut mailbox = runtime().mailbox.try_lock().ok()?;
         if let Some((epoch, frame)) = &mailbox.published {
@@ -522,7 +522,7 @@ impl Engine {
             self.source = Some(request.source.clone());
             if let Some(error) = self.error {
                 self.native = None;
-                crate::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
+                plx_base::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
             }
         }
         if let Some(error) = self.error {
@@ -582,7 +582,7 @@ impl Engine {
             }
             Err(error) => {
                 self.error = Some(error);
-                crate::eventlog::log(&format!("subtitle: ASS render failed: {error:?}"));
+                plx_base::eventlog::log(&format!("subtitle: ASS render failed: {error:?}"));
                 error_frame(key, error)
             }
         };
@@ -609,7 +609,7 @@ pub(crate) struct NativeFrame {
     regions: *const Bitmap,
 }
 
-crate::dynlib! {
+plx_base::dynlib! {
     native_ass: ["libass-plx-host.so.0", "libass-plx.so.0", "libass-plx.0.dylib"] {
         fn plx_ass_abi_version() -> u32;
         fn plx_ass_create(default_font: *const c_char) -> *mut c_void;
@@ -634,7 +634,7 @@ fn asset_dir() -> &'static std::path::Path {
     }
     #[cfg(not(test))]
     {
-        crate::paths::app_dir()
+        plx_base::paths::app_dir()
     }
 }
 

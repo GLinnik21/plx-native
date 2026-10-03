@@ -17,7 +17,7 @@ fn strictly_between(v: f32, a: f32, b: f32) -> bool { v > a.min(b) + 1.0e-3 && v
 /// rows open and close their caption band over frames — sideways, down, and out of the grid.
 #[test]
 fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     page.initial = false;
@@ -59,7 +59,7 @@ fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
 #[test]
 fn a_type_switch_never_draws_the_empty_interim_layout() {
     use crate::browse::LibraryType;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
     let mut page = fixture.screen();
     page.initial = false;
@@ -119,7 +119,7 @@ fn a_section_switch_draws_card_zero_where_it_settles(order: Arrival) -> LibraryS
 
 /// `restore` is a bookmarked scroll (`ListingView::cursor`) the incoming section reopens at.
 fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) -> LibraryScreen {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
     let mut page = fixture.screen();
     page.initial = false;

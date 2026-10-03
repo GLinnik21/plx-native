@@ -568,7 +568,7 @@ mod tests {
     /// after it, stays exactly where it does at rest.
     #[test]
     fn a_focused_about_card_does_not_scale_its_siblings() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut rows = Rows::new();
         let d = movie_with_audio();
         rows.update(&d);
@@ -593,7 +593,7 @@ mod tests {
     /// the never-focused draw, for either block.
     #[test]
     fn leaving_a_lifted_block_leaves_no_plate_or_shadow_once_settled() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut rows = Rows::new();
         let d = movie_with_audio();
         rows.update(&d);

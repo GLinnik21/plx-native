@@ -423,7 +423,7 @@ mod hud_visibility_tests {
     /// Drive the derived playback state through the field the pump owns. Crate-global, so the whole
     /// body holds `testlock::serial()` — `state()` is read by other modules' tests too.
     fn with_state<T>(s: PlaybackState, f: impl FnOnce() -> T) -> T {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let prev = crate::player::swap_state_for_test(s);
         let out = f();
         crate::player::restore_state_for_test(prev);

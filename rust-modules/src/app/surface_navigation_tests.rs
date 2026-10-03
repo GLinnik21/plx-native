@@ -48,7 +48,7 @@ fn a_page_arg_wears_the_chrome_its_own_table_says() {
 /// (`overlay_word`), and `every_route()` is nine pages with nothing to fold.
 #[test]
 fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for r in every_route() {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -65,7 +65,7 @@ fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
 
 #[test]
 fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     let _ = rig.stores.take_notices();
@@ -129,7 +129,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
 /// which an op is parked but not yet applied for `reset_for_profile` to catch.
 #[test]
 fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
         Box::new(crate::ui::containers::transition::PageDip::new()));
     let mut rig = Bridge::for_test(|| 0);
@@ -189,7 +189,7 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
 /// rather than the detail page the session was launched from.
 #[test]
 fn an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -234,7 +234,7 @@ fn an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back() {
 /// a month and broken from `app::mod` anyway, through `every_surface_word`.
 #[test]
 fn route_flips_preserve_content_and_player_origin_entries() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]).0, "home");
@@ -274,7 +274,7 @@ fn route_flips_preserve_content_and_player_origin_entries() {
 /// than by actually pushing 16 pages, since the fallback does not care HOW the entry went away.
 #[test]
 fn player_exit_with_a_gone_origin_returns_to_the_existing_home_entry() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -323,7 +323,7 @@ fn player_exit_with_a_gone_origin_returns_to_the_existing_home_entry() {
 #[test]
 fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame() {
     use crate::screens::player::overlay::OverlayKind;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -349,7 +349,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
 #[test]
 fn player_diagnostics_hide_behind_any_open_player_overlay() {
     use crate::screens::player::overlay::OverlayKind;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     let mut t = 0u32;
@@ -402,7 +402,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
 /// back → root) and only then lets the container dismiss it — with the app's page untouched.
 #[test]
 fn the_settings_surface_owns_input_and_walks_its_own_stack() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -450,7 +450,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
 /// chip used to cut the page underneath to Home.
 #[test]
 fn the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for (route, word) in [
         (AppArg::Home, "home"),
         (AppArg::Library, "library"),
@@ -509,7 +509,7 @@ fn the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed() {
 /// disappearing mid-hold — and the assertion that catches it is the same one each time.
 #[test]
 fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for (route, word) in [
         (AppArg::Home, "home"),
         (AppArg::Library, "library"),
@@ -577,7 +577,7 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
 /// nothing is read after the dismissal at all.
 #[test]
 fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -656,7 +656,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 /// the Settings surface is dismissed with the sheet — caught by the `settings_up` assertion.
 #[test]
 fn account_to_settings_never_unfreezes_the_host() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -723,7 +723,7 @@ fn account_to_settings_never_unfreezes_the_host() {
 #[test]
 fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_alone() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
@@ -805,7 +805,7 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
 fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     use crate::screens::player::overlay::OverlayKind;
     let ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
@@ -861,7 +861,7 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
 fn the_hud_state_helper_reads_every_phase_of_every_surface() {
     use crate::screens::player::overlay::OverlayKind;
     let ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
@@ -915,7 +915,7 @@ fn the_hud_state_helper_reads_every_phase_of_every_surface() {
 /// dismisses the question, so selecting the tile again must come straight back to it.
 #[test]
 fn back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Profiles, tick(0), vec![]);
@@ -968,7 +968,7 @@ fn a_replaced_host_draws_surfaces_only_whoever_owns_the_page() {
 /// two cannot disagree and the predicate has no route argument left to compare against.
 #[test]
 fn the_first_run_favourites_page_is_owned_because_the_container_holds_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -990,7 +990,7 @@ fn the_first_run_favourites_page_is_owned_because_the_container_holds_it() {
 /// flipped, was the ghost.
 #[test]
 fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary_path() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -1051,7 +1051,7 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
 /// Search arm does.
 #[test]
 fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.browse.borrow_mut().seed_two_source_table_for_test();
@@ -1101,7 +1101,7 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
 /// linger for the next detail mount of the same item that nobody seeded.
 #[test]
 fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
         Box::new(crate::ui::containers::transition::PageDip::new()));
     let mut rig = Bridge::for_test(|| 0);

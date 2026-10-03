@@ -1094,7 +1094,7 @@ impl HomeScreen {
                 self.hero_slide.jump(1.0);
                 if matches!(command, HomeCmd::PinHero(_)) {
                     self.hero_pinned = true;
-                    crate::eventlog::log(&format!("home: hero pinned at slot {index}"));
+                    plx_base::eventlog::log(&format!("home: hero pinned at slot {index}"));
                 }
                 fx.invalidate(Provenance::Input);
             }
@@ -2574,7 +2574,7 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
 fn display_source(real: &str) -> &str {
     static OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     OVERRIDE
-        .get_or_init(|| crate::devtrig::read("shared"))
+        .get_or_init(|| plx_base::devtrig::read("shared"))
         .as_deref()
         .unwrap_or(real)
 }

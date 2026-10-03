@@ -89,8 +89,8 @@ pub(super) fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOrig
 /// names a slot the next test is about to re-fill with a different server, and `machine_id` is
 /// a cache keyed on exactly that id — which `the_machine_id_cache_is_scoped_to_the_server_that_taught_it`
 /// then reads. `reset_session` is the whole-session write, and this is what it is for.
-pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Serial {
-    let g = crate::testlock::serial();
+pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Serial {
+    let g = plx_base::testlock::serial();
     // These are process-global route transactions, not Session fields. A host test has no
     // Engine pump to spend them, so leaving either behind makes a later loopback server see a
     // stop for an encoder from a completely different case.
@@ -261,7 +261,7 @@ pub(super) fn plan_pms_inner(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut requests = Vec::new();
         while requests.len() < n && std::time::Instant::now() < deadline {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let first = drain_http(&mut socket);
                     if start_bytes.is_some() && first.contains("/library/parts/") {
@@ -321,7 +321,7 @@ pub(super) fn selection_probe_pms(
         let mut selection = (1, 9);
         let mut requests = Vec::new();
         loop {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
                     if line.starts_with("PUT /library/parts/") {
@@ -528,7 +528,7 @@ pub(super) fn enhancement_pms_parts(
     let handle = std::thread::spawn(move || {
         let mut requests = Vec::new();
         loop {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
                     let enhanced = query_param(&line, "boostDialog") == Some("1")

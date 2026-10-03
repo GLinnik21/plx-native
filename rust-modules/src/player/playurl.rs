@@ -2,9 +2,9 @@
 //! with, parsed beside the one module that acts on it ([`super::engine`]'s `start_bufferfeed`).
 //!
 //! It is a TYPED dev trigger. Its value is a JSON object whose decision half is a
-//! [`crate::metadata::Dovi`], so it can live neither with the trigger primitives (`crate::devtrig`
+//! [`crate::metadata::Dovi`], so it can live neither with the trigger primitives (`plx_base::devtrig`
 //! is a base-layer module and names no application type) nor in `crate::dev` (the application
-//! layer, which the player may not name). It is parsed here from `crate::devtrig::read`, and a
+//! layer, which the player may not name). It is parsed here from `plx_base::devtrig::read`, and a
 //! release build still folds it away at COMPILE time exactly as before: `read` is `None` without
 //! the `devtriggers` feature, so [`playurl`] answers `None` and no declaration can be injected.
 
@@ -157,7 +157,7 @@ fn parse_playurl(s: &str) -> Result<PlayUrl, String> {
 /// `servers` is memoized for the opposite reason — credentials are a property of the boot.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn playurl() -> Option<Result<PlayUrl, String>> {
-    crate::devtrig::read("playurl").map(|s| parse_playurl(&s))
+    plx_base::devtrig::read("playurl").map(|s| parse_playurl(&s))
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn playurl() -> Option<Result<PlayUrl, String>> {

@@ -16,7 +16,7 @@
 //! `arm_active_stall_guard` evaluation runs, from inputs it samples itself rather than inputs a
 //! caller hands it.
 use super::*;
-use crate::checkpoint::{Checkpoint, Flow};
+use plx_base::checkpoint::{Checkpoint, Flow};
 
 /// The acquisition policy for one `hls_demux_segment` fetch. Its payload (`Policy`) is private to
 /// this module, so nothing outside — including `ff` itself — can name `Policy::Active(..)` or

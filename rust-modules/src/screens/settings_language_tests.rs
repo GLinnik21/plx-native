@@ -38,7 +38,7 @@ fn save_request(effects: Vec<Stamped<InnerHost>>) -> (Preference, std::sync::mps
 
 #[test]
 fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::System);
     let running = crate::i18n::current().language().tag();
     let mut page = LanguagePage::new(EntryId(0));
@@ -60,7 +60,7 @@ fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
 
 #[test]
 fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::Be);
     let mut page = LanguagePage::new(EntryId(0));
     let (requested, reply) = save_request(activate(&mut page, lang(Preference::System)));
@@ -73,7 +73,7 @@ fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
 
 #[test]
 fn language_entry_seats_the_engine_on_the_saved_preference() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _session = scratch_session("language-saved-seat");
     for preference in LANGUAGES.iter().copied() {
         let _saved = SavedLanguage::new(preference);
@@ -103,7 +103,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
 
 #[test]
 fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::En);
     for disconnected in [false, true] {
         let mut page = LanguagePage::new(EntryId(0));
@@ -124,7 +124,7 @@ fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry(
 
 #[test]
 fn contribution_is_focusable_and_right_opens_the_guide() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _session = scratch_session("language-contribution");
     let mut page = LanguagePage::new(EntryId(0));
     let key = FocusKey { entry: EntryId(0), elem: contribute() };
@@ -143,7 +143,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
 
 #[test]
 fn signed_out_settings_reaches_language_and_back_restores_it_after_contribution() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _session = scratch_session("language-back");
     let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root, crate::pms::HubsSnapshot::empty_for_test().view());
     step(&mut surface, ScreenEvent::Mount, None);

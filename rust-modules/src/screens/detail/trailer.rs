@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn a_fresh_press_hops_the_default_step_and_a_tap_arms_the_debounce_instead_of_committing_at_once()
     {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut t = Transport::IDLE;
         let dur = 120_000_000_000i64;
         let live = 30_000_000_000i64;
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn a_fresh_press_hops_the_chosen_skip_interval() {
         use crate::plex::session::SkipInterval;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         const S: i64 = 1_000_000_000;
         let (dur, live) = (200 * S, 100 * S);
         for interval in SkipInterval::LADDER {

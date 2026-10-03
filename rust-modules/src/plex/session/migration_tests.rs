@@ -391,7 +391,7 @@ impl TempCanonicalState {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
         Self { dir }
     }
 }
@@ -399,14 +399,14 @@ impl TempCanonicalState {
 #[cfg(test)]
 impl Drop for TempCanonicalState {
     fn drop(&mut self) {
-        crate::paths::redirect_persistent_state_root_for_test(None);
+        plx_base::paths::redirect_persistent_state_root_for_test(None);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 #[test]
 fn live_load_and_update_use_the_canonical_authority() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _state = TempCanonicalState::new("live-authority");
     let session = fixture();
     assert!(matches!(
@@ -414,7 +414,7 @@ fn live_load_and_update_use_the_canonical_authority() {
         persistence::CanonicalCommit::Durable { revision: 1, .. }
     ));
     let _ = super::peek();
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(
         super::peek().account_token,
         "synthetic-account",
@@ -832,7 +832,7 @@ fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_
     let learned = Session {
         server_key_pins: vec![ServerKeyPin {
             machine_id: "machine".into(),
-            pin: crate::spki::pin_from_spki_der(b"synthetic spki"),
+            pin: plx_base::spki::pin_from_spki_der(b"synthetic spki"),
             extensions: Default::default(),
         }],
         ..session.clone()
@@ -1198,7 +1198,7 @@ mod published_06 {
 
     #[test]
     fn a_066_host_store_session_record_reopens_on_host() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let state = TempCanonicalState::new("json-066");
         std::fs::write(
             state.dir.join("session.json"),
@@ -1218,7 +1218,7 @@ mod published_06 {
 
 #[test]
 fn fallback_written_file_migrates_into_recovered_missing_db8() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = test_support::TempSession::new("fallback-helper-migration");
     let expected = fixture();
     assert!(save_legacy_fallback_locked(&expected, false, false).is_some());

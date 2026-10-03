@@ -171,7 +171,7 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
     use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
     use crate::plex::session::{Session, ServerRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    let _lock = crate::testlock::serial();
+    let _lock = plx_base::testlock::serial();
     for failures in [1, 2] {
         let saved = Session { client_id: "synthetic-device".into(),
             account_token: "synthetic-saved-a".into(), ..Default::default() };
@@ -223,7 +223,7 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
     }
 }
 
-struct Cleanup<'a>(&'a crate::task::MainThread);
+struct Cleanup<'a>(&'a plx_base::task::MainThread);
 
 #[test]
 fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
@@ -271,8 +271,8 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
     use crate::auth::owner::{BootstrapAuthority, ReadyInstall, SessionWork};
     use crate::plex::session::{self, Session, ServerRef, SourceRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    let _lock = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _lock = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     for saved_account in [false, true] {
         let tmp = session::TempSession::new("dev-bootstrap-owner");
         let _cleanup = Cleanup(&mt);
@@ -374,8 +374,8 @@ fn dev_boot_capture_cannot_keep_saved_account_as_worker_authority() {
 #[test]
 fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contract() {
     use crate::plex::session::{self, Session, ServerRef};
-    let _lock = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _lock = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     for disk_case in 0..3 {
         let tmp = session::TempSession::new("dev-login-replacement");
         let _cleanup = Cleanup(&mt);

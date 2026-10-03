@@ -371,7 +371,7 @@ impl OnboardScreen {
     fn commit<H: DirectoryLike>(&mut self, directory: DirectoryView<'_>, fx: &mut Effects<'_, H>) {
         if directory.section_count() == 0 {
             fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::RetryDiscovery))));
-            crate::eventlog::log("onboard: no discovered libraries yet — retry queued");
+            plx_base::eventlog::log("onboard: no discovered libraries yet — retry queued");
             return;
         }
         // The count logged below is read off `self.draft`, not back from the Browse owner —
@@ -389,7 +389,7 @@ impl OnboardScreen {
             StoreId::Browse,
             StoreCmd::Browse(BrowseCmd::ApplyPins(self.answered())),
         )));
-        crate::eventlog::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
+        plx_base::eventlog::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
         self.leave(fx);
     }
 
@@ -555,7 +555,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                         Some(k) if k == self.action_kind(H::directory(cx)) => {
                             self.commit(H::directory(cx), fx)
                         }
-                        Some(_) => crate::eventlog::log(
+                        Some(_) => plx_base::eventlog::log(
                             "onboard: the action changed under an armed press — refusing to commit it",
                         ),
                         // `PressCommit` reached us with no recorded arm at all — should not
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn endpoint_outcomes_leave_onboard_in_the_same_tick_as_discovery() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("endpoint-onboard");
         crate::plex::reset_servers_for_test();
         let mut browse = BrowseFixture::new();
@@ -1001,7 +1001,7 @@ mod tests {
     /// though nothing has been touched.
     #[test]
     fn the_band_expresses_forward_back_and_commit_as_distinct_states() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
         assert!(
@@ -1038,7 +1038,7 @@ mod tests {
     /// `app/bridge.rs`'s own tests to carry, not this file's.
     #[test]
     fn toggling_never_touches_the_live_pin_or_the_recorded_answer_until_commit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("draft");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1101,7 +1101,7 @@ mod tests {
     /// is the same draft either way.
     #[test]
     fn settings_mode_dirty_and_persistence_track_the_draft_not_the_live_table() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("settings-draft");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1144,7 +1144,7 @@ mod tests {
     /// (`touched`).
     #[test]
     fn an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_edit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("entry-drift");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1181,7 +1181,7 @@ mod tests {
     /// so Done still disappears when an edit is undone.
     #[test]
     fn a_row_toggled_back_after_its_default_drifted_is_still_an_answer() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("drift-under-a-dirty-row");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1222,7 +1222,7 @@ mod tests {
     /// `rebuild` fails the assertions below.
     #[test]
     fn a_table_reset_mid_edit_discards_the_stale_draft_instead_of_misapplying_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("epoch-reset");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1260,7 +1260,7 @@ mod tests {
     /// this screen opened.
     #[test]
     fn a_freshly_landed_row_can_independently_make_settings_dirty() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("late-row");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true]);
@@ -1286,7 +1286,7 @@ mod tests {
     /// passing there — but the task this phase carries names it explicitly, so it gets one here.
     #[test]
     fn the_last_pinned_library_cannot_be_turned_off() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, false]);
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
@@ -1311,7 +1311,7 @@ mod tests {
     /// restore and the live pin and the recorded answer must both be exactly where they started.
     #[test]
     fn back_through_the_real_step_path_touches_neither_the_live_pin_nor_the_record() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("real-back");
 
         let mut browse = BrowseFixture::new();
@@ -1355,7 +1355,7 @@ mod tests {
     /// verb — and an unchanged verb must still commit normally.
     #[test]
     fn an_action_that_changes_verb_under_an_armed_press_refuses_to_commit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // **The scratch session is load-bearing here, not boilerplate.** This test asserts that a
         // refused commit RECORDED NOTHING, and `pins_for` reads whatever `auth.json` the session
         // layer resolves — which off a developer's own machine is that household's real one. It
@@ -1445,7 +1445,7 @@ mod tests {
                 ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(TABLE_GROUP) }),
             ),
         ] {
-            let _g = crate::testlock::serial();
+            let _g = plx_base::testlock::serial();
             let mut browse = BrowseFixture::new();
             let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
             let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
@@ -1520,7 +1520,7 @@ mod tests {
     /// this drives it through the real `Machine::step` `Tick` path.
     #[test]
     fn the_empty_roster_spinner_reports_motion_on_every_tick() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("no-library-yet-spinner");
         let mut browse = BrowseFixture::new();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
@@ -1544,7 +1544,7 @@ mod tests {
 
     #[test]
     fn commit_and_back_both_refuse_to_answer_before_a_real_library_lands() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("no-library-yet");
         let mut browse = BrowseFixture::new(); // no discovered libraries at all, in either flavour
 
@@ -1622,7 +1622,7 @@ mod tests {
     /// which a restore loop would misfire.
     #[test]
     fn a_toggled_rows_independent_drift_is_never_restored_or_recorded_by_cancel() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("toggle-and-drift-race");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1665,7 +1665,7 @@ mod tests {
     /// now sends it.
     #[test]
     fn a_commit_carries_a_toggled_row_the_live_pin_has_caught_up_with() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = TempSession::new("commit-after-drift");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
@@ -1723,7 +1723,7 @@ mod tests {
     /// a live Tick pump in the loop to fight with a fixture never built to survive one.
     #[test]
     fn down_off_the_last_row_reaches_the_bottom_action() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
@@ -1802,7 +1802,7 @@ mod tests {
     /// about the band at all.
     #[test]
     fn a_press_abandoned_for_the_list_does_not_swallow_the_row_s_own_ok() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_two_sources();
         let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
@@ -1842,7 +1842,7 @@ mod tests {
     #[test]
     fn every_favourites_row_fits_its_column_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let frame_w = RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();
         for language in SHIPPED {

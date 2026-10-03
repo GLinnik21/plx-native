@@ -405,14 +405,14 @@ fn the_headless_stand_in_shows_the_case_the_ordering_rule_turns_on() {
 /// the assertion below that a REFRESH with no mount and no phase at all still rebuilds.
 #[test]
 fn a_re_described_source_restamps_the_credit_on_an_open_page() {
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
-    let _g = Fresh(crate::testlock::serial());
+    let _g = Fresh(plx_base::testlock::serial());
     crate::plex::reset_servers_for_test();
     let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
     let friend = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
@@ -505,14 +505,14 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 /// their evidence at the registry, so the fix has something to read when it is written.
 #[test]
 fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bug() {
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
-    let _g = Fresh(crate::testlock::serial());
+    let _g = Fresh(plx_base::testlock::serial());
     crate::plex::reset_servers_for_test();
     let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
     let named = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
@@ -571,14 +571,14 @@ fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bu
 /// trusting what the worker carried.
 #[test]
 fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
-    let _g = Fresh(crate::testlock::serial());
+    let _g = Fresh(plx_base::testlock::serial());
     crate::plex::reset_servers_for_test();
     let house = crate::plex::register_for_test("alt-late-house", "127.0.0.1", 1, "t", "cid");
     let friend = crate::plex::register_for_test("alt-late-friend", "127.0.0.1", 2, "t", "cid");
@@ -622,13 +622,13 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
 /// be accepted, and the owned `DetailScreen` of phase 7 stopped stamping it — see `AltStore`'s doc.
 #[test]
 fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             test_store().run(crate::stores::metadata::MetadataCmd::Clear);
         }
     }
-    let _g = Fresh(crate::testlock::serial());
+    let _g = Fresh(plx_base::testlock::serial());
     test_store().run(crate::stores::metadata::MetadataCmd::Clear);
     let available = |sid: ServerId, rk: &str| test_store().view().alt_available(sid, rk);
     let two_sources = || {
@@ -1082,7 +1082,7 @@ fn every_app_owned_run_fits_the_panel_in_every_language() {
         let mut capped = crate::ui::table::TableView::new();
         capped.compact = false;
         capped.set_sections(vec![section_for(&short_built)], 0, false);
-        out.extend(capped.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, language.tag()));
+        out.extend(capped.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
         out.extend(table.app_fit_failures(MENU_MAX_W, language.tag()));
         out.extend(table.app_fit_failures_hugged(language.tag()));
     }

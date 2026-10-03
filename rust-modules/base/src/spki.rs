@@ -1,5 +1,5 @@
 //! A PEM certificate -> the string `CURLOPT_PINNEDPUBLICKEY` accepts (issue #380; used by
-//! [`crate::net::keypin`], issue #378).
+//! `net::keypin`, issue #378).
 //!
 //! The app remembers each Plex server's certificate public key so an offline TV whose clock is
 //! wrong can still recognise its own server. libcurl 7.53.1 reports a verified connection's chain
@@ -102,13 +102,13 @@ fn first_der(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The pin string for a DER `SubjectPublicKeyInfo`.
-pub(crate) fn pin_from_spki_der(spki: &[u8]) -> String {
+pub fn pin_from_spki_der(spki: &[u8]) -> String {
     format!("sha256//{}", b64::encode(&sha256(spki)))
 }
 
 /// The `CURLOPT_PINNEDPUBLICKEY` string for the first certificate in `pem`, or `None` when there
 /// is no certificate or it is not well-formed X.509.
-pub(crate) fn pin_from_pem(pem: &str) -> Option<String> {
+pub fn pin_from_pem(pem: &str) -> Option<String> {
     let der = first_der(pem)?;
     Some(pin_from_spki_der(spki_of_certificate(&der)?))
 }

@@ -7,7 +7,7 @@ use super::test_support::*;
 
 #[test]
 fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_sources_for_owner_test(&mut browse.state, 2, false);
     browse.state.source_mut(0).unwrap().retry_cd = 9;
@@ -24,7 +24,7 @@ fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
 }
 #[test]
 fn a_settled_query_change_with_unknown_total_is_still_page_work() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, browse, _, _) = registered_resident_page_source();
     let mut state = browse.state;
     let adapter = BrowseAdapter::default();
@@ -44,7 +44,7 @@ fn a_settled_query_change_with_unknown_total_is_still_page_work() {
 }
 #[test]
 fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appending() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
     let a = crate::plex::register_for_test("browse-a", "127.0.0.1", 1, "a", "cid");
@@ -66,7 +66,7 @@ fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appendin
 }
 #[test]
 fn filling_a_source_name_refreshes_the_retained_directory() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _cleanup = RegisteredCleanup;
     crate::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
@@ -105,7 +105,7 @@ fn filling_a_source_name_refreshes_the_retained_directory() {
 /// one field here that a rename would churn under an open panel.
 #[test]
 fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
     let sid = crate::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
@@ -136,7 +136,7 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
 }
 #[test]
 fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -158,7 +158,7 @@ fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
 }
 #[test]
 fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_source();
     with_refused_discovery_for_test(|| {
         queue_discovery_for_owner_test(
@@ -184,7 +184,7 @@ fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
 }
 #[test]
 fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _) = registered_page_source();
     assert!(browse.state.sources()[0].sections_done);
     assert_eq!(browse.section_count(), 1);
@@ -207,7 +207,7 @@ fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
 }
 #[test]
 fn a_discovery_landing_from_before_an_in_place_retoken_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -230,7 +230,7 @@ fn a_discovery_landing_from_before_an_in_place_retoken_is_inert() {
 }
 #[test]
 fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     let old_gen = old.token_gen();
     crate::plex::revoke_for_profile_switch();
@@ -251,7 +251,7 @@ fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
 }
 #[test]
 fn page_failure_and_recovery_republish_directory_reachability() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_resident_page_source();
     crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
     // A fully discovered, current lifecycle: neither directory discovery nor the next-page
@@ -307,7 +307,7 @@ fn page_failure_and_recovery_republish_directory_reachability() {
 }
 #[test]
 fn a_page_landing_from_before_a_same_slot_repoint_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -331,7 +331,7 @@ fn a_page_landing_from_before_a_same_slot_repoint_is_inert() {
 }
 #[test]
 fn a_page_landing_from_before_an_in_place_retoken_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -352,7 +352,7 @@ fn a_page_landing_from_before_an_in_place_retoken_is_inert() {
 }
 #[test]
 fn a_page_landing_from_before_a_profile_reset_is_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
     let old_gen = old.token_gen();
     crate::plex::revoke_for_profile_switch();
@@ -374,7 +374,7 @@ fn a_page_landing_from_before_a_profile_reset_is_inert() {
 }
 #[test]
 fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_resident_page_source();
     let token_gen = client.token_gen();
     let (start_tx, start_rx) = std::sync::mpsc::channel();
@@ -385,10 +385,10 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
         // This worker races the registry's own `WRITE` mutex against the main thread's
         // `commit_reachability_if_current` closure below — that IS the property under test —
         // so it is not a bystander of some other module's test; it still writes the same
-        // crate-global registry `crate::testlock::serial()` protects, and it joins back into
+        // crate-global registry `plx_base::testlock::serial()` protects, and it joins back into
         // the outer test (below) strictly before that guard drops. See
-        // `crate::testlock::adopt_current_thread`'s doc for the exact contract.
-        crate::testlock::adopt_current_thread();
+        // `plx_base::testlock::adopt_current_thread`'s doc for the exact contract.
+        plx_base::testlock::adopt_current_thread();
         start_rx.recv().unwrap();
         attempt_tx.send(()).unwrap();
         assert_eq!(
@@ -427,7 +427,7 @@ fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
 }
 #[test]
 fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -439,7 +439,7 @@ fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
 }
 #[test]
 fn directory_landings_from_before_an_in_place_retoken_are_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
     assert_eq!(
@@ -451,7 +451,7 @@ fn directory_landings_from_before_an_in_place_retoken_are_inert() {
 }
 #[test]
 fn directory_landings_from_before_a_profile_reset_are_inert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_directory_source();
     let old_gen = old.token_gen();
     crate::plex::revoke_for_profile_switch();
@@ -465,7 +465,7 @@ fn directory_landings_from_before_a_profile_reset_are_inert() {
 }
 #[test]
 fn directory_landings_for_the_current_lifecycle_commit_both_menus() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, client) = registered_directory_source();
     queue_directories_from(&mut browse, client, client.token_gen());
     let state = browse.state.states().first().unwrap();
@@ -476,7 +476,7 @@ fn directory_landings_for_the_current_lifecycle_commit_both_menus() {
 }
 #[test]
 fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     let count = ensure_sections_with(&mut browse.state, |client| {
         assert!(std::ptr::eq(client, old));
@@ -500,7 +500,7 @@ fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() 
 }
 #[test]
 fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, old) = registered_source();
     crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
     let old_gen = old.token_gen();
@@ -523,7 +523,7 @@ fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() 
 }
 #[test]
 fn blocking_section_failure_preserves_an_auth_401_published_during_the_request() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _) = registered_source();
     let count = ensure_sections_with(&mut browse.state, |_| {
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
@@ -549,7 +549,7 @@ fn blocking_section_failure_preserves_an_auth_401_published_during_the_request()
 /// early forever and the Library is a spinner until the app is killed.
 #[test]
 fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     browse.adapter.fetching.store(true, Ordering::SeqCst);
     browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
@@ -578,7 +578,7 @@ fn reset_clears_the_retry_backoff() {
     // Takes the crate lock for the same reason the fetch-machine tests below do — see the note
     // there. `reset()` is the most destructive call in this module, and a test that makes it
     // without the lock is not testing concurrently, it is CORRUPTING whoever is.
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     browse.state.retry_cd = 120;
     browse.reset();
@@ -599,7 +599,7 @@ fn reset_clears_the_retry_backoff() {
 fn the_source_table_tells_a_household_server_from_a_share_though_both_read_unowned() {
     const ADMIN_ID: i64 = 111_111;
     const FRIEND_ID: i64 = 987_654;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _cleanup = RegisteredCleanup;
     let _session = TempPins::new("browse-household");
     crate::plex::session::save(&crate::plex::session::Session {

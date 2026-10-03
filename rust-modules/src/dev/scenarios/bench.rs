@@ -344,7 +344,7 @@ pub(crate) struct PushBench {
 impl PushBench {
     pub(crate) fn new(n: u32, rk: String) -> Self {
         let targets = if rk.is_empty() {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "bench: pushbench has no ratingKey (pushbench=<n>,<rk> or navosc=<rk>) — \
                  rotating Library only, Detail/Person skipped",
             );
@@ -409,14 +409,14 @@ impl ModalBench {
     pub(crate) fn new(n: u32, rk: String) -> Self {
         let mut targets = vec![ModalTarget::Settings, ModalTarget::AccountMenu, ModalTarget::About];
         if rk.is_empty() {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "bench: modalbench has no ratingKey (modalbench=<n>,<rk> or reuse navosc=<rk>) \
                  — item menu skipped from rotation",
             );
         } else {
             targets.insert(2, ModalTarget::ItemMenu);
         }
-        crate::eventlog::log(
+        plx_base::eventlog::log(
             "bench: modalbench skips library menu (needs a live, mounted Library page instance) \
              and filmography (needs a live Person page, itself gated on Detail cast data) — both \
              are push-navigation dependencies a modal-only bench should not carry, see ModalBench::new's doc",
@@ -501,7 +501,7 @@ impl DeepBench {
         let empty_rk = rk.is_empty();
         let depth = if empty_rk { 0 } else { depth };
         if empty_rk {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "bench: deepbench has no ratingKey (deepbench=<depth>,<rk> or reuse navosc=<rk>) \
                  — Library cannot deepen the stack (its entry point is a peer swap, \
                  NavOp::SelectTab, not a push — see DeepBench::targets's doc), so there is \

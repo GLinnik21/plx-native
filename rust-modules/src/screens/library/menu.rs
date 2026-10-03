@@ -1051,7 +1051,7 @@ mod tests {
     #[test]
     fn sources_keep_server_identity_and_align_recheck_after_separator() {
         // with_cx retains the same explicit directory shape a Bridge captures from its owner.
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (groups, sections) = source_sections();
         let draft = lay(source_draft(11, 0, &groups, &sections));
         assert_eq!(draft.sections.len(), 2);
@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn every_type_row_fits_the_popover_in_every_language() {
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let measure = crate::fontcov::advances::ShippedMeasure;
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
@@ -1241,7 +1241,7 @@ mod tests {
                 title: crate::i18n::msg::browse_library_plays().into(), default_desc: true },
         ];
         let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];
-        let measure = crate::fontcov::advances::ShippedMeasure;
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);

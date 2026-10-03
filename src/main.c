@@ -32,7 +32,7 @@ extern void plx_crash_write_image_marker(int fd); /* identify this binary in the
 /* Where this INSTALL's runtime files live — `/tmp/plxnative-events.log` for the app users get,
  * `/tmp/com.beb.plxnative.debug/plxnative-events.log` for a developer build installed beside it.
  *
- * The answer comes from Rust (`plx_runtime_path`, rust-modules/src/paths.rs) rather than from a
+ * The answer comes from Rust (`plx_runtime_path`, rust-modules/base/src/paths.rs) rather than from a
  * literal here, and that is the whole point: this file opens three logs before a single line of
  * Rust runs, and `crate::log` and the panic hook then append to two of them. Two definitions of
  * "where" — one in C, one in Rust — is the split-brain paths.rs documents at length: main.c would

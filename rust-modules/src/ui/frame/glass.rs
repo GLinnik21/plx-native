@@ -114,7 +114,7 @@ mod tests {
     /// pair made impossible to assert.
     #[test]
     fn the_dial_travels_with_the_plan_it_was_armed_on() {
-        let _g = crate::testlock::serial(); // the published step snapshot is process-wide
+        let _g = plx_base::testlock::serial(); // the published step snapshot is process-wide
         let mut armed = GlassPlan::new();
         let untouched = GlassPlan::new();
         assert!(!armed.dial.armed(), "a fresh plan is disarmed");
@@ -152,7 +152,7 @@ mod tests {
     /// plan at its fresh values; a process static or Bridge-owned field cannot satisfy this.
     #[test]
     fn two_glass_plans_own_independent_tab_bands() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut a = GlassPlan::new();
         let b = GlassPlan::new();
         a.seed_tab_density_for_test(0.73);

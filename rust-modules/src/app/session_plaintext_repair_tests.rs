@@ -9,7 +9,7 @@ mod tests {
     use crate::auth::owner::{SessionEvent, SessionWork};
     use crate::plex::session::{self, ProfileCreds, Session, ServerRef, SourceRef, UserRef};
 
-    struct Cleanup<'a>(&'a crate::task::MainThread);
+    struct Cleanup<'a>(&'a plx_base::task::MainThread);
     impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
@@ -25,8 +25,8 @@ mod tests {
 
     #[test]
     fn endpoint_repair_upgrades_a_stored_plaintext_session_and_its_cached_profile() {
-        let _lock = crate::testlock::serial();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let _lock = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         let tmp = session::TempSession::new("owner-plaintext-repair");
         let _cleanup = Cleanup(&mt);
         tmp.assert_only_target();

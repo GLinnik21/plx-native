@@ -953,7 +953,7 @@ pub(crate) fn report_standing(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::eventlog::log("telemetry: no /dev/urandom — onboarding incident was not queued");
+        plx_base::eventlog::log("telemetry: no /dev/urandom — onboarding incident was not queued");
         return None;
     };
     let body = event_body(
@@ -983,7 +983,7 @@ fn queue_standing(record: &super::queue::Record, allowed: impl FnOnce() -> bool)
     match super::spool::append_watched_if(record, tenure, allowed) {
         Some(true) => true,
         Some(false) => {
-            crate::eventlog::log("telemetry: onboarding incident did not fit the durable spool");
+            plx_base::eventlog::log("telemetry: onboarding incident did not fit the durable spool");
             false
         }
         None => false, // consent/tenure changed, or no delivery watch could be admitted
@@ -1008,7 +1008,7 @@ pub(crate) fn send_one_off(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::eventlog::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
+        plx_base::eventlog::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
         return None;
     };
     let body = event_body(&event_id, super::sentry::build_id(), None, ctx, ConsentKind::OneOff);
@@ -1203,7 +1203,7 @@ mod tests {
         );
         assert_eq!(
             ctx().with_persistence(&CompletionOutcome::Failed(Failure::Admission(
-                crate::storage_worker::SubmitError::Full
+                plx_base::storage_worker::SubmitError::Full
             )))
             .persistence,
             Some(PersistenceFailure::Admission)
@@ -1552,7 +1552,7 @@ mod tests {
     #[test]
     fn a_queued_standing_report_is_watched_from_the_moment_the_spool_takes_it() {
         use super::super::delivery::{self, DeliveryState};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         delivery::forget();
         let dir = std::env::temp_dir().join(format!("plxnative-standing-watch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1578,7 +1578,7 @@ mod tests {
     fn completion_before_append_returns_is_not_lost() {
         use super::super::{delivery, spool};
         use delivery::DeliveryState;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         delivery::forget();
         let dir = std::env::temp_dir().join(format!("plxnative-standing-race-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1614,7 +1614,7 @@ mod tests {
     /// `consent::tests::report_permission_follows_the_accepted_and_declined_scope`.
     #[test]
     fn a_standing_report_needs_the_scope_and_never_carries_a_stall() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = consent::current();
         let dir = std::env::temp_dir().join(format!("plxnative-incident-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

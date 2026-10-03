@@ -1,13 +1,13 @@
 //! Nonblocking Session persistence admission and completion tracking.
 //!
-//! The production executor is the application's one bounded FIFO in [`crate::storage_worker`];
+//! The production executor is the application's one bounded FIFO in [`plx_base::storage_worker`];
 //! the local executors below exist only to prove lifecycle and revision behavior without a TV.
 
 use super::persistence::{self, CanonicalCommit, HelperEvidence, ProtectionFailure};
 use super::{SaveAuthority, Session};
 use crate::storage::wire::{AuthPreservation, ProtectionOutcome};
 use crate::storage::{CommitStage, StoreError};
-use crate::storage_worker::SubmitError;
+use plx_base::storage_worker::SubmitError;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -917,11 +917,11 @@ impl CompletionGuard {
 
     fn finish_outcome(&mut self, outcome: CompletionOutcome) -> CompletionOutcome {
         match outcome {
-            CompletionOutcome::Uncertain { stage, errno, helper } => crate::eventlog::log(&format!(
+            CompletionOutcome::Uncertain { stage, errno, helper } => plx_base::eventlog::log(&format!(
                 "session: async persistence uncertain revision={} stage={stage:?} errno={errno} helper={helper:?}",
                 self.revision
             )),
-            CompletionOutcome::Failed(failure) => crate::eventlog::log(&format!(
+            CompletionOutcome::Failed(failure) => plx_base::eventlog::log(&format!(
                 "session: async persistence failed revision={} failure={failure:?}",
                 self.revision
             )),
@@ -966,7 +966,7 @@ struct SharedExecutor;
 
 impl Submitter for SharedExecutor {
     fn submit(&self, job: Job) -> Result<(), SubmitError> {
-        crate::storage_worker::submit(move || job()).map(|ticket| drop(ticket))
+        plx_base::storage_worker::submit(move || job()).map(|ticket| drop(ticket))
     }
 }
 
@@ -1104,8 +1104,8 @@ pub(crate) fn clear_after(
 
 pub(crate) fn start_bootstrap(
     opener: Box<dyn persistence::LegacyOpener + Send>,
-) -> Result<crate::storage_worker::TypedTicket<persistence::Bootstrap>, SubmitError> {
-    crate::storage_worker::submit(move || {
+) -> Result<plx_base::storage_worker::TypedTicket<persistence::Bootstrap>, SubmitError> {
+    plx_base::storage_worker::submit(move || {
         let _io = super::io();
         let mut opener = opener;
         let result = persistence::bootstrap(&mut *opener);
@@ -1205,7 +1205,7 @@ fn execute_clear() -> DiskOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage_worker::{SubmitErrorGeneric, Writer};
+    use plx_base::storage_worker::{SubmitErrorGeneric, Writer};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -1228,17 +1228,17 @@ mod tests {
 
     #[test]
     fn routine_write_without_fallback_reads_canonical_only_for_the_commit() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let files = crate::plex::session::test_support::TempSession::new("routine-write-read-count");
         struct ResetCanonical;
         impl Drop for ResetCanonical {
             fn drop(&mut self) {
                 persistence::READ_FOR_TEST.with(|hook| hook.set(None));
-                crate::paths::redirect_persistent_state_root_for_test(None);
+                plx_base::paths::redirect_persistent_state_root_for_test(None);
             }
         }
         let _reset = ResetCanonical;
-        crate::paths::redirect_persistent_state_root_for_test(Some(files.dir.join("canonical")));
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(files.dir.join("canonical")));
         std::thread_local! {
             static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         }
@@ -1346,7 +1346,7 @@ mod tests {
 
     #[test]
     fn admission_and_peek_do_not_wait_for_delayed_disk() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("before"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(1);
@@ -1385,7 +1385,7 @@ mod tests {
 
     #[test]
     fn rapid_field_edits_compose_from_the_latest_snapshot_and_finish_newest() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("client"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(2);
@@ -1433,7 +1433,7 @@ mod tests {
 
     #[test]
     fn stale_completion_cannot_clobber_newer_snapshot_or_status() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("initial"));
         let coordinator = Coordinator::new();
         let (release_tx, release_rx) = mpsc::channel();
@@ -1476,7 +1476,7 @@ mod tests {
 
     #[test]
     fn write_clear_fresh_is_fifo_and_pre_clear_receipt_is_superseded() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("old"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(3);
@@ -1558,7 +1558,7 @@ mod tests {
 
     #[test]
     fn queue_refusal_is_explicit_and_does_not_publish_rejected_edit() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("kept"));
         let coordinator = Coordinator::new();
         let error = coordinator
@@ -1583,7 +1583,7 @@ mod tests {
 
     #[test]
     fn clear_refusal_keeps_memory_revoked_without_claiming_durability() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("signed-in"));
         let coordinator = Coordinator::new();
         let error = coordinator
@@ -1608,7 +1608,7 @@ mod tests {
 
     #[test]
     fn empty_fresh_authority_cannot_reopen_a_cleared_tenure() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("signed-in"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(2);
@@ -1631,7 +1631,7 @@ mod tests {
 
     #[test]
     fn rejected_clear_still_prevents_an_older_queued_write_from_running() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("signed-in"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(1);
@@ -1701,7 +1701,7 @@ mod tests {
             }
         }
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("before-drop"));
         let coordinator = Coordinator::new();
         let (tx, rx) = mpsc::channel::<Job>();
@@ -1732,7 +1732,7 @@ mod tests {
 
     #[test]
     fn shared_executor_runs_persistence_off_the_admitting_thread() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("shared"));
         let coordinator = Coordinator::new();
         let caller = std::thread::current().id();
@@ -1755,12 +1755,12 @@ mod tests {
             CompletionOutcome::Durable(_)
         ));
         assert!(ran.load(Ordering::Acquire));
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
     }
 
     #[test]
     fn refused_ordinary_edit_retains_dirty_snapshot_for_explicit_retry() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("dirty"));
         let coordinator = Coordinator::new();
         assert!(!coordinator.update_ordinary(
@@ -1780,7 +1780,7 @@ mod tests {
 
     #[test]
     fn public_ordinary_edit_is_allowed_when_auth_is_locked() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("locked-public"));
         LOCKED_STATE.store(1, Ordering::Release);
         let coordinator = Coordinator::new();
@@ -1803,7 +1803,7 @@ mod tests {
 
     #[test]
     fn rejected_owner_permit_does_not_enqueue_or_publish_a_patch() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("permitted-snapshot"));
         let coordinator = Coordinator::new();
         let result = coordinator.admit_with(
@@ -1828,7 +1828,7 @@ mod tests {
     /// therefore never be reported as an admitted persistence revision.
     #[test]
     fn typed_admission_separates_registry_only_from_a_durable_revision() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("client"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(1);
@@ -1965,7 +1965,7 @@ mod tests {
     /// dirty Routine/PublicOnly authority and can never mint fresh authority.
     #[test]
     fn ordinary_retry_can_never_acquire_fresh_reauthentication() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         install(session("signed-in"));
         let coordinator = Coordinator::new();
         let executor = WriterExecutor::start(3);
@@ -2009,7 +2009,7 @@ mod tests {
 
     #[test]
     fn snapshot_admission_cannot_bypass_public_only_or_locked_auth_guards() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for authority in [SaveAuthority::PublicOnly, SaveAuthority::Routine] {
             install(session("before"));
             LOCKED_STATE.store(

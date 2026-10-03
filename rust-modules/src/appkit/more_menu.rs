@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn warm_open_queues_the_opening_page_once_without_an_update() {
         use crate::ui::fixture::FixtureMeasure as M;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::default();
         for st in [MoreMenuState::new(&ps), MoreMenuState::new_quality(&ps)] {
             crate::text::reset_prewarm_for_test();
@@ -957,7 +957,7 @@ mod tests {
     /// Force Direct Play entry (no ladder) and the ordinary entry open the root.
     #[test]
     fn the_quality_entry_opens_on_the_page_and_the_ordinary_entry_on_the_root() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::default();
         let st = MoreMenuState::new(&ps);
         assert_eq!(st.page(), None);
@@ -1143,10 +1143,10 @@ mod tests {
     /// frame it animates and asks for none once settled — the same bar as the track menu.
     #[test]
     fn a_push_and_a_pop_slide_and_then_rest() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = crate::route::PlaybackSession::default();
-        let m = crate::fontcov::advances::ShippedMeasure;
+        let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
             crate::ui::idle::frame_begin(DT);
             st.update(DT, &m, &ps);
@@ -1186,10 +1186,10 @@ mod tests {
     /// right stay anchored, then it asks for no more frames.
     #[test]
     fn a_changed_row_set_resizes_the_card_with_a_spring_and_then_rests() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = crate::route::PlaybackSession::default();
-        let m = crate::fontcov::advances::ShippedMeasure;
+        let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
             crate::ui::idle::frame_begin(DT);
             st.update(DT, &m, &ps);
@@ -1365,7 +1365,7 @@ mod focus_tests {
         let mut out = Vec::new();
         let rows = rows_for(false);
         let mut check = |tag: &str, form: &MoreTable| {
-            out.extend(form.table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, tag));
+            out.extend(form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, tag));
             out.extend(form.table.app_fit_failures(crate::ui::table::MENU_MAX_W, tag));
             out.extend(form.table.app_fit_failures_hugged(tag));
         };

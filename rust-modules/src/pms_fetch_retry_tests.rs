@@ -8,7 +8,7 @@ use super::test_support::land;
 
 #[test]
 fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     let a_sid = crate::plex::register_for_test("request-a", "a.invalid", 32400, "test", "cid");
@@ -37,7 +37,7 @@ fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
 
 #[test]
 fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
@@ -63,7 +63,7 @@ fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
 
 #[test]
 fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("request", "old.invalid", 32400, "old", "cid");
@@ -95,7 +95,7 @@ fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
 
 #[test]
 fn addressed_arrivals_and_retry_ticks_do_not_drain_the_mailbox() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
@@ -118,7 +118,7 @@ fn addressed_arrivals_and_retry_ticks_do_not_drain_the_mailbox() {
 
 #[test]
 fn a_captured_batch_does_not_consume_later_worker_arrivals() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
@@ -145,7 +145,7 @@ fn a_captured_batch_does_not_consume_later_worker_arrivals() {
 
 #[test]
 fn a_captured_batch_is_still_rejected_after_an_identity_reset() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
@@ -161,7 +161,7 @@ fn a_captured_batch_is_still_rejected_after_an_identity_reset() {
 
 #[test]
 fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("home-life", "10.0.0.1", 32400, "old", "cid");
     let old = crate::plex::client_for(sid).unwrap();
@@ -192,7 +192,7 @@ fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
 /// of the three statics exactly as it found them.
 #[test]
 fn a_failed_landing_never_blanks_a_populated_home() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(3)))]);
@@ -220,7 +220,7 @@ fn a_failed_landing_never_blanks_a_populated_home() {
 /// its next failure starts at the bottom of the ladder instead of inheriting a 30s wait.
 #[test]
 fn a_successful_landing_commits_and_retires_the_backoff() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Loading, None)]);
@@ -245,7 +245,7 @@ fn a_successful_landing_commits_and_retires_the_backoff() {
 /// forever.
 #[test]
 fn a_server_with_no_hubs_is_ready_and_empty_not_failed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Loading, None)]);
@@ -281,7 +281,7 @@ fn the_retry_countdown_fires_when_the_backoff_elapses() {
 /// call abandoned could still land on top of the one that replaced it.
 #[test]
 fn a_stale_or_superseded_landing_is_dropped_whole() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let stale = o.state.hub_gen;

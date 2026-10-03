@@ -49,7 +49,7 @@ fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
 #[test]
 fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    let _lock = crate::testlock::serial();
+    let _lock = plx_base::testlock::serial();
     let mut uhd_feasible = |raster: (u16, u16)| {
         arm_auto_fixture(&mut ps, 
             "http://host/clip.mp4",
@@ -1013,7 +1013,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
         }
         fn poll(listener: &std::net::TcpListener, rounds: usize, requests: &mut Vec<String>) {
             for _ in 0..rounds {
-                match crate::testnet::accept(listener) {
+                match plx_base::testnet::accept(listener) {
                     Ok((mut socket, _)) => {
                         requests.push(request(&mut socket));
                         socket
@@ -1663,7 +1663,7 @@ fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let timeout = Some(std::time::Duration::from_secs(20));
                     socket.set_read_timeout(timeout).expect("request timeout");
@@ -1764,7 +1764,7 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
                     let mut first = String::new();
@@ -2055,7 +2055,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
         while std::time::Instant::now() < hard_deadline
             && observe_until.is_none_or(|until| std::time::Instant::now() < until)
         {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
                     let mut first = String::new();

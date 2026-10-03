@@ -45,7 +45,7 @@ pub enum CredentialPolicy {
 }
 
 #[cfg(all(feature = "devtriggers", not(test)))]
-crate::devtrig::latched_flag!(
+plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-storepolicy` — a developer build takes the store's
     /// [`CredentialPolicy::HttpsOnly`], read once at boot, so the PLX-NATIVE-10 consent flow (which
     /// `AllowPlaintext` never needs) is reachable in the sim and on the TV. Absent from a store

@@ -34,11 +34,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
+# The layer crates split out of the app crate (docs/module-layers.md), each a dependency of it and
+# each held to the same rule: an rlib, never an archive. One archive is linked, and it is the app's.
+LAYER_CRATES = ("plx_base",)
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
 # the manifest names. A mutated copy replaces `Cargo.toml` only.
-WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage")
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base")
 
 
 def offences(unit_graph=None, metadata=None):
@@ -61,6 +64,18 @@ def offences(unit_graph=None, metadata=None):
             for field in ("crate_types", "kind"):
                 if target.get(field) != ["rlib"]:
                     found.append((f"target {field}", ",".join(target.get(field) or [])))
+    return found
+
+
+def layer_offences(unit_graph):
+    """The layer crates that the host library build compiles as anything but an rlib, or not at all."""
+    found = []
+    for layer in LAYER_CRATES:
+        units = [u for u in unit_graph.get("units", []) if (u.get("target") or {}).get("name") == layer]
+        if not units:
+            found.append((layer, "no library unit at all"))
+        found.extend((layer, ",".join(u["target"].get("crate_types") or []))
+                     for u in units if (u["target"].get("crate_types") or []) != ["rlib"])
     return found
 
 
@@ -109,6 +124,12 @@ class ParserTests(unittest.TestCase):
     def test_a_missing_library_is_an_offence_not_a_pass(self):
         self.assertEqual(len(offences(self.graph(name="other"), self.meta(name="other"))), 2)
 
+    def test_a_layer_crate_must_be_present_and_an_rlib(self):
+        clean = self.graph(name="plx_base")
+        self.assertEqual(layer_offences(clean), [])
+        self.assertEqual(layer_offences(self.graph(("staticlib",), name="plx_base")), [("plx_base", "staticlib")])
+        self.assertEqual(layer_offences(self.graph()), [("plx_base", "no library unit at all")])
+
     def test_other_crates_may_be_archives(self):
         graph = {"units": [{"target": {"name": "zstd_sys", "kind": ["staticlib"],
                                        "crate_types": ["staticlib"]}, "mode": "build"},
@@ -120,6 +141,7 @@ class HostBuildTests(unittest.TestCase):
     def test_host_lib_build_is_rlib_only(self):
         graph, meta = resolve(ROOT / "rust-modules")
         self.assertEqual(offences(graph, meta), [], f"{CRATE} would build more than an rlib")
+        self.assertEqual(layer_offences(graph), [], "a layer crate would build more than an rlib")
 
 
 class ManifestMutationTests(unittest.TestCase):

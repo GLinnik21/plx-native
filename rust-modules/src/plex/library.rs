@@ -355,7 +355,7 @@ mod tests {
                 let mut requests = Vec::new();
                 let deadline = Instant::now() + Duration::from_secs(3);
                 while requests.len() <= failed_requests && Instant::now() < deadline {
-                    let Ok((mut socket, _)) = crate::testnet::accept(&listener) else {
+                    let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     };
@@ -420,7 +420,7 @@ mod tests {
                 let end = Instant::now() + Duration::from_millis(2500);
                 let mut requests = 0;
                 while Instant::now() < end {
-                    let Ok((mut socket, _)) = crate::testnet::accept(&listener) else {
+                    let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     };

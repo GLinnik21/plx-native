@@ -676,7 +676,7 @@ fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
 fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_command_carry() {
     use crate::auth::owner::Command;
     use crate::ui::machine::{PressId, RequestId};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let epoch = u64::from(u32::MAX) + 31;
     let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
@@ -894,7 +894,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     use crate::ui::machine::RequestId;
     // frame_ingest also captures the OTHER stores. Serialize that real frame boundary;
     // Session's own resources remain private and every network operation is injected.
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         ..Default::default()
@@ -989,7 +989,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
 #[test]
 fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
     use crate::auth::owner::{RegistryPlan, SessionEvent, SessionWork};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for replacement in 0..3 {
         crate::plex::reset_servers_for_test();
         let initial_origin = crate::plex::Origin::http("127.0.0.1", 9);

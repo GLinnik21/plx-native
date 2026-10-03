@@ -154,7 +154,7 @@ thread_local! {
     static LABEL: Cell<&'static BlockingLabel> = const { Cell::new(&UNLABELED) };
 }
 
-pub(crate) struct LabelScope {
+pub struct LabelScope {
     previous: &'static BlockingLabel,
     _thread: PhantomData<Rc<()>>,
 }
@@ -180,16 +180,16 @@ const PRESENT_LABEL: &str = "gl present";
 #[cfg(feature = "threadcheck")]
 const GPU_LABELS: [&str; 3] = [DRAW_LABEL, READBACK_LABEL, PRESENT_LABEL];
 #[cfg(feature = "threadcheck")]
-pub(crate) fn draw_scope() -> LabelScope {
+pub fn draw_scope() -> LabelScope {
     enter_label(const { &BlockingLabel::new(DRAW_LABEL) })
 }
 /// A dev capture-stream grab or a simulator screenshot: `glReadPixels` drains the pipeline.
 #[cfg(feature = "threadcheck")]
-pub(crate) fn readback_scope() -> LabelScope {
+pub fn readback_scope() -> LabelScope {
     enter_label(const { &BlockingLabel::new(READBACK_LABEL) })
 }
 #[cfg(feature = "threadcheck")]
-pub(crate) fn present_scope() -> LabelScope {
+pub fn present_scope() -> LabelScope {
     enter_label(const { &BlockingLabel::new(PRESENT_LABEL) })
 }
 
@@ -204,15 +204,15 @@ impl Drop for LabelScope {
 
 /// The app loop owns this guard. Tests are disabled by default and may explicitly attach private
 /// signals to exercise publication without creating a thread or waiting for real time.
-pub(crate) struct LoopWatch {
+pub struct LoopWatch {
     signals: Option<&'static Signals>,
     previous: Option<&'static Signals>,
     _thread: PhantomData<Rc<()>>,
 }
 
 impl LoopWatch {
-    pub(crate) fn start() -> Self {
-        if cfg!(test) { return Self::disabled(); }
+    pub fn start() -> Self {
+        if cfg!(any(test, feature = "test-support")) { return Self::disabled(); }
         Self::start_enabled()
     }
 
@@ -256,7 +256,7 @@ impl LoopWatch {
     }
 
     /// Arm only after the first swap returns; shader/font warm-up may legitimately exceed 250 ms.
-    pub(crate) fn presented(&self) {
+    pub fn presented(&self) {
         if let Some(signals) = self.signals {
             signals.presented.store(true, Ordering::Release);
         }
@@ -264,7 +264,7 @@ impl LoopWatch {
 
     /// One native-word atomic increment, independent of presentation, replay time or heartbeat.
     #[inline]
-    pub(crate) fn advance(&self) {
+    pub fn advance(&self) {
         if let Some(signals) = self.signals { signals.progress.fetch_add(1, Ordering::Release); }
     }
 }

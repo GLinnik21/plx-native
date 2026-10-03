@@ -1398,7 +1398,7 @@ mod tests {
         let schedule = record.land_schedule();
         assert_eq!(schedule.len(),1);
         assert_eq!(schedule[&u32::MAX],vec![(0,u32::MAX)]);
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _gate = crate::ui::landgate::Armed;
         crate::ui::landgate::arm_sparse_replay(schedule);
         assert_eq!(crate::ui::landgate::unmatched_counts(),vec![(u32::MAX,0,u32::MAX)]);

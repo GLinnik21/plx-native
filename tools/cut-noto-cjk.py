@@ -109,7 +109,7 @@ def check_input(path: Path) -> None:
             f"{path.name}: sha256 {got}\n  expected {ASSET_SHA256}\n"
             f"  This is a PINNED input. If you meant to move to a new release, update RELEASE_TAG,\n"
             f"  ASSET, ASSET_SHA256 and ASSET_BYTES together, and re-read the coverage gate in\n"
-            f"  rust-modules/src/fontcov.rs — a re-cut moves every ideograph's design.")
+            f"  rust-modules/base/src/fontcov.rs — a re-cut moves every ideograph's design.")
 
 
 def main() -> None:

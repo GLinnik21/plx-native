@@ -998,7 +998,7 @@ impl TableView {
     /// fix; a caller that wants it too reads `fit_report` directly.
     #[cfg(test)]
     pub(crate) fn app_fit_failures(&self, frame_w: f32, tag: &str) -> Vec<String> {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         self.fit_report(frame_w, &ShippedMeasure, HEADROOM)
             .iter()
@@ -1012,7 +1012,7 @@ impl TableView {
     /// panel that hugs its content must not elide any of it.
     #[cfg(test)]
     pub(crate) fn app_fit_failures_hugged(&self, tag: &str) -> Vec<String> {
-        let w = self.menu_panel_width(&crate::fontcov::advances::ShippedMeasure);
+        let w = self.menu_panel_width(&plx_base::fontcov::advances::ShippedMeasure);
         self.app_fit_failures(w, &format!("{tag} @hugged {w}"))
     }
 
@@ -1022,7 +1022,7 @@ impl TableView {
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
         let mut trailing = row.ticon.map_or(0.0, ticon_slot_w);
         if !row.badges.is_empty() {
-            trailing += row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None, &crate::fontcov::advances::ShippedMeasure)).sum::<f32>()
+            trailing += row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None, &plx_base::fontcov::advances::ShippedMeasure)).sum::<f32>()
                 + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
         }
         frame_w - SIDE - CONTENT_PAD - trailing
@@ -1929,7 +1929,7 @@ mod tests {
 
     #[test]
     fn the_focus_pill_runs_between_rows_and_goes_quiet_at_rest() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut t = TableView::new();
         t.set_sections(
             vec![Section::new("").row(Row::new("One")).row(Row::new("Two"))],
@@ -1973,7 +1973,7 @@ mod tests {
     /// clip. This overflows a small frame on purpose and settles on the last row.
     #[test]
     fn scrolling_to_the_last_row_reveals_it_fully_above_the_bottom_pad() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut t = TableView::new();
         let mut sec = Section::new("S");
         for i in 0..20 {
@@ -2009,7 +2009,7 @@ mod tests {
     /// both a Settings-sized frame and a popover-sized one, with plain and two-line rows.
     #[test]
     fn no_row_is_drawn_cut_mid_glyph_at_the_bottom_edge() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for (frame_h, detail_every) in [(300.0f32, 2usize), (520.0, 3), (455.0, 0)] {
             let mut t = TableView::new();
             let mut sec = Section::new("S");
@@ -2075,7 +2075,7 @@ mod tests {
     /// beside its label, but never to nothing.
     #[test]
     fn row_columns_still_elides_an_unshortened_long_value() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         use crate::ui::machine::Measure;
         use crate::ui::route_screen::RouteLayout;
         let frame_w = RouteLayout::screen().sectioned_table().w;
@@ -2098,7 +2098,7 @@ mod tests {
     /// `fit_report` does not flag a short value that fits, and still flags one that does not.
     #[test]
     fn fit_report_does_not_flag_a_short_value_that_fits() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         use crate::ui::fit::HEADROOM;
         let frame_w = 700.0;
         let mut table = TableView::new();
@@ -2122,7 +2122,7 @@ mod tests {
     /// itself, flush — no empty column is held open. And a hugged panel must show every run whole.
     #[test]
     fn a_sections_values_share_a_right_edge_and_the_hugged_panel_elides_nothing() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         use crate::ui::machine::Measure;
         let mut table = TableView::new();
         table.compact = false;
@@ -2180,7 +2180,7 @@ mod tests {
     /// Spanish Subtitles note ran off the panel as one clipped line at a fixed `ROW_H`.
     #[test]
     fn a_long_note_wraps_and_its_row_grows_with_the_lines() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         let t = note_table(ES_NOTE);
         let before = t.measured_height();
         t.fit_notes(620.0, &M);
@@ -2198,7 +2198,7 @@ mod tests {
     /// column does not.
     #[test]
     fn fit_report_covers_note_rows() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         use crate::ui::fit::HEADROOM;
         let ok = note_table(ES_NOTE).fit_report(620.0, &M, HEADROOM);
         assert!(ok.iter().all(|i| i.role != FitRole::Note), "a wrappable note fits: {ok:?}");
@@ -2323,7 +2323,7 @@ mod tests {
     /// **The fit gate reports a title that cannot fit**, at the width the localized text needs.
     #[test]
     fn fit_report_covers_the_title_band() {
-        use crate::fontcov::advances::ShippedMeasure as M;
+        use plx_base::fontcov::advances::ShippedMeasure as M;
         use crate::ui::fit::HEADROOM;
         let mut t = TableView::new();
         t.set_sections(vec![Section::new("").row(Row::new("a"))], 0, false);

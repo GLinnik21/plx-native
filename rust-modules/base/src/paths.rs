@@ -51,13 +51,13 @@ use std::sync::OnceLock;
 /// split-brain above was reachable on the device; and a `--no-default-features --features hostsim`
 /// build had the opposite hole, writing its event log to a shared `/tmp` while the simulator
 /// binary truncated one inside the instance root.
-pub(crate) const ENV_STEERABLE: bool = cfg!(feature = "hostsim");
+pub const ENV_STEERABLE: bool = cfg!(feature = "hostsim");
 
 /// The app id this project ships to users, and the one every install falls back to.
 ///
 /// It is a FALLBACK and a comparison value — never the answer on its own. See [`app_id`]: which
 /// app this process is depends on where it was installed, not on what it was compiled with.
-pub(crate) const STABLE_APP_ID: &str = "com.beb.plxnative";
+pub const STABLE_APP_ID: &str = "com.beb.plxnative";
 
 /// The Developer Mode install dir. Only a last-resort fallback now — it is what the app used to
 /// hardcode, so it keeps the historical behaviour if `/proc` is somehow unreadable.
@@ -101,7 +101,7 @@ const LEGACY_APP_DIR: &str = "/media/developer/apps/usr/palm/applications/com.be
 /// of output exists to explain why. `runtime_dir`'s doc records that deadlock being hit for real.
 /// It reads `current_exe` itself rather than calling [`app_dir`] for the same reason it always
 /// has: this path must not depend on anything that might log.
-pub(crate) fn app_id() -> &'static str {
+pub fn app_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         std::env::current_exe()
@@ -129,7 +129,7 @@ fn installed_app_id(exe: &Path) -> Option<String> {
 /// One definition, so no caller has to know how a flavour is spelled. Everything that must differ
 /// between two installs on one television — the runtime root, the session file, the plex.tv device
 /// name — asks this rather than parsing the id again.
-pub(crate) fn flavour() -> Option<&'static str> {
+pub fn flavour() -> Option<&'static str> {
     app_id().strip_prefix(STABLE_APP_ID)?.strip_prefix('.')
 }
 
@@ -139,7 +139,7 @@ pub(crate) fn flavour() -> Option<&'static str> {
 /// a raw path is exactly the kind of value this app's telemetry never sends (see this module's own
 /// doc, and `diag::schema`'s "no field a caller can put a runtime string into"). `unknown` also
 /// covers the host build, where the binary sits under `target-sim/`.
-pub(crate) fn install_kind() -> &'static str {
+pub fn install_kind() -> &'static str {
     let dir = app_dir();
     if dir.starts_with("/media/developer") {
         "devmode"
@@ -155,7 +155,7 @@ pub(crate) fn install_kind() -> &'static str {
 /// `std::env::current_exe` IS the `/proc/self/exe` read on Linux, so this is the same syscall the
 /// reasoning above is about — it just also answers on a host build, where the simulator's fonts sit
 /// next to the simulator binary rather than under a webOS install prefix.
-pub(crate) fn app_dir() -> &'static Path {
+pub fn app_dir() -> &'static Path {
     &app_dir_resolved().0
 }
 
@@ -173,7 +173,7 @@ enum AppDirSource {
 /// `app::pre_boot_diagnostics` logs it right after the `install:` line. This module does not log
 /// it itself: the event log resolves its own path through this module ([`runtime_dir`]), so a log
 /// call here would make `paths` and `eventlog` name each other (docs/module-layers.md).
-pub(crate) fn app_dir_line() -> String {
+pub fn app_dir_line() -> String {
     let (dir, source) = app_dir_resolved();
     match source {
         AppDirSource::Env => format!("appdir: {} (PLXNATIVE_APP_DIR)", dir.display()),
@@ -220,7 +220,7 @@ fn app_dir_resolved() -> &'static (PathBuf, AppDirSource) {
 }
 
 /// A file shipped inside the ipk, addressed by name.
-pub(crate) fn in_app_dir(name: &str) -> PathBuf {
+pub fn in_app_dir(name: &str) -> PathBuf {
     app_dir().join(name)
 }
 
@@ -313,7 +313,7 @@ fn macos_app_support() -> Option<PathBuf> {
 ///
 /// There is nothing to announce anyway. On a television the answer is always `/tmp`, and the one
 /// configuration that overrides it is the one that passed the value in.
-pub(crate) fn runtime_dir() -> &'static Path {
+pub fn runtime_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let d = resolve_runtime_dir(
@@ -462,17 +462,17 @@ pub unsafe extern "C" fn plx_runtime_path(
 /// Create-only runtime logs. Rust producers and the privacy erasure sweep share these names; the
 /// test below extracts the C boot shim's sinks too, so adding one cannot leave Delete all local
 /// data with a stale second list.
-pub(crate) mod runtime_file {
-    pub(crate) const EVENTS: &str = "plxnative-events.log";
-    pub(crate) const CRASH: &str = "plxnative-crash.log";
-    pub(crate) const STDERR: &str = "plxnative-stderr.log";
-    pub(crate) const STORAGE_DIAGNOSTICS: &str = "plxnative-diag.log";
-    pub(crate) const ANIMATION: &str = "plxnative-anim.log";
-    pub(crate) const GST: &str = "plxnative-gst.log";
-    pub(crate) const GPU_TIME: &str = "plxnative-gputime.jsonl";
-    pub(crate) const HARDWARE_COUNTERS: &str = "plxnative-hwcnt.jsonl";
+pub mod runtime_file {
+    pub const EVENTS: &str = "plxnative-events.log";
+    pub const CRASH: &str = "plxnative-crash.log";
+    pub const STDERR: &str = "plxnative-stderr.log";
+    pub const STORAGE_DIAGNOSTICS: &str = "plxnative-diag.log";
+    pub const ANIMATION: &str = "plxnative-anim.log";
+    pub const GST: &str = "plxnative-gst.log";
+    pub const GPU_TIME: &str = "plxnative-gputime.jsonl";
+    pub const HARDWARE_COUNTERS: &str = "plxnative-hwcnt.jsonl";
 
-    pub(crate) const LOGS: [&str; 8] = [
+    pub const LOGS: [&str; 8] = [
         EVENTS,
         CRASH,
         STDERR,
@@ -489,7 +489,7 @@ pub(crate) mod runtime_file {
 /// Everything that opens one of these goes through here, so the instance root has a single
 /// definition. `dev.rs` is still the only module allowed to name a TRIGGER — this is the path
 /// arithmetic underneath it, shared with the remote FIFO.
-pub(crate) fn in_runtime_dir(name: &str) -> PathBuf {
+pub fn in_runtime_dir(name: &str) -> PathBuf {
     runtime_dir().join(name)
 }
 
@@ -519,7 +519,7 @@ pub(crate) fn in_runtime_dir(name: &str) -> PathBuf {
 /// as before. (`session::save_legacy_fallback_locked`'s caller already reports a save this
 /// uncertain through the same non-durable/`Uncertain` class an unconfirmed canonical commit uses,
 /// so landing here is never mistaken for a durable save.)
-pub(crate) fn session_candidates() -> Vec<PathBuf> {
+pub fn session_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build gets its own identity, first. Without this every concurrent simulator
     // falls through the two `/media/…` candidates (absent off-device) into `in_app_dir`, i.e. the
@@ -586,11 +586,11 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 ///
 /// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
 /// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
-/// Where the image cache may live (`crate::imgcache`), best first: the session file's search
+/// Where the image cache may live (`imgcache`), best first: the session file's search
 /// order, as DIRECTORIES. `/media/developer` under the Developer Mode jail, `/media/internal`
 /// under the production one, the app dir as a theory, and a steerable build's instance root
 /// first of all so two simulators never share (or race) one cache.
-pub(crate) fn image_cache_candidates() -> Vec<PathBuf> {
+pub fn image_cache_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if ENV_STEERABLE {
         v.push(in_runtime_dir("imgcache"));
@@ -611,7 +611,7 @@ pub(crate) fn image_cache_candidates() -> Vec<PathBuf> {
 /// anything, while the spool is up to half a megabyte rewritten after every flush. Sharing one file
 /// would put the consent record itself at risk on every single upload, which is the one piece of
 /// state whose loss changes what the app is allowed to do.
-pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
+pub fn telemetry_spool_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
         .map(|p| {
@@ -639,7 +639,7 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
 /// the log, and the one thing worse than losing a crash report is sending it four times. It lives
 /// beside the decision that authorised sending it, which is also the directory that survives a
 /// reinstall.
-pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
+pub fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
         .map(|p| {
@@ -654,7 +654,7 @@ pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
         .collect()
 }
 
-pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
+pub fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several
     // simulators must not share one decision (or one identifier).
@@ -672,12 +672,12 @@ pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     v
 }
 
-/// Candidate locations of the retired **last place** bookmark ([`crate::coldstart`]).
+/// Candidate locations of the retired **last place** bookmark (`coldstart`).
 ///
 /// Builds before 2026-09-01 wrote into these persistent locations. The current build only removes
 /// them during migration; it never reads or writes a route bookmark. Keep the exact old resolution
 /// (including steerable simulator and per-flavour names) so every former location is retired.
-pub(crate) fn obsolete_last_place_candidates() -> Vec<PathBuf> {
+pub fn obsolete_last_place_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // Steerable simulators used their own instance root.
     if ENV_STEERABLE {
@@ -697,7 +697,7 @@ pub(crate) fn obsolete_last_place_candidates() -> Vec<PathBuf> {
 mod tests {
     #[test]
     fn c_boot_log_sinks_are_in_the_shared_runtime_catalog() {
-        let source = include_str!("../../src/main.c");
+        let source = include_str!("../../../src/main.c");
         let names: Vec<&str> = source
             .split("runtime_path(\"")
             .skip(1)
@@ -1099,8 +1099,8 @@ mod tests {
 /// whose `/tmp/state/session.json` happened to be dirty, while the exact same suite passed clean —
 /// neither test, nor anything in this module, was wrong.
 #[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
-pub(crate) fn persistent_state_root() -> PathBuf {
-    #[cfg(test)]
+pub fn persistent_state_root() -> PathBuf {
+    #[cfg(any(test, feature = "test-support"))]
     {
         if let Some(root) = TEST_PERSISTENT_STATE_ROOT
             .lock()
@@ -1111,7 +1111,7 @@ pub(crate) fn persistent_state_root() -> PathBuf {
         }
         return test_default_persistent_state_root();
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     if ENV_STEERABLE {
         runtime_dir().join("state")
     } else {
@@ -1123,8 +1123,8 @@ pub(crate) fn persistent_state_root() -> PathBuf {
 /// machine-wide `runtime_dir().join("state")`. Empty at first use in this process, isolated from
 /// every other checkout, worktree, and concurrently running `cargo test` invocation, and never the
 /// path a device or `make sim` build resolves to.
-#[cfg(test)]
-pub(crate) fn test_default_persistent_state_root() -> PathBuf {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_default_persistent_state_root() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         let dir = std::env::temp_dir()
@@ -1136,12 +1136,12 @@ pub(crate) fn test_default_persistent_state_root() -> PathBuf {
     .clone()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
-pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
+pub fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
     if let Some(root) = &root {
         let _ = std::fs::create_dir_all(root);
     }
@@ -1153,7 +1153,7 @@ pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
 /// Prepare the hostsim-only state root without following a pre-existing symlink. Television code
 /// may inspect an existing directory as a migration source but never creates it as an authority.
 #[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
-pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
+pub fn ensure_persistent_state_root() -> std::io::Result<()> {
     if !ENV_STEERABLE {
         return Ok(());
     }
@@ -1184,7 +1184,7 @@ pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
 
 /// Final legacy migration order, independent of the temporary synchronous caller API.
 #[allow(dead_code)]
-pub(crate) fn session_migration_candidates() -> Vec<PathBuf> {
+pub fn session_migration_candidates() -> Vec<PathBuf> {
     let mut candidates = session_candidates();
     let app = in_app_dir("auth.json");
     let index = candidates.iter().position(|path| path == &app).unwrap_or(candidates.len());

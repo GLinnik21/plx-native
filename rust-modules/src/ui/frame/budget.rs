@@ -258,7 +258,7 @@ impl Budget {
         };
         if due {
             self.solo_logged_us = Some(now);
-            crate::eventlog::log(&format!("budget solo={}", class.name()));
+            plx_base::eventlog::log(&format!("budget solo={}", class.name()));
         }
     }
 

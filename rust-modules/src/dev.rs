@@ -11,7 +11,7 @@
 //! the app a whole additional server — an address AND the token to trust it with (see [`servers`])
 //! — and `plxnative-url` replaces the stream the player feeds.
 //!
-//! So every read goes through [`crate::devtrig`] — the primitives (`flag`, `read`, `latched_flag!`,
+//! So every read goes through [`plx_base::devtrig`] — the primitives (`flag`, `read`, `latched_flag!`,
 //! `read_sample`, `no_wan`, …), a base-layer module no application type can leak into — and that
 //! door is `#[cfg]`-gated on the `devtriggers` feature. In a `--no-default-features` build
 //! `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time, so no trigger can be
@@ -29,7 +29,7 @@
 //!
 //! Two rules for anything added later:
 //!
-//! 1. **Never open a `/tmp` path directly.** Read through `crate::devtrig`. The grep that audits
+//! 1. **Never open a `/tmp` path directly.** Read through `plx_base::devtrig`. The grep that audits
 //!    this (`/tmp/plxnative-` outside this module and the unconditional log sinks) is the only
 //!    thing keeping the property true. The two profiler logs are dev-only and listed in [`DIAG`]
 //!    below.
@@ -44,7 +44,7 @@
 //! another process to steer this one.
 //!
 //! **Since UI restructure phase 10, [`scenarios`] is where a read gets ACTED on.** Both modules
-//! reach `/tmp` only through the one door, [`crate::devtrig`] (`flag`/`read`); `dev::scenarios`
+//! reach `/tmp` only through the one door, [`plx_base::devtrig`] (`flag`/`read`); `dev::scenarios`
 //! gathers every ARM — the app-core code that calls through this door and reacts — that used to be scattered
 //! across `app/boot.rs`, `app/run.rs`, `app/content.rs` and `app/mod.rs`, plus the per-arm state
 //! (oscillator phases, retry latches) those arms used to keep on `App` itself. Read that module's
@@ -171,20 +171,20 @@ const DIAG: [&str; 35] = [
 /// setting to leave armed while measuring anything about frame pacing.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn arm_gst_logging() {
-    let Some(spec) = crate::devtrig::read("gstlog") else { return };
+    let Some(spec) = plx_base::devtrig::read("gstlog") else { return };
     let spec = if spec.is_empty() {
         "dvbin:6,dvsplitter:6,dvsplitter_algo:6,dvmdparse:6,dualsequencer:6".to_string()
     } else {
         spec
     };
-    let log = crate::paths::in_runtime_dir(crate::paths::runtime_file::GST);
+    let log = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::GST);
     // SAFETY: single-threaded here by construction — `plex_run` has not yet minted a worker, and
     // this runs before SDL init. `set_var` is only unsound against a concurrent reader.
     std::env::set_var("GST_DEBUG", &spec);
     std::env::set_var("GST_DEBUG_FILE", &log);
     std::env::set_var("GST_DEBUG_FILE_OVERWRITE", "enable");
     std::env::set_var("GST_DEBUG_NO_COLOR", "1");
-    crate::eventlog::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
+    plx_base::eventlog::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_gst_logging() {}
@@ -203,7 +203,7 @@ pub(crate) fn arm_gst_logging() {}
 /// pacing from another.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn arm_wayland_debug() {
-    if !crate::devtrig::flag("wldebug") {
+    if !plx_base::devtrig::flag("wldebug") {
         return;
     }
     // SAFETY (of the environment write): the caller (`app::pre_boot_diagnostics`) runs this before
@@ -219,7 +219,7 @@ pub(crate) fn arm_wayland_debug() {
         ts.tv_sec as i64 * 1_000_000 + ts.tv_nsec as i64 / 1000
     };
     let (real, mono) = (stamp(libc::CLOCK_REALTIME), stamp(libc::CLOCK_MONOTONIC));
-    crate::eventlog::log(&format!("wldebug: WAYLAND_DEBUG=client realtime_us={real} mono_us={mono} offset_us={}", real - mono));
+    plx_base::eventlog::log(&format!("wldebug: WAYLAND_DEBUG=client realtime_us={real} mono_us={mono} offset_us={}", real - mono));
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn arm_wayland_debug() {}
@@ -256,7 +256,7 @@ fn parse_server_slot(s: &str) -> Result<u16, String> {
 /// server happens to be current.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn server_slot() -> Option<Result<u16, String>> {
-    crate::devtrig::read("server").map(|s| parse_server_slot(&s))
+    plx_base::devtrig::read("server").map(|s| parse_server_slot(&s))
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn server_slot() -> Option<Result<u16, String>> {
@@ -299,19 +299,19 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
 /// or any screen is created, so it remains reachable when the fault being chased prevents UI boot.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn crash_on_purpose() {
-    let Some(kind) = crate::devtrig::read("crashtest") else {
+    let Some(kind) = plx_base::devtrig::read("crashtest") else {
         return;
     };
     if kind == "panic" {
         extern "C" fn callback() {
             panic!("crashtest: deliberate panic");
         }
-        crate::eventlog::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
+        plx_base::eventlog::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
         callback();
         return;
     }
     if kind == "unwind" {
-        crate::eventlog::log(
+        plx_base::eventlog::log(
             "crashtest: DELIBERATE crash, kind=unwind (unwinds plex_run to its extern \"C\" boundary)",
         );
         panic!("crashtest: deliberate unwinding panic");
@@ -325,14 +325,14 @@ pub(crate) fn crash_on_purpose() {
         "ill" => 4,
         "trap" => 5,
         other => {
-            crate::eventlog::log(&format!("crashtest: unknown kind {other:?} — not crashing"));
+            plx_base::eventlog::log(&format!("crashtest: unknown kind {other:?} — not crashing"));
             return;
         }
     };
-    // Logged BEFORE the fault, and flushed by `crate::eventlog::log`'s own O_APPEND write, so the event log
+    // Logged BEFORE the fault, and flushed by `plx_base::eventlog::log`'s own O_APPEND write, so the event log
     // says the death was deliberate. Without this line a deliberate crash is indistinguishable
     // from the real one somebody is hunting.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "crashtest: DELIBERATE crash, kind={kind} signal={sig}"
     ));
     if sig == 11 {
@@ -354,12 +354,12 @@ pub(crate) fn crash_on_purpose() {}
 /// divergence can be diffed word by word. `make softfloat-probe` is the recipe.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn softfloat_probe() {
-    if !crate::devtrig::flag("softfloat") {
+    if !plx_base::devtrig::flag("softfloat") {
         return;
     }
     let host = crate::ui::motion::DIFFERENTIAL_HASH_HOST;
     let here = crate::ui::motion::differential_hash();
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "softfloat: n={} hash={here:#018x} host={host:#018x} {}",
         crate::ui::motion::DIFFERENTIAL_N,
         if here == host { "MATCH" } else { "DIVERGE" }
@@ -367,9 +367,9 @@ pub(crate) fn softfloat_probe() {
     let mut t = Vec::new();
     crate::ui::motion::differential_table(&mut t);
     let body: String = t.iter().map(|w| format!("{w:08x}\n")).collect();
-    let path = crate::paths::runtime_dir().join("plxnative-softfloat.tbl");
+    let path = plx_base::paths::runtime_dir().join("plxnative-softfloat.tbl");
     if let Err(e) = std::fs::write(&path, body) {
-        crate::eventlog::log(&format!("softfloat: table write failed: {e}"));
+        plx_base::eventlog::log(&format!("softfloat: table write failed: {e}"));
     }
 }
 #[cfg(not(feature = "devtriggers"))]
@@ -383,7 +383,7 @@ pub(crate) fn softfloat_probe() {}
 /// make a test change the owner's real preference. Unknown and empty values fail closed by
 /// producing no override.
 pub(crate) fn playback_quality_override() -> Option<crate::plex::session::PlaybackQuality> {
-    let value = crate::devtrig::read("quality")?;
+    let value = plx_base::devtrig::read("quality")?;
     parse_playback_quality(&value)
 }
 
@@ -473,7 +473,7 @@ fn parse_quality_switch_script(
 }
 
 pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
-    parse_quality_switch_script(&crate::devtrig::read("qualityswitch")?)
+    parse_quality_switch_script(&plx_base::devtrig::read("qualityswitch")?)
 }
 
 /// One synchronized user Pause, optionally followed by Resume —
@@ -541,7 +541,7 @@ fn parse_pause_script(raw: &str) -> Option<PauseScript> {
 }
 
 pub(crate) fn pause_script() -> Option<PauseScript> {
-    parse_pause_script(&crate::devtrig::read("autopause")?)
+    parse_pause_script(&plx_base::devtrig::read("autopause")?)
 }
 
 /// One ADDITIONAL server's credentials, injected for an automated run — see [`servers`].
@@ -736,7 +736,7 @@ fn parse_servers(s: &str) -> Result<Vec<DevServer>, String> {
 #[cfg(feature = "devtriggers")]
 pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
     static ONCE: std::sync::OnceLock<Result<Vec<DevServer>, String>> = std::sync::OnceLock::new();
-    ONCE.get_or_init(|| match crate::devtrig::read("servers") {
+    ONCE.get_or_init(|| match plx_base::devtrig::read("servers") {
         Some(s) => parse_servers(&s),
         None => Ok(Vec::new()),
     })
@@ -763,7 +763,7 @@ pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
 /// it with a DOT instead. Two independent reasons is the right number for a failure this quiet.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn any_trigger_present() -> bool {
-    std::fs::read_dir(crate::paths::runtime_dir())
+    std::fs::read_dir(plx_base::paths::runtime_dir())
         .ok()
         .map(|rd| rd.filter_map(|e| e.ok()).any(|e| is_armed_trigger(&e)))
         .unwrap_or(false)
@@ -774,7 +774,7 @@ pub(crate) fn any_trigger_present() -> bool {
 /// only: a trigger's CONTENT can be a query or a path and never enters a recording.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn armed_triggers() -> Vec<String> {
-    armed_triggers_in(crate::paths::runtime_dir())
+    armed_triggers_in(plx_base::paths::runtime_dir())
 }
 #[cfg(feature = "devtriggers")]
 fn armed_triggers_in(root: &std::path::Path) -> Vec<String> {
@@ -853,7 +853,7 @@ mod tests {
     /// than against a copy of the list, so adding another log sink without listing it fails here.
     #[test]
     fn diag_names_every_log_this_app_writes() {
-        for log in crate::paths::runtime_file::LOGS {
+        for log in plx_base::paths::runtime_file::LOGS {
             assert!(super::DIAG.contains(&log), "{log} is written by this app but absent from DIAG — it would suppress the boot picker forever");
         }
     }
@@ -861,7 +861,7 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn storage_diagnostics_is_never_an_armed_trigger() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!(".plx-diag-trigger-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         struct Cleanup(std::path::PathBuf);
@@ -884,7 +884,7 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn the_poster_observers_are_never_armed_triggers() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!(".plx-poster-observers-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         struct Cleanup(std::path::PathBuf);
@@ -916,16 +916,16 @@ mod tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn a_directory_is_not_an_armed_trigger() {
-        if !crate::devtrig::ENABLED {
+        if !plx_base::devtrig::ENABLED {
             return; // a release build reads nothing
         }
         // Test the exact entry rather than scanning the whole host /tmp. Developers legitimately
         // keep captured TV artifacts there, and their names are intentionally outside DIAG.
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // Per PROCESS, not a fixed name: the runtime dir is the host's /tmp here, shared with every
         // other `cargo test` on this Mac, and two suites running at once (a second checkout's
         // `make check`) removed each other's entry between the create and the read_dir.
-        let d = crate::paths::in_runtime_dir(&format!(
+        let d = plx_base::paths::in_runtime_dir(&format!(
             "plxnative-notatrigger-{}",
             std::process::id()
         ));

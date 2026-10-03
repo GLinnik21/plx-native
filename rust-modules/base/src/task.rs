@@ -53,11 +53,11 @@ use std::marker::PhantomData;
 use std::thread::{Builder, JoinHandle};
 
 mod blocking;
-pub(crate) mod watchdog;
+pub mod watchdog;
 #[cfg(feature = "threadcheck")]
-pub(crate) mod runtime_check;
-pub(crate) use blocking::{allow_blocking, AllowBlocking};
-pub(crate) use blocking::{assert_may_block, BlockingGuard, BlockingLabel, FrameScope};
+pub mod runtime_check;
+pub use blocking::{allow_blocking, AllowBlocking};
+pub use blocking::{assert_may_block, BlockingGuard, BlockingLabel, FrameScope};
 
 /// Proof that the holder runs on the SDL main thread.
 ///
@@ -75,14 +75,14 @@ pub(crate) use blocking::{assert_may_block, BlockingGuard, BlockingLabel, FrameS
 ///   `player::engine::ENGINE`, a `static mut` handed out as `&'static mut` with worker threads
 ///   holding raw pointers into the boxes it owns: two live `&mut` to it is instant UB, and the
 ///   token was the only thing standing between the code and one. It is a FIELD now, so the token
-///   is CONSUMED into [`crate::player::adapter::PlayerAdapter`] and `&mut PlayerAdapter` is the
+///   is CONSUMED into `player::adapter::PlayerAdapter` and `&mut PlayerAdapter` is the
 ///   proof instead — one the borrow checker keeps rather than one a caller can satisfy twice.
 ///
 /// The one deliberate hole: `assume` is callable, so `unsafe { MainThread::assume() }` inside a
 /// worker would defeat this. That is the ceiling of the pattern, not an oversight — what it buys
 /// is that the mistake has to be *written*, in an `unsafe` block, instead of happening by
 /// forgetting a convention documented in three other files.
-pub(crate) struct MainThread(PhantomData<*const ()>);
+pub struct MainThread(PhantomData<*const ()>);
 
 impl MainThread {
     /// Mint the token. `plex_run` calls this once, at the top, and nothing else should.
@@ -91,7 +91,7 @@ impl MainThread {
     /// The caller asserts this is the SDL main thread. It is not a memory-safety obligation in
     /// itself — it is the premise every `&MainThread` downstream is trusted on, including the
     /// one the Player adapter holds, so a false one reintroduces exactly the races this prevents.
-    pub(crate) unsafe fn assume() -> Self {
+    pub unsafe fn assume() -> Self {
         MainThread(PhantomData)
     }
 }
@@ -127,12 +127,12 @@ fn spawn_with(
 
 /// Spawn `f` and keep the handle. `None` means the OS refused the thread and **the worker does
 /// not exist** — undo whatever was armed for it. `what` names the work in the failure log.
-pub(crate) fn spawn(what: &str, f: impl FnOnce() + Send + 'static) -> Option<JoinHandle<()>> {
+pub fn spawn(what: &str, f: impl FnOnce() + Send + 'static) -> Option<JoinHandle<()>> {
     spawn_with(what, None, f)
 }
 
 /// [`spawn`] on a [`SMALL_STACK`], for the fire-and-forget network workers. `false` = not spawned.
-pub(crate) fn spawn_small(what: &str, f: impl FnOnce() + Send + 'static) -> bool {
+pub fn spawn_small(what: &str, f: impl FnOnce() + Send + 'static) -> bool {
     spawn_with(what, Some(SMALL_STACK), f).is_some()
 }
 
@@ -140,7 +140,7 @@ pub(crate) fn spawn_small(what: &str, f: impl FnOnce() + Send + 'static) -> bool
 /// is fire-and-forget *during* a session yet must still be allowed to finish before the process
 /// exits — the end-of-playback scrobble is the only such case, and losing it would lose the
 /// server-side resume point.
-pub(crate) fn spawn_small_keeping(
+pub fn spawn_small_keeping(
     what: &str,
     f: impl FnOnce() + Send + 'static,
 ) -> Option<JoinHandle<()>> {
@@ -175,7 +175,7 @@ const STALL_MS: u64 = 250;
 /// be read against: the joins are fault-conditional, not an everyday cost, and it independently
 /// confirms the condvar fix that superseded `docs/async-model-review.md` §3b's "every teardown
 /// pays 0-1000 ms". It also means a single `THREADJOIN` line in a log is signal, never noise.
-pub(crate) fn join(what: &str, h: JoinHandle<()>) {
+pub fn join(what: &str, h: JoinHandle<()>) {
     let t0 = std::time::Instant::now();
     let outcome = h.join();
     let ms = t0.elapsed().as_millis() as u64;

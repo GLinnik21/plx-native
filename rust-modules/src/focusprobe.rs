@@ -171,7 +171,7 @@ pub(crate) struct Hud {
     pub(crate) visible: bool,
 }
 
-crate::devtrig::latched_flag!(
+plx_base::devtrig::latched_flag!(
     /// Is the probe armed for this boot? Resolved once, from `/tmp/plxnative-focus`.
     ///
     /// Resolved once rather than per frame for two reasons: `tests/run.py` clears `/tmp/plxnative-*`
@@ -179,7 +179,7 @@ crate::devtrig::latched_flag!(
     /// `exists()` is a syscall this is not worth paying. Call sites may check this before building
     /// arguments — [`sample`] checks it again, so the module is correct on its own.
     ///
-    /// This body was hand-rolled here first; [`crate::devtrig::latched_flag`] is that body, moved to the
+    /// This body was hand-rolled here first; [`plx_base::devtrig::latched_flag`] is that body, moved to the
     /// module that owns the trigger surface so every per-frame `flag` caller can have it.
     pub(crate) fn armed = "focus";
 );
@@ -198,7 +198,7 @@ pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Sc
     if last.as_deref() == Some(line.as_str()) {
         return;
     }
-    crate::eventlog::log(&line);
+    plx_base::eventlog::log(&line);
     *last = Some(line);
 }
 
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (rn, sc) in every_screen() {
             let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
             let b = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (rn, sc) in every_screen() {
             let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
             assert!(
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn one_screen_always_carries_the_same_keys() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let keys = |rn, sc, ctrl| {
             fingerprint(&ps, rn, sc, hud(), ctrl, test_store().view())
                 .split(' ')
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn moving_the_hud_cursor_changes_the_line() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let at = |f, btn, tab| {
             fingerprint(&ps, 
                 "player",
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn the_login_screens_stalled_control_appearing_is_observable() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
         let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
         assert_ne!(

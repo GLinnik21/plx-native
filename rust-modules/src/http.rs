@@ -315,7 +315,7 @@ fn request_with(
     // `route::decision::try_retranscode` for the pattern) or, if it is a pre-existing, not-yet-split
     // path, wrap the call with `allow_blocking` and say why.
     let _guard =
-        crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("PMS HTTP") });
+        plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("PMS HTTP") });
     if !credential_transport_allowed(origin, path, headers) {
         return RequestOutcome::Transport(None);
     }
@@ -360,7 +360,7 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
     if !origin.is_tls() && carries_credential(path, headers) {
         static REPORTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
         if let Some(line) = plaintext_credential_report(&REPORTED, CredentialPolicy::build(), allowed) {
-            crate::eventlog::log(line);
+            plx_base::eventlog::log(line);
         }
     }
     allowed
@@ -464,7 +464,7 @@ fn plaintext(
                 extra_ptr,
                 method.as_str(),
                 effective,
-                &mut crate::checkpoint::NoCheckpoint,
+                &mut plx_base::checkpoint::NoCheckpoint,
             ) {
                 Ok(()) => 0,
                 Err(crate::stream::HttpOpenError::Status(status)) => {
@@ -544,7 +544,7 @@ fn plaintext(
                             chunk.as_mut_ptr(),
                             want as i32,
                             Some(effective),
-                            &mut crate::checkpoint::NoCheckpoint,
+                            &mut plx_base::checkpoint::NoCheckpoint,
                         ),
                         Some(owner),
                     )
@@ -594,7 +594,7 @@ fn plaintext(
         return failure;
     }
     if overflowed {
-        crate::eventlog::log("http: response exceeded body limit");
+        plx_base::eventlog::log("http: response exceeded body limit");
         return RequestOutcome::Transport(None);
     }
     if matches!(body_policy, BodyPolicy::Deadline { .. })
@@ -754,7 +754,7 @@ mod tests {
     /// sent, so the same request stays undialled.
     #[test]
     fn a_pinned_tls_origin_is_dialled_at_the_pinned_address() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         if !crate::net::global_init() {
             return;
         }
@@ -800,7 +800,7 @@ mod tests {
     /// pin pointed at that socket, never reaches it.
     #[test]
     fn request_probe_hands_the_pin_to_the_tls_path_only() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         if !crate::net::global_init() {
             return;
         }

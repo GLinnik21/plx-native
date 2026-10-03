@@ -3225,7 +3225,7 @@ mod tests {
         let mut errnos = [None; 8];
         errnos[0] = Some(libc::EACCES);
         for (outcome, class) in [
-            (O::Failed(F::Admission(crate::storage_worker::SubmitError::Full)), P::Admission),
+            (O::Failed(F::Admission(plx_base::storage_worker::SubmitError::Full)), P::Admission),
             (O::Failed(F::Persistence(PersistOutcome::WriteFailed)), P::WriteFailed),
             (O::Failed(F::Storage(crate::storage::StoreError::HelperUnavailable)), P::Storage),
             (O::Failed(F::Helper(helper, errnos)), P::Storage),
@@ -4338,7 +4338,7 @@ mod tests {
     /// registry-only [`RegistryPlan::Probe`] rather than silently retiring the request.
     #[test]
     fn endpoint_worker_with_no_fresh_source_still_publishes_its_probe() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("insecure-mach", "10.0.0.9", 32400, "tok", "cid");
         let client = crate::plex::client_for(sid).unwrap();
@@ -4385,7 +4385,7 @@ mod tests {
     /// offline reseat of that profile would then read the stale cached server/sources forever.
     #[test]
     fn endpoint_commit_plans_credentials_when_only_the_profile_record_needed_repair() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("ours", "10.0.0.9", 32400, "profile-token", "cid");
         let client = crate::plex::client_for(sid).unwrap();
@@ -4456,7 +4456,7 @@ mod tests {
     /// disk roster changed.
     #[test]
     fn no_reachable_server_roster_commits_registry_only_probes_and_no_credentials() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut owner = SessionMachine::from_init(captured_session());
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
@@ -4605,7 +4605,7 @@ mod tests {
 
     #[test]
     fn seated_managed_profile_roster_refresh_keeps_profile_credentials_and_publishes_probes() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-managed", vec![
             crate::plex::session::HomeUserRef { id: 2, uuid: "u-managed".into(),
                 title: "Managed".into(), admin: false, ..Default::default() },
@@ -4614,7 +4614,7 @@ mod tests {
 
     #[test]
     fn seated_home_member_roster_refresh_keeps_profile_credentials_and_publishes_probes() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-member", vec![
             crate::plex::session::HomeUserRef { id: 3, uuid: "u-member".into(),
                 title: "Home member".into(), protected: true, admin: false, ..Default::default() },
@@ -4623,7 +4623,7 @@ mod tests {
 
     #[test]
     fn same_user_take_ready_keeps_an_unavailable_secondary_live_and_cached() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let primary = crate::plex::session::SourceRef {
             machine_id: "a".into(), name: "Primary A".into(), owned: true,
             token: "kid-a-token".into(), address: "10.0.0.8".into(), port: 32400,
@@ -4732,7 +4732,7 @@ mod tests {
 
     #[test]
     fn unknown_roster_profile_refresh_keeps_profile_credentials_and_publishes_probes() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-unknown", vec![
             crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
                 title: "Owner".into(), admin: true, ..Default::default() },
@@ -4755,7 +4755,7 @@ mod tests {
 
     #[test]
     fn seated_admin_profile_roster_refresh_accepts_refreshed_tokens() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_admin_roster_refresh_accepts_credentials(roster_refresh_fixture("u-owner", vec![
             crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
                 title: "Owner".into(), admin: true, ..Default::default() },
@@ -4764,13 +4764,13 @@ mod tests {
 
     #[test]
     fn no_home_account_roster_refresh_accepts_refreshed_tokens() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         assert_admin_roster_refresh_accepts_credentials(roster_refresh_fixture("", Vec::new()));
     }
 
     #[test]
     fn admin_refresh_never_keeps_an_identity_only_cached_primary_current() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
             title: "Owner".into(), admin: true, ..Default::default() }];
         let mut owner = roster_refresh_fixture("u-owner", users);
@@ -4913,7 +4913,7 @@ mod tests {
     /// which lives in `app/session_roster_art_tests.rs` beside the poster it grades): the owner
     /// seats a picked profile, then takes the switch's own late `ProfileRoster` for that same
     /// profile. Returns the seated server's slot and the plan that late roster commits. The caller
-    /// holds [`crate::testlock::serial`] and has reset the server table and the grants.
+    /// holds [`plx_base::testlock::serial`] and has reset the server table and the grants.
     pub(crate) fn late_roster_of_the_seated_profile() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, req, epoch, primary) = picker_switch_seated();
         let sid = crate::plex::id_of_machine("a").expect("the switch installed the seated server");
@@ -4926,7 +4926,7 @@ mod tests {
     /// which lives in `app/session_roster_art_tests.rs` beside the poster it grades): the stored
     /// session's registry is installed, then discovery reaches the same server and user under
     /// plex.tv's current `grant`. Returns the stored server's slot and the plan the refresh
-    /// commits. The caller holds [`crate::testlock::serial`] and has reset the server table and the
+    /// commits. The caller holds [`plx_base::testlock::serial`] and has reset the server table and the
     /// grants.
     pub(crate) fn admin_boot_refresh_of_the_seated_profile(grant: &str) -> (crate::plex::ServerId, CommitPlan) {
         let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
@@ -5003,7 +5003,7 @@ mod tests {
     /// lives in `app/session_roster_art_tests.rs` beside the poster it grades): `admin` is not
     /// "the account holder". The terminal reconcile of [`member_account_on_admin_seat`] installs
     /// the member's grants over the admin's live tokens. Returns the admin server's slot and the
-    /// plan that reconcile commits. The caller holds [`crate::testlock::serial`].
+    /// plan that reconcile commits. The caller holds [`plx_base::testlock::serial`].
     pub(crate) fn refresh_under_another_accounts_token() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, sid, members_view) = member_account_on_admin_seat();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
@@ -5038,7 +5038,7 @@ mod tests {
     /// lives in `app/session_roster_art_tests.rs` beside the poster it grades): the roster worker's
     /// `Activate` progress for the admin's server, carrying the member's grant, re-tokens the
     /// admin's live slot in place. Returns that slot and the plan the activation commits. The
-    /// caller holds [`crate::testlock::serial`].
+    /// caller holds [`plx_base::testlock::serial`].
     pub(crate) fn activation_under_another_accounts_token() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, sid, members_view) = member_account_on_admin_seat();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
@@ -5070,7 +5070,7 @@ mod tests {
 
     #[test]
     fn admin_refresh_keeps_a_granted_cached_secondary_live_when_its_probe_misses() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
             title: "Owner".into(), admin: true, ..Default::default() }];
         let mut owner = roster_refresh_fixture("u-owner", users);
@@ -5140,7 +5140,7 @@ mod tests {
     #[test]
     fn landing_a_failed_roster_requests_the_frame_that_draws_the_readout() {
         use crate::ui::machine::{Cx, Effects, InputOwner, EntryId, Machine, Tick};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for users in [None, Some(Vec::new())] {
             let mut owner = SessionMachine::from_init(local_session());
             let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
@@ -5207,7 +5207,7 @@ mod tests {
 
     #[test]
     fn change_profile_with_no_roster_reads_out_the_failure_and_back_resumes_the_session() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (users, reason) in [
             (None, roster_unreachable()),
             (Some(Vec::new()), roster_refused()),
@@ -5232,7 +5232,7 @@ mod tests {
     /// picker that HAS tiles is still a root: BACK stays refused there.
     #[test]
     fn a_refused_roster_keeps_cached_tiles_and_the_picker_stays_a_root() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut init = local_session();
         init.persisted.home_users = vec![crate::plex::session::HomeUserRef {
             uuid: "cached-user".into(), title: "Cached".into(), ..Default::default() }];
@@ -5263,7 +5263,7 @@ mod tests {
     /// BACK re-announces the dev session exactly as its activation did.
     #[test]
     fn a_dev_session_change_profile_says_it_cannot_switch_and_back_returns() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = PersistedSession { client_id: "synthetic-client".into(), ..Default::default() };
         let mut owner = SessionMachine::from_init(SessionInit::captured_boot(saved, Some(local_server()), Vec::new()));
         let effects = step(&mut owner, SessionEvent::Command(Command::ActivateDevBootstrap));
@@ -5307,7 +5307,7 @@ mod tests {
     /// publishes none, because the menu row is what asks again.
     #[test]
     fn a_refused_roster_with_nothing_cached_is_published_as_the_identitys_switch_verdict() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (users, refused) in [(None, false), (Some(Vec::new()), true)] {
             let (mut owner, _) = empty_roster_change_profile(users);
             let read = owner.publication();
@@ -5332,7 +5332,7 @@ mod tests {
     /// until restart even after that login brought a roster.
     #[test]
     fn signing_out_forgets_the_switch_verdict() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut owner, _) = empty_roster_change_profile(Some(Vec::new()));
         assert!(owner.publication().switch_refused, "rig: the verdict is recorded");
         let account = owner.state.persisted.clone();
@@ -5349,7 +5349,7 @@ mod tests {
     /// brought no roster answered nothing, and keeps it.
     #[test]
     fn a_sign_in_that_brings_a_roster_clears_the_switch_verdict() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (users, cleared) in [
             (vec![UserTile { uuid: "u-1".into(), title: "Only user".into(), ..Default::default() }], true),
             (Vec::new(), false),
@@ -5375,7 +5375,7 @@ mod tests {
     /// #164) — so it is neither committed over the cache nor published as a verdict.
     #[test]
     fn a_refusal_over_a_cached_roster_is_not_a_switch_verdict() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut init = local_session();
         init.persisted.home_users = vec![crate::plex::session::HomeUserRef {
             uuid: "cached-user".into(), title: "Cached".into(), ..Default::default() }];
@@ -5396,7 +5396,7 @@ mod tests {
     /// — so the read-out must not offer a *Back* that claims to stay in the app.
     #[test]
     fn a_readout_with_no_session_behind_it_says_back_does_not_resume() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut persisted = local_session().persisted;
         persisted.server = Default::default();
         let mut owner = SessionMachine::from_init(SessionInit::captured(persisted));

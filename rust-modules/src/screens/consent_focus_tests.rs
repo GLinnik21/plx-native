@@ -18,7 +18,7 @@ use super::test_support::*;
 /// those builds would have replayed `verdict=SAME` across the whole document.
 #[test]
 fn a_down_inside_a_preview_changes_the_hashed_state() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let idx = PreviewKind::ALL.iter().position(|k| *k == PreviewKind::Crash).unwrap() as u8;
     let mut page = PreviewPage::new(EntryId(9), idx);
     // Long enough that five DOWNs (5 * `document_reader::STEP` = 960px) never reach the end,
@@ -70,7 +70,7 @@ fn a_down_inside_a_preview_changes_the_hashed_state() {
 /// asymmetry `row_ids` can get wrong (which channel's preview a stage offers) went ungraded.
 #[test]
 fn every_row_id_has_a_row() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -108,7 +108,7 @@ fn every_row_id_has_a_row() {
 /// rather than leaving a stale action nobody can reach a live control for.
 #[test]
 fn toggling_a_switch_shows_done_without_resizing_the_table_and_reversing_hides_it_again() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -269,7 +269,7 @@ fn left_off_the_bands_leading_control_is_a_wall_at_every_first_run_stage() {
 /// the spring, so the one-line re-derivation could regress silently.
 #[test]
 fn a_value_only_row_commit_preserves_in_flight_focus_motion() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -297,7 +297,7 @@ fn a_value_only_row_commit_preserves_in_flight_focus_motion() {
 /// `step` to prove that call is actually REACHED, rather than only present in the source.
 #[test]
 fn a_tick_advances_the_shared_table_highlight_spring() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -332,7 +332,7 @@ fn a_tick_advances_the_shared_table_highlight_spring() {
 /// impossible.
 #[test]
 fn settings_opens_on_the_list_after_a_first_run_left_focus_in_the_answer_band() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -390,7 +390,7 @@ fn settings_opens_on_the_list_after_a_first_run_left_focus_in_the_answer_band() 
 /// that needs a real `draw()` is `ui-sim`'s or the television's, as above.
 #[test]
 fn a_hover_over_the_answer_band_parks_without_answering_anything() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -432,7 +432,7 @@ fn a_hover_over_the_answer_band_parks_without_answering_anything() {
 /// answer to a direction key.
 #[test]
 fn toggling_a_switch_keeps_focus_on_the_row_it_toggled() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -465,7 +465,7 @@ fn toggling_a_switch_keeps_focus_on_the_row_it_toggled() {
 /// same absence on the way back down as the test above watches for on the way up.
 #[test]
 fn toggling_a_value_back_never_leaves_focus_on_nothing() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -571,7 +571,7 @@ mod composed {
     /// exactly as a real OK on the switch would).
     #[test]
     fn left_reaches_the_action_band_and_right_comes_back_out_of_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = consent::current();
         consent::install(Consent::default());
         let m = FixtureMeasure;
@@ -648,7 +648,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
         fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
         fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
     }
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _no_live_font = crate::ui::text_view::ForbidLive::enter();
     let measure = ReadingMeasure;
     let reader = DocumentReader::new().with_size(theme::size::BODY);
@@ -716,7 +716,7 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
         fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
     }
     static METRICS: ExpandedBody = ExpandedBody;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _no_live_font = crate::ui::text_view::ForbidLive::enter();
     let run = |measure: &dyn Measure| {
         let fixture = FixtureMeasure;
@@ -769,7 +769,7 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
 /// emits exactly one `Nav` push, and its destination is what the page's form declares for that row.
 #[test]
 fn every_first_run_row_pushes_exactly_its_preview() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     for (stage, product) in [(0, false), (STAGE_PRODUCT, true)] {

@@ -183,7 +183,7 @@ pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
 /// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is on every
 /// television seen so far.
 pub(crate) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
-    crate::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
+    plx_base::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
 }
 
 pub(crate) fn rd_i32(ev: &[u8], off: usize) -> i32 {
@@ -269,8 +269,8 @@ fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
     };
     let (x, y) = coords.split_once(',')?;
     Some((kind,
-        x.parse::<i32>().ok()?.clamp(0, crate::surface::LOGICAL_W as i32 - 1),
-        y.parse::<i32>().ok()?.clamp(0, crate::surface::LOGICAL_H as i32 - 1)))
+        x.parse::<i32>().ok()?.clamp(0, plx_base::surface::LOGICAL_W as i32 - 1),
+        y.parse::<i32>().ok()?.clamp(0, plx_base::surface::LOGICAL_H as i32 - 1)))
 }
 
 /// SDL pointer bytes shared by clicks, held-pointer FIFO edges and recorded-event replay.
@@ -281,7 +281,7 @@ fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
 /// `offsetof` assertions verified these offsets; see `docs/testing-player-pointer.md`.
 fn encode_pointer(et: u32, x: i32, y: i32) -> [u8; 128] {
     let mut ev = [0u8; 128];
-    let (px, py) = crate::surface::to_physical(x as f32, y as f32);
+    let (px, py) = plx_base::surface::to_physical(x as f32, y as f32);
     ev[0..4].copy_from_slice(&et.to_ne_bytes());
     ev[20..24].copy_from_slice(&(px.round() as i32).to_ne_bytes());
     ev[24..28].copy_from_slice(&(py.round() as i32).to_ne_bytes());
@@ -421,7 +421,7 @@ mod input_event_tests {
 
     #[test]
     fn pointer_bytes_round_trip_through_the_common_coordinate_decoder() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for et in [SDL_MOUSEMOTION, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP] {
             for (x, y) in [(0, 0), (1400, 870), (1919, 1079), (-200, 400)] {
                 let ev = encode_pointer(et, x, y);
@@ -560,7 +560,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
         // `pat:flat:40` — swap the synthetic ground live for a one-session graded sweep.
         let ok = crate::ui::testpat::set(spec);
         if !ok {
-            crate::eventlog::log(&format!("remote: unrecognised pattern {spec:?}"));
+            plx_base::eventlog::log(&format!("remote: unrecognised pattern {spec:?}"));
         }
         ok
     } else if let Some(text) = tok.strip_prefix("txt:") {

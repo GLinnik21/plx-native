@@ -519,7 +519,7 @@ mod tests {
     /// survives once focus has left and the spring has settled.
     #[test]
     fn the_label_plate_shows_for_either_stop_and_leaves_nothing_at_rest() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let rest = cell_census(1.0, &TextLift::new());
         assert!(
             cell_census(theme::EP_CARD_FOCUS_SCALE, &TextLift::new()).len() > rest.len(),

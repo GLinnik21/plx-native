@@ -54,7 +54,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
     let presence = |id: &Option<String>| if id.is_some() { "yes" } else { "none" };
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "telemetry: answered={} errors={} usage={} id={} errors_id={}",
         c.answered(),
         c.errors,
@@ -71,7 +71,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // identical either way — `diag::event` returns before the queue, correctly and silently. This
     // is the line that says whether telemetry is WIRED, as against merely consented to, and it
     // names no endpoint: which projects those are is a release-audit fact, not a per-boot one.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "telemetry: env={} sentry={} posthog={}",
         sender::ENVIRONMENT,
         if sender::has_sentry() { "yes" } else { "no" },
@@ -114,7 +114,7 @@ fn load() -> Consent { capture_initial() }
 /// from, so a test that writes through the real list leaves a consent file in `target/`.
 #[cfg(not(test))]
 fn candidates() -> Vec<std::path::PathBuf> {
-    crate::paths::telemetry_candidates()
+    plx_base::paths::telemetry_candidates()
 }
 
 #[cfg(test)]
@@ -124,7 +124,7 @@ static TEST_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mute
 fn candidates() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(p) => vec![p],
-        None => crate::paths::telemetry_candidates(),
+        None => plx_base::paths::telemetry_candidates(),
     }
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn resource_candidates() -> Vec<std::path::PathBuf> {
 }
 
 /// Point this module's decision file at `p`, or back at the real search order with `None`. The
-/// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
+/// caller holds `plx_base::testlock::serial()` for the whole test: this is a crate global.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let root = p.as_ref().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
@@ -238,7 +238,7 @@ pub(crate) fn flush_soon() {
         return; // one at a time — see FLUSHING; the running one looks again (AGAIN)
     }
     AGAIN.store(false, Ordering::Release);
-    let ok = crate::task::spawn_small("telemetry", move || {
+    let ok = plx_base::task::spawn_small("telemetry", move || {
         let retry = flush_now(&c, decision_revision);
         FLUSHING.store(false, Ordering::Release);
         if AGAIN.load(Ordering::Acquire) {
@@ -250,7 +250,7 @@ pub(crate) fn flush_soon() {
             }
             // A retry is an actual schedule, not merely a number in a log. This worker owns no
             // spool lock and has a small stack; when it wakes it goes through FLUSHING again.
-            let scheduled = crate::task::spawn_small("telemetry-retry", move || {
+            let scheduled = plx_base::task::spawn_small("telemetry-retry", move || {
                 std::thread::sleep(std::time::Duration::from_secs(seconds));
                 RETRY_SCHEDULED.store(false, Ordering::Release);
                 flush_soon();
@@ -283,14 +283,14 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
     );
     retired.extend(newly_retired);
     if let Some(s) = retry {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: holding {} records, ~{s}s",
             all.len() - retired.len()
         ));
     }
     if !retired.is_empty() {
         spool::commit_retiring(&retired);
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: flushed {} of {} record(s)",
             retired.len(),
             all.len()
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn the_flush_settles_each_watched_one_off_by_what_the_server_said() {
         use delivery::DeliveryState as D;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         delivery::forget();
         let all = vec![
             watched_record("done", queue::Category::OneOff),
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn the_flush_settles_each_watched_standing_report_the_same_way() {
         use delivery::DeliveryState as D;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         delivery::forget();
         let on = consent::Consent {
             asked_version: consent::POLICY_VERSION,
@@ -543,7 +543,7 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.dir);
             }
         }
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir = std::env::temp_dir().join(format!("plxnative-forget-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -582,7 +582,7 @@ mod tests {
     /// read must find both, and the next answer must not narrow them or downgrade the policy.
     #[test]
     fn an_upgraded_06_decision_is_kept_and_the_next_answer_does_not_narrow_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir = std::env::temp_dir().join(format!("plxnative-consent-upgrade-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -590,7 +590,7 @@ mod tests {
         let legacy = dir.join("telemetry.json");
         redirect_for_test(Some(legacy.clone()));
         spool::set_test_path(Some(dir.join("spool.jsonl")));
-        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
 
         std::fs::write(
             dir.join("consent.json"),
@@ -622,7 +622,7 @@ mod tests {
 
         spool::set_test_path(None);
         redirect_for_test(None);
-        crate::paths::redirect_persistent_state_root_for_test(None);
+        plx_base::paths::redirect_persistent_state_root_for_test(None);
         if let Some(c) = saved {
             consent::install(c);
         }
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn a_symlink_cannot_supply_telemetry_consent() {
         use std::os::unix::fs::symlink;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir =
             std::env::temp_dir().join(format!("plxnative-consent-symlink-{}", std::process::id()));
         let _ = std::fs::create_dir(&dir);

@@ -7,7 +7,7 @@
 //! [`latched_flag!`], and the handful of triggers whose answer is a plain value ([`no_wan`],
 //! [`holdload_delay_ms`], [`guard_log_only`]). It names no application type, so every layer can
 //! call it. What a trigger DOES once read — the arms that boot a screen, press a key, feed the
-//! player a URL — is `crate::dev` and its `scenarios`, which names the app and sits above
+//! player a URL — is `dev` and its `scenarios`, which names the app and sits above
 //! everything; a typed trigger (a value that needs an upper layer's type to parse into) lives next
 //! to the one lower-layer module that consumes it, parsed from [`read`].
 //!
@@ -27,12 +27,12 @@
 //! folds away, but not reliably: once the answer is carried through a struct field (the
 //! `nobudget` flag on `DevFlags`), the optimizer may keep the branch and its string literals
 //! in a release build, and `ci/check-package.py` fails the package because it greps the shipped
-//! bytes for every trigger name `crate::dev`'s `DIAG` list and [`CONTROLLED`] declare. So every
+//! bytes for every trigger name `dev`'s `DIAG` list and [`CONTROLLED`] declare. So every
 //! statement whose literal names a trigger (a log line saying `/tmp/plxnative-…`) carries its own
 //! `#[cfg(feature = "devtriggers")]`. Never rely on constant folding for this.
 //!
 //! **Never open a `/tmp` path directly.** The grep that audits this (`/tmp/plxnative-` outside
-//! `crate::dev` and the unconditional log sinks, `ci/check-deps.sh`'s `tmppath`) is the only thing
+//! `dev` and the unconditional log sinks, `ci/check-deps.sh`'s `tmppath`) is the only thing
 //! keeping the property true. A trigger's bare name is the argument to [`flag`] / [`read`] and the
 //! `plxnative-` prefix is added in [`path`], so no literal path exists to find.
 
@@ -40,50 +40,50 @@
 /// `app-init`) may carry, as bare names. Anything else armed on a recording boot makes its typed
 /// initial unsupported, so a replay cannot silently run under a trigger it never modelled.
 ///
-/// One gated table rather than literals at each consumer, for the reason `crate::dev`'s `DIAG` is
+/// One gated table rather than literals at each consumer, for the reason `dev`'s `DIAG` is
 /// gated: a full trigger name in the release binary is exactly what `ci/check-package.py` grades as
 /// "dev triggers compiled in", and `plxnative-noidle` is its witness. A release build never arms a
-/// trigger (`crate::dev::armed_triggers` is empty there), so it has no vocabulary to check against
+/// trigger (`dev::armed_triggers` is empty there), so it has no vocabulary to check against
 /// and the accessors below answer "not supported" / "not listed" without naming one.
 ///
 /// `ci/check-package.py` parses this array out of THIS file (and `DIAG` out of `dev.rs`), so it
 /// stays one array literal of bare names, and no other text in this file spells its declaration.
-#[cfg(any(feature = "devtriggers", test))]
+#[cfg(any(feature = "devtriggers", test, feature = "test-support"))]
 const CONTROLLED: &[&str] = &[
     "rec", "recplay", "focus", "noidle", "token", "app-init", "settings",
     "detail", "detailsec", "detailok", "filmography", "personcredits", "nowan",
 ];
 
-/// Is the recorded trigger `trigger` (full `plxnative-<name>` form, as `crate::dev::armed_triggers`
+/// Is the recorded trigger `trigger` (full `plxnative-<name>` form, as `dev::armed_triggers`
 /// lists it) one a controlled boot supports? See [`CONTROLLED`].
-#[cfg(any(feature = "devtriggers", test))]
-pub(crate) fn controlled_trigger(trigger: &str) -> bool {
+#[cfg(any(feature = "devtriggers", test, feature = "test-support"))]
+pub fn controlled_trigger(trigger: &str) -> bool {
     trigger.strip_prefix("plxnative-").is_some_and(|name| CONTROLLED.contains(&name))
 }
-#[cfg(not(any(feature = "devtriggers", test)))]
-pub(crate) fn controlled_trigger(_trigger: &str) -> bool {
+#[cfg(not(any(feature = "devtriggers", test, feature = "test-support")))]
+pub fn controlled_trigger(_trigger: &str) -> bool {
     false
 }
 
-/// Does a recorded trigger list (full names, as `crate::dev::armed_triggers` returns them) carry
+/// Does a recorded trigger list (full names, as `dev::armed_triggers` returns them) carry
 /// the trigger `name` (bare)? The typed-initial counterpart of [`flag`]: it reads the list a boot
 /// was captured with, never the filesystem. Always `false` in a release build, whose list is empty.
-#[cfg(any(feature = "devtriggers", test))]
-pub(crate) fn listed(triggers: &[String], name: &str) -> bool {
+#[cfg(any(feature = "devtriggers", test, feature = "test-support"))]
+pub fn listed(triggers: &[String], name: &str) -> bool {
     triggers.iter().any(|trigger| trigger.strip_prefix("plxnative-") == Some(name))
 }
-#[cfg(not(any(feature = "devtriggers", test)))]
-pub(crate) fn listed(_triggers: &[String], _name: &str) -> bool {
+#[cfg(not(any(feature = "devtriggers", test, feature = "test-support")))]
+pub fn listed(_triggers: &[String], _name: &str) -> bool {
     false
 }
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
 #[cfg(feature = "devtriggers")]
-pub(crate) fn flag(name: &str) -> bool {
+pub fn flag(name: &str) -> bool {
     path(name).exists()
 }
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn flag(_name: &str) -> bool {
+pub fn flag(_name: &str) -> bool {
     false
 }
 
@@ -98,7 +98,7 @@ pub(crate) fn flag(_name: &str) -> bool {
 /// function would need a map behind a lock — which is the thing being avoided. It lives HERE
 /// because this module is the one door onto the `/tmp` surface; it was briefly a file-local macro
 /// in `ui/widgets.rs`, which walled it off from the other per-frame `flag` callers
-/// ([`crate::focusprobe::armed`] had already hand-rolled exactly this body, doc comment and all).
+/// (`focusprobe::armed` had already hand-rolled exactly this body, doc comment and all).
 ///
 /// No `#[cfg]` arms, deliberately: [`flag`] is already `false` at COMPILE time without the
 /// `devtriggers` feature, so a second gate here would only re-derive what the door behind it
@@ -110,7 +110,9 @@ pub(crate) fn flag(_name: &str) -> bool {
 ///     fn flat_tabs_armed = "flattabs";
 /// );
 /// ```
-macro_rules! latched_flag {
+#[macro_export]
+#[doc(hidden)] // reached as `devtrig::latched_flag!` through the re-export below
+macro_rules! __latched_flag {
     ($(#[$m:meta])* $vis:vis fn $name:ident = $trigger:literal;) => {
         $(#[$m])*
         $vis fn $name() -> bool {
@@ -119,25 +121,25 @@ macro_rules! latched_flag {
         }
     };
 }
-pub(crate) use latched_flag;
+pub use __latched_flag as latched_flag;
 
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
 /// empty file must not read the same as an absent one.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn read(name: &str) -> Option<String> {
+pub fn read(name: &str) -> Option<String> {
     std::fs::read_to_string(path(name))
         .ok()
         .map(|s| s.trim().to_string())
 }
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn read(_name: &str) -> Option<String> {
+pub fn read(_name: &str) -> Option<String> {
     None
 }
 
 /// Boot-latched main-thread checker escape hatch. File content must be exactly `log`.
 #[cfg(feature = "threadcheck")]
-pub(crate) fn guard_log_only() -> bool {
+pub fn guard_log_only() -> bool {
     static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| read("guard").as_deref() == Some("log"))
 }
@@ -148,22 +150,22 @@ pub(crate) fn guard_log_only() -> bool {
 /// no public name at all: `plex.tv`, `discover.provider.plex.tv` and — the one that matters — the
 /// `plex.direct` hostname the app persisted for its OWN server on the LAN. Nothing on a desk can
 /// take the router's uplink away deterministically, so this trigger does it inside the app: while
-/// armed, [`crate::net`], [`crate::curlio`] and [`crate::stream`] refuse any host that is not a
+/// armed, `net`, `curlio` and `stream` refuse any host that is not a
 /// numeric literal, at the point where they would otherwise hand it to a resolver, and return the
 /// same error a failed resolution returns. A name reaches the wire only when the request carries a
-/// resolve pin ([`crate::plex::ResolvePin`]) — which is exactly what the fix provides, so the same
+/// resolve pin (`plex::ResolvePin`) — which is exactly what the fix provides, so the same
 /// trigger shows the defect red and the fix green with no network condition arranged anywhere.
 ///
 /// Content `slow` first sleeps the connect budget an API call would have spent waiting on a dead
-/// resolver ([`crate::net::API`]'s `connect_s`), so a worker that would have stalled stalls here
+/// resolver (`net::API`'s `connect_s`), so a worker that would have stalled stalls here
 /// too. Empty is the fast variant. Latched at first read like every per-frame trigger, and `None`
 /// at COMPILE time without `devtriggers`, so a public binary carries no such switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NoWan {
-    pub(crate) slow: bool,
+pub struct NoWan {
+    pub slow: bool,
 }
 
-pub(crate) fn no_wan() -> Option<NoWan> {
+pub fn no_wan() -> Option<NoWan> {
     static SEEN: std::sync::OnceLock<Option<NoWan>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
         read("nowan").map(|s| NoWan {
@@ -183,7 +185,7 @@ pub(crate) fn no_wan() -> Option<NoWan> {
 /// behaviour (a real Load attempt now waits), so arming it must suppress the who's-watching
 /// picker like every other automation trigger.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn holdload_delay_ms() -> Option<u64> {
+pub fn holdload_delay_ms() -> Option<u64> {
     let raw = read("holdload")?;
     Some(if raw.is_empty() {
         30_000
@@ -192,7 +194,7 @@ pub(crate) fn holdload_delay_ms() -> Option<u64> {
     })
 }
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn holdload_delay_ms() -> Option<u64> {
+pub fn holdload_delay_ms() -> Option<u64> {
     None
 }
 
@@ -207,17 +209,17 @@ pub(crate) fn holdload_delay_ms() -> Option<u64> {
 /// resolves through [`crate::paths::in_runtime_dir`], and rules with holes stop being checkable.
 /// NB the file now goes in the install's own root: `$(make -s print-rundir)/sample.h264`.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn read_sample(name: &str) -> Option<Vec<u8>> {
+pub fn read_sample(name: &str) -> Option<Vec<u8>> {
     std::fs::read(crate::paths::in_runtime_dir(name)).ok()
 }
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn read_sample(_name: &str) -> Option<Vec<u8>> {
+pub fn read_sample(_name: &str) -> Option<Vec<u8>> {
     None
 }
 
 /// `true` when this build reads `/tmp` at all — for the one boot log line that says so, and for
 /// call sites gating a whole subsystem (the capture listener, the remote FIFO) rather than a read.
-pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
+pub const ENABLED: bool = cfg!(feature = "devtriggers");
 
 /// The trigger's absolute path. `/tmp/plxnative-<name>` on the television; see
 /// [`crate::paths::runtime_dir`] for why a host build may put the whole namespace elsewhere.
@@ -229,10 +231,10 @@ pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
 /// `path` in module `super`"). A shipping release build is unchanged: `cfg(test)` is false there,
 /// and the fn is gone exactly as before.
 ///
-/// `pub(crate)` so `crate::dev::scenarios`, which hands a trigger's PATH (not its content) to the
+/// `pub(crate)` so `dev::scenarios`, which hands a trigger's PATH (not its content) to the
 /// recorder's own parser, goes through the same door instead of re-spelling the prefix.
-#[cfg(any(feature = "devtriggers", test))]
-pub(crate) fn path(name: &str) -> std::path::PathBuf {
+#[cfg(any(feature = "devtriggers", test, feature = "test-support"))]
+pub fn path(name: &str) -> std::path::PathBuf {
     crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
 }
 
@@ -246,7 +248,7 @@ mod tests {
             return; // a release build reads nothing; nothing to distinguish
         }
         // Arms a real trigger in the shared runtime root, which is what
-        // `crate::dev`'s `a_directory_is_not_an_armed_trigger` scans — they must not overlap.
+        // `dev`'s `a_directory_is_not_an_armed_trigger` scans — they must not overlap.
         let _g = crate::testlock::serial();
         // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`. The literal was
         // right when the namespace was always `/tmp/plxnative-…`, but it stops meeting the read as

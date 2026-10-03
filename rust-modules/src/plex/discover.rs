@@ -117,13 +117,13 @@ impl AccountClient {
         // conservative direction — a page that keeps asking is recoverable, a page that has decided
         // the person has no career is not.
         let Some(groups) = env.media_container.credit_group else {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "person: credits guid={guid} — 200 with no CreditGroup container; treating as a \
                  failure, not an empty career"
             ));
             return None;
         };
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "person: credits groups={} rows={}",
             groups.len(),
             groups.iter().map(|g| g.credits.len()).sum::<usize>()

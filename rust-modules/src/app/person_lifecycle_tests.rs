@@ -16,7 +16,7 @@ use super::test_support::{detail_arg, person_arg, tick};
 /// `Enter(Fresh)`s the new Person A page. The store must end up holding the person again.
 #[test]
 fn reopening_an_evicted_same_identity_person_leaves_the_store_holding_it() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     let mut frame_no = 0u32;

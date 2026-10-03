@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn decoding_requires_the_exact_client_mapping_and_preserves_stale_token_tags() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("codec-machine", "codec.invalid", 32400, "secret-codec-token", "private-device");
         let old = crate::plex::client_for(sid).unwrap();

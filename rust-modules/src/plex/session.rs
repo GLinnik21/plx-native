@@ -79,10 +79,10 @@ pub(crate) struct ProfilePublisher {
 }
 
 impl ProfilePublisher {
-    pub(crate) fn new(_mt: &crate::task::MainThread) -> Self {
+    pub(crate) fn new(_mt: &plx_base::task::MainThread) -> Self {
         Self { scoped: None, _main_thread: std::marker::PhantomData }
     }
-    pub(crate) fn scoped(_mt: &crate::task::MainThread) -> Self {
+    pub(crate) fn scoped(_mt: &plx_base::task::MainThread) -> Self {
         Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0 })),
             _main_thread: std::marker::PhantomData }
     }
@@ -131,8 +131,8 @@ impl ProfilePublisher {
 /// This is not a controller or a process-global scope allocator. Caller owns teardown/serial guard.
 #[cfg(test)]
 pub(crate) fn publish_profile_for_test(user: Option<UserRef>, generation: u32) {
-    crate::testlock::assert_held("profile publication fixture");
-    let mt = unsafe { crate::task::MainThread::assume() };
+    plx_base::testlock::assert_held("profile publication fixture");
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     ProfilePublisher::new(&mt).publish(user, generation);
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
@@ -167,7 +167,7 @@ pub(crate) fn plex_tv_credential(snapshot_user: &UserRef) -> Option<String> {
         .then(|| stored.account_token.clone()).filter(|token| !token.is_empty())
 }
 
-/// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a
+/// Session file locations, best first — see [`plx_base::paths::session_candidates`] for why this is a
 /// SEARCH ORDER rather than the single constant it used to be. The short version: webOS picks one
 /// of two jail profiles by install prefix, and they disagree about which directories are writable,
 /// so the one hardcoded path was correct under Developer Mode and did not exist under a Homebrew
@@ -179,7 +179,7 @@ pub(crate) fn plex_tv_credential(snapshot_user: &UserRef) -> Option<String> {
 /// user out when the file lived there.
 #[cfg(not(test))]
 fn auth_paths() -> Vec<std::path::PathBuf> {
-    crate::paths::session_candidates()
+    plx_base::paths::session_candidates()
 }
 
 /// The test build's [`auth_paths`]: the scratch file a test redirected to (see
@@ -194,7 +194,7 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 static TEST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
-/// **The fallback is a scratch file, NEVER [`crate::paths::session_candidates`].**
+/// **The fallback is a scratch file, NEVER [`plx_base::paths::session_candidates`].**
 ///
 /// That fall-through was the whole bug. Off a television the real search order ends at
 /// `paths::in_app_dir("auth.json")`, and for a test binary `in_app_dir` resolves through
@@ -251,7 +251,7 @@ pub(crate) fn fallback_file_for_test() -> std::path::PathBuf {
 /// A whole CANDIDATE LIST a test wants `auth_paths()` to answer, distinct from [`TEST_FILE`]'s
 /// single scratch path. [`TEST_FILE`] can only ever stand for the ONE file a fixture like
 /// [`TempSession`] owns; it cannot represent "several candidates, some unwritable, in a specific
-/// order" — exactly the shape [`crate::paths::session_candidates`] itself has, and exactly what
+/// order" — exactly the shape [`plx_base::paths::session_candidates`] itself has, and exactly what
 /// the runtime-dir fallback regression needs to exercise the real search-and-fall-through loops
 /// in [`save_legacy_fallback_locked`]/[`read_legacy_locked`] rather than a hand-rolled stand-in
 /// for them.
@@ -286,7 +286,7 @@ fn redirect_candidates_for_test(v: Option<Vec<std::path::PathBuf>>) {
 /// another's), which no in-memory fixture can see.
 ///
 /// The caller owes the same discipline `tests::TempSession` documents: hold
-/// [`crate::testlock::serial`] for the whole test, because this is a crate global and several
+/// [`plx_base::testlock::serial`] for the whole test, because this is a crate global and several
 /// modules reach `session::load` indirectly.
 ///
 /// **It takes [`IO`] to make the swap, and that is not tidiness.** [`update`] is a read-modify-write
@@ -299,7 +299,7 @@ fn redirect_candidates_for_test(v: Option<Vec<std::path::PathBuf>>) {
 /// the redirect, and the crate lock cannot see that pairing.)
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     REFRESH.lock().unwrap_or_else(|e| e.into_inner()).retry_at = None;
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
@@ -331,7 +331,7 @@ pub(crate) fn redirect_snapshot_for_test() -> Option<std::path::PathBuf> {
 /// which is where that screen and its `TempSession` wrapper live since phase 5b), rather
 /// than forking the redirect a fourth time.
 ///
-/// **The caller must hold [`crate::testlock::serial`] for its whole body** — the redirected path is
+/// **The caller must hold [`plx_base::testlock::serial`] for its whole body** — the redirected path is
 /// a crate global that several modules reach indirectly, so two of these at once is one test
 /// reading the other's fixtures.
 #[cfg(test)]
@@ -370,7 +370,7 @@ impl TempSession {
 
     /// Resource tests assert the actual read/write/clear candidate list before touching it.
     pub(crate) fn assert_only_target(&self) {
-        crate::testlock::assert_held("Session scratch resource target");
+        plx_base::testlock::assert_held("Session scratch resource target");
         assert_eq!(auth_paths(), vec![self.path()]);
     }
 
@@ -1397,7 +1397,7 @@ pub struct ProfileCreds {
 }
 
 /// A Plex Home PIN as something a PIN can be checked against, never the PIN: PBKDF2-HMAC-SHA-256
-/// over a random 16-byte salt ([`crate::sha256`]).
+/// over a random 16-byte salt ([`plx_base::sha256`]).
 ///
 /// **What it does and does not protect.** A four-digit PIN has ten thousand values, so nothing
 /// stored can stop somebody who can read this file from grinding it — and that somebody already
@@ -1438,7 +1438,7 @@ impl PinVerifier {
     }
 
     fn with_salt(pin: &str, salt: &[u8]) -> PinVerifier {
-        let hash = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), salt, Self::ITERS);
+        let hash = plx_base::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), salt, Self::ITERS);
         PinVerifier {
             salt: hex(salt),
             hash: hex(&hash),
@@ -1456,8 +1456,8 @@ impl PinVerifier {
         if salt.len() != 16 || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
             return false;
         }
-        let got = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), &salt, self.iters);
-        crate::sha256::ct_eq(&got, &hash)
+        let got = plx_base::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), &salt, self.iters);
+        plx_base::sha256::ct_eq(&got, &hash)
     }
 }
 
@@ -1762,13 +1762,13 @@ pub(crate) struct PlaintextConsent {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServerKeyPin {
     pub machine_id: String,
-    /// `sha256//<base64>`, the exact `CURLOPT_PINNEDPUBLICKEY` string (`crate::spki`).
+    /// `sha256//<base64>`, the exact `CURLOPT_PINNEDPUBLICKEY` string (`plx_base::spki`).
     pub pin: String,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
 }
 
-/// Is `pin` shaped like `crate::spki::pin_from_pem`'s answer: `sha256//` and the 44 base64
+/// Is `pin` shaped like `plx_base::spki::pin_from_pem`'s answer: `sha256//` and the 44 base64
 /// characters of a 32-byte digest. The file is hand-editable and the value goes to libcurl, so a
 /// string that is not one is treated as absent rather than handed on.
 fn is_key_pin(pin: &str) -> bool {
@@ -2754,11 +2754,11 @@ static IO: Mutex<()> = Mutex::new(());
 
 struct IoGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
-    _block: crate::task::BlockingGuard,
+    _block: plx_base::task::BlockingGuard,
 }
 
 fn io() -> IoGuard {
-    let block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("session storage I/O") });
+    let block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("session storage I/O") });
     // Poison is stepped over: a panic in one writer must not turn every later save into a panic of
     // its own, which on this path would mean losing the credentials rather than a stale file.
     IoGuard { _lock: IO.lock().unwrap_or_else(|e| e.into_inner()), _block: block }
@@ -2867,7 +2867,7 @@ fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> 
         read.get().unwrap_or(read_live_locked)()
     }));
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-    crate::eventlog::log("session: authority read reason=miss");
+    plx_base::eventlog::log("session: authority read reason=miss");
     #[cfg(not(test))]
     let finished = std::time::Instant::now();
     #[cfg(test)]
@@ -2921,10 +2921,10 @@ pub(crate) fn learn_server_key(machine_id: &str, pin: &str) -> bool {
 
 /// The UI may retain the receipt while showing its pending preference locally.
 pub(crate) fn queue_update_ticket(edit: impl FnOnce(&Session) -> Option<Session> + Send + 'static)
-    -> Result<crate::storage_worker::TypedTicket<bool>, crate::storage_worker::SubmitError> {
+    -> Result<plx_base::storage_worker::TypedTicket<bool>, plx_base::storage_worker::SubmitError> {
     let expected = peek();
     let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
-    Ok(crate::storage_worker::submit_retained(move || {
+    Ok(plx_base::storage_worker::submit_retained(move || {
         update(|current| {
             if REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire) != tenure
                 || (!expected.client_id.is_empty() && (current.client_id != expected.client_id
@@ -2948,7 +2948,7 @@ pub(crate) fn queue_update_settled(
 ) {
     let expected = peek();
     let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
-    drop(crate::storage_worker::submit_retained(move || {
+    drop(plx_base::storage_worker::submit_retained(move || {
         let (mut read, mut moot) = (false, false);
         let write = update_with_outcome(|current| {
             if REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire) != tenure
@@ -3045,7 +3045,7 @@ static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 
 #[cfg(test)]
 pub(crate) fn install_transient_for_test(locked: bool) {
-    crate::testlock::assert_held("session read fixture");
+    plx_base::testlock::assert_held("session read fixture");
     let _io = io();
     install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: crate::i18n::saved_preference() } } else { ReadState::Blocked }));
 }
@@ -3216,7 +3216,7 @@ fn schedule_refresh(now: std::time::Instant, generation: u64) {
     // Shared asynchronous fixtures opt in by holding testlock::serial. Its teardown drains the
     // FIFO before another test can own the cache; incidental readers cannot leak jobs into it.
     #[cfg(test)]
-    if !crate::testlock::held() { return; }
+    if !plx_base::testlock::held() { return; }
     {
         let mut refresh = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
         if refresh.in_flight || refresh.retry_at.is_some_and(|retry| now < retry) { return; }
@@ -3227,7 +3227,7 @@ fn schedule_refresh(now: std::time::Instant, generation: u64) {
     let read = CACHE_READ_FOR_TEST.with(|read| read.get());
     // The shared bounded FIFO uses task::spawn (Builder::spawn with an error return).
     // A discarded ticket does not cancel the job; its result is the cache publication itself.
-    let _ = crate::storage_worker::submit(move || {
+    let _ = plx_base::storage_worker::submit(move || {
         let mut flight = flight;
         let _io = io();
         if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
@@ -3246,7 +3246,7 @@ fn schedule_refresh(now: std::time::Instant, generation: u64) {
 #[cfg(test)]
 pub(crate) fn drain_refresh_for_test() {
     if REFRESH.lock().unwrap_or_else(|e| e.into_inner()).in_flight {
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
     }
 }
 
@@ -3291,7 +3291,7 @@ mod cache_timing_tests {
         use std::sync::{atomic::{AtomicUsize, Ordering}, mpsc::{self, Receiver, Sender}};
         static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
         static READS: AtomicUsize = AtomicUsize::new(0);
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("slow-production-landing");
         let _idle = ResetIdle;
         { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
@@ -3316,10 +3316,10 @@ mod cache_timing_tests {
         entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(READS.load(Ordering::SeqCst), 1);
         release.send(()).unwrap();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert!(!crate::ui::idle::should_present(0), "the worker only publishes data");
         assert_eq!(crate::ui::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         assert!(frame_step.lands(), "the frame step observes the published session");
         assert_eq!(peek().client_id, "cid-1");
         assert!(!frame_step.lands(), "once");
@@ -3327,38 +3327,38 @@ mod cache_timing_tests {
 
     #[test]
     fn a_preference_edit_survives_a_full_worker_queue() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("full-edit-queue");
         save(&test_support::signed_in());
         let (release, held) = std::sync::mpsc::channel();
         let (started, entered) = std::sync::mpsc::channel();
-        let _block = crate::storage_worker::submit(move || {
+        let _block = plx_base::storage_worker::submit(move || {
             started.send(()).unwrap();
             let _ = held.recv();
         }).unwrap();
         entered.recv().unwrap();
-        for _ in 0..crate::storage_worker::CAPACITY {
-            let _ = crate::storage_worker::submit(|| ()).unwrap();
+        for _ in 0..plx_base::storage_worker::CAPACITY {
+            let _ = plx_base::storage_worker::submit(|| ()).unwrap();
         }
         let edit = queue_update_ticket(|s| Some(s.with_auto_sign_in(true)));
         release.send(()).unwrap();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert!(edit.unwrap().wait_blocking().unwrap(), "the edit must survive admission backpressure");
         assert!(peek().auto_sign_in());
     }
 
     #[test]
     fn registering_a_new_server_inside_a_frame_never_loads_storage() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("register-frame-no-load");
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         crate::plex::register_origin("frame-client", &crate::plex::Origin::http("127.0.0.1", 32400),
             "", None, crate::plex::ConnectionFacts::default());
     }
 
     #[test]
     fn reads_and_preference_updates_cannot_resurrect_a_revoked_session() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("revoked-read");
         save(&test_support::signed_in());
         revoke_cached_session(); // A non-durable clear leaves this old record on disk.
@@ -3371,7 +3371,7 @@ mod cache_timing_tests {
 
     #[test]
     fn an_edit_admitted_before_the_first_cache_read_reaches_the_valid_disk_session() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("unloaded-edit");
         save(&test_support::signed_in());
         invalidate_for_test();
@@ -3382,7 +3382,7 @@ mod cache_timing_tests {
 
     #[test]
     fn a_queued_refresh_cannot_overwrite_a_newer_write() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-queued-write");
         let held = io();
         assert!(peek().client_id.is_empty());
@@ -3398,7 +3398,7 @@ mod cache_timing_tests {
     fn an_inflight_refresh_cannot_undo_local_revocation() {
         use std::sync::mpsc::{self, Receiver, Sender};
         static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-revoked-inflight");
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -3425,13 +3425,13 @@ mod cache_timing_tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static READS: AtomicUsize = AtomicUsize::new(0);
         static FINISHED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-background-blocked");
         let _idle = ResetIdle;
         struct ResetRead;
         impl Drop for ResetRead {
             fn drop(&mut self) {
-                crate::storage_worker::drain_for_test();
+                plx_base::storage_worker::drain_for_test();
                 CACHE_READ_FOR_TEST.with(|read| read.set(None));
             }
         }
@@ -3450,7 +3450,7 @@ mod cache_timing_tests {
         for _ in 0..30 { assert!(peek().client_id.is_empty()); }
         assert!(started.elapsed() < std::time::Duration::from_millis(200),
             "per-frame peeks must return while the backend is still blocked");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_eq!(READS.load(Ordering::SeqCst), 1, "one refresh for all thirty frames");
         let finished = FINISHED.lock().unwrap().unwrap();
         assert!(cached_at(finished + LOCKED_RETRY / 2).is_some(),
@@ -3460,7 +3460,7 @@ mod cache_timing_tests {
 
     #[test]
     fn session_landings_invalidate_once_on_the_frame_thread_only_when_content_changes() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-visible-landing");
         let _idle = ResetIdle;
         {
@@ -3468,7 +3468,7 @@ mod cache_timing_tests {
             install_locked(std::sync::Arc::new(ReadState::Blocked));
         }
         let mut frame_step = FrameCursor::new();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         frame_step.lands();
         for (read, landed) in [
             ((|| ReadState::Blocked) as fn() -> ReadState, false),
@@ -3487,10 +3487,10 @@ mod cache_timing_tests {
             schedule_refresh(std::time::Instant::now(),
                 CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
             CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
-            crate::storage_worker::drain_for_test();
+            plx_base::storage_worker::drain_for_test();
             assert!(!crate::ui::idle::should_present(10_001), "workers cannot wake the UI");
             assert_eq!(crate::ui::idle::take_local_damage(), 0);
-            let _frame = crate::task::FrameScope::enter();
+            let _frame = plx_base::task::FrameScope::enter();
             assert_eq!(frame_step.lands(), landed);
             assert!(!frame_step.lands(), "one landing per change");
             assert_eq!(crate::ui::idle::take_local_damage(), 0, "landing the cache raises no frame damage of its own");
@@ -3499,11 +3499,11 @@ mod cache_timing_tests {
 
     #[test]
     fn an_unserialized_peek_cannot_leak_a_refresh_into_another_test() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-unserialized-peek");
         let held = io();
         std::thread::Builder::new().spawn(|| {
-            assert!(!crate::testlock::held());
+            assert!(!plx_base::testlock::held());
             assert!(peek().client_id.is_empty());
         }).unwrap().join().unwrap();
         let in_flight = REFRESH.lock().unwrap().in_flight;
@@ -3514,7 +3514,7 @@ mod cache_timing_tests {
 
     #[test]
     fn a_slow_blocked_read_is_cached_from_its_completion() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-slow-blocked");
         struct ResetRead;
         impl Drop for ResetRead {
@@ -3643,7 +3643,7 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
                     retry_canonical: false,
                 },
                 Err(error) => {
-                    crate::eventlog::log(&format!("session: canonical record is invalid: {error}"));
+                    plx_base::eventlog::log(&format!("session: canonical record is invalid: {error}"));
                     ReadState::Blocked
                 }
             }
@@ -3705,7 +3705,7 @@ fn migrate_missing_fallback_locked(read: ReadState) -> ReadState {
                         session: session.clone(), plaintext: protection.is_none(), retry_canonical: false,
                     };
                 }
-                _ => crate::eventlog::log("session: fallback migration did not complete; retaining snapshot for retry"),
+                _ => plx_base::eventlog::log("session: fallback migration did not complete; retaining snapshot for retry"),
             }
         }
     }
@@ -3765,7 +3765,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = crate::tv::secure::open(&envelope.sealed) else {
-                    crate::eventlog::log("session: secure file is present but its device key is unavailable");
+                    plx_base::eventlog::log("session: secure file is present but its device key is unavailable");
                     return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
                 };
                 return serde_json::from_slice::<Session>(&plain)
@@ -3778,7 +3778,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             }
         }
         if identifies_secure_envelope(&bytes) {
-            crate::eventlog::log("session: unsupported or damaged secure envelope is locked");
+            plx_base::eventlog::log("session: unsupported or damaged secure envelope is locked");
             return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
@@ -3857,7 +3857,7 @@ pub(crate) fn install_account_clear_cleanup(sweep: fn() -> bool) {
     let _ = ACCOUNT_CLEAR_CLEANUP.set(sweep);
 }
 
-/// **Hand the scrubber this household's names**, so `crate::eventlog::log` can redact them without ever
+/// **Hand the scrubber this household's names**, so `plx_base::eventlog::log` can redact them without ever
 /// touching this module.
 ///
 /// The scrubber used to call [`peek`] per line, which took [`IO`] and read the file — a deadlock
@@ -3890,7 +3890,7 @@ fn publish_identities(s: &Session) {
         }
     }
     v.push(s.server.origin().host().to_string());
-    crate::eventlog::scrub::set_identities(v);
+    plx_base::eventlog::scrub::set_identities(v);
 }
 
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
@@ -4266,13 +4266,13 @@ fn save_locked_with_authority(
         match &commit {
             persistence::CanonicalCommit::Durable { .. } => unreachable!(),
             persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
-                crate::eventlog::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno} helper={helper:?}"));
+                plx_base::eventlog::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno} helper={helper:?}"));
             }
             persistence::CanonicalCommit::Failed(error) => {
-                crate::eventlog::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
+                plx_base::eventlog::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
             }
             persistence::CanonicalCommit::ProtectionFailed(failure) => {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "session: canonical protection failed: {:?}, commit_verified={}",
                     failure.failure, failure.db8_commit_verified
                 ));
@@ -4356,7 +4356,7 @@ fn save_legacy_fallback_locked(
     // Only our marked fallback envelopes may be resealed here. Unmarked legacy secure files
     // still refuse the entire fallback write, as before; the plaintext arm never downgrades either.
     if protected_before || protected_after || has_unmarked_secure_locked() {
-        crate::eventlog::log("session: preserving the existing protected record; refusing an unprotected downgrade");
+        plx_base::eventlog::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;
     }
     if let Some(sealed) = crate::tv::secure::seal(&serde_json::to_vec_pretty(s).ok()?) {
@@ -4374,7 +4374,7 @@ fn save_legacy_fallback_locked(
                 Ok(()) => {
                     retire_other_fallback_candidates_locked(&winner, true);
                     if !failures.is_empty() {
-                        crate::eventlog::log(
+                        plx_base::eventlog::log(
                             "session: protected write succeeded on a later candidate; earlier ones refused",
                         );
                         log_candidate_diagnostics("protected write refused before the later success", &failures);
@@ -4384,14 +4384,14 @@ fn save_legacy_fallback_locked(
                 Err(diagnostic) => failures.push(diagnostic),
             }
         }
-        crate::eventlog::log("session: key manager succeeded but the protected file could not be written");
+        plx_base::eventlog::log("session: key manager succeeded but the protected file could not be written");
         log_candidate_diagnostics("protected write refused", &failures);
         return None;
     }
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
     if has_secure_locked() {
-        crate::eventlog::log("session: preserving the existing secure file; refusing a plaintext downgrade");
+        plx_base::eventlog::log("session: preserving the existing secure file; refusing a plaintext downgrade");
         return None;
     }
     let Ok(json) = fallback_bytes(s) else {
@@ -4408,7 +4408,7 @@ fn save_legacy_fallback_locked(
             Ok(()) => {
                 retire_other_fallback_candidates_locked(&path, false);
                 if !failures.is_empty() {
-                    crate::eventlog::log(
+                    plx_base::eventlog::log(
                         "session: plaintext write succeeded on a later candidate; earlier ones refused",
                     );
                     log_candidate_diagnostics("plaintext write refused before the later success", &failures);
@@ -4418,7 +4418,7 @@ fn save_legacy_fallback_locked(
             Err(diagnostic) => failures.push(diagnostic),
         }
     }
-    crate::eventlog::log(
+    plx_base::eventlog::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
     log_candidate_diagnostics("plaintext write refused", &failures);
@@ -4652,7 +4652,7 @@ fn log_candidate_diagnostics(context: &str, failures: &[CandidateDiagnostic]) {
             WriteFailure::RenameFailed(_) => "rename_failed",
         };
         let errno = d.failure.errno().map_or_else(|| "none".to_string(), |e| e.to_string());
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "session: {context} path={} {parent} cause={class} errno={errno}",
             d.path.display()
         ));
@@ -4808,7 +4808,7 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
     match outcome {
         persistence::ClearCleanupOutcome::Confirmed => ClearOutcome::Durable { legacy_swept: true },
         persistence::ClearCleanupOutcome::LegacyRetireFailed => {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "session: canonical clear is durable but a recognized legacy migration \
                  candidate could not be retired — it remains on disk and will be swept \
                  again on the next sign-out or bootstrap",
@@ -4816,7 +4816,7 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
             ClearOutcome::Durable { legacy_swept: false }
         }
         persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "session: canonical clear reported durable but the immediate authority \
                  read-back did not confirm Cleared — the legacy sweep was skipped and the \
                  account token may still be readable from the canonical authority",
@@ -4928,7 +4928,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             // called here in that release).
             #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
             if !ACCOUNT_CLEAR_CLEANUP.get().is_none_or(|sweep| sweep()) {
-                crate::eventlog::log(
+                plx_base::eventlog::log(
                     "session: canonical clear is durable but a telemetry/consent legacy \
                      candidate could not be retired — it remains on disk and will be swept \
                      again on the next sign-out",
@@ -4940,21 +4940,21 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             outcome
         }
         persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: canonical clear is uncertain stage={stage:?} errno={errno} helper={helper:?} — the \
                  account token may still be readable from the canonical authority"
             ));
             ClearOutcome::NotDurable
         }
         persistence::CanonicalCommit::Failed(error) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: canonical clear failed: {error:?} — the account token may still be \
                  readable from the canonical authority"
             ));
             ClearOutcome::NotDurable
         }
         persistence::CanonicalCommit::ProtectionFailed(failure) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: canonical clear protection failed: {:?}, commit_verified={} — the \
                  account token may still be readable from the canonical authority",
                 failure.failure, failure.db8_commit_verified
@@ -5042,7 +5042,7 @@ fn persist_fallback_revocation_locked() -> bool {
             ]),
         }
     }
-    crate::eventlog::log("session: no durable fallback revocation marker; sign-out cannot survive a restart until cleanup succeeds");
+    plx_base::eventlog::log("session: no durable fallback revocation marker; sign-out cannot survive a restart until cleanup succeeds");
     false
 }
 
@@ -5059,7 +5059,7 @@ fn retire_marked_fallbacks_locked() -> bool {
         match std::fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                crate::eventlog::log(&format!("session: fallback retirement stat failed path={} errno={}",
+                plx_base::eventlog::log(&format!("session: fallback retirement stat failed path={} errno={}",
                     path.display(), error.raw_os_error().unwrap_or(0)));
                 complete = false;
                 continue;
@@ -5071,7 +5071,7 @@ fn retire_marked_fallbacks_locked() -> bool {
             Some(bytes) if marked_fallback(&bytes) => complete &= retire_session_candidate(&path),
             Some(_) => {}
             None => {
-                crate::eventlog::log(&format!("session: fallback retirement could not read candidate path={}", path.display()));
+                plx_base::eventlog::log(&format!("session: fallback retirement could not read candidate path={}", path.display()));
                 complete = false;
             }
         }
@@ -5101,7 +5101,7 @@ fn retry_pending_revocation_removals_locked() -> bool {
                 Err(error) => match crate::storage::prove_absent_after_refused_unlink(&marker, error) {
                     Ok(()) => true,
                     Err(error) => {
-                        crate::eventlog::log(&format!("session: revocation retirement failed errno={}",
+                        plx_base::eventlog::log(&format!("session: revocation retirement failed errno={}",
                             error.raw_os_error().unwrap_or(0)));
                         false
                     }
@@ -5208,7 +5208,7 @@ fn sync_retired_candidate_parent(path: &std::path::Path) -> bool {
         let mut pending = PENDING_RETIREMENTS.lock().unwrap_or_else(|e| e.into_inner());
         if !pending.iter().any(|candidate| candidate == path) { pending.push(path.to_path_buf()); }
         drop(pending);
-        crate::eventlog::log(&format!("session: sign-out unlink sync failed path={} errno={}",
+        plx_base::eventlog::log(&format!("session: sign-out unlink sync failed path={} errno={}",
             path.display(), error.raw_os_error().unwrap_or(0)));
         return false;
     }
@@ -5239,7 +5239,7 @@ fn retire_session_candidate(path: &std::path::Path) -> bool {
         // Opened without O_CREAT: the name vanished after the lookup above.
         Err(overwrite) if overwrite.kind() == std::io::ErrorKind::NotFound => true,
         Err(overwrite) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: sign-out candidate retirement failed path={} unlink_errno={} neutralize_errno={}",
                 path.display(), unlink.raw_os_error().unwrap_or(0),
                 overwrite.raw_os_error().unwrap_or(0)
@@ -5672,7 +5672,7 @@ mod server_key_pin_tests {
     use super::*;
 
     fn pin(seed: u8) -> String {
-        crate::spki::pin_from_spki_der(&[seed; 8])
+        plx_base::spki::pin_from_spki_der(&[seed; 8])
     }
 
     fn stored(machine: &str, pin: &str) -> Session {
@@ -5686,7 +5686,7 @@ mod server_key_pin_tests {
     #[test]
     fn only_a_sign_out_ends_what_keypin_published_not_a_live_session_with_no_key() {
         use crate::net::keypin;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("session-signed-in.invalid", 32400);
         let _scoped = keypin::Scoped::watch_machine("m-session-live", &key);
         let language = crate::i18n::Preference::En;
@@ -5785,16 +5785,16 @@ mod server_key_pin_tests {
     /// helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none` does.)
     #[test]
     fn learning_writes_a_change_once_and_the_file_sign_out_forgets_it() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("server-key-learn");
         save(&test_support::signed_in());
         assert!(learn_server_key("m", &pin(1)), "a new pin is queued");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_eq!(peek().server_key_pin("m"), Some(pin(1).as_str()));
         assert!(!learn_server_key("m", &pin(1)), "the same pin is not");
         assert!(!learn_server_key("", &pin(1)));
         assert!(learn_server_key("m", &pin(2)), "a different one replaces it");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_eq!(peek().server_key_pin("m"), Some(pin(2).as_str()));
         assert_eq!(peek().account_token, "acct", "the credentials are untouched");
 
@@ -5835,7 +5835,7 @@ mod server_key_pin_tests {
     /// table and the latch that stood on it.
     #[test]
     fn a_restored_session_fills_the_key_table_and_sign_out_empties_it() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("keys-restore");
         let (machine, port) = ("m-keys-restore", 41_001);
         let key = table_key(port);
@@ -5843,7 +5843,7 @@ mod server_key_pin_tests {
         crate::net::keypin::forget_for_test(&key);
         save(&remembering(machine, port, &pin(1)));
         let _ = load();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)), "stored server + stored key");
 
@@ -5859,7 +5859,7 @@ mod server_key_pin_tests {
     /// mode for the host.
     #[test]
     fn learning_a_new_or_changed_key_updates_the_table_and_clears_the_latch() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("keys-learn");
         let (machine, port) = ("m-keys-learn", 41_002);
         let key = table_key(port);
@@ -5869,13 +5869,13 @@ mod server_key_pin_tests {
         stored.account_token = "acct".into();
         save(&stored);
         let _ = load();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
 
         crate::net::keypin::key_established(&key, &pin(1), Some(10));
         assert!(learn_server_key(machine, &pin(2)), "a different key is queued");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(2)), "the applied write projects it");
         assert!(!crate::net::keypin::is_latched(&key), "a pin change ends key mode for the host");
@@ -5886,7 +5886,7 @@ mod server_key_pin_tests {
     /// projects nothing.
     #[test]
     fn a_learn_that_completes_after_sign_out_leaves_the_table_empty() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("keys-learn-signout");
         let (machine, port) = ("m-keys-learn-out", 41_003);
         let key = table_key(port);
@@ -5896,14 +5896,14 @@ mod server_key_pin_tests {
         stored.account_token = "acct".into();
         save(&stored);
         let _ = load();
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(crate::net::keypin::pin_for_test(&key), Some(pin(1)));
 
         revoke_cached_session();
         assert_eq!(crate::net::keypin::pin_for_test(&key), None, "sign-out empties the table");
         let _ = learn_server_key(machine, &pin(2));
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(crate::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
     }

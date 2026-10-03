@@ -206,7 +206,7 @@ fn page_ground_canonical_state_covers_every_held_target_and_spring_component() {
 
 #[test]
 fn page_ground_canonical_state_is_repeatable_and_read_only_through_a_held_dissolve() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut left, mut right) = (PageGround::new(), PageGround::new());
     for frame in 0..20 {
         let source = (frame == 0).then_some([[0.8, 0.1, 0.2]; 4]);

@@ -4,7 +4,7 @@ use super::*;
 use crate::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
 use crate::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
 
-struct Cleanup<'a>(&'a crate::task::MainThread);
+struct Cleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
         crate::plex::reset_servers_for_test();
@@ -72,8 +72,8 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
 }
 
 fn prove_home_observations(conflicting_owner: bool) {
-    let _lock = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _lock = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     let tmp = session::TempSession::new("stored-home-owned-observations");
     let _cleanup = Cleanup(&mt);
     tmp.assert_only_target();
@@ -197,8 +197,8 @@ fn conflicting_live_ctl_rejects_stored_home_observations() {
 
 #[test]
 fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_interest() {
-    let _lock = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _lock = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     for nonterminal in [false, true] {
         let tmp = session::TempSession::new("admitted-endpoint-negative");
         let _cleanup = Cleanup(&mt);

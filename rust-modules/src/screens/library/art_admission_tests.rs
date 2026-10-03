@@ -28,7 +28,7 @@ impl Source for ArtSpy {
 /// of the same cold slot and kept an otherwise settled screen decoding/uploading forever.
 #[test]
 fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     // Source installation and observations are thread-local to this test. A descriptive draw
     // traverses the actual Part implementation while its primitive declarations avoid GL.
     crate::ui::tex::install(&ArtSpy);

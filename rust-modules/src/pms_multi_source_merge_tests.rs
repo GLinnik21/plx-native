@@ -285,7 +285,7 @@ fn every_row_a_source_projects_is_stamped_with_the_server_it_was_asked_of() {
 /// nothing and backs off alone.
 #[test]
 fn one_failing_source_still_commits_the_other() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -340,7 +340,7 @@ fn one_failing_source_still_commits_the_other() {
 /// catalog nor the deck loses a row.
 #[test]
 fn a_failing_source_leaves_a_populated_home_completely_intact() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -404,7 +404,7 @@ fn a_failing_source_leaves_a_populated_home_completely_intact() {
 /// caption under an empty Home.
 #[test]
 fn a_source_landing_repaints_a_settled_home() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     crate::ui::idle::set_enabled(true);
@@ -436,7 +436,7 @@ fn a_source_landing_repaints_a_settled_home() {
 /// answered; a mix of failed and still-loading is still loading.
 #[test]
 fn only_every_source_failing_reads_as_a_failed_home() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -477,7 +477,7 @@ fn only_every_source_failing_reads_as_a_failed_home() {
 /// owner's screenshots show a friend's films sitting BETWEEN their own, in one row.
 #[test]
 fn continue_watching_merges_across_sources_by_last_viewed() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -514,7 +514,7 @@ fn continue_watching_merges_across_sources_by_last_viewed() {
 /// source's shelves may never be interleaved with another's.
 #[test]
 fn every_other_shelf_carries_its_source_and_the_groups_stay_contiguous() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -572,7 +572,7 @@ fn every_other_shelf_carries_its_source_and_the_groups_stay_contiguous() {
 /// not reflow the shelves under the focus ring.
 #[test]
 fn a_source_that_never_answered_draws_nothing_at_all() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -602,7 +602,7 @@ fn a_source_that_never_answered_draws_nothing_at_all() {
 /// fact about the grant rather than about a fetch that happened to fail.
 #[test]
 fn a_source_that_leaves_the_roster_stops_contributing() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![
@@ -636,7 +636,7 @@ fn a_source_that_leaves_the_roster_stops_contributing() {
 
 #[test]
 fn an_equal_size_roster_replacement_has_a_different_cache_key_and_source_table() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
@@ -722,7 +722,7 @@ fn an_unpinned_library_keeps_its_items_off_home_even_when_its_server_feeds_it() 
 
 #[test]
 fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
@@ -807,7 +807,7 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
     );
     assert_eq!(allot(10, &[]), Vec::<usize>::new());
 
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let many = |slot: u16, tag: &str| {
@@ -848,7 +848,7 @@ fn the_budget_is_shared_so_neither_source_starves_the_other() {
 /// `describe` at all, so `sync_roster` early-returned before reaching any of it.
 #[test]
 fn a_corrected_credit_restamps_the_shelves_home_already_built() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     crate::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
@@ -889,7 +889,7 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
 /// The same split over catalog ROWS, which is the cap the shelves' items come out of.
 #[test]
 fn the_row_budget_is_shared_too() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     // enough shelves, each already at the per-shelf ceiling, that the ROW cap is what binds
@@ -936,7 +936,7 @@ fn the_row_budget_is_shared_too() {
 /// column the raw index names. Unreachable with one server, which is why the cap lives here now.
 #[test]
 fn the_merged_deck_is_capped_at_what_the_grid_can_address() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let deck = |slot: u16, tag: &str| {

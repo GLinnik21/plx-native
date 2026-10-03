@@ -1,6 +1,6 @@
 //! The seam through which a blocking media transport asks its caller "may I keep waiting?".
 //!
-//! A transport ([`crate::stream`], [`crate::curlio`]) knows how to wait for bytes; it does not
+//! A transport (`stream`, `curlio`) knows how to wait for bytes; it does not
 //! know why its caller might stop wanting them. The ABR acquisition that owns a segment fetch does
 //! know — a playhead-funded reserve can run out, or the main thread can ask for a hold — but the
 //! only instant it could hand a transport used to be one absolute deadline, fixed when the
@@ -24,7 +24,7 @@ use std::time::Instant;
 
 /// The caller's answer at a checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Flow {
+pub enum Flow {
     /// Keep waiting. `next_check` is the latest instant at which the transport must ask again;
     /// `None` means it never needs to for the rest of this operation.
     Continue { next_check: Option<Instant> },
@@ -33,12 +33,12 @@ pub(crate) enum Flow {
 }
 
 /// Consulted by a transport before it blocks, and again whenever a checkpoint slice expires.
-pub(crate) trait Checkpoint {
+pub trait Checkpoint {
     fn check(&mut self) -> Flow;
 }
 
 /// The checkpoint of a caller that has nothing to check: today's behaviour, unchanged.
-pub(crate) struct NoCheckpoint;
+pub struct NoCheckpoint;
 
 impl Checkpoint for NoCheckpoint {
     fn check(&mut self) -> Flow {
@@ -48,19 +48,19 @@ impl Checkpoint for NoCheckpoint {
 
 /// The caller asked the transport to stop at a checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Stopped;
+pub struct Stopped;
 
 /// One transport operation's view of its [`Checkpoint`]: asks only when a check is DUE, so a
 /// read that never blocks and bytes that keep arriving cost no extra calls, and a wait that does
 /// block wakes at most once per `next_check` rather than once per syscall.
-pub(crate) struct Pacer<'a> {
+pub struct Pacer<'a> {
     checkpoint: &'a mut dyn Checkpoint,
     /// `None` until the first ask; then the last answer's `next_check`.
     due: Option<Option<Instant>>,
 }
 
 impl<'a> Pacer<'a> {
-    pub(crate) fn new(checkpoint: &'a mut dyn Checkpoint) -> Pacer<'a> {
+    pub fn new(checkpoint: &'a mut dyn Checkpoint) -> Pacer<'a> {
         Pacer {
             checkpoint,
             due: None,
@@ -70,7 +70,7 @@ impl<'a> Pacer<'a> {
     /// Call immediately before blocking. Consults the checkpoint when it has never been asked or
     /// its `next_check` has passed, and returns the instant the coming wait must wake by to ask
     /// again (`None`: wait as long as the transport's own bounds allow).
-    pub(crate) fn before_wait(&mut self) -> Result<Option<Instant>, Stopped> {
+    pub fn before_wait(&mut self) -> Result<Option<Instant>, Stopped> {
         let ask = match self.due {
             None => true,
             Some(None) => false,
@@ -89,24 +89,24 @@ impl<'a> Pacer<'a> {
 /// Milliseconds a `poll`-style wait may block to reach `at`, rounded UP (a wait that returns a
 /// hair early would only spin) and at least 1 (0 is a non-blocking poll, a busy loop in a caller
 /// whose `next_check` is already in the past).
-pub(crate) fn wait_ms_until(at: Instant, cap_ms: i32) -> i32 {
+pub fn wait_ms_until(at: Instant, cap_ms: i32) -> i32 {
     let left_us = at.saturating_duration_since(Instant::now()).as_micros();
     (left_us.saturating_add(999) / 1_000).clamp(1, cap_ms.max(1) as u128) as i32
 }
 
 /// A host-suite checkpoint: counts its calls, asks again `slice` after each, and stops once
 /// `stop` is set or after `stop_after` calls. The transport tests synchronise on `calls`.
-#[cfg(test)]
-pub(crate) struct TestCheckpoint {
-    pub(crate) calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub(crate) stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) stop_after: Option<usize>,
-    pub(crate) slice: std::time::Duration,
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestCheckpoint {
+    pub calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub stop_after: Option<usize>,
+    pub slice: std::time::Duration,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TestCheckpoint {
-    pub(crate) fn every(slice: std::time::Duration) -> TestCheckpoint {
+    pub fn every(slice: std::time::Duration) -> TestCheckpoint {
         TestCheckpoint {
             calls: Default::default(),
             stop: Default::default(),
@@ -114,18 +114,18 @@ impl TestCheckpoint {
             slice,
         }
     }
-    pub(crate) fn stopping_after(calls: usize, slice: std::time::Duration) -> TestCheckpoint {
+    pub fn stopping_after(calls: usize, slice: std::time::Duration) -> TestCheckpoint {
         TestCheckpoint {
             stop_after: Some(calls),
             ..TestCheckpoint::every(slice)
         }
     }
-    pub(crate) fn calls(&self) -> usize {
+    pub fn calls(&self) -> usize {
         self.calls.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Checkpoint for TestCheckpoint {
     fn check(&mut self) -> Flow {
         use std::sync::atomic::Ordering;

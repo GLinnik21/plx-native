@@ -102,7 +102,7 @@ fn a_control_leaving_focus_shrinks_while_its_neighbour_grows() {
 #[test]
 fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
     let mut p = crate::ui::press::Press::new();
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut pop: CtlPop<1> = CtlPop::new();
     for _ in 0..60 {
         pop.step(Some(0), 1.0 / 60.0);

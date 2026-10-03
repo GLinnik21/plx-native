@@ -259,7 +259,7 @@ pub struct ReadyCreds {
 }
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 
 /// Does restarting this flow begin a NEW sign-in attempt, as the diagnostics count them?
 ///
@@ -714,7 +714,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
 fn retire_grant_on_https(machine_id: &str, origin: &Origin) {
     if origin.is_tls() && crate::plex::grant::granted_origin(machine_id).is_some() {
         crate::plex::grant::revoke(machine_id);
-        crate::eventlog::log("security: server verified over HTTPS — plaintext upgrade complete");
+        plx_base::eventlog::log("security: server verified over HTTPS — plaintext upgrade complete");
     }
 }
 
@@ -3061,7 +3061,7 @@ fn resolve_roster_live_while(
 ) -> Resolution {
     let policy = CredentialPolicy::build();
     let dial: ProbeDial = Arc::new(get_identity);
-    let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
+    let spawn = |_index: usize, job: ProbeJob| plx_base::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan, rejected: &[String]| {
         if !live() { return Reach::No; }
         probe_server_racing(&plan.without(rejected), Arc::clone(&dial), &spawn, PROBE_DEADLINES,
@@ -3139,7 +3139,7 @@ fn probe_profile_resource_live_after(
 ) -> (Option<SourceRef>, SettledProbe) {
     let plan = probe::plan(resource, CredentialPolicy::build());
     let dial: ProbeDial = Arc::new(get_identity);
-    let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
+    let spawn = |_index: usize, job: ProbeJob| plx_base::task::spawn_small("probe", job);
     let reach = probe_server_racing(&plan.without(rejected_origins), dial, &spawn, PROBE_DEADLINES,
         &mut |_, _, _| {});
     let reach = settle_plaintext(resource, &plan, rejected_origins, household, reach, ask);

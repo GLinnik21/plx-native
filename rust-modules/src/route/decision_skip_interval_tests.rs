@@ -13,7 +13,7 @@ impl Drop for Restore {
 /// **A durable pick is live, read back by the next load, and reported once** (as the length alone).
 #[test]
 fn a_durable_pick_is_live_persisted_and_reported_once() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("skip-interval-set");
     let _restore = Restore(skip_interval());
     restore_skip_interval(SkipInterval::Seconds10);
@@ -37,7 +37,7 @@ fn a_durable_pick_is_live_persisted_and_reported_once() {
 /// **A failed write claims nothing**: the live value stays and nothing is reported.
 #[test]
 fn a_failed_write_changes_and_reports_nothing() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("skip-interval-failed");
     let _restore = Restore(skip_interval());
     restore_skip_interval(SkipInterval::Seconds10);

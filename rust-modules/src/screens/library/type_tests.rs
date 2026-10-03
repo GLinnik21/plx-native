@@ -33,7 +33,7 @@ fn collections_fixture(total: usize) -> Fixture {
 
 #[test]
 fn every_library_kind_offers_the_type_selector_and_it_opens_its_own_menu() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let movies = Fixture::new();
     let movie_page = movies.screen();
     assert_eq!(movie_page.toolbar_elems(), [TYPE, SORT, FILTER], "Movies / Collections is a real choice");
@@ -59,7 +59,7 @@ fn every_library_kind_offers_the_type_selector_and_it_opens_its_own_menu() {
 
 #[test]
 fn episode_navigation_and_page_jumps_follow_four_columns() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = tv_fixture(LibraryType::Episodes, 36);
     let mut page = tv_page(&fixture);
     page.initial = false;
@@ -84,7 +84,7 @@ fn episode_navigation_and_page_jumps_follow_four_columns() {
 
 #[test]
 fn empty_episode_results_keep_type_selector_available() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = tv_fixture(LibraryType::Episodes, 0);
     let mut page = tv_page(&fixture);
     page.grid_fade = Xfade::new();
@@ -98,7 +98,7 @@ fn empty_episode_results_keep_type_selector_available() {
 
 #[test]
 fn type_menu_command_preserves_plaintext_alert_control_keys() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     assert_ne!(TYPE, PLAINTEXT_CANCEL);
     assert_ne!(TYPE, PLAINTEXT_CONNECT);
     let fixture = tv_fixture(LibraryType::Primary, 36);
@@ -114,7 +114,7 @@ fn type_menu_command_preserves_plaintext_alert_control_keys() {
 
 #[test]
 fn empty_tv_library_names_the_selected_listing_type() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for (kind, expected) in [
         (LibraryType::Primary, "No shows in Television"),
         (LibraryType::Seasons, "No seasons in Television"),
@@ -135,7 +135,7 @@ fn empty_tv_library_names_the_selected_listing_type() {
 /// and the TYPE chip names what is listed.
 #[test]
 fn a_collections_listing_hides_the_filter_control() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = collections_fixture(36);
     let page = fixture.screen();
     assert_eq!(page.listed(), LibraryType::Collections);
@@ -148,7 +148,7 @@ fn a_collections_listing_hides_the_filter_control() {
 /// it keeps the heading row so TYPE can leave it.
 #[test]
 fn an_empty_collections_listing_says_so_and_keeps_the_type_selector() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = collections_fixture(0);
     let mut page = fixture.screen();
     page.grid_fade = Xfade::new();
@@ -166,7 +166,7 @@ fn an_empty_collections_listing_says_so_and_keeps_the_type_selector() {
 /// `activate_card` routes kind 4 to `ContentArg::Collection` (pinned in `app/input.rs`).
 #[test]
 fn ok_on_a_collection_card_requests_its_page() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = collections_fixture(36);
     let mut page = fixture.screen();
     page.initial = false;
@@ -184,7 +184,7 @@ fn ok_on_a_collection_card_requests_its_page() {
 /// section on the page.
 #[test]
 fn the_set_type_command_is_the_menu_rows_edit() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut output = Vec::new();
@@ -201,7 +201,7 @@ fn the_set_type_command_is_the_menu_rows_edit() {
 /// heading row instead, and the read-out stands in it and scrolls with the page.
 #[test]
 fn an_empty_answer_under_shelves_stands_below_its_heading() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::shelves(&["Recently Added"], 6);
     fixture.listing = fixture.listing.clone().with_library_type(LibraryType::Collections).with_fetch(SecFetch::Ready, 0);
     let mut page = fixture.screen();

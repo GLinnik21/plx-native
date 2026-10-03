@@ -588,7 +588,7 @@ impl Client {
                 //
                 // The ENDPOINT only — never the built path, which carries `X-Plex-Token`. Serde's
                 // own message names a type and an offset and quotes no content.
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "pms: GET {} answered {} bytes that will not parse — {e}",
                     path_no_token.split('?').next().unwrap_or(path_no_token),
                     body.len()
@@ -609,7 +609,7 @@ impl Client {
             match serde_json::from_slice::<Envelope>(&reply.body) {
                 Ok(envelope) => Some(envelope.media_container),
                 Err(error) => {
-                    crate::eventlog::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "pms: GET {} answered {} bytes that will not parse — {error}",
                         path_no_token.split('?').next().unwrap_or(path_no_token),
                         reply.body.len()
@@ -644,7 +644,7 @@ impl Client {
                     match serde_json::from_slice::<Envelope>(&reply.body) {
                         Ok(envelope) => Some(envelope.media_container),
                         Err(error) => {
-                            crate::eventlog::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "pms: GET {} answered {} bytes that will not parse — {error}",
                                 path_no_token.split('?').next().unwrap_or(path_no_token),
                                 reply.body.len()

@@ -75,7 +75,7 @@ pub(crate) enum CanonicalCommit {
 }
 
 pub(crate) fn root() -> PathBuf {
-    crate::paths::persistent_state_root()
+    plx_base::paths::persistent_state_root()
 }
 
 pub(crate) fn path() -> PathBuf {
@@ -107,7 +107,7 @@ pub(crate) fn cleanup_temporaries() -> Result<(), StoreError> {
 }
 
 fn store() -> Result<impl RecordStore, StoreError> {
-    crate::paths::ensure_persistent_state_root().map_err(|error| StoreError::Io {
+    plx_base::paths::ensure_persistent_state_root().map_err(|error| StoreError::Io {
         stage: crate::storage::CommitStage::ParentOpen,
         errno: error.raw_os_error().unwrap_or(0),
     })?;
@@ -703,7 +703,7 @@ fn helper_commit_with(
             helper: crate::storage::wire::failure::last().map(|failure| (failure, [None; 8])),
         },
         Ok(Response::Error { code }) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: storage helper rejected commit code={code:?}"
             ));
             CanonicalCommit::Failed(helper_rejection(code))
@@ -727,7 +727,7 @@ fn helper_commit_with(
                 Response::Error { .. } => "error",
                 Response::KeymanagerError { .. } => "keymanager_error",
             };
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "session: storage helper returned incomplete response shape={shape}"
             ));
             CanonicalCommit::Failed(StoreError::InvalidSchema)
@@ -813,7 +813,7 @@ mod db8_policy_tests {
 
     #[test]
     fn previous_json_wrapper_yields_its_nested_session_payload_and_tombstone() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!(
             "plxnative-prior-session-wrapper-{}",
             std::process::id()
@@ -867,7 +867,7 @@ mod db8_policy_tests {
     /// process-shared default on drop. This is a sibling of `session.rs`'s own
     /// `TempCanonicalRoot` (declared private, inside that module's own `#[cfg(test)] mod tests`,
     /// so not reachable from this module's sibling test mod) built the identical way, against the
-    /// same `crate::paths::redirect_persistent_state_root_for_test` seam.
+    /// same `plx_base::paths::redirect_persistent_state_root_for_test` seam.
     struct TempPersistenceRoot {
         dir: PathBuf,
     }
@@ -879,14 +879,14 @@ mod db8_policy_tests {
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
-            crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+            plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
             TempPersistenceRoot { dir }
         }
     }
 
     impl Drop for TempPersistenceRoot {
         fn drop(&mut self) {
-            crate::paths::redirect_persistent_state_root_for_test(None);
+            plx_base::paths::redirect_persistent_state_root_for_test(None);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -1004,7 +1004,7 @@ mod db8_policy_tests {
     /// edit itself was reverted before this test was left in its final shape.
     #[test]
     fn cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _root = TempPersistenceRoot::new("clear-cleanup-outcome");
         let _legacy = TempLegacyCandidate::new("clear-cleanup-outcome");
 
@@ -1378,7 +1378,7 @@ fn insert_arm_canonical_wrapper(candidates: &mut Vec<PathBuf>) {
 
 pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
     #[cfg(not(test))]
-    let candidates = crate::paths::session_migration_candidates();
+    let candidates = plx_base::paths::session_migration_candidates();
     #[cfg(test)]
     let candidates = super::auth_paths();
     #[cfg(all(
@@ -1442,7 +1442,7 @@ pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
         return ClearCleanupOutcome::AuthorityNotConfirmed;
     }
     #[cfg(not(test))]
-    let candidates = crate::paths::session_migration_candidates();
+    let candidates = plx_base::paths::session_migration_candidates();
     #[cfg(test)]
     let candidates = super::auth_paths();
     #[cfg(all(

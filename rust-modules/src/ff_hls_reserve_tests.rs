@@ -70,7 +70,7 @@ fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
         &mut *aq,
         std::time::Duration::ZERO,
         Some(std::time::Instant::now()),
-        &mut crate::checkpoint::NoCheckpoint,
+        &mut plx_base::checkpoint::NoCheckpoint,
     );
     assert!(matches!(result, Err(HlsExit::Aborted)));
     crate::aq::aq_destroy(&mut *aq);
@@ -240,7 +240,7 @@ fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
 
 #[test]
 fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stable = SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -268,7 +268,7 @@ fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
 
 #[test]
 fn proven_candidate_transition_settlement_reopens_generation() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stable = SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -297,7 +297,7 @@ fn proven_candidate_transition_settlement_reopens_generation() {
 
 #[test]
 fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stable = SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -385,7 +385,7 @@ fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
 
 #[test]
 fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 40_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -448,7 +448,7 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
 
 #[test]
 fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 50_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -500,7 +500,7 @@ fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
 
 #[test]
 fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 60_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -542,7 +542,7 @@ fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve
 
 #[test]
 fn stale_reserve_wakes_cannot_renew_transport_liveness() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 65_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -598,7 +598,7 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
 
 #[test]
 fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 66_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -633,7 +633,7 @@ fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
 
 #[test]
 fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_classification() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 67_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -672,7 +672,7 @@ fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_cl
 
 #[test]
 fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let old_paused = crate::player::TX
         .paused
         .load(std::sync::atomic::Ordering::Acquire);
@@ -714,7 +714,7 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
 /// buffer moved only 5.251→4.834 s. The SAME playhead clock must cross control and media.
 #[test]
 fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 70_000_000_000;
     let old = SHARED
         .playpos_ns
@@ -787,7 +787,7 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
 
 #[test]
 fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 71_000_000_000;
     let old_pos = SHARED
         .playpos_ns
@@ -841,7 +841,7 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
 
 #[test]
 fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let start_ns = 72_000_000_000;
     let old_pos = SHARED
         .playpos_ns

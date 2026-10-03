@@ -20,7 +20,7 @@
 //!
 //! This module is not compiled for the `hostsim` build or for host tests: the simulator's own
 //! `VideoSink` is `player::ffi_host`, so the test binary references no Starfish externs at all.
-use crate::task::MainThread;
+use plx_base::task::MainThread;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 

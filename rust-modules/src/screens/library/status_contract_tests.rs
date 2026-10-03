@@ -140,7 +140,7 @@ fn owned_readout_helper_preserves_the_legacy_precedence_matrix() {
 
 #[test]
 fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::normal();
     fixture.listing = Fixture::listing(SecFetch::Failed, -1);
     let page = fixture.screen();
@@ -171,7 +171,7 @@ fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
 
 #[test]
 fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let sid = crate::plex::ServerId::from_raw(7);
     let scenarios = [
         ("reachable empty table", crate::stores::browse::DirectorySnapshot::fixture_source(
@@ -205,7 +205,7 @@ fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
 
 #[test]
 fn failed_page_or_source_with_resident_items_stays_a_grid_without_status_controls() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     assert_eq!(readout(SecFetch::Failed, 3, SecFetch::Failed, 185), Readout::Grid,
         "a failed source with resident items keeps the grid verdict");
     let mut fixture = Fixture::normal();

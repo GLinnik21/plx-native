@@ -13,7 +13,7 @@ use crate::ui::screen::By;
 /// names the root — the heartbeat's `overlay=` before anything has been pressed.
 #[test]
 fn mounting_the_surface_names_its_root_page() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-mount");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -30,7 +30,7 @@ fn mounting_the_surface_names_its_root_page() {
 
 #[test]
 fn signed_out_root_does_not_offer_automatically_sign_in() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("root-signed-out-auto");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -66,7 +66,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
 
 #[test]
 fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-auto-toggle");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -90,7 +90,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         Some(row),
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(
         name(&s),
         word::SETTINGS,
@@ -102,14 +102,14 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         "the queued switch is durable after the worker completes"
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert!(!crate::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
 }
 
 #[test]
 fn right_on_automatically_sign_in_does_not_push() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-auto-right");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -156,7 +156,7 @@ fn right_on_automatically_sign_in_does_not_push() {
 /// built on.
 #[test]
 fn back_at_the_surface_s_own_root_is_not_handled() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-back-root");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -200,7 +200,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
 /// — which is the one thing `bridge.rs`'s word-only assertions cannot see from outside `app/`.
 #[test]
 fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-pop-focus");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -288,7 +288,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
 /// this asserts the new target by name, not merely "some fresh focus target came out".
 #[test]
 fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-push-seat");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -332,7 +332,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
 /// already dropped for good, because a popped page's `EntryId` is never minted again.
 #[test]
 fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-remembered");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -396,7 +396,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
 /// is the predicate the branch is now keyed on, and the one that used to have no equivalent.
 #[test]
 fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-at-rest");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -500,7 +500,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
 /// file; the `LogicalState` impl above carries the census of who currently does.
 #[test]
 fn the_logical_state_follows_the_inner_stack() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-state-hash");
     let mut s = RouteSurface::new(
         EntryId(0),
@@ -547,7 +547,7 @@ fn the_logical_state_follows_the_inner_stack() {
 
 #[test]
 fn session_refresh_rebuilds_root_without_navigation() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-session-refresh");
     let saved = crate::plex::session::peek();
     crate::plex::session::install_transient_for_test(true);
@@ -565,12 +565,12 @@ fn session_refresh_rebuilds_root_without_navigation() {
 
 #[test]
 fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-pending-refresh");
     let saved = crate::plex::session::peek();
     let mut root = RootPage::new(EntryId(0), cx(None).views);
-    let ticket = crate::storage_worker::submit_retained(|| false);
-    crate::storage_worker::drain_for_test();
+    let ticket = plx_base::storage_worker::submit_retained(|| false);
+    plx_base::storage_worker::drain_for_test();
     root.pending_auto = Some((true, ticket));
     root.rebuild(cx(None).views);
     crate::plex::session::install_transient_for_test(false);
@@ -594,7 +594,7 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
 #[test]
 fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     use crate::plex::session::PlaintextChoice;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-switch");
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
@@ -630,7 +630,7 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
     assert_eq!(drawn.toggle, Some(false));
     assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "lan-machine"), PlaintextChoice::Revoked);
     crate::plex::grant::reset_for_test();
     crate::plex::reset_servers_for_test();
@@ -639,7 +639,7 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
 /// Nobody was ever asked, so there is nothing to turn off: no section at all.
 #[test]
 fn no_unencrypted_connection_section_without_an_answer() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-none");
     let root = RootPage::new(EntryId(0), cx(None).views);
     assert!(root.form.index_of_key(RowKey(PLAINTEXT_KEY_BASE)).is_none());
@@ -654,7 +654,7 @@ fn no_unencrypted_connection_section_without_an_answer() {
 #[test]
 fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     use crate::plex::session::PlaintextChoice;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-ask");
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
@@ -771,7 +771,7 @@ fn reordering_the_root_form_changes_no_id_addressed_behaviour() {
 /// of that same row key, which the surface also holds in `remembered`.
 #[test]
 fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-back-reseat");
     for (id, dest) in [
         (RootId::Favourites, SettingsPage::Favourites),
@@ -809,7 +809,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
 /// old order, and the page's own state follows.
 #[test]
 fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-rebuild-identity");
     let mut page = RootPage::new(EntryId(0), cx(None).views);
     select_root(&mut page, RootId::Language);

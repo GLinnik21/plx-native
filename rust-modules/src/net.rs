@@ -76,7 +76,7 @@ pub(crate) struct CurlVersionInfo {
 // It is LAST deliberately — a television never reaches it, so this costs the device nothing but
 // one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
 // ordered by "what the fleet actually answers to" first.
-crate::dynlib! {
+plx_base::dynlib! {
     curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
     fn curl_version() -> *const c_char;
@@ -312,7 +312,7 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 /// callback owned by another component would be strictly less safe.
 fn setup_legacy_crypto_locks(soname: &'static str) -> LegacyCrypto {
     *LEGACY_CRYPTO_RESULT.get_or_init(|| {
-        let Some((scope, _)) = crate::dynlib::Handle::open(&[soname]) else {
+        let Some((scope, _)) = plx_base::dynlib::Handle::open(&[soname]) else {
             return LegacyCrypto::Missing;
         };
         let (Some(num), Some(get), Some(set)) = (
@@ -409,7 +409,7 @@ fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
 /// bound at all, in which case nothing else in this module may be called.
 pub fn global_init() -> bool {
     match curl::load(None) {
-        crate::dynlib::Loaded::Ok(soname) => {
+        plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
             // The version string carries the TLS backend and its version, which is the fact worth
             // having in a bug report from hardware nobody here owns.
@@ -444,12 +444,12 @@ pub fn global_init() -> bool {
             } else {
                 "no"
             };
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
                  threaded-tls={threaded} legacy-locks={locks:?}"
             ));
             if legacy && !threaded {
-                crate::eventlog::log(
+                plx_base::eventlog::log(
                     "net: legacy OpenSSL concurrency unavailable — serialized HTTPS control \
                      remains available; concurrent HTTPS media is disabled",
                 );
@@ -457,15 +457,15 @@ pub fn global_init() -> bool {
             CURL_OK.store(true, Ordering::Release);
             true
         }
-        crate::dynlib::Loaded::NoLibrary => {
-            crate::eventlog::log(
+        plx_base::dynlib::Loaded::NoLibrary => {
+            plx_base::eventlog::log(
                 "net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — \
                  account calls and HTTPS PMS control unavailable",
             );
             false
         }
-        crate::dynlib::Loaded::Incomplete(soname, n) => {
-            crate::eventlog::log(&format!(
+        plx_base::dynlib::Loaded::Incomplete(soname, n) => {
+            plx_base::eventlog::log(&format!(
                 "net: {soname} is missing {n} symbol(s) — account calls and HTTPS PMS control unavailable"
             ));
             false
@@ -801,7 +801,7 @@ pub(crate) fn request_result_evidence(
 /// Test-only override of the CA trust root `request_result` verifies against — see that
 /// function's doc. Process-global rather than thread-local: `auth::race_batch` dials each
 /// candidate on a real worker thread (`task::spawn_small`), which a thread-local would never see.
-/// Guard every read/write with `crate::testlock::serial()`, matching this crate's existing
+/// Guard every read/write with `plx_base::testlock::serial()`, matching this crate's existing
 /// convention for shared test-global state (see `lib.rs`'s `testlock` module doc).
 #[cfg(test)]
 pub(crate) mod test_ca_bundle {
@@ -810,7 +810,7 @@ pub(crate) mod test_ca_bundle {
     static BUNDLE: Mutex<Option<String>> = Mutex::new(None);
 
     /// Point every `request_result` call at `path` (a PEM CA bundle) until cleared. Caller must
-    /// hold `crate::testlock::serial()` for the duration any dial using it can run.
+    /// hold `plx_base::testlock::serial()` for the duration any dial using it can run.
     pub(crate) fn set(path: Option<&str>) {
         *BUNDLE.lock().unwrap_or_else(|e| e.into_inner()) = path.map(str::to_owned);
     }
@@ -1254,7 +1254,7 @@ mod loopback_pms {
 
     /// The `sha256//…` pin of `cert`'s key.
     pub(crate) fn leaf_pin(cert: &TestCert) -> String {
-        crate::spki::pin_from_spki_der(&cert.spki_der)
+        plx_base::spki::pin_from_spki_der(&cert.spki_der)
     }
 }
 #[cfg(test)]
@@ -1348,7 +1348,7 @@ fn request_tls_evidence(
     // The one funnel every libcurl easy request passes (plex.tv account calls, PMS TLS control
     // calls via `request_result_evidence`). A frame-thread caller would freeze the HUD for up to
     // the request timeout: panic in host tests, abort under `threadcheck`.
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("curl request") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("curl request") });
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
@@ -1424,7 +1424,7 @@ fn request_tls_evidence(
                 ($call:expr, $name:literal) => {{
                     let rc = $call;
                     if rc != 0 {
-                        crate::eventlog::log(&format!(
+                        plx_base::eventlog::log(&format!(
                             "net: libcurl refused security option {} (rc={rc}); request cancelled",
                             $name
                         ));
@@ -1504,7 +1504,7 @@ fn request_tls_evidence(
                 TlsCfg::CaBundle(p) => {
                     let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
                     if rc != 0 {
-                        crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
+                        plx_base::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
                         return Err(RequestError::Transport.into());
                     }
                 }
@@ -1515,7 +1515,7 @@ fn request_tls_evidence(
                         p.as_ptr() as *const c_void,
                     );
                     if rc != 0 {
-                        crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
+                        plx_base::eventlog::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
                         return Err(RequestError::Transport.into());
                     }
                     require_setopt!(
@@ -1534,7 +1534,7 @@ fn request_tls_evidence(
             // falls back to the strict failure it already had (or, if none, to a strict attempt).
             if let Some(pin) = &pin_c {
                 if let Err(rc) = keypin::apply(easy.0, pin) {
-                    crate::eventlog::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "net: this libcurl refuses the key-mode options (rc={rc}) — the request stays strict"
                     ));
                     return Ok(None);
@@ -1627,7 +1627,7 @@ fn request_tls_evidence(
             }
 
             if sink.overflowed {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "net: response exceeded {} byte body limit",
                     max_body.unwrap_or(0)
                 ));
@@ -1713,7 +1713,7 @@ fn request_tls_evidence(
         // A key-mode pin mismatch has its own line ([`keypin::key_refused`]); this one would call
         // it a stale lab session.
         if !(matches!(final_mode, keypin::Mode::Key { .. }) && rc == keypin::PIN_MISMATCH) {
-            crate::eventlog::log(&format!("net: curl rc={rc} — {why}"));
+            plx_base::eventlog::log(&format!("net: curl rc={rc} — {why}"));
         }
     }
     finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
@@ -1805,7 +1805,7 @@ fn peer_leaf_pin(easy: *mut CURL) -> Option<String> {
 /// # Safety
 /// `info` is null or points to a well-formed `curl_certinfo` whose lists and strings stay valid
 /// for the call. Every pointer is null-checked and both walks are bounded; the PEM text itself is
-/// untrusted network input and goes through [`crate::spki::pin_from_pem`], which bounds-checks it.
+/// untrusted network input and goes through [`plx_base::spki::pin_from_pem`], which bounds-checks it.
 unsafe fn leaf_pin_of_certinfo(info: *const CurlCertInfo) -> Option<String> {
     let info = unsafe { info.as_ref() }?;
     if info.num_of_certs < 1 || info.certinfo.is_null() {
@@ -1820,7 +1820,7 @@ unsafe fn leaf_pin_of_certinfo(info: *const CurlCertInfo) -> Option<String> {
                 if pem.len() > CERTINFO_MAX_PEM {
                     return None;
                 }
-                return crate::spki::pin_from_pem(std::str::from_utf8(pem).ok()?);
+                return plx_base::spki::pin_from_pem(std::str::from_utf8(pem).ok()?);
             }
         }
         node = n.next;
@@ -1973,14 +1973,14 @@ pub(crate) fn post_pinned(
 /// rotation, on televisions nobody can update. That is the opposite trade from the lab receiver's.
 #[allow(dead_code)] // no sender yet — see `telemetry::sentry`
 pub(crate) fn post_ca(url: &str, headers: &[String], body: &[u8], t: Timeouts) -> Option<Resp> {
-    let bundle = shipped_ca_bundle(crate::paths::app_dir());
+    let bundle = shipped_ca_bundle(plx_base::paths::app_dir());
     // Once per process, not per send. Which trust store verified a telemetry endpoint is a fact
     // that is unanswerable after the event and free to state before it — but it does not change
     // between sends, and a line per upload would drown the log it is written into.
     static SAID: std::sync::Once = std::sync::Once::new();
     SAID.call_once(|| match &bundle {
-        Some(p) => crate::eventlog::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
-        None => crate::eventlog::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
+        Some(p) => plx_base::eventlog::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
+        None => plx_base::eventlog::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
     });
     let tls = match bundle.as_deref() {
         Some(p) => Tls::CaBundle(p),
@@ -2031,7 +2031,7 @@ pub fn https_get_public(url: &str) -> Option<Resp> {
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
 pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
-    let Some(nw) = crate::devtrig::no_wan() else {
+    let Some(nw) = plx_base::devtrig::no_wan() else {
         return false;
     };
     let bare = host
@@ -2047,7 +2047,7 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
     // `host=`, not a bare `{host}` interpolation, so `eventlog::scrub::scrub_local`'s host clause
     // catches it — a private hostname reaching this line unredacted is the exact device leak
     // `stream.rs`'s DNS-failure line had.
-    crate::eventlog::log(&format!("net: nowan — refused name host={host}"));
+    plx_base::eventlog::log(&format!("net: nowan — refused name host={host}"));
     true
 }
 
@@ -2120,14 +2120,14 @@ pub(crate) mod resolve {
             static REPORTED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !REPORTED.swap(true, Ordering::Relaxed) {
-                crate::eventlog::log(
+                plx_base::eventlog::log(
                     "net: resolve pin not applied (rc=48, this libcurl has no CURLOPT_RESOLVE); \
                      names resolve through DNS",
                 );
             }
-            return if crate::devtrig::no_wan().is_some() { Err(()) } else { Ok(()) };
+            return if plx_base::devtrig::no_wan().is_some() { Err(()) } else { Ok(()) };
         }
-        crate::eventlog::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
+        plx_base::eventlog::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
         Err(())
     }
 
@@ -2463,7 +2463,7 @@ pub(crate) mod keypin {
             }
         }
         drop(st);
-        crate::eventlog::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
+        plx_base::eventlog::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
     }
 
     /// The mode a request starts in: key mode while the host is latched and the latch is live,
@@ -2602,7 +2602,7 @@ pub(crate) mod keypin {
             }
         }
         if let Some(year) = told_year {
-            crate::eventlog::log(&engaged_line(verify, year));
+            plx_base::eventlog::log(&engaged_line(verify, year));
         }
     }
 
@@ -2610,7 +2610,7 @@ pub(crate) mod keypin {
     /// key mode, publish it ([`Blocked::KeyChanged`]) and say why.
     pub(super) fn key_refused(key: &str) {
         key_changed(key);
-        crate::eventlog::log("net: the server presented a different key than the remembered one — refusing");
+        plx_base::eventlog::log("net: the server presented a different key than the remembered one — refusing");
     }
 
     /// The one line logged when a host first goes into key mode. Built on [`tls_verify_why`] so it
@@ -2801,7 +2801,7 @@ mod request_tests {
             scope.spawn(|| {
                 let until = Instant::now() + Duration::from_secs(5);
                 while !stop.load(Ordering::Acquire) && Instant::now() < until {
-                    if let Ok((mut socket, _)) = crate::testnet::accept(&server) {
+                    if let Ok((mut socket, _)) = plx_base::testnet::accept(&server) {
                         socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                         socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
                         let _ = socket.read(&mut [0; 4096]);
@@ -2822,7 +2822,7 @@ mod request_tests {
     }
 
     fn truncated_refusal_keeps_status(status: u16) {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(global_init() && available(), "this transport regression requires host libcurl");
         let reply = format!("HTTP/1.1 {status} Refused\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort");
         with_response(reply.into_bytes(), false, |url| {
@@ -2855,7 +2855,7 @@ mod request_tests {
 
     /// One real HTTP/2 `RST_STREAM` exchange for `status` against the local Python/OpenSSL fixture,
     /// with libcurl trusting its CA. Hands the transport's failure to `check` while the fixture is
-    /// still up, then lets the fixture finish. The caller holds `crate::testlock::serial()`.
+    /// still up, then lets the fixture finish. The caller holds `plx_base::testlock::serial()`.
     pub(super) fn with_h2_reset_failure(status: u16, check: impl FnOnce(RequestFailure)) {
         use std::io::{BufRead, Write};
         use std::process::{Command, Stdio};
@@ -2891,7 +2891,7 @@ mod request_tests {
 
     #[test]
     fn ca_trusted_http2_wire_reset_retains_refusal() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for status in [401, 403, 404, 410] {
             with_h2_reset_failure(status, |_| {});
         }
@@ -2899,7 +2899,7 @@ mod request_tests {
 
     #[test]
     fn evidence_bounds_and_completion_use_the_real_request_path() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(global_init() && available());
         for status in [200, 401, 403] {
             for len in [31, 32, 33, 65536] {
@@ -2924,7 +2924,7 @@ mod request_tests {
 
     #[test]
     fn body_timeout_retains_status_but_legacy_projection_stays_timed_out() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(global_init() && available());
         let reply = b"HTTP/1.1 403 Refused\r\nContent-Length: 1000\r\n\r\nshort".to_vec();
         let t = Timeouts { total_ms: 200, ..API };
@@ -2940,7 +2940,7 @@ mod request_tests {
 
     #[test]
     fn absent_invalid_and_redirect_failure_status_are_not_evidence() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(global_init() && available());
         for reply in [Vec::new(), b"HTTP/1.1 999 Invalid\r\nContent-Length: 0\r\n\r\n".to_vec()] {
             with_response(reply, false, |url| {
@@ -2979,7 +2979,7 @@ mod request_tests {
 
     #[test]
     fn option_wrappers_preserve_complete_and_incomplete_projection() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(global_init() && available());
         for post in [false, true] {
             for complete in [false, true] {
@@ -3045,7 +3045,7 @@ mod request_tests {
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    match crate::testnet::accept(&srv) {
+                    match plx_base::testnet::accept(&srv) {
                         Ok((mut s, _)) => {
                             accepts.fetch_add(1, Ordering::AcqRel);
                             let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
@@ -3080,7 +3080,7 @@ mod request_tests {
     /// through `CURLOPT_RESOLVE` and not through DNS. Vacuous on a host with no libcurl.
     #[test]
     fn a_resolve_entry_dials_the_address_without_dns() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         if !(global_init() && available()) {
             return;
         }
@@ -3109,7 +3109,7 @@ mod request_tests {
     /// Skips where `::1` cannot be bound.
     #[test]
     fn a_v6_resolve_entry_dials_the_address_in_this_curls_syntax() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         if !(global_init() && available()) {
             return;
         }
@@ -3171,7 +3171,7 @@ mod keypin_latch_tests {
     const SECOND: Duration = Duration::from_secs(1);
 
     fn pin() -> String {
-        crate::spki::pin_from_spki_der(&[7; 8])
+        plx_base::spki::pin_from_spki_der(&[7; 8])
     }
 
     fn is_key(mode: &Mode) -> bool {
@@ -3180,7 +3180,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn the_latch_lapses_after_its_interval_and_a_new_success_starts_a_fresh_one() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("latch-lapse.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         let t0 = Instant::now();
@@ -3197,7 +3197,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn a_second_key_mode_success_inside_the_interval_does_not_extend_it() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("latch-no-slide.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         let t0 = Instant::now();
@@ -3219,7 +3219,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn a_date_failure_with_no_key_publishes_no_key_and_only_then() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for (n, (rc, verify)) in [(60, Some(9)), (60, Some(10))].into_iter().enumerate() {
             let key = keypin::key_of("fact-nokey.invalid", n as i32);
             let _scoped = keypin::Scoped::watch(&key);
@@ -3245,7 +3245,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn a_date_failure_of_a_host_that_is_no_media_server_publishes_nothing() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         // plex.tv fails its date check on a wrong clock too, but it is not a server key mode could
         // ever serve and nothing but a plex.tv success would clear the fact: it would colour a Home
         // that failed for an unrelated reason.
@@ -3271,7 +3271,7 @@ mod keypin_latch_tests {
     #[cfg(feature = "devtriggers")]
     #[test]
     fn a_planted_fact_is_read_and_outlives_a_sign_out_projection() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct Forget;
         impl Drop for Forget {
             fn drop(&mut self) {
@@ -3297,7 +3297,7 @@ mod keypin_latch_tests {
     /// blames a clock that is right.
     #[test]
     fn a_later_strict_failure_that_is_not_the_date_clears_no_key_and_not_a_changed_key() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("fact-later.invalid", 1);
         let _scoped = keypin::Scoped::watch(&key);
         for (rc, verify) in [(7, None), (28, None), (60, Some(20)), (60, Some(18)), (51, Some(9)), (60, None)] {
@@ -3324,7 +3324,7 @@ mod keypin_latch_tests {
     /// server. The fact is asked for BY MACHINE.
     #[test]
     fn a_fact_is_answered_for_the_machine_it_was_published_about_only() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (ka, kb) = (keypin::key_of("fact-scope-a.invalid", 1), keypin::key_of("fact-scope-b.invalid", 1));
         let kb2 = keypin::key_of("fact-scope-b2.invalid", 1);
         let _scoped = (
@@ -3346,7 +3346,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn a_changed_key_publishes_key_changed_and_outranks_no_key() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("fact-changed.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         keypin::key_refused(&key);
@@ -3365,7 +3365,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn a_success_or_a_pin_change_clears_that_host_only() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let a = keypin::key_of("fact-clear-a.invalid", 1);
         let b = keypin::key_of("fact-clear-b.invalid", 1);
         let c = keypin::key_of("fact-clear-c.invalid", 1);
@@ -3387,14 +3387,14 @@ mod keypin_latch_tests {
         assert_eq!(blocked_of(&c), None, "a key-mode success clears its host");
 
         keypin::key_changed(&a);
-        keypin::set_for_test(&a, &crate::spki::pin_from_spki_der(&[8; 8]));
+        keypin::set_for_test(&a, &plx_base::spki::pin_from_spki_der(&[8; 8]));
         assert_eq!(blocked_of(&a), None, "a pin change clears it");
         assert_eq!(blocked_of(&b), Some(keypin::Blocked::NoKey));
     }
 
     #[test]
     fn a_pin_arriving_for_a_blocked_host_clears_no_key_and_a_projection_that_changes_nothing_does_not() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let machine = "fact-project-machine";
         let key = keypin::key_of("fact-project.invalid", 1);
         let _scoped = keypin::Scoped::watch(&key);
@@ -3420,7 +3420,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn the_engaged_year_is_the_first_one_and_survives_a_latch_lapse() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("fact-engaged.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         assert_eq!(keypin::fact_for(&key).engaged, None, "not engaged yet");
@@ -3437,7 +3437,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn an_engagement_with_no_known_year_records_none_inside() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("fact-engaged-noyear.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         keypin::key_established_in(&key, &pin(), None, Instant::now(), || None);
@@ -3446,7 +3446,7 @@ mod keypin_latch_tests {
 
     #[test]
     fn the_revision_moves_on_each_change_and_not_otherwise() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("fact-revision.invalid", 1);
         let _scoped = keypin::Scoped::new(key.clone(), &pin());
         let r0 = keypin::revision();
@@ -3686,7 +3686,7 @@ mod blocking_guard_tests {
     #[test]
     #[should_panic(expected = "main-thread block: curl request")]
     fn a_plex_tv_call_inside_a_frame_is_rejected() {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         let _ = request_evidence("https://plex.tv.invalid/api/v2/ping", &[], "GET", None, API, false, None, None);
     }
 }
@@ -3722,7 +3722,7 @@ mod peer_pin_tests {
 
     fn minted() -> (String, String) {
         let cert = mint_cert(&["certinfo.invalid"]);
-        (cert.pem.clone(), crate::spki::pin_from_spki_der(&cert.spki_der))
+        (cert.pem.clone(), plx_base::spki::pin_from_spki_der(&cert.spki_der))
     }
 
     /// The pin of certificate 0 in a `curl_certinfo` made of `chain`.

@@ -464,7 +464,7 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
     } else {
         format!("webOS {} · api {}", w.release, w.api)
     };
-    let (_, _, vw, vh) = crate::surface::viewport();
+    let (_, _, vw, vh) = plx_base::surface::viewport();
     [
         // via `plex::identity`, not a literal + `env!`: that module exists precisely so the
         // product name and version cannot disagree between surfaces, and this one is photographed.
@@ -1912,7 +1912,7 @@ mod tests {
     /// suffix must be silent for every one of them.
     #[test]
     fn audio_row_suffix_only_when_applied() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let both = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
         for (applied, refused, expect_suffix) in [
             (both, false, true),   // Applied: cur_enhancement derives Applied from `applied.any()`
@@ -1939,7 +1939,7 @@ mod tests {
     /// unchanged), and naming `refused`/`unverified` distinctly from `applied` otherwise.
     #[test]
     fn route_line_shows_refused_and_unverified() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
         let d = crate::player::Diag::default();
 
@@ -2872,7 +2872,7 @@ mod tests {
         // Serialized: `frames_str` reads the process-wide `player::TX.paused`, which the paused
         // test below toggles under this same lock — without it, this test can observe the paused
         // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let d = crate::player::Diag {
             load_completed: true,
             load_at: 1_000,
@@ -2903,7 +2903,7 @@ mod tests {
     #[test]
     fn a_paused_stream_does_not_report_its_frames_as_frozen() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let d = crate::player::Diag {
             load_completed: true,
             seen_frame: true,
@@ -3183,7 +3183,7 @@ mod tests {
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // "No session" is a PRECONDITION on three crate globals, not a property of a default
         // `Diag`: `player::state()` derives from the pump's `pb_state` and the route's refusal
         // flags, and the hostsim engine tests drive the real pump — which stores `Error` on a

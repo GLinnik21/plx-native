@@ -1881,8 +1881,8 @@ mod tests {
     #[test]
     #[cfg(feature = "devtriggers")]
     fn populated_person_geometry_uses_recorded_metrics() {
-        let _serial = crate::testlock::serial();
-        let path = crate::paths::in_runtime_dir("plxnative-personbio");
+        let _serial = plx_base::testlock::serial();
+        let path = plx_base::paths::in_runtime_dir("plxnative-personbio");
         assert!(!path.exists(), "this test needs an isolated runtime root");
         std::fs::write(&path, "A populated biography whose words must pass through the recorded measurement capability. ".repeat(60)).unwrap();
         let (mut store, mut s) = seed(3, 2);
@@ -1919,7 +1919,7 @@ mod tests {
     /// drives it through the real `Machine::step` `Tick` path.
     #[test]
     fn the_header_skeleton_spinner_reports_motion_while_facts_are_pending() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut store = crate::stores::person::PersonStore::default();
         store.run(PersonCmd::Open {
             sid: ServerId::UNSET, key: "161".into(),
@@ -2076,7 +2076,7 @@ mod tests {
     /// focus to the first present shelf — `clamp_focus`'s `p.credited || p.guid.is_empty()` gate.
     #[test]
     fn the_entry_group_releases_once_credits_settle_with_nothing_found() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
         let p = store.view().current().unwrap();
         assert!(!has_entry(p), "no credits were installed");
@@ -2104,7 +2104,7 @@ mod tests {
     /// should ever navigate to.
     #[test]
     fn focused_movie_answers_only_for_a_shelf_row() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 0);
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
@@ -2137,7 +2137,7 @@ mod tests {
     /// order `reconcile` must keep (module doc's worked trace).
     #[test]
     fn reconcile_reseats_by_identity_before_falling_back_to_index_clamp() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(4, 0);
         let want = focus_of(&s, &store, 0, 2);
         // the row is rebuilt with two items inserted ahead — "m2" is now at index 4
@@ -2169,7 +2169,7 @@ mod tests {
     /// shelf, never leaving it pointed at a kind with nothing in it.
     #[test]
     fn a_vanished_shelf_kind_falls_back_to_the_other_present_shelf() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 3);
         let want = focus_of(&s, &store, 1, 2);
         store.install_for_test(vec![item("m0")], Vec::new()); // shows vanished
@@ -2192,7 +2192,7 @@ mod tests {
     /// here fixes both at once.
     #[test]
     fn the_entry_pill_sits_in_the_text_column_not_under_the_portrait() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
         store.install_credits_for_test(&[("Actor", 3)]);
         let m = FixtureMeasure;
@@ -2266,7 +2266,7 @@ mod tests {
         use crate::ui::hit::{HitMap, PointerKind};
         use crate::ui::screen::DrawFrame;
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 0);
         store.install_credits_for_test(&[("Actor", 3)]);
         let measure = FixtureMeasure;
@@ -2347,7 +2347,7 @@ mod tests {
     /// `bio.truncates(BIO_W)` from the last remeasure, and it takes no measure capability at all.
     #[test]
     fn the_more_gate_reads_the_header_measure_not_a_fresh_wrap() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
         let m = FixtureMeasure;
         let long = "A biography far longer than the header's three lines can hold. ".repeat(40);
@@ -2388,7 +2388,7 @@ mod tests {
     /// the (nonexistent) catalog focus — `focused_movie` must answer `None` throughout.
     #[test]
     fn a_page_with_no_shelves_answers_no_focused_movie_anywhere() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, s) = seed(0, 0);
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
@@ -2415,7 +2415,7 @@ mod tests {
     /// `PressCommit` leaves immediately through the content contract; there is no pending latch.
     #[test]
     fn press_commit_on_a_card_pushes_detail_as_an_effect() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 0);
         let m = FixtureMeasure;
         let cxv = cx(&m, store.view());
@@ -2462,7 +2462,7 @@ mod tests {
     /// must not.
     #[test]
     fn focus_moved_marks_the_header_only_on_an_explicit_arrival() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
         let header_key = crate::ui::machine::FocusKey {
             entry: EntryId(0),
@@ -2519,7 +2519,7 @@ mod tests {
     /// currently draw the same person. A summary-only hash would miss both differences.
     #[test]
     fn logical_state_hash_includes_the_full_card_registry_and_counter() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut a) = seed(1, 0);
         let mut b = PersonScreen::new(
             EntryId(0),
@@ -2557,7 +2557,7 @@ mod tests {
     /// numeric slot.
     #[test]
     fn evict_remount_with_reordered_shelf_preserves_movie_identity() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, original) = seed(2, 0);
         let old_focus = focus_of(&original, &store, 0, 1);
         assert_eq!(
@@ -2598,7 +2598,7 @@ mod tests {
 
     #[test]
     fn restoring_a_frozen_registry_never_rewinds_keys_minted_after_the_snapshot() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut screen) = seed(1, 0);
         let frozen = screen.memory();
         store.install_for_test(vec![item("m0"), item("newer")], Vec::new());
@@ -2707,7 +2707,7 @@ mod tests {
 
     #[test]
     fn a_direction_abandons_an_unavailable_return_card_and_allows_fallback() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
         let mut present = crate::ui::present::Present::new();
@@ -2750,7 +2750,7 @@ mod tests {
 
     #[test]
     fn a_click_abandons_an_unavailable_return_card() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
         let available = focus_of(&returned, &store, 0, 0);
@@ -2786,7 +2786,7 @@ mod tests {
 
     #[test]
     fn a_successful_empty_source_answer_releases_the_return_card_to_fallback() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, share) = pending_share_return(&measure);
         store.install_source_for_test(share, Vec::new(), Vec::new());
@@ -2822,7 +2822,7 @@ mod tests {
     /// back to the same movie without a screen-local focus copy.
     #[test]
     fn retained_back_holds_the_known_card_key_until_the_requested_person_lands() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let origin =
             crate::plex::register_for_test("person-return-origin", "127.0.0.1", 1, "a", "cid");
@@ -2974,7 +2974,7 @@ mod tests {
     /// opened an empty A store. The saved engine key must remain intact until A's shelves arrive.
     #[test]
     fn cold_remount_holds_the_memory_interner_key_until_reordered_shelves_land() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("person-cold-return", "127.0.0.1", 1, "a", "cid");
         let mut store = crate::stores::person::PersonStore::default();
@@ -3070,7 +3070,7 @@ mod tests {
 
     #[test]
     fn restore_reclaims_only_a_displaced_store_and_preserves_shell_scroll() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut first) = seed(2, 0);
         first.scroll.scroll.jump(173.0);
         let _other = PersonScreen::new(
@@ -3123,7 +3123,7 @@ mod tests {
 
     #[test]
     fn entry_back_and_hold_emit_their_content_effects_without_latches() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
         store.install_credits_for_test(&[("Actor", 7)]);
         let measure = FixtureMeasure;
@@ -3195,7 +3195,7 @@ mod tests {
 
     #[test]
     fn header_geometric_anchor_is_not_its_pointer_hit_rectangle() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, s) = seed(1, 0);
         let anchor = s.header_anchor();
         let hit = s.header_rect();
@@ -3220,7 +3220,7 @@ mod tests {
 
     #[test]
     fn focus_walks_only_the_shelves_that_exist() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(3, 0);
         let measure = FixtureMeasure;
         let context = cx(&measure, store.view());

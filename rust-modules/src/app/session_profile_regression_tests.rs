@@ -71,7 +71,7 @@ mod tests {
     /// COMMIT (`RegistryPlan::Install` with `RosterCommit::Switch`), never at its launch.
     #[test]
     fn a_refused_profile_switch_leaves_the_live_plaintext_grant_alone() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         crate::plex::grant::reset_for_test();
         let origin = crate::plex::Origin::http("192.168.0.10", 32400);

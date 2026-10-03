@@ -412,7 +412,7 @@ impl super::BrowseState {
         }
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
-        let spawned = crate::task::spawn_small("libhubs", move || {
+        let spawned = plx_base::task::spawn_small("libhubs", move || {
             let shelves = catch_unwind(|| {
                 let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
                 Some(parse_hubs(&mc, sid, key))
@@ -465,7 +465,7 @@ impl super::BrowseState {
         };
         match result.shelves {
             Some(shelves) => {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "libhubs: section {} landed {} shelves",
                     result.sec,
                     shelves.len()
@@ -473,7 +473,7 @@ impl super::BrowseState {
                 state.hubs.land_ok(shelves);
             }
             None => {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "libhubs: section {} failed ({} in a row)",
                     result.sec,
                     state.hubs.fails + 1
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn publication_revision_observes_in_place_deck_removal() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         seed_shelves_for_owner_test(&mut state, sec, &["movie.inprogress.1"], 3);
         let before = state.hubs_snapshot(sec);
@@ -1245,7 +1245,7 @@ mod tests {
 
     #[test]
     fn publication_revision_tracks_commits_not_staging_or_snapshot_reads() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         let before = state.hubs_snapshot(sec);
         let revision = before.view().revision();
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn publication_revision_changes_for_visible_watch_edits_but_not_staged_only_edits() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         let before = state.hubs_snapshot(sec);
         let revision = before.view().revision();
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn snapshot_acquisition_shares_the_publication_and_captures_its_real_identity() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (state, sec) = seeded_section();
         let sid = state.section_sid(sec).unwrap();
         let section = state.sections()[sec].key;
@@ -1354,7 +1354,7 @@ mod tests {
 
     #[test]
     fn a_retained_snapshot_survives_commit_staged() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         state.state_mut(sec)
             .unwrap()
@@ -1383,7 +1383,7 @@ mod tests {
 
     #[test]
     fn watched_edits_are_copy_on_write_and_an_unmatched_edit_copies_nothing() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         let (sid, rk) = {
             let section = state.state_mut(sec).unwrap();
@@ -1437,7 +1437,7 @@ mod tests {
 
     #[test]
     fn a_retained_snapshot_survives_reset_and_the_reused_index_gets_a_new_identity() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (mut state, sec) = seeded_section();
         let retained = state.hubs_snapshot(sec);
         let old = retained.view();
@@ -1582,7 +1582,7 @@ mod tests {
     /// is precisely which of the two sets that function reaches.
     #[test]
     fn removing_from_the_deck_reaches_the_staged_set_as_well() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _t = crate::plex::session::TempSession::new("deckstage");
         _t.watching("u-deckstage");
         let mut state = super::super::BrowseState::default();

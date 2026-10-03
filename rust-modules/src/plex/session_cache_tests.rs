@@ -13,7 +13,7 @@ use super::test_support::TempSession;
 
 #[test]
 fn a_durable_write_is_served_to_every_later_peek_from_memory() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-durable-served");
     save(&signed_in());
 
@@ -31,7 +31,7 @@ fn a_durable_write_is_served_to_every_later_peek_from_memory() {
 
 #[test]
 fn update_reads_the_authority_and_peek_reads_the_result() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-update-then-peek");
     save(&signed_in());
 
@@ -64,7 +64,7 @@ fn update_reads_the_authority_and_peek_reads_the_result() {
 /// window elapsing without an actual one-second sleep.
 #[test]
 fn a_locked_record_is_retried_not_latched() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let t = TempSession::new("cache-locked-retried");
     std::fs::write(
         t.file(),
@@ -126,21 +126,21 @@ impl TempCanonicalRoot {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
         TempCanonicalRoot { dir }
     }
 }
 
 impl Drop for TempCanonicalRoot {
     fn drop(&mut self) {
-        crate::paths::redirect_persistent_state_root_for_test(None);
+        plx_base::paths::redirect_persistent_state_root_for_test(None);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 #[test]
 fn a_non_durable_write_drops_the_cache() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("cache-non-durable-drops");
     redirect_for_test(None);
 
@@ -182,7 +182,7 @@ fn a_non_durable_write_drops_the_cache() {
 /// credentials.
 #[test]
 fn clear_drops_the_cached_session() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-clear-drops");
     save(&signed_in());
 
@@ -213,7 +213,7 @@ fn clear_drops_the_cached_session() {
 /// fence read" behaviour on the OTHER refusal path `update` itself can take.
 #[test]
 fn a_refused_write_installs_the_record_it_refused_over() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-refused-write");
     save(&signed_in());
 
@@ -247,7 +247,7 @@ fn a_refused_write_installs_the_record_it_refused_over() {
 /// It fails; it does not hang.
 #[test]
 fn peek_from_another_thread_does_not_take_io() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-peek-other-thread");
     save(&signed_in()); // primes the cache before the point under test
 
@@ -289,7 +289,7 @@ fn peek_from_another_thread_does_not_take_io() {
 /// actually matters here.
 #[test]
 fn a_peek_that_waited_for_io_sees_the_fill_and_does_not_reread() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-double-check-no-reread");
     save(&signed_in());
     invalidate_for_test(); // back to Unloaded: the next peek() must be a genuine miss
@@ -339,7 +339,7 @@ fn a_peek_that_waited_for_io_sees_the_fill_and_does_not_reread() {
 /// no-save branch under test.
 #[test]
 fn apply_installs_the_verified_read_when_it_does_not_save() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-deferred-apply-installs");
     save(&signed_in());
 
@@ -372,7 +372,7 @@ fn apply_installs_the_verified_read_when_it_does_not_save() {
 /// follows (see `a_refused_write_installs_the_record_it_refused_over` above).
 #[test]
 fn apply_installs_the_fresh_read_when_the_identity_check_fails() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _t = TempSession::new("cache-deferred-apply-mismatch-installs");
     save(&signed_in());
     let stale_expected = read_identity(&read_live_locked());
@@ -405,7 +405,7 @@ fn apply_installs_the_fresh_read_when_the_identity_check_fails() {
 /// must never let a cached answer from the old one leak into the new tenure.
 #[test]
 fn redirecting_the_fixture_drops_the_cache() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let a = TempSession::new("cache-redirect-a");
     save(&signed_in());
     assert_eq!(peek().client_id, "cid-1");
@@ -424,7 +424,7 @@ fn redirecting_the_fixture_drops_the_cache() {
 
 #[test]
 fn an_uncertain_clear_cannot_be_undone_by_a_queued_preference_or_load() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("uncertain-clear-revoked");
     redirect_for_test(None);
     save(&signed_in());

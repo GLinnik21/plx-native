@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn fixture_neither_reads_nor_publishes_the_global_snapshot() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let published_before = consent::current();
         let revision_before = consent::revision();
         let previous = decision("owned");
@@ -137,7 +137,7 @@ mod tests {
             }
         }
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let dir = std::env::temp_dir().join(format!(
             "plxnative-consent-adapter-fixture-{}",
             std::process::id()
@@ -162,7 +162,7 @@ mod tests {
     /// television — and must not run that call on the caller's own thread, since the caller here
     /// is the frame loop's message dispatch (`app::bridge::AppRig::deliver`). `release/v0.6`'s
     /// equivalent (`telemetry::mod.rs::record_with_receipt`/`forget_with_receipt`) submitted the
-    /// same work to `crate::storage_worker` for exactly this reason; this test pins the live
+    /// same work to `plx_base::storage_worker` for exactly this reason; this test pins the live
     /// adapter to the same off-thread contract.
     #[test]
     fn commit_live_persists_off_the_calling_thread() {
@@ -174,7 +174,7 @@ mod tests {
             }
         }
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let dir = std::env::temp_dir().join(format!(
             "plxnative-consent-adapter-live-thread-{}",
             std::process::id()
@@ -191,7 +191,7 @@ mod tests {
         let mut adapter = ConsentAdapter::live();
 
         adapter.commit(&previous, &next);
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_ne!(
             crate::telemetry::persistence::last_call_thread(),
             Some(caller_thread),
@@ -199,7 +199,7 @@ mod tests {
         );
 
         adapter.forget(&next);
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_ne!(
             crate::telemetry::persistence::last_call_thread(),
             Some(caller_thread),
@@ -222,7 +222,7 @@ mod tests {
             }
         }
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let saved = consent::current();
         let dir = std::env::temp_dir().join(format!(
             "plxnative-consent-adapter-oneoff-{}",
@@ -273,7 +273,7 @@ mod tests {
             }
         }
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let saved = consent::current();
         let dir = std::env::temp_dir().join(format!(
             "plxnative-consent-adapter-held-{}",

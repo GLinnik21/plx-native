@@ -1034,7 +1034,7 @@ mod tests {
     /// meta line beside the artwork. Measured with the device's whole-pixel advances.
     #[test]
     fn the_collection_pages_fixed_slots_fit_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
         use crate::ui::machine::Measure;
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn every_app_owned_run_on_the_collection_page_comes_from_the_catalog() {
         use crate::ui::screen::DrawFrame;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
         let server = ["Set", "Qwerty", "Zzyzx", "Vlox"];
         let season = PmsMovie { rk: "s".into(), kind: 2, season_index: 3, title: "Zzyzx".into(),

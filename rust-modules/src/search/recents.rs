@@ -71,7 +71,7 @@ fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<St
         pending.retain(|p| p.account == s.account);
         let slot = pending.iter().position(|p| p.who == s.who);
         if slot.is_none() && pending.len() == PENDING_CAP {
-            crate::eventlog::log("search: recent-history queue full; edit refused");
+            plx_base::eventlog::log("search: recent-history queue full; edit refused");
             retry_drain = true;
             return false;
         }
@@ -89,7 +89,7 @@ pub(crate) fn remember(profile_generation: u32, term: &str) -> bool {
     remember_with(profile_generation, term, submit)
 }
 
-fn submit() { let _ = crate::task::spawn_small("recents-save", flush); }
+fn submit() { let _ = plx_base::task::spawn_small("recents-save", flush); }
 
 fn remember_with(profile_generation: u32, term: &str, submit: impl FnOnce()) -> bool {
     let term = term.trim();
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn session_refresh_recovers_history_without_a_profile_switch() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-session-refresh");
         let _caches = ClearCaches;
         session.watching("test-user");
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn queue_capacity_refuses_new_profiles_without_evicting_accepted_edits() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-pending-cap");
         let _caches = ClearCaches;
         session.watching("overflow");
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn pending_writes_preserve_each_profiles_latest_committed_history() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-pending-profiles");
         let _caches = ClearCaches;
         session.watching("pending-a");
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn pending_writes_cannot_cross_an_account_replacement() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-pending-account");
         let _caches = ClearCaches;
         crate::plex::session::update(|s| {
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn retained_terms_survive_edits_and_noops_do_not_republish_or_submit() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-publication");
         let _caches = ClearCaches;
         session.watching("recent-a");
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn profile_snapshots_and_persisted_lists_stay_separate_across_switches() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("recents-profiles");
         let _caches = ClearCaches;
         crate::plex::session::update(|s| {

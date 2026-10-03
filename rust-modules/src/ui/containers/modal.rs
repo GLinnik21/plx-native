@@ -530,7 +530,7 @@ impl ModalUnderlay {
         if !self.dormant && (self.held != Latched::Nothing || self.pending.is_some()) {
             return;
         }
-        crate::diag::spans::span("upre", || self.latch_corners(c));
+        plx_base::diag::spans::span("upre", || self.latch_corners(c));
         self.dormant = true;
     }
 
@@ -959,10 +959,10 @@ impl<H: Host> ModalStack<H> {
         // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
         // surface on a frame that captured nothing still queues nothing.
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() || self.underlay.is_dormant() {
-            crate::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
+            plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
         for (_, a, lift) in dims {
-            crate::diag::spans::span("udim", || sink.dim(self.underlay.field(), a));
+            plx_base::diag::spans::span("udim", || sink.dim(self.underlay.field(), a));
             (lift)(read);
         }
     }
@@ -1138,7 +1138,7 @@ mod hide_tests {
     /// queue that never drains cannot hold a panel shut past [`SURFACE_TEXT_HOLD_MAX_MS`].
     #[test]
     fn a_held_surface_waits_for_its_text_but_not_forever() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let held_for = |pending_frames: u32| {
             crate::text::reset_prewarm_for_test();
             let mut m = PopoverMotion::at(0.0);
@@ -1172,7 +1172,7 @@ mod hide_tests {
     /// two frames late) must open the surface on the recorded frame whatever its own queue holds.
     #[test]
     fn a_held_surface_waits_on_the_latched_text_readiness() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let held_for = |latched: &dyn Fn(u32) -> bool, queued: bool| {
             crate::text::reset_prewarm_for_test();
             let mut m = PopoverMotion::at(0.0);

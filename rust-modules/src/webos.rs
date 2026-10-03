@@ -77,14 +77,14 @@ pub(crate) fn probe() {
     let info = match std::fs::read_to_string(OS_INFO) {
         Ok(s) => parse(&s),
         Err(e) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "webos: {OS_INFO} unreadable ({e}) — version unknown"
             ));
             Info::default()
         }
     };
     if info.major > 0 {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "webos: {} release={} codename={} api={} major={}",
             info.name, info.release, info.codename, info.api, info.major
         ));
@@ -121,14 +121,14 @@ fn probe_hw() {
     let hw = match std::fs::read_to_string(DEVICE_INFO) {
         Ok(s) => parse_hw(&s),
         Err(e) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"
             ));
             Hardware::default()
         }
     };
     if !hw.model.is_empty() || !hw.board.is_empty() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "webos: model={} board={} hw={}",
             hw.model, hw.board, hw.hw_revision
         ));
@@ -186,7 +186,7 @@ fn probe_jail() {
         crate::tv::sandbox::Verdict::NotApplicable
     };
     crate::tv::sandbox::publish(result);
-    crate::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::sandbox::context()));
+    plx_base::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::sandbox::context()));
 }
 
 // ---- the ROOT press: give the screen back, without ending the process -------------------------
@@ -252,7 +252,7 @@ fn probe_jail() {
 /// press through it before it does anything else, `auth::cancel` included. Call this only having
 /// claimed one.
 pub(crate) fn go_home() {
-    let forced = crate::devtrig::read("gohome");
+    let forced = plx_base::devtrig::read("gohome");
     let forced = forced.as_deref().map(str::trim).unwrap_or("");
     let mode = match forced {
         "sam" | "minimize" | "probe" => forced,
@@ -261,15 +261,15 @@ pub(crate) fn go_home() {
     // The FIRST line of every root press, and the one that makes the rest of them readable: which
     // legs are even eligible. Without it a reader cannot tell a forced run from an ordinary one,
     // and the device evidence for this change is read by somebody who did not write it.
-    crate::eventlog::log(&format!("gohome: request mode={mode}"));
+    plx_base::eventlog::log(&format!("gohome: request mode={mode}"));
     if mode == "minimize" { minimize(); return; }
     if HOME_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
     let probe = mode == "probe";
     let sam_only = mode == "sam";
-    if !crate::task::spawn_small("platform home", move || {
+    if !plx_base::task::spawn_small("platform home", move || {
         if probe { ls2_probe(); }
         else if !launch_home() {
-            if sam_only { crate::eventlog::log("gohome: no fallback — the trigger forced SAM only"); }
+            if sam_only { plx_base::eventlog::log("gohome: no fallback — the trigger forced SAM only"); }
             else { HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release); }
         }
         HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
@@ -297,7 +297,7 @@ const HOME_APP_ID: &str = "com.webos.app.home";
 
 #[cfg(any(feature = "hostsim", test))]
 fn launch_home() -> bool {
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
     ));
     true
@@ -308,7 +308,7 @@ fn minimize() {}
 
 #[cfg(any(feature = "hostsim", test))]
 fn ls2_probe() {
-    crate::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
+    plx_base::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -405,7 +405,7 @@ fn launch_home() -> bool {
             let ok =
                 reply.contains("\"returnValue\":true") || reply.contains("\"returnValue\": true");
             let verdict = if ok { "accepted" } else { "rejected" };
-            crate::eventlog::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
+            plx_base::eventlog::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
             ok
         }
         // **Four different failures used to arrive as one sentence**, which is exactly the kind of
@@ -413,20 +413,20 @@ fn launch_home() -> bool {
         // refused this app a registration, the call was never submitted, or the reply really did
         // time out. They are three different bugs and only one of them is about SAM.
         Err(ls2::Fail::Setup { stage, detail, .. }) if detail.is_empty() => {
-            crate::eventlog::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
+            plx_base::eventlog::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
             false
         }
         // The hub's own words, when it gave any. The register refusal that shipped with this
         // branch (`Can not find service "" permissions`) was legible ONLY in ls-hubd's log,
         // which nobody reading the app's evidence knew to open.
         Err(ls2::Fail::Setup { stage, detail, .. }) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "gohome: LS2 setup failed stage={stage} after {ms}ms — {detail}"
             ));
             false
         }
         Err(ls2::Fail::Timeout) => {
-            crate::eventlog::log(&format!("gohome: SAM timed out in {ms}ms"));
+            plx_base::eventlog::log(&format!("gohome: SAM timed out in {ms}ms"));
             false
         }
     }
@@ -436,13 +436,13 @@ fn launch_home() -> bool {
 fn minimize() {
     let win = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     if win.is_null() {
-        crate::eventlog::log("gohome: no window bound — cannot leave the foreground");
+        plx_base::eventlog::log("gohome: no window bound — cannot leave the foreground");
         return;
     }
     // Returns void: SDL has no way to say whether the driver implemented the hook, so this line
     // says what was ASKED and never that it worked. The screenshot is the evidence.
     unsafe { SDL_MinimizeWindow(win) };
-    crate::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
+    plx_base::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -587,7 +587,7 @@ pub(crate) mod ls2 {
     /// The app id as a C string, for [`probe`]'s app-service shapes — `register` itself passes
     /// no name at all (module doc).
     fn app_id_cstring() -> Result<CString, RegisterFail> {
-        CString::new(crate::paths::app_id()).map_err(|_| RegisterFail::Setup {
+        CString::new(plx_base::paths::app_id()).map_err(|_| RegisterFail::Setup {
             stage: "app-id",
             detail: String::new(), code: None,
         })
@@ -698,7 +698,7 @@ pub(crate) mod ls2 {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
                 // teardown, against a use-after-free (Codex review, 2026-09-04).
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "ls2: unregister refused — leaking its glib context ({})",
                     error_text(&error)
                 ));
@@ -759,7 +759,7 @@ pub(crate) mod ls2 {
             app_id: Option<&str>,
             budget: Duration,
         ) -> Result<String, Fail> {
-            let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("LS2 round trip") });
+            let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("LS2 round trip") });
             let setup = |stage| Fail::Setup {
                 stage,
                 detail: String::new(), code: None,
@@ -825,7 +825,7 @@ pub(crate) mod ls2 {
                 // into it — which is the registration's lifetime, so it is leaked (Codex review,
                 // 2026-09-04: dropping it regardless was a use-after-free on a retained handle).
                 if !unsafe { LSCallCancel(self.handle, token, &mut error) } {
-                    crate::eventlog::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "ls2: cancel refused after a timeout — leaking the reply slot ({})",
                         error_text(&error)
                     ));
@@ -857,7 +857,7 @@ pub(crate) mod ls2 {
         let app_id = match app_id_cstring() {
             Ok(n) => n,
             Err(e) => {
-                crate::eventlog::log(&format!("ls2probe: {e}"));
+                plx_base::eventlog::log(&format!("ls2probe: {e}"));
                 return;
             }
         };
@@ -879,18 +879,18 @@ pub(crate) mod ls2 {
                 }
             };
             if !ok || handle.is_null() {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "ls2probe: {label}: register REFUSED — {}",
                     error_text(&error)
                 ));
                 unsafe { LSErrorFree(&mut error) };
                 continue;
             }
-            crate::eventlog::log(&format!("ls2probe: {label}: registered"));
+            plx_base::eventlog::log(&format!("ls2probe: {label}: registered"));
             reset(&mut error);
             let context = unsafe { g_main_context_new() };
             if context.is_null() {
-                crate::eventlog::log(&format!("ls2probe: {label}: no glib context"));
+                plx_base::eventlog::log(&format!("ls2probe: {label}: no glib context"));
                 unsafe {
                     LSUnregister(handle, &mut error);
                     LSErrorFree(&mut error);
@@ -902,16 +902,16 @@ pub(crate) mod ls2 {
                 let registration = Registration { handle, context };
                 let uri = "luna://com.webos.applicationManager/getForegroundAppInfo";
                 match registration.call(uri, "{}", BUDGET) {
-                    Ok(r) => crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
+                    Ok(r) => plx_base::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
                     Err(Fail::Timeout) => {
-                        crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
+                        plx_base::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
                     }
-                    Err(Fail::Setup { stage, detail, .. }) => crate::eventlog::log(&format!(
+                    Err(Fail::Setup { stage, detail, .. }) => plx_base::eventlog::log(&format!(
                         "ls2probe: {label}: call failed stage={stage} ({detail})"
                     )),
                 }
             } else {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "ls2probe: {label}: attach failed — {}",
                     error_text(&error)
                 ));

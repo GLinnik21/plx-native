@@ -20,18 +20,18 @@
 //! Armed by `plxnative-framedrop[=<ms>]`; unarmed, every stamp is the frame's origin and every
 //! phase reads 0.0 — the counter is never read, so an unarmed frame pays nothing.
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 extern "C" {
     fn SDL_GetPerformanceCounter() -> u64;
     fn SDL_GetPerformanceFrequency() -> u64;
 }
 // The host test binary links no SDL: the tests set the stamps and the frequency directly.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(non_snake_case)] // the SDL name, so the call sites read the same in both builds
 unsafe fn SDL_GetPerformanceCounter() -> u64 {
     0
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(non_snake_case)]
 unsafe fn SDL_GetPerformanceFrequency() -> u64 {
     1000
@@ -40,7 +40,7 @@ unsafe fn SDL_GetPerformanceFrequency() -> u64 {
 /// The eight phases, as stamp indices: `mark(Phase::X)` stamps the END of phase X.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
-pub(crate) enum Phase {
+pub enum Phase {
     /// The iteration's origin (stamp 0), taken at the loop top.
     Top = 0,
     Ingest = 1,
@@ -54,7 +54,7 @@ pub(crate) enum Phase {
 }
 
 /// Microseconds on the performance counter — the frame budget's clock (`ui::frame::Budget`).
-pub(crate) fn now_us() -> u64 {
+pub fn now_us() -> u64 {
     // SAFETY: SDL is initialised before the loop; no arguments, no memory of ours.
     let (t, f) = unsafe { (SDL_GetPerformanceCounter(), SDL_GetPerformanceFrequency()) };
     if f == 0 {
@@ -76,11 +76,11 @@ pub(crate) fn now_us() -> u64 {
 /// The loop drains them on EVERY presented frame now and hands the result to
 /// [`Instruments::note_frame_counters`]; `frame_drop_line` only formats what it was given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct FrameCounters {
-    pub(crate) uploads: u32,
-    pub(crate) upload_px: u64,
-    pub(crate) cards: u32,
-    pub(crate) cards_off: u32,
+pub struct FrameCounters {
+    pub uploads: u32,
+    pub upload_px: u64,
+    pub cards: u32,
+    pub cards_off: u32,
 }
 
 /// The heartbeat's frame-plan fields (spec §8.4), gathered by the loop once a second and printed
@@ -88,18 +88,18 @@ pub(crate) struct FrameCounters {
 /// are untouched. Plain scalars rather than the frame plan's own types: this module is `diag/`
 /// and has no business naming `ui::frame::budget::Class`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct HeartbeatFields {
+pub struct HeartbeatFields {
     /// Effects the dispatcher carried into the next frame at the last frame of this second.
-    pub(crate) carried: usize,
+    pub carried: usize,
     /// Deliveries dropped since the previous heartbeat (an undeliverable addressee, a full lane).
-    pub(crate) dropped: u32,
+    pub dropped: u32,
     /// `Budget` takes admitted / refused since the previous heartbeat, and the solo class if one
     /// was admitted in that window.
-    pub(crate) admitted: u32,
-    pub(crate) refused: u32,
-    pub(crate) solo: Option<&'static str>,
+    pub admitted: u32,
+    pub refused: u32,
+    pub solo: Option<&'static str>,
     /// Glyph-cache entries evicted while still inside their hot window (`text::take_evicted_hot`).
-    pub(crate) evicted_hot: u32,
+    pub evicted_hot: u32,
 }
 
 /// Presented-frame cadence, including pacing/scheduler time outside the measured CPU phases.
@@ -173,7 +173,7 @@ impl FramePacing {
     }
 }
 
-pub(crate) struct Instruments {
+pub struct Instruments {
     armed: bool,
     thresh_ms: f64,
     perf_freq: f64,
@@ -200,7 +200,7 @@ pub(crate) struct Instruments {
 /// measured. With the ring armed every frame's line is still formatted, but it is only HELD: the
 /// last [`Self::BEFORE`] lines stay in memory, and they reach the log when a frame crosses `slow_ms`,
 /// together with that frame and the [`Self::AFTER`] frames that follow it.
-pub(crate) struct FrameRing {
+pub struct FrameRing {
     slow_ms: f64,
     held: std::collections::VecDeque<String>,
     /// Frames still owed to the log after the last slow one.
@@ -213,14 +213,14 @@ impl FrameRing {
     /// Frames of context written after it.
     const AFTER: usize = 3;
 
-    pub(crate) fn new(slow_ms: f64) -> Self {
+    pub fn new(slow_ms: f64) -> Self {
         Self { slow_ms, held: std::collections::VecDeque::with_capacity(Self::BEFORE + 1), after: 0 }
     }
 
     /// Offer one presented frame's line. Returns the lines to write NOW, oldest first: nothing for
     /// an ordinary frame, the held context plus the frame for a slow one, the frame alone while
     /// the context after a slow one is still owed.
-    pub(crate) fn offer(&mut self, total_ms: f64, line: String) -> Vec<String> {
+    pub fn offer(&mut self, total_ms: f64, line: String) -> Vec<String> {
         if total_ms >= self.slow_ms {
             self.after = Self::AFTER;
             let mut out: Vec<String> = self.held.drain(..).collect();
@@ -241,7 +241,7 @@ impl FrameRing {
 
 impl Instruments {
     /// `armed` is the trigger's presence; `thresh_ms` its content (default 22).
-    pub(crate) fn new(armed: bool, thresh_ms: f64) -> Self {
+    pub fn new(armed: bool, thresh_ms: f64) -> Self {
         Self {
             armed,
             thresh_ms,
@@ -260,7 +260,7 @@ impl Instruments {
 
     /// Arm the context ring ([`FrameRing`]): every presented frame formats its line, so the
     /// threshold drops to zero, and `slow_ms` decides which of them reach the log.
-    pub(crate) fn arm_ring(&mut self, slow_ms: f64) {
+    pub fn arm_ring(&mut self, slow_ms: f64) {
         if self.armed {
             self.thresh_ms = 0.0;
             self.ring = Some(FrameRing::new(slow_ms));
@@ -269,7 +269,7 @@ impl Instruments {
 
     /// This frame's counters, REPLACING the last frame's — see [`FrameCounters`] for why that
     /// word is the whole point. Called once per presented frame, before [`Self::frame_drop_line`].
-    pub(crate) fn note_frame_counters(&mut self, c: FrameCounters) {
+    pub fn note_frame_counters(&mut self, c: FrameCounters) {
         self.counters = c;
     }
 
@@ -278,7 +278,7 @@ impl Instruments {
     }
 
     /// Stamp the end of a phase. Unarmed, a phase inherits the origin so every span reads 0.
-    pub(crate) fn mark(&mut self, phase: Phase) {
+    pub fn mark(&mut self, phase: Phase) {
         let i = phase as usize;
         self.stamps[i] = if self.armed {
             // SAFETY: as `new`.
@@ -292,7 +292,7 @@ impl Instruments {
 
     /// Initialize draw/capture/swap to the end of prepare before the present decision. This
     /// runs on every iteration; a later present replaces the stamps and preserves cadence.
-    pub(crate) fn seed_present_phases(&mut self) {
+    pub fn seed_present_phases(&mut self) {
         let p = self.stamps[Phase::Prepare as usize];
         self.stamps[Phase::Draw as usize] = p;
         self.stamps[Phase::Capture as usize] = p;
@@ -301,13 +301,13 @@ impl Instruments {
 
     /// An iteration that actually skips presenting has no draw/capture/swap. Its idle gap must
     /// not become a pacing sample when presenting resumes; call only after that decision.
-    pub(crate) fn skip_present_phases(&mut self) {
+    pub fn skip_present_phases(&mut self) {
         self.seed_present_phases();
         self.previous_present = None;
     }
 
     /// After `mark(Prepare)`: fold this iteration's prepare span into the per-second peak.
-    pub(crate) fn note_prepare(&mut self) {
+    pub fn note_prepare(&mut self) {
         if !self.armed {
             return;
         }
@@ -332,7 +332,7 @@ impl Instruments {
     /// stamps equal Prepare's (`skip_present_phases`), so its "total" reads as the prepare-only
     /// cost, which is why callers that want presented-frame timing gate on `Frame::present`
     /// themselves rather than trusting this alone.
-    pub(crate) fn last_frame_ms(&self) -> f64 {
+    pub fn last_frame_ms(&self) -> f64 {
         if !self.armed {
             return 0.0;
         }
@@ -343,7 +343,7 @@ impl Instruments {
     /// previous presented frame's. `None` unarmed, and for the first frame after startup or a
     /// skipped present (an idle gap is not a cadence sample — `skip_present_phases`). Read it
     /// BEFORE [`Self::frame_drop_line`], which advances the previous-present stamp.
-    pub(crate) fn present_interval_ms(&self) -> Option<f64> {
+    pub fn present_interval_ms(&self) -> Option<f64> {
         if !self.armed {
             return None;
         }
@@ -356,7 +356,7 @@ impl Instruments {
     /// [`Self::note_frame_counters`] — this frame's, not the accumulation since the last drop
     /// line — and `extra` is the loop's own trailing fields (route, load, snap), appended
     /// verbatim after them.
-    pub(crate) fn frame_drop_line(&mut self, extra: &dyn Fn() -> String) -> Option<String> {
+    pub fn frame_drop_line(&mut self, extra: &dyn Fn() -> String) -> Option<String> {
         if !self.armed {
             return None;
         }
@@ -396,7 +396,7 @@ impl Instruments {
 
     /// [`Self::frame_drop_line`] through the context ring when one is armed: the lines to write
     /// for this presented frame, oldest first. Without a ring, that method's line or nothing.
-    pub(crate) fn frame_drop_lines(&mut self, extra: &dyn Fn() -> String) -> Vec<String> {
+    pub fn frame_drop_lines(&mut self, extra: &dyn Fn() -> String) -> Vec<String> {
         let total = self.last_frame_ms();
         let Some(line) = self.frame_drop_line(extra) else {
             return Vec::new();
@@ -434,7 +434,7 @@ impl Instruments {
     /// no `GlobalAlloc` and phase 11 did not add one: a counting allocator is a whole-process
     /// instrument with its own correctness argument, and inventing one to fill a heartbeat field
     /// would be the more expensive half of the work with none of the evidence.
-    pub(crate) fn heartbeat_tail(&mut self, f: HeartbeatFields, rec_us: Option<u64>) -> String {
+    pub fn heartbeat_tail(&mut self, f: HeartbeatFields, rec_us: Option<u64>) -> String {
         let mut s = String::new();
         if self.armed {
             s = format!(
@@ -503,7 +503,7 @@ impl Instruments {
 /// no line is emitted. That ends when the player's focus moves onto the engine; nothing else is
 /// needed here.
 #[derive(Default)]
-pub(crate) struct ColdOpens {
+pub struct ColdOpens {
     pending: Vec<Pending>,
     /// The `Budget`'s refusal count as this frame's prepare window opened.
     refused_at_prepare: u32,
@@ -523,7 +523,7 @@ const COLD_PENDING_MAX: usize = 16;
 
 impl ColdOpens {
     /// A body mounted this frame. `InstanceId`s are never reused, so one id can be pending once.
-    pub(crate) fn mounted(&mut self, id: u32, screen: &'static str, now_ms: u32) {
+    pub fn mounted(&mut self, id: u32, screen: &'static str, now_ms: u32) {
         if self.pending.iter().any(|p| p.id == id) {
             return;
         }
@@ -538,18 +538,18 @@ impl ColdOpens {
     }
 
     /// A body was unmounted without ever drawing: forget it rather than report it late.
-    pub(crate) fn unmounted(&mut self, id: u32) {
+    pub fn unmounted(&mut self, id: u32) {
         self.pending.retain(|p| p.id != id);
     }
 
     /// The prepare window opened: remember the budget's refusal count to difference at the draw.
-    pub(crate) fn note_prepare(&mut self, refused: u32) {
+    pub fn note_prepare(&mut self, refused: u32) {
         self.refused_at_prepare = refused;
     }
 
     /// A body drew this frame, on a frame whose prepare pass ran. `refused_now` is the budget's
     /// refusal count at the draw; the line is queued for [`Self::take_lines`].
-    pub(crate) fn drawn(&mut self, id: u32, now_ms: u32, refused_now: u32) {
+    pub fn drawn(&mut self, id: u32, now_ms: u32, refused_now: u32) {
         let Some(i) = self.pending.iter().position(|p| p.id == id) else {
             return;
         };
@@ -563,7 +563,7 @@ impl ColdOpens {
         ));
     }
 
-    pub(crate) fn take_lines(&mut self) -> Vec<String> {
+    pub fn take_lines(&mut self) -> Vec<String> {
         std::mem::take(&mut self.out)
     }
 }

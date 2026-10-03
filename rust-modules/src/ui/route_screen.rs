@@ -1246,7 +1246,7 @@ mod tests {
         // `CtlPop::scale` reads the crate-global `press` machine for whichever index is focused —
         // see `[[test-suite-global-pollution]]` — so this holds the same lock every `press.rs`
         // test does for its own body.
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut row: ActionRow<2> = ActionRow::new();
         for _ in 0..300 {
             row.step(Some(0), 1.0 / 60.0);

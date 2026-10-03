@@ -7,7 +7,7 @@ use super::test_support::{frame};
 
 #[test]
 fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identity() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

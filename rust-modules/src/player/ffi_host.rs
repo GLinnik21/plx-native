@@ -60,7 +60,7 @@
 //! `player::sink()` in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
 //! they touch, and the tests reach them as `crate::player::ffi_host::<hook>`.
 
-use crate::task::MainThread;
+use plx_base::task::MainThread;
 use crate::tv::sink::VideoSink;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
@@ -208,9 +208,9 @@ fn enabled() -> bool {
     }
     static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ONCE.get_or_init(|| {
-        let on = crate::devtrig::flag("clocksink");
+        let on = plx_base::devtrig::flag("clocksink");
         if on {
-            crate::eventlog::log(
+            plx_base::eventlog::log(
                 "clocksink: ARMED — AUs are accepted and discarded, and the presentation clock \
                  advances at real time. NOTHING IS DECODED and no number from this run is a \
                  device measurement.",
@@ -424,7 +424,7 @@ impl Clock {
             });
         if spawned.is_err() {
             TICKING.store(false, Relaxed);
-            crate::eventlog::log("clocksink: could not spawn the position thread; no position will report");
+            plx_base::eventlog::log("clocksink: could not spawn the position thread; no position will report");
         }
     }
 }
@@ -501,13 +501,13 @@ static REFUSALS_LEFT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI6
 fn take_refusal() -> bool {
     static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     ONCE.get_or_init(|| {
-        let n = match crate::devtrig::read("refuseload") {
+        let n = match plx_base::devtrig::read("refuseload") {
             None => 0,
             Some(v) if v.trim().is_empty() => i64::MAX,
             Some(v) => v.trim().parse::<i64>().unwrap_or(0),
         };
         if n > 0 {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "clocksink: plxnative-refuseload armed — the next {} Load(s) get the webOS 10.3.1 \
                  type=18 num=601 refusal after Load() returns ok=1",
                 if n == i64::MAX { "∞".to_string() } else { n.to_string() }
@@ -880,8 +880,8 @@ mod tests {
     /// The seam state is process-global and the engine's hostsim tests drive the same atomics.
     /// Use the crate-wide lock rather than a module-local mutex: two different locks made both
     /// suites individually serial while still allowing them to overwrite `FED_MAX_NS` together.
-    fn lock() -> crate::testlock::Serial {
-        crate::testlock::serial()
+    fn lock() -> plx_base::testlock::Serial {
+        plx_base::testlock::serial()
     }
 
     fn fresh() {

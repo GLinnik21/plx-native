@@ -489,7 +489,7 @@ def generate(args) -> str:
                        "Two library families are deliberately absent because their SONAME moves "
                        "between firmwares and a `DT_NEEDED` entry cannot express \"either of these\" "
                        "— libcurl and libAcbAPI are `dlopen`ed by candidate list instead "
-                       "(`rust-modules/src/dynlib.rs`, `src/starfish.c`).")
+                       "(`rust-modules/base/src/dynlib.rs`, `src/starfish.c`).")
             out.append("")
     sos = {n: d for n, (m, d) in files.items() if re.search(r"\.so(\.\d+)*$", n)}
     if sos:

@@ -74,9 +74,9 @@ fn message(year: Option<i64>) -> String {
 
 /// Raise `message` off the frame thread and log what became of it, once.
 fn send(message: String) {
-    crate::task::spawn_small("clock notice", move || {
+    plx_base::task::spawn_small("clock notice", move || {
         let outcome = crate::tv::toast::toast(&message);
-        crate::eventlog::log(&format!("clock notice: toast {outcome:?}"));
+        plx_base::eventlog::log(&format!("clock notice: toast {outcome:?}"));
     });
 }
 

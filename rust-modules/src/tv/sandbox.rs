@@ -24,7 +24,7 @@ pub(crate) fn publish(verdict: Verdict) {
 /// `VERDICT` `OnceLock` — a real boot sets that exactly once via the port's probe, and no test can
 /// re-init it to exercise the blocked path. Mirrors `ffi_host.rs`'s `FORCE_*` controls. There is no
 /// separate "release" call: `false` is the default, so a test that sets this to `true` must reset
-/// it to `false` before returning, under `crate::testlock::serial()`.
+/// it to `false` before returning, under `plx_base::testlock::serial()`.
 #[cfg(test)]
 pub(crate) static FORCE_BLOCKED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

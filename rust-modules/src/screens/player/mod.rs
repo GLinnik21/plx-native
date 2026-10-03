@@ -777,7 +777,7 @@ impl PlayerScreen {
         }
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
-            crate::eventlog::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
+            plx_base::eventlog::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
             Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
             self.scrub.ns = -1;
         }
@@ -1020,7 +1020,7 @@ impl PlayerScreen {
                 // playback is already sitting on — a full reopen + prime and a visible stall, out
                 // of a press the reveal rule promises moves nothing. `step_scrub_hold` clears it
                 // once there is real travel.
-                crate::eventlog::log("scrub: hold engaged (0x101 repeat)");
+                plx_base::eventlog::log("scrub: hold engaged (0x101 repeat)");
             }
         }
     }
@@ -1042,7 +1042,7 @@ impl PlayerScreen {
             self.scrub.ns = -1;
             self.scrub.disengage();
         } else if self.scrub.hold {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "scrub: keyup commit (held) {}s",
                 self.scrub.ns / 1_000_000_000
             ));
@@ -1080,7 +1080,7 @@ impl PlayerScreen {
             return;
         }
         if self.scrub.ns >= 0 {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "scrub: tap commit {}s",
                 self.scrub.ns / 1_000_000_000
             ));
@@ -1129,7 +1129,7 @@ impl PlayerScreen {
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.scrub.t = now;
         if now.wrapping_sub(self.scrub.alive) > input::SCRUB_LOST_MS {
-            crate::eventlog::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
+            plx_base::eventlog::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
             self.commit_scrub(fx);
             self.scrub.disengage();
         }
@@ -1464,7 +1464,7 @@ mod clock_animator_tests {
     /// picture nobody draws is the gate turned off.
     #[test]
     fn a_moving_playhead_presents_a_frame_while_the_plane_is_unbound() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
@@ -1489,7 +1489,7 @@ mod clock_animator_tests {
     /// the screen, from a countdown, with nothing else in the frame moving at all.
     #[test]
     fn the_huds_auto_hide_deadline_presents_the_frame_it_expires_on() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
@@ -1509,7 +1509,7 @@ mod clock_animator_tests {
     /// that no report was owed for it because the player route presented unconditionally.
     #[test]
     fn the_play_marks_two_second_expiry_presents_a_frame() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
@@ -1536,7 +1536,7 @@ mod clock_animator_tests {
     /// in that frame moves, and what the viewer would otherwise keep looking at is a black screen.
     #[test]
     fn a_read_out_appearing_presents_a_frame_while_the_plane_is_unbound() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(crate::ui::machine::EntryId(1));
@@ -1701,7 +1701,7 @@ mod step_ladder_tests {
     fn a_control_the_frame_does_not_draw_registers_no_stop() {
         use crate::appkit::player_hud::ELEM_TAB_BASE;
         use crate::ui::screen::DrawFrame;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (transport, hud_drawn, want) in [
             (true, false, vec![]),
             (false, false, vec![]),
@@ -1726,7 +1726,7 @@ mod step_ladder_tests {
     #[test]
     fn the_hidden_policy_withholds_the_transport_and_the_lift() {
         use crate::ui::screen::DrawFrame;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         page.transport = true;
         let cx = cx();
@@ -1748,7 +1748,7 @@ mod step_ladder_tests {
     /// took those frames past 20 ms under an open Tracks/More popover (`HudPolicy::Lifted`).
     #[test]
     fn prepare_queues_the_transport_clocks_only_while_the_playbar_is_drawn() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::text::reset_prewarm_for_test();
         let mut budget = Budget::new();
         let cx = cx();
@@ -1773,7 +1773,7 @@ mod step_ladder_tests {
     /// dismissed HUD; a later bound key raises it again as usual.
     #[test]
     fn the_capsule_leaving_leaves_the_transport_dismissed_however_it_closed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
         let cx = cx();
         let ps = TestHost::session(&cx);
@@ -1795,7 +1795,7 @@ mod step_ladder_tests {
     /// per-frame `HudPolicy::Hidden` gate is what keeps it down, and this is the layer that draws it.
     #[test]
     fn a_fresh_press_on_the_capsule_while_paused_keeps_the_transport_hidden() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
         let cx = cx();
         let ps = TestHost::session(&cx);
@@ -1829,7 +1829,7 @@ mod step_ladder_tests {
         use crate::ui::machine::FocusKey;
         use crate::appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         use crate::ui::screen::{At, DrawFrame};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
         let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false, crate::route::NextEpisodeMode::Countdown);
         let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true, crate::route::NextEpisodeMode::Countdown);
@@ -1898,7 +1898,7 @@ mod step_ladder_tests {
     /// `key_pause`/`key_play`'s Route::Player arms.
     #[test]
     fn transport_keys_ask_for_the_shared_toggle() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (wcode, want) in [
             (WCODE_PAUSE, Some(false)),
             (WCODE_PLAY, Some(true)),
@@ -1916,7 +1916,7 @@ mod step_ladder_tests {
     /// the Starfish/ACB seam — this is the request it is now reached through).
     #[test]
     fn stop_and_back_both_ask_to_exit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for wcode in [WCODE_STOP, WCODE_BACK] {
             let mut page = PlayerScreen::new(ENTRY);
             let (handled, reqs) = press(&mut page, 0, wcode, Edge::Down);
@@ -1929,7 +1929,7 @@ mod step_ladder_tests {
     /// tabs; from either, the return trip goes back to the scrubber.
     #[test]
     fn updown_walks_the_huds_three_rows() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
         assert_eq!(page.hud.nav.focus, 0);
@@ -1949,7 +1949,7 @@ mod step_ladder_tests {
     /// port of `key_ok`'s `focus == 1` arm.
     #[test]
     fn ok_on_the_control_row_arms_the_deferred_press() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
         page.hud.nav.focus = 1;
@@ -1961,7 +1961,7 @@ mod step_ladder_tests {
     /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm.
     #[test]
     fn ok_on_the_tabs_row_opens_the_named_overlay() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
         page.hud.nav.focus = 2;
@@ -1977,7 +1977,7 @@ mod step_ladder_tests {
     /// port of `key_ok`'s final `else` arm.
     #[test]
     fn ok_elsewhere_toggles_play_pause() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
         page.hud.nav.focus = 0;
@@ -1989,7 +1989,7 @@ mod step_ladder_tests {
     /// deferred press OK would — the pointer twin of `ok_on_the_control_row_arms_the_deferred_press`.
     #[test]
     fn a_click_on_a_disc_seats_the_ring_and_arms_the_press() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         let (handled, reqs) = click(&mut page, player_hud::ELEM_ROW_BASE + 1);
         assert_eq!(handled, Handled::Yes);
@@ -2002,7 +2002,7 @@ mod step_ladder_tests {
     /// by the dispatcher's hit map lands on the same geometry the old bare pointer path did.
     #[test]
     fn the_scrubber_group_places_at_the_hit_testers_own_band() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let page = PlayerScreen::new(ENTRY);
         let placed = Focusable::<TestHost>::place(
             &page,
@@ -2020,7 +2020,7 @@ mod step_ladder_tests {
     /// bookkeeping to be internally consistent.
     #[test]
     fn every_declared_group_round_trips_through_group_of() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let page = PlayerScreen::new(ENTRY);
         let mut groups = Vec::new();
         Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
@@ -2212,7 +2212,7 @@ mod scrub_ownership_tests {
     /// a second seek 450 ms later for the same tap.
     #[test]
     fn one_right_tap_issues_exactly_one_seek() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let mut page = page_on_the_bar();
 
@@ -2246,7 +2246,7 @@ mod scrub_ownership_tests {
         use crate::plex::session::SkipInterval;
         use crate::ui::consts::SDLK_LEFT;
         use std::sync::atomic::Ordering::Relaxed;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         const S: i64 = 1_000_000_000;
         crate::player::SHARED.playpos_ns.store(50 * S, Relaxed);
@@ -2283,7 +2283,7 @@ mod scrub_ownership_tests {
     /// all three of them the loop's to hold).
     #[test]
     fn a_scrub_seek_taken_while_paused_holds_the_pause() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(true);
         let mut page = page_on_the_bar();
 
@@ -2307,7 +2307,7 @@ mod scrub_ownership_tests {
     /// `Tick` now, beside the ramp it guards.
     #[test]
     fn a_held_direction_commits_on_release_and_on_the_lost_keyup_net() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
 
         // …the release that does arrive.
@@ -2342,7 +2342,7 @@ mod scrub_ownership_tests {
     /// committed later by a debounce that knows nothing about where it came from.
     #[test]
     fn a_direction_press_during_a_drag_discards_the_drags_preview() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let mut page = page_on_the_bar();
 
@@ -2370,7 +2370,7 @@ mod scrub_ownership_tests {
     #[test]
     fn a_click_on_the_picture_toggles_play_pause_but_not_over_a_failure() {
         use std::sync::atomic::Ordering::Relaxed;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let mut page = page_on_the_bar();
 
@@ -2411,7 +2411,7 @@ mod scrub_ownership_tests {
     #[test]
     fn a_failed_playback_answers_only_its_two_drawn_escapes() {
         use std::sync::atomic::Ordering::Relaxed;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let was = crate::player::SHARED.pb_state.load(Relaxed);
         crate::player::SHARED
@@ -2476,7 +2476,7 @@ mod scrub_ownership_tests {
     fn session_eight_click_coordinates_need_a_presented_hud_not_a_pointer_gate_override() {
         use crate::ui::hit::{HitMap, PointerKind};
         use crate::ui::screen::DrawFrame;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let was = crate::player::swap_state_for_test(crate::player::PlaybackState::Playing);
         for y in [870.0, 890.0] {
@@ -2524,7 +2524,7 @@ mod scrub_ownership_tests {
 
     #[test]
     fn a_click_on_the_scrubber_seeks_and_a_drag_previews_before_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         let mut page = page_on_the_bar();
         let tol = DUR / 1_000; // 100 ms: the band's own f32 arithmetic, not a behaviour
@@ -2625,7 +2625,7 @@ mod repair_confirmation_tests {
     #[test]
     #[cfg(feature = "devtriggers")]
     fn jail_fixture_keeps_repair_open_through_the_screen_tick() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         struct Trigger(std::path::PathBuf, Option<Vec<u8>>);
         impl Drop for Trigger {
             fn drop(&mut self) {
@@ -2633,7 +2633,7 @@ mod repair_confirmation_tests {
                 else { std::fs::remove_file(&self.0).unwrap(); }
             }
         }
-        let path = crate::paths::in_runtime_dir("plxnative-failtest");
+        let path = plx_base::paths::in_runtime_dir("plxnative-failtest");
         let previous = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -2662,7 +2662,7 @@ mod repair_confirmation_tests {
 
     #[test]
     fn repair_requires_second_explicit_answer_and_cancel_is_the_default() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = blocked();
         crate::route::reset_player_control_for_test(&ps);
         let mut page = PlayerScreen::new(EntryId(1));
@@ -2680,7 +2680,7 @@ mod repair_confirmation_tests {
     }
     #[test]
     fn back_then_stale_commit_and_underlying_click_cannot_repair_or_reopen() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = blocked();
         crate::route::reset_player_control_for_test(&ps);
         let mut page = PlayerScreen::new(EntryId(1));
@@ -2711,7 +2711,7 @@ mod repair_confirmation_tests {
     }
     #[test]
     fn accepted_attempt_hides_forward_action_after_screen_recreation() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for state in [crate::tv::sandbox::State::Running, crate::tv::sandbox::State::Repaired, crate::tv::sandbox::State::Failed(crate::tv::sandbox::Failure::Timeout)] {
             let mut ps = blocked(); ps.repair_status = state;
             crate::route::reset_player_control_for_test(&ps);

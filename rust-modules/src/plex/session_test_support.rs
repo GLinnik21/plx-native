@@ -55,7 +55,7 @@ pub(super) fn dialable_home(users: usize, uuid: &str, auto: bool) -> Session {
 //
 // Everything below drives the real `save`/`peek`/`update` against a real file, so it needs a
 // file it may have. `TempSession` redirects [`TEST_FILE`] — a crate global, which is why every
-// test here holds `crate::testlock::serial()` for its whole body (`src/lib.rs`): several
+// test here holds `plx_base::testlock::serial()` for its whole body (`src/lib.rs`): several
 // modules call `session::load` indirectly, and one running in parallel would read and WRITE
 // the file being graded.
 //

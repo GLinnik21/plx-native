@@ -20,7 +20,7 @@ use super::test_support::{frame};
 /// empty modal stack — `assert_eq!(d.nav.modals.surfaces.len(), 1)` fails at 0.
 #[test]
 fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     // Metadata is owned per-`Bridge` now, so `rig`'s own store drops with it — there is no
     // process-wide metadata state left for a `Cleanup` to clear. Server registration is still
     // process-global, so that reset stays.
@@ -172,7 +172,7 @@ fn panel_sel(d: &Dispatcher<AppHost>, entry: EntryId) -> i32 {
 #[test]
 fn an_alt_sources_anchor_travels_on_its_arg() {
     use crate::screens::alt_sources::{AltSourcesArg, AltSourcesScreen};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let arg = |x: f32, y: f32| AltSourcesArg {
         host: InstanceId(1),
         sid: crate::plex::ServerId::UNSET,

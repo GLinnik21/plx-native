@@ -5,7 +5,7 @@
 //! Every other knob in this app arrives as a `/tmp/plxnative-*` trigger written over ssh, and on a
 //! Cloud Test Lab set there is no ssh: the **.ipk is the only channel into the device**. So the
 //! session's endpoint, secret and certificate pin are staged into the package beside the binary
-//! (`make LAB=1 … ipk`, `ci/mkipk.py`) and resolved here through [`crate::paths::in_app_dir`] — the
+//! (`make LAB=1 … ipk`, `ci/mkipk.py`) and resolved here through [`plx_base::paths::in_app_dir`] — the
 //! same `/proc/self/exe` resolution everything else in this app uses, so it is correct under both
 //! install prefixes and both jail profiles.
 //!
@@ -119,7 +119,7 @@ static LOADED: OnceLock<Result<Config, &'static str>> = OnceLock::new();
 
 fn load() -> &'static Result<Config, &'static str> {
     LOADED.get_or_init(|| {
-        let p = crate::paths::in_app_dir(FILE);
+        let p = plx_base::paths::in_app_dir(FILE);
         match std::fs::read_to_string(&p) {
             Ok(s) => parse(&s),
             Err(_) => Err("no lab.json beside the binary"),

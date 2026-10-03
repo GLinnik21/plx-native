@@ -171,7 +171,7 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
 fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_retries() {
     use std::io::{Read, Write};
 
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stall server");
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -268,7 +268,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
 fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
     use std::io::{Read, Write};
 
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stall server");
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
