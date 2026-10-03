@@ -98,6 +98,8 @@ Open **PlxNative** from the TV's app launcher. Scan the on-screen QR code and si
 
 **Installation is complete.** You can now use PlxNative from the TV launcher. The remaining setup responsibility is keeping Developer Mode active, as described below.
 
+PlxNative is free and open source. If it's useful to you, you can [support it on Ko-fi](https://ko-fi.com/0xbeb).
+
 ## Important: Developer Mode expires
 
 For installations made through LG Developer Mode, including Homebrew Channel installed that way:
