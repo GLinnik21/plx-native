@@ -52,7 +52,7 @@ fn a_collection_row_has_no_watch_or_resume_state() {
 #[test]
 #[should_panic(expected = "requires its server in the retained Browse directory")]
 fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
     let directory = crate::stores::browse::DirectorySnapshot::default();
     seed_for_directory_test(
@@ -61,7 +61,7 @@ fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
 
 #[test]
 fn every_catalog_commit_advances_the_published_generation() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let before = o.state.catalog_gen;
@@ -72,7 +72,7 @@ fn every_catalog_commit_advances_the_published_generation() {
 
 #[test]
 fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut o = Owner::default();
     seed_for_test(&mut o.state, &o.adapter, 3, HubState::Ready);
     let first = hubs_snapshot(&o.state);
@@ -192,7 +192,7 @@ fn a_flat_season_listing_keeps_its_show_title_and_own_poster() {
 /// the wrong film from the item menu and the wrong backdrop on the detail page.
 #[test]
 fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let (a, b) = (sid(0), sid(1));
@@ -243,7 +243,7 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
 /// the state machine must come back as a fresh boot's (Loading, no source, no backoff owed).
 #[test]
 fn reset_wipes_the_catalog_and_re_arms_the_fetch() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(4)))]);
     reset(&mut o.state, &o.adapter);

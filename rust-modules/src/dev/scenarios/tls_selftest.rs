@@ -227,13 +227,13 @@ impl Selftest {
         };
         let url = format!("{}/identity", self.cfg.origin.base());
         let until = Instant::now() + PLANE_BUDGET;
-        let mut src = match CurlSource::open_reserved_checked(&url, 0, reservation, Some(until), &mut crate::checkpoint::NoCheckpoint) {
+        let mut src = match CurlSource::open_reserved_checked(&url, 0, reservation, Some(until), &mut plx_base::checkpoint::NoCheckpoint) {
             Ok(src) => src,
             Err(OpenErr::Transport(rc)) => return refused(format!("rc={rc}")),
             Err(e) => return refused(format!("open={e:?}")),
         };
         let mut buf = [0u8; READ_BYTES];
-        let n = src.read_until(&mut buf, Some(until), &mut crate::checkpoint::NoCheckpoint);
+        let n = src.read_until(&mut buf, Some(until), &mut plx_base::checkpoint::NoCheckpoint);
         if n <= 0 {
             return refused(format!("read={n}"));
         }
@@ -252,18 +252,18 @@ fn yes_no(b: bool) -> &'static str {
 /// earlier would let the projection wipe it under round 1's first handshake. A no-op without the
 /// trigger. The worker is detached and ends with its rounds.
 pub(crate) fn arm_at_boot() {
-    let Some(value) = crate::devtrig::read("tls-selftest") else { return };
+    let Some(value) = plx_base::devtrig::read("tls-selftest") else { return };
     let cfg = match parse(&value) {
         Ok(cfg) => cfg,
         Err(why) => {
-            crate::eventlog::log(&format!("tls-selftest IGNORED — {why}"));
+            plx_base::eventlog::log(&format!("tls-selftest IGNORED — {why}"));
             return;
         }
     };
     let mut run = Selftest::new(cfg);
-    crate::eventlog::log(&run.start_line());
-    if crate::task::spawn("tls-selftest", move || drive(&mut run)).is_none() {
-        crate::eventlog::log("tls-selftest IGNORED — the worker thread could not start");
+    plx_base::eventlog::log(&run.start_line());
+    if plx_base::task::spawn("tls-selftest", move || drive(&mut run)).is_none() {
+        plx_base::eventlog::log("tls-selftest IGNORED — the worker thread could not start");
     }
 }
 
@@ -271,7 +271,7 @@ fn drive(run: &mut Selftest) {
     let (mut ok, mut key) = ([0u32; 2], [0u32; 2]);
     for r in 1..=run.rounds() {
         for (i, plane) in run.round(r).into_iter().enumerate() {
-            crate::eventlog::log(&plane.line);
+            plx_base::eventlog::log(&plane.line);
             ok[i] += u32::from(plane.ok);
             key[i] += u32::from(plane.key);
         }
@@ -279,7 +279,7 @@ fn drive(run: &mut Selftest) {
             std::thread::sleep(run.interval());
         }
     }
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "tls-selftest done rounds={} control_ok={} control_key={} media_ok={} media_key={}",
         run.rounds(), ok[0], key[0], ok[1], key[1]
     ));
@@ -362,11 +362,11 @@ mod tests {
     /// both planes say `strict`.
     #[test]
     fn a_strict_round_learns_the_pin_and_both_planes_say_strict() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         if !(crate::net::global_init() && crate::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-30, 30, "selftest-strict");
-        let given = crate::spki::pin_from_spki_der(&cert.spki_der);
+        let given = plx_base::spki::pin_from_spki_der(&cert.spki_der);
         // `pin` absent: the pin is learned. A second run with it given reports `matches_given`.
         let mut run = run_for(port, "");
         let [control, media] = run.round(1);
@@ -390,11 +390,11 @@ mod tests {
     /// the same kind of server: both planes answer in key mode.
     #[test]
     fn an_expired_leaf_with_a_held_pin_is_answered_in_key_mode_on_both_planes() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         if !(crate::net::global_init() && crate::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-90, -30, "selftest-expired");
-        let pin = crate::spki::pin_from_spki_der(&cert.spki_der);
+        let pin = plx_base::spki::pin_from_spki_der(&cert.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{pin}""#));
         let [control, media] = run.round(7);
         assert_eq!(control.line, "tls-selftest r=7 control: ok mode=key pin_held=yes", "{}", control.line);
@@ -412,11 +412,11 @@ mod tests {
     /// (`pin_held` is the table, not the run's own "given or learned" field).
     #[test]
     fn a_projection_that_wipes_the_pin_costs_one_plane_and_the_line_says_so() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         if !(crate::net::global_init() && crate::net::available()) { return; }
         resolve::clear();
         let (cert, _ca, port) = serve(-90, -30, "selftest-wiped");
-        let pin = crate::spki::pin_from_spki_der(&cert.spki_der);
+        let pin = plx_base::spki::pin_from_spki_der(&cert.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{pin}""#));
         assert!(keypin::holds(&run.key), "stated at construction");
         let wipe = || crate::plex::session::project_server_keys(&crate::plex::session::Session::default(), false);
@@ -442,7 +442,7 @@ mod tests {
     /// line says so, and a WRONG pin is a pin mismatch (rc 90), never an answer.
     #[test]
     fn an_expired_leaf_is_refused_without_a_pin_and_with_a_wrong_one() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         if !(crate::net::global_init() && crate::net::available()) { return; }
         resolve::clear();
         let (_cert, _ca, port) = serve(-90, -30, "selftest-refused");
@@ -454,7 +454,7 @@ mod tests {
         forget(port);
 
         let other = crate::net::mint_cert(&["127.0.0.1"]);
-        let wrong = crate::spki::pin_from_spki_der(&other.spki_der);
+        let wrong = plx_base::spki::pin_from_spki_der(&other.spki_der);
         let mut run = run_for(port, &format!(r#","pin":"{wrong}""#));
         let [control, media] = run.round(2);
         assert_eq!(control.line, "tls-selftest r=2 control: refused rc=90 pin_held=yes", "{}", control.line);

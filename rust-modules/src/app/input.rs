@@ -283,9 +283,9 @@ mod activate_card_tests {
     /// it.
     #[test]
     fn a_show_or_season_play_no_longer_decides_on_the_press_frame() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
         let mut pages = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
@@ -340,9 +340,9 @@ mod activate_card_tests {
 
     #[test]
     fn a_collection_card_opens_the_collection_page() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
         let mut pages = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
@@ -794,7 +794,7 @@ mod unsupported_key_tests {
     #[test]
     fn a_bound_key_still_wakes_the_hud_and_aborts_the_click() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, SDLK_ESCAPE, 0);
         assert!(
             !armed,
@@ -810,7 +810,7 @@ mod unsupported_key_tests {
     #[test]
     fn an_unsupported_key_wakes_nothing_and_abandons_nothing() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (sym, wcode, what) in [
             (0, 269, "HOME"),
             (0, 270, "AC_BACK"),
@@ -828,7 +828,7 @@ mod unsupported_key_tests {
     #[test]
     fn a_number_key_counts_as_bound_because_the_pin_keypad_types_from_it() {
         let ps = crate::route::PlaybackSession::IDLE;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, b'5' as c_uint, 34);
         assert!(!armed);
         assert!(!dismissed);
@@ -1017,7 +1017,7 @@ pub(crate) fn remove_or_prove_absent(path: &std::path::Path) -> std::io::Result<
 
 fn erase_runtime_logs(root: &std::path::Path) -> Vec<String> {
     let mut failures = Vec::new();
-    for name in crate::paths::runtime_file::LOGS {
+    for name in plx_base::paths::runtime_file::LOGS {
         if name == crate::storage::diagnostics::NAME {
             continue;
         }
@@ -1046,12 +1046,12 @@ fn sweep_local_files(persistent: impl IntoIterator<Item = std::path::PathBuf>,
 pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore,
     mut failures: Vec<String>) -> Vec<String> {
     failures.extend(sweep_local_files(
-        crate::paths::obsolete_last_place_candidates()
+        plx_base::paths::obsolete_last_place_candidates()
             .into_iter()
-            .chain(crate::paths::telemetry_candidates())
-            .chain(crate::paths::telemetry_spool_candidates())
-            .chain(crate::paths::telemetry_crashmark_candidates()),
-        crate::paths::runtime_dir(),
+            .chain(plx_base::paths::telemetry_candidates())
+            .chain(plx_base::paths::telemetry_spool_candidates())
+            .chain(plx_base::paths::telemetry_crashmark_candidates()),
+        plx_base::paths::runtime_dir(),
     ));
     meta.run(crate::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
@@ -1107,7 +1107,7 @@ mod delete_all_tests {
     /// mount before it looks the child up. Nothing was left behind, so nothing is a leftover.
     #[test]
     fn absent_files_behind_a_read_only_mount_are_not_leftovers() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let tv = Tv::new("absent-erofs");
         let _erofs = crate::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
         let leftovers = sweep_local_files(tv.persistent(), &tv.runtime());
@@ -1118,13 +1118,13 @@ mod delete_all_tests {
     /// still be reported so the user is told data may remain.
     #[test]
     fn present_files_behind_a_read_only_mount_are_still_leftovers() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let tv = Tv::new("present-erofs");
         let persistent = tv.persistent();
         for path in &persistent {
             std::fs::write(path, b"x").unwrap();
         }
-        let log = tv.runtime().join(crate::paths::runtime_file::EVENTS);
+        let log = tv.runtime().join(plx_base::paths::runtime_file::EVENTS);
         let rec = tv.runtime().join("plxnative-rec");
         std::fs::write(&log, b"x").unwrap();
         std::fs::write(&rec, b"x").unwrap();
@@ -1136,7 +1136,7 @@ mod delete_all_tests {
 
     #[test]
     fn runtime_log_sweep_includes_the_storage_diagnostics_snapshot() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -1150,16 +1150,16 @@ mod delete_all_tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir(&root).unwrap();
-        for name in crate::paths::runtime_file::LOGS {
+        for name in plx_base::paths::runtime_file::LOGS {
             std::fs::write(root.join(name), name.as_bytes()).unwrap();
         }
-        let event = root.join(crate::paths::runtime_file::EVENTS);
+        let event = root.join(plx_base::paths::runtime_file::EVENTS);
         let diagnostics = root.join(crate::storage::diagnostics::NAME);
 
         crate::storage::diagnostics::disable();
         crate::storage::diagnostics::finish_disable(&root).unwrap();
         assert!(erase_runtime_logs(&root).is_empty());
-        assert!(crate::paths::runtime_file::LOGS
+        assert!(plx_base::paths::runtime_file::LOGS
             .iter()
             .all(|name| !root.join(name).exists()));
         assert!(!event.exists());

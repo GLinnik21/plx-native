@@ -60,7 +60,7 @@ pub(crate) fn last_outcome() -> PersistOutcome {
 
 #[cfg(test)]
 pub(crate) fn redirect_root_for_test(root: Option<PathBuf>) {
-    crate::paths::redirect_persistent_state_root_for_test(root);
+    plx_base::paths::redirect_persistent_state_root_for_test(root);
 }
 
 /// Which thread most recently ran the blocking disk/storage-helper work in [`record`] or
@@ -81,7 +81,7 @@ fn note_call_thread() {
 }
 
 fn root() -> PathBuf {
-    crate::paths::persistent_state_root()
+    plx_base::paths::persistent_state_root()
 }
 
 /// Snapshot the canonical destination before an asynchronous operation is queued. In production
@@ -90,7 +90,7 @@ fn root() -> PathBuf {
 /// Persist a decision to the canonical record and, once that is durable, retire the legacy files.
 ///
 /// This is blocking disk/storage-helper I/O — a genuine round trip on the television. Callers
-/// must run it off the frame thread (`crate::storage_worker`), never inline from a dispatch path;
+/// must run it off the frame thread (`plx_base::storage_worker`), never inline from a dispatch path;
 /// see `telemetry::transition::commit`.
 pub(crate) fn record(consent: &Consent) -> PersistOutcome {
     #[cfg(test)]
@@ -136,7 +136,7 @@ fn cleanup_failure_message(stage: &str, path: &Path, error: &std::io::Error) -> 
 }
 
 fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
-    crate::eventlog::log(&cleanup_failure_message(stage, path, error));
+    plx_base::eventlog::log(&cleanup_failure_message(stage, path, error));
 }
 
 /// Sweep telemetry/consent's own legacy candidates once the shared account ClearTenure DB8
@@ -188,7 +188,7 @@ pub(crate) fn load(legacy: &[PathBuf]) -> Consent {
     #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
     {
     #[cfg(not(test))]
-    if crate::paths::ensure_persistent_state_root().is_err() {
+    if plx_base::paths::ensure_persistent_state_root().is_err() {
         publish(PersistOutcome {
             write: PersistResult::Failed,
             cleanup: CleanupResult::NotAttempted,
@@ -1048,7 +1048,7 @@ mod tests {
     /// observed runtime failure.
     #[test]
     fn cleanup_after_combined_clear_removes_every_legacy_candidate() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("combined-clear");
         let a = legacy_path(&fixture, "a-telemetry.json");
         let b = legacy_path(&fixture, "b-telemetry.json");
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn migration_preserves_ids_declines_and_exact_legacy_payload() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("migration");
         let source = legacy_path(&fixture, "telemetry.json");
         let bytes = serde_json::to_vec(&old_yes()).unwrap();
@@ -1117,7 +1117,7 @@ mod tests {
 
     #[test]
     fn previous_json_wrapper_yields_nested_consent_and_tombstone() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("prior-wrapper");
         let store = JsonStore::new(fixture.root.clone()).unwrap();
         assert_eq!(
@@ -1143,7 +1143,7 @@ mod tests {
 
     #[test]
     fn canonical_cleared_tombstone_beats_an_old_legacy_yes_after_reboot() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("cleared");
         let source = legacy_path(&fixture, "telemetry.json");
         std::fs::write(&source, serde_json::to_vec(&old_yes()).unwrap()).unwrap();
@@ -1162,7 +1162,7 @@ mod tests {
 
     #[test]
     fn corrupt_canonical_record_blocks_legacy_fallback() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("corrupt");
         let source = legacy_path(&fixture, "telemetry.json");
         std::fs::write(&source, serde_json::to_vec(&old_yes()).unwrap()).unwrap();
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn failed_migration_write_keeps_the_legacy_source() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("failed");
         let source = legacy_path(&fixture, "telemetry.json");
         std::fs::write(&source, serde_json::to_vec(&old_yes()).unwrap()).unwrap();
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn writable_legacy_yes_is_barriered_off_across_two_launches() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("widened-two-launches");
         let source = legacy_path(&fixture, "telemetry.json");
         std::fs::write(&source, serde_json::to_vec(&old_yes()).unwrap()).unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     fn failed_untrusted_barrier_leaves_writable_source_untrusted_on_next_launch() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("widened-barrier-failure");
         let source = legacy_path(&fixture, "telemetry.json");
         std::fs::write(&source, serde_json::to_vec(&old_yes()).unwrap()).unwrap();
@@ -1226,7 +1226,7 @@ mod tests {
 
     #[test]
     fn conflicting_trusted_legacy_decisions_fail_closed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let fixture = Fixture::new("conflict");
         let first = legacy_path(&fixture, "first.json");
         let second = legacy_path(&fixture, "second.json");
@@ -1377,7 +1377,7 @@ mod upgrade_tests {
 
     #[test]
     fn every_published_06_decision_survives_a_db8_import_and_the_next_launch() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (label, bytes) in published() {
             let dir = Dir::new("db8-matrix");
             let source = dir.legacy(bytes);
@@ -1395,7 +1395,7 @@ mod upgrade_tests {
 
     #[test]
     fn every_published_06_decision_survives_the_host_store_migration_and_a_rewrite() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for (label, bytes) in published() {
             let dir = Dir::new("host-matrix");
             let source = dir.legacy(bytes);
@@ -1409,7 +1409,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_066_db8_record_reopens_every_consent_field_without_writing() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _dir = Dir::new("db8-066");
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
@@ -1419,7 +1419,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_066_host_store_record_reopens_every_consent_field() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir = Dir::new("json-066");
         std::fs::write(dir.0.join("state/consent.json"), JSON_STORE_066).unwrap();
         std::fs::set_permissions(dir.0.join("state/consent.json"), std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1430,7 +1430,7 @@ mod upgrade_tests {
     /// policy version, silently dropping the accepted/declined scopes and downgrading 6 to 4.
     #[test]
     fn a_07_settings_answer_over_a_066_record_keeps_scopes_declines_and_policy_version() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _dir = Dir::new("db8-edit");
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
@@ -1446,7 +1446,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_refused_db8_import_keeps_the_legacy_source_and_the_next_launch_completes_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir = Dir::new("db8-interrupted");
         let source = dir.legacy(GENERATED_DECLINE_065);
         let mut b = backend(None);
@@ -1497,7 +1497,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_session_commit_landing_mid_write_does_not_drop_the_decision() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _dir = Dir::new("db8-race");
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
@@ -1522,7 +1522,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_decision_racing_a_sign_out_is_not_written_into_the_cleared_tenure() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _dir = Dir::new("db8-race-clear");
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
@@ -1535,7 +1535,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_decision_racing_a_fresh_sign_in_is_not_written_into_the_new_account() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _dir = Dir::new("db8-race-signin");
         let mut b = backend(Some(db8_066()));
         let loaded = helper_load(&mut b, &[]);
@@ -1563,7 +1563,7 @@ mod upgrade_tests {
 
     #[test]
     fn a_db8_sign_out_outranks_a_reappeared_legacy_yes() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let dir = Dir::new("db8-cleared");
         let mut b = backend(Some(db8_066()));
         let mut transport = |request: Request| Ok(b.dispatch(request));

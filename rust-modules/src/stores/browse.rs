@@ -468,7 +468,7 @@ mod contract_tests {
 
     #[test]
     fn explicit_store_commands_answer_now_and_capture_one_consistent_publication() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let stores = crate::stores::Stores::default();
         {
             let mut browse = stores.browse.borrow_mut();
@@ -503,7 +503,7 @@ mod contract_tests {
 
     #[test]
     fn separate_store_aggregates_never_share_state_transport_or_notices() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let first = crate::stores::Stores::default();
         let second = crate::stores::Stores::default();
         first.browse.borrow_mut().seed_two_source_table_for_test();
@@ -529,7 +529,7 @@ mod contract_tests {
 
     #[test]
     fn snapshots_and_an_idle_pump_are_quiet() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();
@@ -549,7 +549,7 @@ mod contract_tests {
 
     #[test]
     fn hubs_housekeeping_notices_only_a_new_publication() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let mut browse = BrowseStore::default();
         browse.seed_two_source_table_for_test();
@@ -581,7 +581,7 @@ mod contract_tests {
 
     #[test]
     fn an_owned_discovery_landing_is_consumed_once_and_noticed_once() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("browse-preowner");
         session.watching("u-browse-preowner");
         crate::plex::reset_servers_for_test();
@@ -605,7 +605,7 @@ mod contract_tests {
 
     #[test]
     fn controlled_discovery_apply_and_directory_landing_each_bump_exactly_once() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-owned-landings", "127.0.0.1", 9, "synthetic", "fixture");
@@ -637,7 +637,7 @@ mod contract_tests {
 
     #[test]
     fn reset_rotates_the_adapter_away_from_a_late_old_worker() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-reset-worker", "127.0.0.1", 9, "synthetic", "fixture");
@@ -666,7 +666,7 @@ mod contract_tests {
 
     #[test]
     fn roster_removal_rotates_transport_away_from_a_held_old_worker() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-roster-retire", "127.0.0.1", 9, "synthetic", "fixture");
@@ -694,7 +694,7 @@ mod contract_tests {
 
     #[test]
     fn extracted_discovery_result_cannot_clear_the_post_reset_source_flight() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-result-retire", "127.0.0.1", 9, "synthetic", "fixture");
@@ -723,7 +723,7 @@ mod contract_tests {
 
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         // `sync_roster_owned` also watches the process-global session generation. Keep it settled
         // so the exact notice count below grades this roster addition, not an async session read.
         let _session = crate::plex::session::TempSession::new("controlled-roster-spawn-refused");
@@ -766,7 +766,7 @@ mod contract_tests {
 
     #[test]
     fn direct_controlled_discovery_mutates_only_the_addressed_owner() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let selected = crate::stores::Stores::default();
         let decoy = crate::stores::Stores::default();
@@ -796,7 +796,7 @@ mod contract_tests {
 
     #[test]
     fn isolated_current_page_failure_is_one_observable_change_and_notice() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-page-failure", "127.0.0.1", 9, "synthetic", "fixture");
@@ -823,7 +823,7 @@ mod contract_tests {
 
     #[test]
     fn library_switch_events_count_only_new_committed_choices() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("library-switch-events");
         session.watching("u-library-switch-events");
         struct Cleanup;

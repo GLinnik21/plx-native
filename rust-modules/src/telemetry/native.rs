@@ -88,11 +88,11 @@ pub(crate) fn sync_change(c: &super::consent::Consent) {
 }
 
 fn database_dir() -> PathBuf {
-    crate::paths::in_runtime_dir(DATABASE_DIR)
+    plx_base::paths::in_runtime_dir(DATABASE_DIR)
 }
 
 fn pending_dir() -> PathBuf {
-    crate::paths::in_runtime_dir(PENDING_DIR)
+    plx_base::paths::in_runtime_dir(PENDING_DIR)
 }
 
 fn remove_database() {
@@ -284,7 +284,7 @@ const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
 const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 /// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`crate::tv::sandbox::context`]) and `install`
-/// (`devmode`/`homebrew`/`unknown`, from [`crate::paths::install_kind`]) ride on every native
+/// (`devmode`/`homebrew`/`unknown`, from [`plx_base::paths::install_kind`]) ride on every native
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
 /// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
 /// `envelope_props`), so a chassis's crash-at-start rate is queryable by sandbox on either side.
@@ -752,7 +752,7 @@ fn read_pending_in(dir: &Path) -> Vec<PendingNative> {
         }
     }
     if rejected != 0 || deferred != 0 {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: native crash envelopes rejected={rejected} deferred={deferred}"
         ));
     }
@@ -770,7 +770,7 @@ fn import_all() {
         }
     }
     if queued != 0 {
-        crate::eventlog::log(&format!("telemetry: native crash envelopes queued={queued}"));
+        plx_base::eventlog::log(&format!("telemetry: native crash envelopes queued={queued}"));
     }
 }
 
@@ -854,7 +854,7 @@ mod sdk {
             return;
         };
         let Some(handler) = cstring(
-            crate::paths::app_dir()
+            plx_base::paths::app_dir()
                 .join("sentry-crash")
                 .as_os_str()
                 .as_encoded_bytes(),
@@ -888,7 +888,7 @@ mod sdk {
         // issue #74: the same two closed-enum sandbox facts the PostHog envelope carries, so a
         // native crash report can be graded by chassis AND sandbox without a second dashboard.
         let rtkmem = cstring(crate::tv::sandbox::context().as_bytes());
-        let install = cstring(crate::paths::install_kind().as_bytes());
+        let install = cstring(plx_base::paths::install_kind().as_bytes());
         let ptr = |value: &Option<CString>| {
             value
                 .as_ref()
@@ -929,10 +929,10 @@ mod sdk {
                 // After ACTIVE, because `set_user` refuses to touch a backend that is not running;
                 // still inside `start`, so no caller can observe an active backend with no id.
                 set_user(super::super::consent::errors_id().as_deref());
-                crate::eventlog::log("telemetry: native ARM crash capture active");
+                plx_base::eventlog::log("telemetry: native ARM crash capture active");
             } else {
                 // `sentry_init` takes ownership even when backend startup fails.
-                crate::eventlog::log(
+                plx_base::eventlog::log(
                     "telemetry: native crash capture unavailable; C fallback remains active",
                 );
             }
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn external_mode_moves_only_the_sdks_regular_envelope() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let root =
             std::env::temp_dir().join(format!("plxnative-sentry-test-{}", std::process::id()));
         let database = root.join("db");
@@ -1272,7 +1272,7 @@ mod tests {
     /// an `extern "C"` boundary in an abort, and that abort is the crash worth capturing.
     #[test]
     fn a_guard_dropped_while_unwinding_keeps_the_native_database() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let db = database_dir();
         std::fs::create_dir_all(&db).unwrap();
         let unwound = std::panic::catch_unwind(|| {
@@ -1291,7 +1291,7 @@ mod tests {
     /// The other branch: a clean exit still tears the backend down and removes its database.
     #[test]
     fn a_guard_dropped_on_a_clean_exit_tears_the_backend_down() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let db = database_dir();
         std::fs::create_dir_all(&db).unwrap();
         drop(Guard);

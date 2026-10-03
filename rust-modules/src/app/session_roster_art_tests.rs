@@ -16,7 +16,7 @@ use crate::auth::owner::{
 /// own late `ProfileRoster` re-committed the already-seated profile as another `Switch`.
 #[test]
 fn a_late_profile_roster_for_the_seated_profile_keeps_resident_art() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let (sid, plan) = late_roster_of_the_seated_profile();
@@ -43,7 +43,7 @@ fn a_late_profile_roster_for_the_seated_profile_keeps_resident_art() {
 #[test]
 fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
     const ROTATED_GRANT: &str = "plex-tv-grant-for-the-same-owner";
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let (sid, plan) = admin_boot_refresh_of_the_seated_profile(ROTATED_GRANT);
@@ -67,7 +67,7 @@ fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
 /// must not survive into the member-token session.
 #[test]
 fn a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (sid, plan) = refresh_under_another_accounts_token();
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {
@@ -83,7 +83,7 @@ fn a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art(
 /// admin's server, carrying the member's grant, re-tokens the admin's live slot in place.
 #[test]
 fn an_activation_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (sid, plan) = activation_under_another_accounts_token();
     let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
         for p in &plan.registry {

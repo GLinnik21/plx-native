@@ -6,11 +6,11 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc, time::Instant};
 /// An immutable static descriptor lets the watchdog publish a whole label with one pointer.
 /// `const { &BlockingLabel::new("literal") }` is evaluated into static storage; no scope
 /// allocates or interns strings.
-pub(crate) struct BlockingLabel {
+pub struct BlockingLabel {
     pub(super) text: &'static str,
 }
 impl BlockingLabel {
-    pub(crate) const fn new(text: &'static str) -> Self { Self { text } }
+    pub const fn new(text: &'static str) -> Self { Self { text } }
 }
 
 thread_local! {
@@ -18,9 +18,9 @@ thread_local! {
     static ALLOWED: Cell<u32> = const { Cell::new(0) };
 }
 
-pub(crate) struct FrameScope(PhantomData<Rc<()>>);
+pub struct FrameScope(PhantomData<Rc<()>>);
 impl FrameScope {
-    pub(crate) fn enter() -> Self {
+    pub fn enter() -> Self {
         FRAMES.with(|depth| depth.set(depth.get() + 1));
         Self(PhantomData)
     }
@@ -29,13 +29,13 @@ impl Drop for FrameScope {
     fn drop(&mut self) { FRAMES.with(|depth| depth.set(depth.get() - 1)); }
 }
 
-pub(crate) struct AllowBlocking { _label: super::watchdog::LabelScope }
+pub struct AllowBlocking { _label: super::watchdog::LabelScope }
 /// Explicit exceptions belong at user actions, with a reason and follow-up at the call site. See
 /// `route::decision`'s `pending_split_block` for the frame-thread PMS calls this repo currently
 /// excepts, all labelled "pending split" — the recovery arm
 /// (`recover_auto_to_original_for`/`admit_original_part`/`admit_or_plain_remux`) is the next one
 /// to move off the frame thread.
-pub(crate) fn allow_blocking(reason: &'static BlockingLabel) -> AllowBlocking {
+pub fn allow_blocking(reason: &'static BlockingLabel) -> AllowBlocking {
     assert!(!reason.text.is_empty());
     ALLOWED.with(|depth| depth.set(depth.get() + 1));
     AllowBlocking { _label: super::watchdog::enter_label(reason) }
@@ -45,19 +45,19 @@ impl Drop for AllowBlocking {
 }
 
 #[must_use = "keep the guard for the duration of the blocking operation"]
-pub(crate) struct BlockingGuard {
+pub struct BlockingGuard {
     label: &'static str,
     started: Option<Instant>,
     _label: super::watchdog::LabelScope,
     _thread: PhantomData<Rc<()>>,
 }
 
-pub(crate) fn assert_may_block(label: &'static BlockingLabel) -> BlockingGuard {
+pub fn assert_may_block(label: &'static BlockingLabel) -> BlockingGuard {
     let in_frame = FRAMES.with(|depth| depth.get() != 0);
-    if cfg!(test) && in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
+    if cfg!(any(test, feature = "test-support")) && in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
         panic!("main-thread block: {}", label.text);
     }
-    #[cfg(all(feature = "threadcheck", not(test)))]
+    #[cfg(all(feature = "threadcheck", not(any(test, feature = "test-support"))))]
     if in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
         if super::runtime_check::fatal(true, super::runtime_check::policy(crate::devtrig::guard_log_only()), super::runtime_check::Issue::Guard) {
             // log writes directly to an unbuffered File before aborting this thread.

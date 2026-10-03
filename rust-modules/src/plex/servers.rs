@@ -492,10 +492,10 @@ pub fn current() -> ServerId {
 /// no client or only recovery metadata whose origin cannot carry a credential in this build —
 /// retargeting to either would make the hot-path `client()` answer unusable connection state.
 pub fn set_current(id: ServerId) -> bool {
-    // `CURRENT` is a crate global; a test that flips it outside `crate::testlock::serial()` lands
+    // `CURRENT` is a crate global; a test that flips it outside `plx_base::testlock::serial()` lands
     // in the middle of some other module's test — see `lib.rs::testlock`.
     #[cfg(test)]
-    crate::testlock::assert_held("the plex server registry (set_current)");
+    plx_base::testlock::assert_held("the plex server registry (set_current)");
     let ok = id.index().is_some_and(|i| {
         client_for(id).is_some() && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0
     });
@@ -994,7 +994,7 @@ pub(crate) fn register_with_client_id(
     // `register_pinned_with_client_id`) — named directly here too, since this is the entry point
     // D5 names and `register_lazy`'s own assertion is one call away rather than at this frame.
     #[cfg(test)]
-    crate::testlock::assert_held("the plex server registry (register_with_client_id)");
+    plx_base::testlock::assert_held("the plex server registry (register_with_client_id)");
     register_pinned_with_client_id(machine_id, &Origin::http(host, port), token, None, client_id,
         ConnectionFacts::default())
 }
@@ -1048,10 +1048,10 @@ fn register_lazy(
 ) -> ServerId {
     // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
     // through `register_with_client_id`/`register_pinned_with_client_id` without
-    // `crate::testlock::serial()` writes them outside the lock, exactly what `lib.rs::testlock`
+    // `plx_base::testlock::serial()` writes them outside the lock, exactly what `lib.rs::testlock`
     // exists to catch.
     #[cfg(test)]
-    crate::testlock::assert_held("the plex server registry (register)");
+    plx_base::testlock::assert_held("the plex server registry (register)");
     let client_id = client_id();
     // A transient/revoked session has no install identity. Never publish a malformed client.
     if client_id.is_empty() { return ServerId::UNSET; }
@@ -1061,7 +1061,7 @@ fn register_lazy(
     // same server (every profile switch) stays byte-identical to what it always logged.
     let pinned = pin.is_some_and(crate::net::resolve::add);
     // The NOTE names the family and nothing else. The pin's host is a dashed LAN address and its
-    // `addr` is that address again: `crate::eventlog::log`'s scrubber rewrites a bare address but has no
+    // `addr` is that address again: `plx_base::eventlog::log`'s scrubber rewrites a bare address but has no
     // rule for a `192-168-0-10.<hash>.plex.direct` label, so printing either would put the
     // household's LAN layout into the file users paste into issues.
     let pin_note = match pin {
@@ -1122,7 +1122,7 @@ fn register_lazy(
             // still comparable with a current one — and the whole URL the moment the scheme is
             // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
             // can be told from an http one at all. See `Origin::log_form`.
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "plex: server slot {} re-pointed to {}{pin_note}",
                 id.0,
                 origin.log_form()
@@ -1170,7 +1170,7 @@ fn register_lazy(
     if n >= MAX_SERVERS {
         // The sentinel, not `current()` — see this function's doc for what the old answer did to
         // the caller's `describe_server` one line later.
-        crate::eventlog::log("plex: server registry full — this server was NOT registered");
+        plx_base::eventlog::log("plex: server registry full — this server was NOT registered");
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
@@ -1192,7 +1192,7 @@ fn register_lazy(
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "plex: server slot {} registered at {}{pin_note}",
         id.0,
         origin.log_form()
@@ -1251,7 +1251,7 @@ pub(crate) fn revoke_for_profile_switch() {
         CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
     }
     if !live.is_empty() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "plex: {} server(s) revoked — profile changed",
             live.len()
         ));
@@ -1295,7 +1295,7 @@ pub(crate) fn finish_roster_refresh(installed: &[ServerId]) {
     }
     commit_installed_roster(installed);
     if !dropped.is_empty() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "plex: {} server(s) retired — no longer granted",
             dropped.len()
         ));
@@ -1372,7 +1372,7 @@ fn commit_installed_roster(installed: &[ServerId]) {
 pub(crate) fn revoke_all() {
     // Same crate-global registry `register_lazy`/`set_current` guard — see `lib.rs::testlock`.
     #[cfg(test)]
-    crate::testlock::assert_held("the plex server registry (revoke_all)");
+    plx_base::testlock::assert_held("the plex server registry (revoke_all)");
     // Every plaintext grant dies with the identity that consented. First, and outside WRITE: its
     // re-grade takes the same lock.
     super::grant::identity_changed();
@@ -1396,7 +1396,7 @@ pub(crate) fn revoke_all() {
     FLOOR.store(n, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "plex: {} server(s) revoked — signed out",
             n - floor
         ));
@@ -1436,7 +1436,7 @@ pub(crate) fn regrade_credentials() {
         regraded += 1;
     }
     if regraded > 0 {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "plex: {regraded} server(s) lost their plaintext credential — the grant ended"
         ));
         crate::ui::idle::invalidate();
@@ -1445,14 +1445,14 @@ pub(crate) fn regrade_credentials() {
 
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
 /// (that is the ordinary lifecycle here, not a test-only wart) and must be called under
-/// [`crate::testlock::serial`] — the registry is a crate global.
+/// [`plx_base::testlock::serial`] — the registry is a crate global.
 ///
 /// `pub(crate)` for the same reason as [`register_with_client_id`]: a test outside `plex/` that
 /// registers a server owes the rest of the suite an empty table on the way out, or the next test
 /// to ask `client_opt()` gets `Some(a client whose port closed when that test returned)`.
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
-    crate::testlock::assert_held("the plex server registry (reset)");
+    plx_base::testlock::assert_held("the plex server registry (reset)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
@@ -1494,14 +1494,14 @@ mod tests {
     /// a source and then spawns a discovery worker for it, so servers left behind here would have another
     /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
     /// is still held (a struct's own `Drop` runs before its fields').
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             reset_for_test();
         }
     }
     fn fresh() -> Fresh {
-        let g = crate::testlock::serial();
+        let g = plx_base::testlock::serial();
         reset_for_test();
         Fresh(g)
     }
@@ -1582,7 +1582,7 @@ mod tests {
     #[test]
     fn registering_a_pinned_server_gives_its_host_the_key_remembered_for_its_machine() {
         let _g = fresh();
-        let key_pin = crate::spki::pin_from_spki_der(&[7; 8]);
+        let key_pin = plx_base::spki::pin_from_spki_der(&[7; 8]);
         let origin = Origin::parse("https://127-0-0-1.h4sh.plex.direct:41004").unwrap();
         let key = crate::net::keypin::key_of(origin.host(), origin.port());
         let _scoped = crate::net::keypin::Scoped::new(key.clone(), "sha256//unused");

@@ -29,7 +29,7 @@ fn install_stored_source(source: &SourceRef, policy: CredentialPolicy) -> Server
 #[cfg(not(feature = "devtriggers"))]
 #[test]
 fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let mut stored = source("cold-http", true, "stored-token");
     stored.origin_url = "http://192.0.2.10:32400".into();
@@ -63,7 +63,7 @@ fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() 
 #[cfg(not(feature = "devtriggers"))]
 #[test]
 fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let mut stored = source("recover-http", true, "profile-token");
     stored.origin_url = "http://192.0.2.10:32400".into();
@@ -95,7 +95,7 @@ fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally
 
 #[test]
 fn stored_credential_policy_https_only_does_not_activate_plaintext_with_its_credential() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let mut previously_live = source("stored-http", true, "previous-token");
     previously_live.origin_url = "https://stored.example.test:32400".into();
@@ -114,7 +114,7 @@ fn stored_credential_policy_https_only_does_not_activate_plaintext_with_its_cred
 
 #[test]
 fn stored_credential_policy_covers_legacy_address_and_port_that_synthesizes_http() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let legacy = source("legacy-http", true, "legacy-token");
     assert!(legacy.origin_url.is_empty());
@@ -129,7 +129,7 @@ fn stored_credential_policy_covers_legacy_address_and_port_that_synthesizes_http
 
 #[test]
 fn stored_credential_policy_allow_plaintext_keeps_dev_installation_usable() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let stored = source("dev-http", true, "developer-token");
 
     crate::plex::reset_servers_for_test();
@@ -145,7 +145,7 @@ fn stored_credential_policy_allow_plaintext_keeps_dev_installation_usable() {
 
 #[test]
 fn stored_credential_policy_rejection_retains_insecure_recovery_metadata() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let stored = source("recover-http", false, "stored-token");
 
@@ -165,7 +165,7 @@ fn stored_credential_policy_rejection_retains_insecure_recovery_metadata() {
 /// applied in the same write.
 #[test]
 fn a_boot_primary_install_of_a_plex_direct_origin_derives_ip_from_the_stored_address() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let origin = Origin::parse("https://192-168-1-50.h4sh.plex.direct:32400").unwrap();
     install_captured_registry(&origin, "192.168.1.50", "tok",
@@ -699,7 +699,7 @@ fn probe_endpoint_work_reports_nothing_when_plex_tv_is_unreachable() {
 /// evidence of anything and must not widen a real, more specific verdict to "Not reachable".
 #[test]
 fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("insecure-mach", "10.0.0.9", 32400, "tok", "cid");
     crate::plex::publish_probe_result(sid, Outcome::InsecureOnly);
@@ -843,7 +843,7 @@ fn endpoint_recovery_keeps_the_watching_profiles_household_evidence() {
 
 #[test]
 fn post_sign_out_registration_keeps_captured_login_client_id() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("registration-after-sign-out");
     crate::plex::reset_servers_for_test();
     crate::plex::session::revoke_cached_session();
@@ -879,7 +879,7 @@ fn lan_source(token: &str) -> SourceRef {
 /// fresh discovery mints a grant — the consent is remembered, the transport is not.
 #[test]
 fn a_stored_plaintext_source_stays_tokenless_without_a_fresh_grant() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let id = install_stored_source(&lan_source("stored-token"), CredentialPolicy::HttpsOnly);
@@ -896,7 +896,7 @@ fn a_stored_plaintext_source_stays_tokenless_without_a_fresh_grant() {
 /// refresh first) sends its credential to the granted server.
 #[test]
 fn another_server_at_a_granted_origin_registers_tokenless() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &Origin::http("192.168.0.10", 32400),
@@ -919,7 +919,7 @@ fn another_server_at_a_granted_origin_registers_tokenless() {
 #[test]
 fn a_roster_commit_leaves_in_flight_asks_and_other_offers_live() {
     use crate::plex::session::PlaintextChoice;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let evidence = crate::plex::grant::eligible_evidence_for_test();
@@ -948,7 +948,7 @@ fn a_roster_commit_leaves_in_flight_asks_and_other_offers_live() {
 /// insecure-only and moves `current` off it.
 #[test]
 fn revoking_a_grant_blanks_the_published_client_in_place() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let origin = Origin::http("192.168.0.10", 32400);
     let evidence = crate::plex::grant::eligible_evidence_for_test();
     for end in ["revoke", "network", "identity"] {
@@ -979,7 +979,7 @@ fn revoking_a_grant_blanks_the_published_client_in_place() {
 /// from the persisted consent. A sign-in owes nothing: the new identity discovers everything.
 #[test]
 fn a_network_change_requests_rediscovery_of_the_servers_it_stranded() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let origin = Origin::http("192.168.0.10", 32400);
     let evidence = crate::plex::grant::eligible_evidence_for_test();
     for end in ["network", "identity"] {
@@ -1009,7 +1009,7 @@ fn a_network_change_requests_rediscovery_of_the_servers_it_stranded() {
 /// at a TLS origin retires its grant, so nothing can put the credential back on the plaintext one.
 #[test]
 fn an_https_endpoint_commit_retires_the_plaintext_grant() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let origin = Origin::http("192.168.0.10", 32400);
@@ -1037,7 +1037,7 @@ fn an_https_endpoint_commit_retires_the_plaintext_grant() {
 /// endpoint commit does.
 #[test]
 fn an_https_install_commit_retires_the_plaintext_grant() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let origin = Origin::http("192.168.0.10", 32400);
@@ -1059,7 +1059,7 @@ fn an_https_install_commit_retires_the_plaintext_grant() {
 /// profile's credential, and every other grant dies with the old roster.
 #[test]
 fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let evidence = crate::plex::grant::eligible_evidence_for_test();

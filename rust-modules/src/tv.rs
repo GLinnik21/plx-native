@@ -87,7 +87,7 @@ fn absent() -> &'static Port {
     #[cfg(not(test))]
     {
         static SAID: std::sync::Once = std::sync::Once::new();
-        SAID.call_once(|| crate::eventlog::log("tv: port not installed - using the no-port defaults"));
+        SAID.call_once(|| plx_base::eventlog::log("tv: port not installed - using the no-port defaults"));
     }
     &ABSENT
 }

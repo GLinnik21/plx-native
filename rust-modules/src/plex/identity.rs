@@ -94,14 +94,14 @@ pub(crate) const VENDOR: &str = "LG";
 /// distinguishable from an official client sharing the same TV.
 ///
 /// **A flavoured install says so.** Two builds can sit on one television now
-/// ([`crate::paths::app_id`]) and they hold separate session files, so each mints its own
+/// ([`plx_base::paths::app_id`]) and they hold separate session files, so each mints its own
 /// `X-Plex-Client-Identifier` and each appears as its own authorized device. Without the suffix
 /// the account grows two entries spelled identically, and revoking "the one on the TV" is a
 /// coin flip. The shipped app's name is unchanged, which matters because it is already in every
 /// existing user's device list — a rename there would read as a new, unknown device.
 pub(crate) fn device_name() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    NAME.get_or_init(|| match crate::paths::flavour() {
+    NAME.get_or_init(|| match plx_base::paths::flavour() {
         None => "PlxNative (LG TV)".to_string(),
         Some(f) => format!("PlxNative {f} (LG TV)"),
     })
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn only_a_flavoured_install_renames_the_device() {
         let name = super::device_name();
-        match crate::paths::flavour() {
+        match plx_base::paths::flavour() {
             None => assert_eq!(name, "PlxNative (LG TV)"),
             Some(f) => assert!(name.contains(f), "{name:?} does not name the {f} install"),
         }

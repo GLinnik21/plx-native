@@ -16,7 +16,7 @@
 //! caller outside this file at all — `hub_state` — is plain private, not `pub(crate)`; (2) every
 //! mutator `stores::hubs` (or a test) can reach — `request_refetch_hubs`, `request_retry`,
 //! `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test` seeds — asserts
-//! `crate::testlock::held()` under `#[cfg(test)]` before it touches the crate-wide test-only
+//! `plx_base::testlock::held()` under `#[cfg(test)]` before it touches the crate-wide test-only
 //! state those seeds still share (see `lib.rs::testlock` and D5), which is the runtime half of
 //! the same contract a compile-time visibility keyword cannot express across two sibling
 //! modules. `ci/allow/mutators.txt`'s `# count: 0` already
@@ -586,10 +586,10 @@ pub(crate) fn hub_item(state: &PmsState, hub: usize, col: usize) -> Option<&PmsM
 /// repaint itself, at the only moment the catalog those surfaces index into actually moves.
 fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
-    // A test reaching this outside `crate::testlock::serial()` races some other module's test — see
+    // A test reaching this outside `plx_base::testlock::serial()` races some other module's test — see
     // `lib.rs::testlock`.
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (request_refetch_hubs)");
+    plx_base::testlock::assert_held("the pms hub catalog (request_refetch_hubs)");
     state.hub_gen = state.hub_gen.wrapping_add(1); // supersede every retry already in flight
     sync_roster_with_scope(state, scope);
     let gen = state.hub_gen;
@@ -647,7 +647,7 @@ fn edit_item_with_scope(
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
     // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (edit_item)");
+    plx_base::testlock::assert_held("the pms hub catalog (edit_item)");
     let mut hit = false;
     for s in state.srcs.iter_mut() {
         if let Some(b) = s.last.as_mut() {
@@ -1551,7 +1551,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     // indistinguishable in the log from one still in flight — "hubs: source 1 fetching" with
     // nothing after it says only that the worker started. The SLOT, never the handle (a plex.tv
     // username is the friend's, and the event log is what users send us).
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "hubs: source {} ok — {} shelves, {} in CW",
         s.sid.raw(),
         b.shelves.len(),
@@ -1571,7 +1571,7 @@ fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     // the ONE line that says a dead source is dead ON PURPOSE and is coming back — without it the
     // whole recovery is invisible in the event log. The SLOT, never the handle: a plex.tv username
     // is the friend's, and the event log is what users send us.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "hubs: source {} FAILED (attempt {}) — retrying in {:.0}s",
         s.sid.raw(),
         s.retry_n,
@@ -1618,7 +1618,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
         s.fetching = false;
         Some(landed_fail(s))
     } else {
-        crate::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
+        plx_base::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
         None
     }
 }
@@ -1629,7 +1629,7 @@ pub(crate) fn spawn_fetch(adapter: &Arc<PmsAdapter>, request: HubRequest) -> boo
     #[cfg(test)]
     if REFUSE_FETCH_FOR_TEST.with(|flag| flag.get()) { return false; }
     let worker_adapter = Arc::clone(adapter);
-    crate::task::spawn_small("hubs", move || {
+    plx_base::task::spawn_small("hubs", move || {
         let (client, sid) = (request.client.resource, request.sid);
         let build = catch_unwind(move || fetch_source(client, sid)).ok().flatten();
         // Outside the panic guard: every admitted worker answers, including a panicking fetch.
@@ -1666,7 +1666,7 @@ fn request_retry(state: &mut PmsState, adapter: &Arc<PmsAdapter>) -> crate::stor
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
     // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (request_retry)");
+    plx_base::testlock::assert_held("the pms hub catalog (request_retry)");
     let gen = state.hub_gen;
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
@@ -1700,7 +1700,7 @@ pub(crate) fn tick(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: f32) -> 
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
     // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (tick)");
+    plx_base::testlock::assert_held("the pms hub catalog (tick)");
     pump_with_landings(state, adapter, dt, Vec::new)
 }
 
@@ -1713,7 +1713,7 @@ pub(crate) fn tick_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> crate::stores::EndpointRefreshSet {
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (owned tick)");
+    plx_base::testlock::assert_held("the pms hub catalog (owned tick)");
     let mut launch = |r| spawn_fetch(adapter, r);
     step_landings_with_scope(state, adapter, Some(dt), Vec::new, &BrowseScope::retained(directory),
         &mut launch)
@@ -1724,7 +1724,7 @@ pub(crate) fn tick_with_directory(
 #[cfg(test)]
 fn apply_landing(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Landing) -> crate::stores::EndpointRefreshSet {
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (apply_landing)");
+    plx_base::testlock::assert_held("the pms hub catalog (apply_landing)");
     step_landings(state, adapter, None, || vec![landing.clone()])
 }
 
@@ -1937,7 +1937,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     }
     if let Some(build) = build {
         let n = commit(state, build);
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "hubs: landed — {n} items, {} shelves",
             hub_count(state)
         ));
@@ -1982,7 +1982,7 @@ fn build_test(n: usize) -> SourceBuild {
 /// cannot reach for real (a live server answering, or refusing) are exactly the ones worth pinning.
 #[cfg(test)]
 pub(crate) fn seed_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, hub_state: HubState) {
-    crate::testlock::assert_held("the pms hub catalog (seed_for_test)");
+    plx_base::testlock::assert_held("the pms hub catalog (seed_for_test)");
     seed_with_scope_for_test(state, adapter, ServerId::UNSET, items, hub_state, &BrowseScope::standalone());
 }
 
@@ -1997,7 +1997,7 @@ pub(crate) fn seed_for_directory_test(
     hub_state: HubState,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) {
-    crate::testlock::assert_held("the pms hub catalog (seed_for_directory_test)");
+    plx_base::testlock::assert_held("the pms hub catalog (seed_for_directory_test)");
     assert!(directory.sections().iter().any(|section| section.sid == Some(sid)),
         "a directory-scoped Hubs fixture requires its server in the retained Browse directory");
     seed_with_scope_for_test(state, adapter, sid, items, hub_state, &BrowseScope::retained(directory));
@@ -2011,7 +2011,7 @@ pub(crate) fn seed_two_library_home_for_test(
     sid: ServerId,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) {
-    crate::testlock::assert_held("the two-library pms home fixture");
+    plx_base::testlock::assert_held("the two-library pms home fixture");
     let sections = directory.sections();
     assert!(
         sections.len() >= 2 && sections[..2].iter().all(|section| section.sid == Some(sid)),
@@ -2096,7 +2096,7 @@ fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &Bro
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
     // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
-    crate::testlock::assert_held("the pms hub catalog (reset)");
+    plx_base::testlock::assert_held("the pms hub catalog (reset)");
     let _ = adapter; // every HubsStore command path rotates before applying `HubsCmd::Reset`
     state.hub_gen = state.hub_gen.wrapping_add(1); // a worker still running belongs to the old identity
     state.srcs = Vec::new();
@@ -2113,7 +2113,7 @@ fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &Bro
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 pub(crate) fn queue_test_landing(state: &PmsState, adapter: &PmsAdapter, items: Option<usize>) -> u32 {
-    crate::testlock::assert_held("the pms hub catalog (queue_test_landing)");
+    plx_base::testlock::assert_held("the pms hub catalog (queue_test_landing)");
     let source = &state.srcs[0];
     let seq = source.seq;
     let landing = Landing {
@@ -2126,7 +2126,7 @@ pub(crate) fn queue_test_landing(state: &PmsState, adapter: &PmsAdapter, items: 
 
 #[cfg(test)]
 pub(crate) fn reverse_test_shelves(state: &mut PmsState) {
-    crate::testlock::assert_held("the pms hub catalog (reverse_test_shelves)");
+    plx_base::testlock::assert_held("the pms hub catalog (reverse_test_shelves)");
     for source in state.srcs.iter_mut() {
         if let Some(build) = source.last.as_mut() {
             for shelf in &mut build.shelves { shelf.items.reverse(); }
@@ -2138,7 +2138,7 @@ pub(crate) fn reverse_test_shelves(state: &mut PmsState) {
 
 #[cfg(test)]
 pub(crate) fn seed_grid_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows: usize, items: usize) {
-    crate::testlock::assert_held("the pms hub catalog (seed_grid_for_test)");
+    plx_base::testlock::assert_held("the pms hub catalog (seed_grid_for_test)");
     seed_for_test(state, adapter, items, HubState::Ready);
     let source = state.srcs[0].last.as_mut().unwrap();
     source.shelves = (0..rows).map(|row| {
@@ -2159,7 +2159,7 @@ pub(crate) fn seed_named_hubs_for_test(
     items: usize,
     rows: &[(&str, &str, &str)],
 ) {
-    crate::testlock::assert_held("the pms hub catalog (seed_named_hubs_for_test)");
+    plx_base::testlock::assert_held("the pms hub catalog (seed_named_hubs_for_test)");
     seed_for_test(state, adapter, items, HubState::Ready);
     let source = state.srcs[0].last.as_mut().unwrap();
     source.shelves = rows.iter().map(|(hub_id, key, title)| {
@@ -2175,7 +2175,7 @@ pub(crate) fn seed_named_hubs_for_test(
 
 #[cfg(test)]
 pub(crate) fn reverse_test_hubs(state: &mut PmsState) {
-    crate::testlock::assert_held("the pms hub catalog (reverse_test_hubs)");
+    plx_base::testlock::assert_held("the pms hub catalog (reverse_test_hubs)");
     for source in state.srcs.iter_mut() {
         if let Some(build) = source.last.as_mut() { build.shelves.reverse(); }
     }
@@ -2185,7 +2185,7 @@ pub(crate) fn reverse_test_hubs(state: &mut PmsState) {
 
 #[cfg(test)]
 pub(crate) fn remove_test_item(state: &mut PmsState, rk: &str) {
-    crate::testlock::assert_held("the pms hub catalog (remove_test_item)");
+    plx_base::testlock::assert_held("the pms hub catalog (remove_test_item)");
     for source in state.srcs.iter_mut() {
         if let Some(build) = source.last.as_mut() {
             for shelf in &mut build.shelves { shelf.items.retain(|item| item.rk != rk); }
@@ -2221,7 +2221,7 @@ mod multi_source_merge_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.
-impl crate::tile::Tile for PmsMovie {
+impl plx_base::tile::Tile for PmsMovie {
     fn title(&self) -> &str {
         &self.title
     }

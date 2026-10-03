@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn measured_wrapping_keeps_live_semantics_and_cannot_reuse_another_owner() {
         use crate::ui::machine::Measure;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         // The host's uninitialized font path has a defined fallback. Supply that same source
         // explicitly to compare the wrap algorithm, including lead, ellipsis and long tokens.
         struct Fallback;
@@ -780,7 +780,7 @@ mod tests {
     fn a_live_font_capability_wraps_once_across_frames() {
         use crate::ui::machine::Measure;
         use std::cell::Cell;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct CountingLive(Cell<u32>);
         impl Measure for CountingLive {
             fn width(&self, s: &std::ffi::CStr, sz: i32, _: bool) -> f32 {
@@ -813,7 +813,7 @@ mod tests {
     fn cached_wrap_reuses_line_widths_across_queries_and_frames() {
         use crate::ui::machine::Measure;
         use std::cell::Cell;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct Counting(Cell<u32>, bool);
         impl Measure for Counting {
             fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
@@ -844,7 +844,7 @@ mod tests {
 
     #[test]
     fn a_forbidden_live_wrap_traps_even_a_warm_global_memo() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let view = || TextView::new("warm live wrap", theme::size::BODY, theme::TEXT_PRIMARY);
         view().measure_h(200.0);
         let _forbid = ForbidLive::enter();

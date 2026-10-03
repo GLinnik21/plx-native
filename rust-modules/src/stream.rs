@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::checkpoint::{Checkpoint, NoCheckpoint, Pacer};
+use plx_base::checkpoint::{Checkpoint, NoCheckpoint, Pacer};
 
 static FD_GATE: Mutex<()> = Mutex::new(());
 
@@ -174,7 +174,7 @@ impl HttpStream {
 /// `app::diagnostics` applies to the diagnostics panel. The endpoint on its own is what makes a line
 /// diagnosable ("which request failed") and it carries no secret.
 ///
-/// `crate::eventlog::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
+/// `plx_base::eventlog::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
 /// nothing built here needs it.
 fn log_endpoint(path: &str) -> &str {
     match path.find('?') {
@@ -248,7 +248,7 @@ pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_er
         hs.chunked != 0,
         recv_err,
     ) {
-        crate::eventlog::log(&line);
+        plx_base::eventlog::log(&line);
     }
 }
 
@@ -267,7 +267,7 @@ pub(crate) fn hs_status(hs: *const HttpStream) -> c_int {
 pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
 
 /// Internal read result for a caller whose [`Checkpoint`] answered
-/// [`Flow::Stop`](crate::checkpoint::Flow::Stop). Distinct from `-1` and [`HTTP_READ_DEADLINE`]: it is neither a
+/// [`Flow::Stop`](plx_base::checkpoint::Flow::Stop). Distinct from `-1` and [`HTTP_READ_DEADLINE`]: it is neither a
 /// transport failure nor a clock this module owns, so nothing here redials or closes on it.
 pub(crate) const HTTP_READ_STOPPED: c_int = -3;
 
@@ -359,7 +359,7 @@ unsafe fn wait_fd(
                         Bound::Recheck => {}
                     }
                 }
-                crate::checkpoint::wait_ms_until(at, c_int::MAX)
+                plx_base::checkpoint::wait_ms_until(at, c_int::MAX)
             }
         };
         let mut pfd = libc::pollfd {
@@ -809,9 +809,9 @@ unsafe fn connect_timeout_cause(
         let (wait_ms, recheck) = if now >= end {
             (0, false)
         } else {
-            let left_ms = crate::checkpoint::wait_ms_until(end, c_int::MAX);
+            let left_ms = plx_base::checkpoint::wait_ms_until(end, c_int::MAX);
             match slice {
-                Some(at) if at < end => (crate::checkpoint::wait_ms_until(at, left_ms), true),
+                Some(at) if at < end => (plx_base::checkpoint::wait_ms_until(at, left_ms), true),
                 _ => (left_ms, false),
             }
         };
@@ -1289,7 +1289,7 @@ fn http_open_with_timeouts(
                 // The host is on the line because "which name failed to resolve" is the only
                 // question this failure raises, and it is not a secret the way a query string is
                 // (`log_endpoint`) — `player::engine` and `plex::servers` already log `host=…:port`.
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "stream: {method} {} DNS FAILED host={host_s}",
                     log_endpoint(&path_s)
                 ));
@@ -1563,7 +1563,7 @@ unsafe fn perform_http_request(
         //
         // `status=0` is not a code any server sent: it is what the parse above leaves when the
         // status line was not `HTTP/1.x` followed by exactly three digits.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "stream: {method} {} status={}",
             log_endpoint(path_s),
             hs.status

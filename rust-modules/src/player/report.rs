@@ -912,7 +912,7 @@ mod tests {
     /// attempt. A live `client_for(server)` read at emit time would have.
     #[test]
     fn requested_snapshots_the_connection_and_a_mid_attempt_repoint_does_not_change_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let o = crate::plex::Origin::http("10.0.0.9", 32400);
         let connection = crate::plex::ConnectionFacts::new(
@@ -982,7 +982,7 @@ mod tests {
     /// telemetry a viewer never experienced as one.
     #[test]
     fn a_claim_hold_is_not_a_rebuffer() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let ps = crate::route::PlaybackSession::IDLE;
         REBUFFER_COUNT.store(0, Relaxed);
         SAW_START.store(true, Relaxed);
@@ -1020,7 +1020,7 @@ mod tests {
     /// actually asked for. A refusal has no delivery and no requested quality; the report must say so.
     #[test]
     fn a_refused_plan_reports_no_delivery_and_no_requested_quality() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for verdict in [
             crate::route::PlayVerdict::Server("Cannot convert this item.".into(), Default::default()),
             crate::route::PlayVerdict::Server(String::new(), Default::default()),
@@ -1043,7 +1043,7 @@ mod tests {
     /// `delivery` itself stays `unknown`, because nothing was installed.
     #[test]
     fn a_server_refusal_reports_its_codes_the_attempted_route_and_the_source_codecs() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         use crate::route::DecisionCodes as C;
         // (remux, hls) -> the attempt. Remux is checked after HLS, as `delivery_class` does.
         for (remux, hls, attempted) in [
@@ -1091,7 +1091,7 @@ mod tests {
     /// event holds none of them while still holding the closed fields.
     #[test]
     fn no_free_text_from_the_server_decision_reaches_the_serialized_event() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         use crate::route::DecisionCodes as C;
         let sentence = "Cannot convert /media/Private Films/Secret Title (2020)/secret.mkv on SERVER-NAME-9 \
                         token=abc123 http://192.168.1.50:32400/library";
@@ -1134,7 +1134,7 @@ mod tests {
     /// server codes and no attempted transcode, and a playback with a route is not a refusal.
     #[test]
     fn only_a_server_refusal_carries_the_refusal_block() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         for verdict in [
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
@@ -1192,7 +1192,7 @@ mod tests {
     /// it was derived from the absence of an encoder session, and a refusal has none.
     #[test]
     fn a_refused_plan_reports_mode_unknown_and_a_real_route_keeps_its_mode() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut refused = crate::route::PlaybackSession::default();
         crate::route::refuse_by_server_for_test(&mut refused, "", Default::default(), true, false, "", "");
         assert_eq!(mode(&refused), "unknown");
@@ -1208,7 +1208,7 @@ mod tests {
     /// The other half: a failure on a playback that DID install a route keeps the real tags.
     #[test]
     fn an_installed_route_keeps_its_real_delivery_and_requested_quality() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let direct = crate::route::PlaybackSession::default();
         let ctx = error_context(&direct);
         assert_eq!((ctx.delivery.code(), ctx.requested), ("original_direct", QualityClass::Original));
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn a_failed_preview_trace_is_erased_through_telemetrys_hook() {
         use crate::telemetry::consent::{self, Consent};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let previous = consent::current();
         let mut enabled = Consent::default();
         enabled.errors = true;

@@ -463,7 +463,7 @@ So a **Homebrew-Channel install breaks two things**:
    `X-Plex-Client-Identifier` minted each launch. There is **no persistent writable directory common
    to both layouts**, so the path has to become a probed search order, not a constant.
 
-**FIXED 2026-08-01** — `rust-modules/src/paths.rs`. The app directory is resolved from
+**FIXED 2026-08-01** — `rust-modules/base/src/paths.rs`. The app directory is resolved from
 `read_link("/proc/self/exe")` (not `$HOME`: LG's conf sets it twice and which one wins differs
 between the profiles), `text.rs` builds the font paths from it, and `capture.rs` now shares the
 same resolver instead of open-coding it.

@@ -353,7 +353,7 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
         // "silently dropped for want of a key", which is precisely the question a verification is
         // asking. One destination missing while the other is configured is the ordinary case here,
         // not an exotic one.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: no endpoint for {:?} in this build — record discarded",
             r.dest
         ));
@@ -361,7 +361,7 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
     };
     let body = wire_body(r);
     if body.is_empty() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: obsolete or unsupported {:?} record discarded before send",
             r.dest
         ));
@@ -377,11 +377,11 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
                 // line did not carry it, which is the difference between debugging a 400 and
                 // guessing at one — Sentry and PostHog both answer a malformed envelope with a
                 // sentence naming the field. Bounded hard and scrubbed like every other line
-                // (`crate::eventlog::log` runs `scrub_local` before the write), because it is third-party
+                // (`plx_base::eventlog::log` runs `scrub_local` before the write), because it is third-party
                 // text landing in the primary debugging surface.
                 let why = String::from_utf8_lossy(&resp.body);
                 let why: String = why.chars().filter(|c| !c.is_control()).take(160).collect();
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "telemetry: {:?} -> {} ({v:?}) {why}",
                     r.dest, resp.status
                 ));

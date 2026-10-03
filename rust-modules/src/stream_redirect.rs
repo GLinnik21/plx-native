@@ -37,7 +37,7 @@ use super::{
     hs_redirect_location, http_open_with_timeouts, log_endpoint, HttpOpenError, HttpStream,
     CONNECT_TIMEOUT_MS, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS,
 };
-use crate::checkpoint::Checkpoint;
+use plx_base::checkpoint::Checkpoint;
 use crate::net::origin::{Origin, Scheme};
 
 /// Hops followed after the first request. The first request plus this many redirects is the most
@@ -140,7 +140,7 @@ pub(crate) fn open_following(
             }
         }
         if !(req.credential_gate)(&cur.origin, &cur.path, &header_lines(&extra)) {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "stream: {}{} REFUSED: a credential may not travel to this plaintext origin",
                 cur.origin.log_form(),
                 log_endpoint(&cur.path)
@@ -183,7 +183,7 @@ pub(crate) fn open_following(
         };
         let next = hs_redirect_location(hs).and_then(|loc| resolve_location(&cur, &loc));
         let Some(mut next) = next else {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "stream: redirect {status} from {}{} has no usable Location",
                 cur.origin.log_form(),
                 log_endpoint(&cur.path)
@@ -191,7 +191,7 @@ pub(crate) fn open_following(
             return Err(FollowError::BadLocation(status));
         };
         if hop >= MAX_HOPS {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "stream: redirect {status} -> {}{} REFUSED: more than {MAX_HOPS} hops",
                 next.origin.log_form(),
                 log_endpoint(&next.path)
@@ -201,7 +201,7 @@ pub(crate) fn open_following(
         hop += 1;
         let same = same_origin(&next.origin, req.origin);
         if !same && req.same_origin_only {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "stream: redirect {status} -> {}{} REFUSED: this request may not leave {}",
                 next.origin.log_form(),
                 log_endpoint(&next.path),
@@ -214,7 +214,7 @@ pub(crate) fn open_following(
                 next.path = with_query_pair(&next.path, pair);
             }
         }
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "stream: redirect {status} -> {}{} hop={hop} same_origin={same}",
             next.origin.log_form(),
             log_endpoint(&next.path)
@@ -532,7 +532,7 @@ mod tests {
             same_origin_only: false,
             credential_gate: allow_all,
         };
-        match open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint) {
+        match open_following(&mut *hs, &req, &mut plx_base::checkpoint::NoCheckpoint) {
             Ok(Opened::Tls(t)) => assert_eq!(t.url(), "https://127.0.0.1:1/x"),
             other => panic!("{other:?}"),
         }
@@ -556,7 +556,7 @@ mod tests {
             same_origin_only: false,
             credential_gate: refuse,
         };
-        match open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint) {
+        match open_following(&mut *hs, &req, &mut plx_base::checkpoint::NoCheckpoint) {
             Err(FollowError::Refused) => {}
             other => panic!("{other:?}"),
         }
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn credential_headers_do_not_cross_origins_but_the_range_does() {
         use std::io::{Read, Write};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let serve = |reply: Vec<u8>| {
             let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = srv.local_addr().unwrap().port();
@@ -608,7 +608,7 @@ mod tests {
             same_origin_only: false,
             credential_gate: allow_all,
         };
-        let got = open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint);
+        let got = open_following(&mut *hs, &req, &mut plx_base::checkpoint::NoCheckpoint);
         super::super::http_close(&mut *hs);
         let (pms_head, cdn_head) = (pms_h.join().unwrap(), cdn_h.join().unwrap());
         match got {

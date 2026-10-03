@@ -1110,7 +1110,7 @@ mod focus_tests {
 
     #[test]
     fn go_to_after_a_trailer_opens_the_loaded_parent() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             rk: "parent-movie".into(),

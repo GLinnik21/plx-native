@@ -167,7 +167,7 @@ the pinned origin and then could seat nobody: every pick is a `POST /api/v2/home
 and the one no-network shortcut (re-picking the active, PIN-free profile) did not cover a house
 whose active profile is the PIN-protected admin. So every ONLINE seating now writes a
 `ProfileCreds` record — user, primary, roster, and for a protected profile a `PinVerifier`
-(PBKDF2-HMAC-SHA-256 under a random salt, `crate::sha256`; never the PIN) — and
+(PBKDF2-HMAC-SHA-256 under a random salt, `plx_base::sha256`; never the PIN) — and
 `auth::switch_thread` reads `account::SwitchOutcome`: plex.tv's verdict (`Refused`) ends the
 switch as before, `Unreachable` falls through to `auth::offline_activation`, which seats a cached
 unprotected profile on the pick and a cached protected one on its PIN, and a profile this set has

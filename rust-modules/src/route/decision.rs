@@ -2282,9 +2282,9 @@ fn drive_encoder_cleanup(sid: ServerId) -> bool {
         .take_unchecked(sid);
     for check in checks {
         let fallback = check.clone();
-        if !crate::task::spawn_small("abr-cleanup", move || run_encoder_cleanup_check(check)) {
-            let _block = crate::task::allow_blocking(
-                const { &crate::task::BlockingLabel::new("encoder cleanup check (worker thread refused)") },
+        if !plx_base::task::spawn_small("abr-cleanup", move || run_encoder_cleanup_check(check)) {
+            let _block = plx_base::task::allow_blocking(
+                const { &plx_base::task::BlockingLabel::new("encoder cleanup check (worker thread refused)") },
             );
             run_encoder_cleanup_check(fallback);
         }
@@ -4240,7 +4240,7 @@ fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
     let Some(client) = cur_client(ps) else { return };
     stop_encoder_off_thread(
         "abr-original-stop",
-        const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        const { &plx_base::task::BlockingLabel::new("encoder stop (worker thread refused)") },
         move || {
             let ok = client.transcode_stop(&encoder);
             crate::player::log(&format!(
@@ -4261,7 +4261,7 @@ fn retire_hls_encoder_keep_source(ps: &PlaybackSession, encoder: String) {
     let Some(client) = cur_client(ps) else { return };
     stop_encoder_off_thread(
         "abr-original-physical-stop",
-        const { &crate::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
+        const { &plx_base::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
         move || {
             let ok = client.transcode_stop_physical(&encoder);
             crate::player::log(&format!(
@@ -4324,7 +4324,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
 }
 /// Test-only twin of [`clear_play_verdict`], for a test whose assertion presumes "no session":
 /// `player::state()` derives `Error` from these fields, and a test that exercised a refusal on the
-/// SAME session value may have left one standing. It no longer needs `crate::testlock::serial()`
+/// SAME session value may have left one standing. It no longer needs `plx_base::testlock::serial()`
 /// for this reason — since phase 9 a test owns its session outright and cannot leave a refusal in
 /// anybody else's.
 #[cfg(test)]
@@ -4749,7 +4749,7 @@ impl ScrobbleWork {
         // was announced before this worker was spawned, so a replacement reporter waits without
         // blocking the old one.
         if let Some(t) = self.report_th.take() {
-            crate::task::join("timeline", t);
+            plx_base::task::join("timeline", t);
         }
         if let Some((rk, t_ms, d_ms)) = self.final_report.take() {
             let ok = {
@@ -4768,7 +4768,7 @@ impl ScrobbleWork {
                     })
                 })
             };
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "timeline stopped t={}s/{}s ok={}",
                 t_ms / 1000,
                 d_ms / 1000,
@@ -4785,7 +4785,7 @@ impl ScrobbleWork {
             let ok = self
                 .client
                 .is_some_and(|c| c.transcode_stop(&self.transcode_session));
-            crate::eventlog::log(&format!("transcode stopped ok={}", ok as i32));
+            plx_base::eventlog::log(&format!("transcode stopped ok={}", ok as i32));
         }
     }
 }
@@ -4854,7 +4854,7 @@ pub(crate) fn scrobble_stop(
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();
-    let h = crate::task::spawn_small_keeping("scrobble", move || {
+    let h = plx_base::task::spawn_small_keeping("scrobble", move || {
         let work = { worker.lock().unwrap_or_else(|e| e.into_inner()).take() };
         if let Some(work) = work {
             work.run();
@@ -4866,8 +4866,8 @@ pub(crate) fn scrobble_stop(
         // Thread refusal is extraordinarily rare, but dropping the old reporter handle and
         // opening the stop fence would recreate the exact new-before-old race. Pay the old
         // synchronous cost on this failure path and preserve ordering.
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("scrobble stop (worker thread refused)") },
+        let _block = plx_base::task::allow_blocking(
+            const { &plx_base::task::BlockingLabel::new("scrobble stop (worker thread refused)") },
         );
         let work = { work.lock().unwrap_or_else(|e| e.into_inner()).take() };
         if let Some(work) = work {
@@ -4952,7 +4952,7 @@ impl ScrobbleJoin {
                     state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
                 }
             };
-            crate::task::join("scrobble", handle);
+            plx_base::task::join("scrobble", handle);
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.completed = state.completed.max(generation);
             state.joining = false;
@@ -5168,7 +5168,7 @@ pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Opti
     // and reopen this URL. Retire the old exact PMS key off the main thread, just like an ABR
     // commit, so a slow `/stop` cannot freeze the seek UI.
     let old = previous.clone();
-    if crate::task::spawn_small_keeping("seek-stop", move || {
+    if plx_base::task::spawn_small_keeping("seek-stop", move || {
         let ok = c.transcode_stop(&old);
         crate::player::log(&format!("seek: retired previous encoder ok={}", ok as i32));
     })
@@ -5183,7 +5183,7 @@ pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Opti
     Some(url)
 }
 
-use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the session's HUD title/ctxline)
+use plx_base::cbuf::set as set_c; // shared fixed-C-buffer write (the session's HUD title/ctxline)
 
 // ---- the QUALITY ceiling: what the USER has asked this playback to come in under -------------
 
@@ -5313,7 +5313,7 @@ pub(crate) fn direct_play_mode() -> DirectPlayMode {
 
 pub(crate) fn restore_direct_play_mode(mode: DirectPlayMode) {
     #[cfg(test)]
-    crate::testlock::assert_held("direct-play preference");
+    plx_base::testlock::assert_held("direct-play preference");
     DIRECT_PLAY_MODE.store(match mode {
         DirectPlayMode::Auto => 0, DirectPlayMode::Forced => 1, DirectPlayMode::Disabled => 2,
     }, Ordering::Relaxed);
@@ -5339,7 +5339,7 @@ pub(crate) fn next_episode_mode() -> NextEpisodeMode {
 
 pub(crate) fn restore_next_episode_mode(mode: NextEpisodeMode) {
     #[cfg(test)]
-    crate::testlock::assert_held("next episode preference");
+    plx_base::testlock::assert_held("next episode preference");
     NEXT_EPISODE_MODE.store(mode.index(), Ordering::Relaxed);
 }
 
@@ -5369,7 +5369,7 @@ pub(crate) fn skip_interval() -> SkipInterval {
 
 pub(crate) fn restore_skip_interval(interval: SkipInterval) {
     #[cfg(test)]
-    crate::testlock::assert_held("skip interval preference");
+    plx_base::testlock::assert_held("skip interval preference");
     SKIP_INTERVAL.store(interval.index(), Ordering::Relaxed);
 }
 
@@ -5407,7 +5407,7 @@ pub(crate) fn subtitle_size() -> SubtitleSize {
 
 pub(crate) fn restore_subtitle_size(size: SubtitleSize) {
     #[cfg(test)]
-    crate::testlock::assert_held("subtitle size preference");
+    plx_base::testlock::assert_held("subtitle size preference");
     SUBTITLE_SIZE.store(size.index(), Ordering::Relaxed);
 }
 
@@ -5421,12 +5421,12 @@ pub(crate) fn restore_subtitle_size(size: SubtitleSize) {
 pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::mpsc::Sender<bool>>) {
     restore_subtitle_size(size);
     crate::ui::idle::invalidate();
-    let _ = crate::storage_worker::submit_retained(move || {
+    let _ = plx_base::storage_worker::submit_retained(move || {
         let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::eventlog::log("subtitle size: durable write failed (live value kept for this session)");
+            plx_base::eventlog::log("subtitle size: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -5446,7 +5446,7 @@ pub(crate) fn subtitle_position() -> SubtitlePosition {
 
 pub(crate) fn restore_subtitle_position(position: SubtitlePosition) {
     #[cfg(test)]
-    crate::testlock::assert_held("subtitle position preference");
+    plx_base::testlock::assert_held("subtitle position preference");
     SUBTITLE_POSITION.store(position.index(), Ordering::Relaxed);
 }
 
@@ -5454,12 +5454,12 @@ pub(crate) fn restore_subtitle_position(position: SubtitlePosition) {
 pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option<std::sync::mpsc::Sender<bool>>) {
     restore_subtitle_position(position);
     crate::ui::idle::invalidate();
-    let _ = crate::storage_worker::submit_retained(move || {
+    let _ = plx_base::storage_worker::submit_retained(move || {
         let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::eventlog::log("subtitle position: durable write failed (live value kept for this session)");
+            plx_base::eventlog::log("subtitle position: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -5499,7 +5499,7 @@ pub(crate) fn restore_quality(q: Quality) {
     // `on_deck_hevc_p5_preview_uses_the_selected_episodes_codec` flaked exactly this way. Same
     // guard as the plex server registry (`plex::servers::register_with_client_id`).
     #[cfg(test)]
-    crate::testlock::assert_held("the playback quality ceiling (restore_quality)");
+    plx_base::testlock::assert_held("the playback quality ceiling (restore_quality)");
     QUALITY.store(supported_quality(q).index(), Ordering::Relaxed);
 }
 
@@ -5529,7 +5529,7 @@ fn persist_quality_choice(q: Quality) -> Quality {
     crate::player::report::note_quality_selected_for(playback_trace_generation(), q);
     // See `restore_quality`: the same process global, the same lock requirement in tests.
     #[cfg(test)]
-    crate::testlock::assert_held("the playback quality ceiling (persist_quality_choice)");
+    plx_base::testlock::assert_held("the playback quality ceiling (persist_quality_choice)");
     QUALITY.store(q.index(), Ordering::Relaxed);
     // A session write is a read-modify-write under the session lock: changing this preference
     // must not overwrite a roster refresh, a profile switch, or another profile's recents.
@@ -6015,7 +6015,7 @@ pub(super) fn queue_put_selection(sid: ServerId, part: i64, aud: i64, sub: i64) 
 }
 
 fn spawn_selection_worker() {
-    let spawned = crate::task::spawn_small("put-selection", || loop {
+    let spawned = plx_base::task::spawn_small("put-selection", || loop {
         let req = {
             let mut queue = selection_queue();
             let Some(req) = queue.pending.pop_front() else {
@@ -6285,15 +6285,15 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
         return;
     };
     let worker_ids = resources.identities.clone();
-    if !crate::task::spawn_small("resolve-abandoned-stop", move || {
+    if !plx_base::task::spawn_small("resolve-abandoned-stop", move || {
         for identity in worker_ids {
             let _ = client.transcode_stop(&identity);
         }
     }) {
         // Thread creation failure is rarer than cancellation and must not turn into a permanent
         // server allocation. The normal path above keeps this network work off the main thread.
-        let _block = crate::task::allow_blocking(
-            const { &crate::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
+        let _block = plx_base::task::allow_blocking(
+            const { &plx_base::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
         );
         for identity in resources.identities {
             let _ = client.transcode_stop(&identity);
@@ -6548,7 +6548,7 @@ fn request_play_inner(
     }
     PLAY_BUSY.store(true, Ordering::SeqCst);
     let (rk, part, vc, ac) = (request.rk, request.part, request.vcodec, request.acodec);
-    let spawned = crate::task::spawn_small("resolve", move || {
+    let spawned = plx_base::task::spawn_small("resolve", move || {
         if drain_previous {
             // The old attempt's `state=stopped` and transcode `/stop` were intentionally moved off
             // the SDL thread.  A user Retry must nevertheless preserve their ordering relative to
@@ -7438,7 +7438,7 @@ fn select_streams_for_encode(inputs: &RetranscodeClaimInputs) {
 /// ([`select_streams_for_encode`]). Pure with respect to
 /// `PlaybackSession` (never sees one): everything it needs is in `inputs`/`contract`, and
 /// everything it decides is returned rather than written, so it may run on
-/// [`crate::task::spawn_small`] as well as synchronously.
+/// [`plx_base::task::spawn_small`] as well as synchronously.
 fn try_retranscode(
     inputs: &RetranscodeClaimInputs,
     contract: crate::plex::EncodeContract,
@@ -7605,9 +7605,9 @@ fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &AppliedRetran
 /// rebuild, a seek during a transcode, the Original recovery's admission probe. A deliberate,
 /// labelled exception to the frame-thread blocking guard, not a fresh regression; see
 /// [`execute_retranscode_claim`]'s doc for what did move.
-fn pending_split_block() -> crate::task::AllowBlocking {
-    crate::task::allow_blocking(
-        const { &crate::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
+fn pending_split_block() -> plx_base::task::AllowBlocking {
+    plx_base::task::allow_blocking(
+        const { &plx_base::task::BlockingLabel::new("route PMS call (frame thread; pending split)") },
     )
 }
 
@@ -8114,7 +8114,7 @@ fn spawn_retranscode_claim(
     if take_fault(Fault::SpawnRefusal) {
         return false;
     }
-    crate::task::spawn_small("retranscode-claim", move || {
+    plx_base::task::spawn_small("retranscode-claim", move || {
         // catch_unwind OUTSIDE the mailbox write, like the resolve worker: a panicking attempt must
         // still land (as a `Rejected`) or `ControlPhase::Applying` waits forever for a mailbox
         // entry that will now never arrive.
@@ -8147,12 +8147,12 @@ fn discard_retranscode_claim_slot() {
 /// because a session left running is a leak on the server. `stop` runs at most once.
 fn stop_encoder_off_thread(
     thread: &str,
-    refused: &'static crate::task::BlockingLabel,
+    refused: &'static plx_base::task::BlockingLabel,
     stop: impl Fn() + Clone + Send + 'static,
 ) {
     let inline = stop.clone();
-    if crate::task::spawn_small_keeping(thread, move || stop()).is_none() {
-        let _block = crate::task::allow_blocking(refused);
+    if plx_base::task::spawn_small_keeping(thread, move || stop()).is_none() {
+        let _block = plx_base::task::allow_blocking(refused);
         inline();
     }
 }
@@ -8166,7 +8166,7 @@ fn stop_encoder_session(client: &'static crate::plex::Client, session: String) {
     }
     stop_encoder_off_thread(
         "retranscode-stop",
-        const { &crate::task::BlockingLabel::new("encoder stop (worker thread refused)") },
+        const { &plx_base::task::BlockingLabel::new("encoder stop (worker thread refused)") },
         move || {
             let _ = client.transcode_stop(&session);
         },
@@ -8453,7 +8453,7 @@ pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
 /// This is the one door: it drives every input `audio_enhancements_offered_live`/
 /// `displayed_audio_enhancements` read (I1-I7), registers a throwaway server carrying the given
 /// Plex Pass tristate, and returns the session plus that server's id so the caller can
-/// `crate::plex::reset_servers_for_test()` when done. Caller holds `crate::testlock::serial()`.
+/// `crate::plex::reset_servers_for_test()` when done. Caller holds `plx_base::testlock::serial()`.
 #[cfg(test)]
 pub(crate) struct EnhTestFixture {
     pub(crate) pass: crate::plex::serverinfo::Subscription,
@@ -8865,7 +8865,7 @@ pub(crate) fn report_timeline(
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
     // already on that line and this runs at 0.1 Hz, so only the silence needs a line of its own.
     if !ok {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "timeline post failed rk={} state={} t={}s",
             report.rating_key,
             report.state.as_str(),

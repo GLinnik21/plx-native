@@ -14,7 +14,7 @@
 # (FFmpeg 55->57->58->59->60, curl .so.5->.so.4, libAcbAPI deleted at 5.0), so the
 # trick pinned the binary to webOS 4.x: on anything newer the loader killed it at
 # exec(), before main, before the event log existed. Those libraries are now
-# dlopen'd by SONAME candidate list instead — rust-modules/src/dynlib.rs, and the
+# dlopen'd by SONAME candidate list instead — rust-modules/base/src/dynlib.rs, and the
 # video-plane comment at the top of src/starfish.c. `tools/fwcompat.py` grades the
 # result against 14 real firmware inventories without leaving the desk.
 #
@@ -391,7 +391,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 #   outright at webOS 5.0). A DT_NEEDED entry is a hard requirement for one exact name, cannot say
 #   "either of these", and a name the device lacks kills the process at exec() — before main,
 #   before the event log exists. So they are dlopen'd by SONAME CANDIDATE LIST:
-#   rust-modules/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+#   rust-modules/base/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
 #
 #   FFmpeg is not a version question at all any more: we SHIP our own, pinned (the bundled-FFmpeg
 #   section below builds libav*-plx.so.63/63/61 and stages them into pkg/). It is unlinked because
@@ -816,7 +816,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1040,7 +1040,7 @@ DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(L
 # single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
 # the television's own DroidSansFallback is present on the sets we have measured but is not
-# something a submission can be graded against. `rust-modules/src/fontcov.rs`'s host gate asserts
+# something a submission can be graded against. `rust-modules/base/src/fontcov.rs`'s host gate asserts
 # what it must cover; `text.rs`'s module doc is the chain.
 
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
@@ -1358,7 +1358,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_NIGHTLY) check --lib --tests --features lab-diagnostics
+	  cargo +$(RUST_NIGHTLY) check --lib --tests -p plxnative-modules -p plx_base --features lab-diagnostics
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1385,7 +1385,7 @@ check-cargo-unit-default:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base
 	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1418,7 +1418,7 @@ check-cargo-unit-hostsim:
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1441,7 +1441,7 @@ test-fast:
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_FAST_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) test --lib $(if $(T),'$(T)')
+	  cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base $(if $(T),'$(T)')
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
@@ -1467,7 +1467,7 @@ check-python: check-localization
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is
 	@# worth checking on every host run rather than only in the release job, which is the one place
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
-	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
+	@# (here, ci/flavor.py, rust-modules/base/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
 	@# The nightly workflow's pure logic (version/label/tag arithmetic, the skip decision, the
 	@# release-note template, and the latest.json/prune field mapping) — no git repository, no
@@ -1844,7 +1844,7 @@ uninstall: tv-lock-require
 	@echo "removed $(APPID)"
 
 # tools/threadprobe.c — measures where pthread_create actually gives up on the TV (the question
-# behind rust-modules/src/task.rs). Standalone diagnostic: not linked into the app, not deployed
+# behind rust-modules/base/src/task.rs). Standalone diagnostic: not linked into the app, not deployed
 # by `make deploy`. Build it, scp it, run it as root, delete it.
 threadprobe: tools/threadprobe.c
 	$(CC) $(CFLAGS) -o pkg/threadprobe tools/threadprobe.c -lpthread

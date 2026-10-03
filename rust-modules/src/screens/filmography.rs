@@ -1119,7 +1119,7 @@ mod tests {
         }
     }
 
-    fn screen(entry: u32, _serial: &crate::testlock::Serial) -> FilmographyScreen {
+    fn screen(entry: u32, _serial: &plx_base::testlock::Serial) -> FilmographyScreen {
         let mut s =
             FilmographyScreen::new(
                 EntryId(entry), ServerId::UNSET, format!("person-{entry}"),
@@ -1229,7 +1229,7 @@ mod tests {
     /// navigation; TableView receives only the render projection on Tick.
     #[test]
     fn the_cursor_lives_in_the_engine_and_nowhere_in_logical_state() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(7, &_serial);
         let measure = FixtureMeasure;
         let first = focus(&s, Located::Row(0));
@@ -1297,7 +1297,7 @@ mod tests {
     /// and slid independently while the row scrolled back.
     #[test]
     fn the_focus_plate_stays_on_its_label_while_the_department_row_scrolls_and_back() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(5, &_serial);
         s.model = [
             "Actor", "Producer", "Executive Producer", "Director", "Writer", "Appearances",
@@ -1363,7 +1363,7 @@ mod tests {
     /// Replaces the legacy left-cut pointer test through the engine's placed clip.
     #[test]
     fn a_tab_stop_is_clipped_at_the_content_columns_left_edge() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(3, &_serial);
         s.tab_hscroll.jump(650.0);
         let measure = FixtureMeasure;
@@ -1383,7 +1383,7 @@ mod tests {
 
     #[test]
     fn a_held_dpad_does_not_swap_the_preview() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(4, &_serial);
         s.preview = Some(("Actor".to_string(), "catalog-Film 0".to_string()));
         s.pv_want = s.preview.clone();
@@ -1444,7 +1444,7 @@ mod tests {
     /// countdown toward swapping the preview art.
     #[test]
     fn a_settling_preview_reports_motion_from_inside_advance() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(5, &_serial);
         s.preview = Some(("Actor".to_string(), "catalog-Film 0".to_string()));
         s.pv_want = s.preview.clone();
@@ -1469,7 +1469,7 @@ mod tests {
 
     #[test]
     fn only_a_joined_credit_exposes_a_real_target_and_no_catalog_item() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         select(&mut s, "Writer");
         let held = focus(&s, Located::Row(0));
@@ -1487,7 +1487,7 @@ mod tests {
     fn holding_a_joined_credit_does_not_activate_it_on_release() {
         use crate::ui::input::{InputMachine, PressEvent};
         use crate::ui::machine::{InstanceId, MachineId, PressArm, PressFrom};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         select(&mut s, "Writer");
         let key = focus(&s, Located::Row(0));
@@ -1519,7 +1519,7 @@ mod tests {
 
     #[test]
     fn cached_credit_activation_targets_participate_in_logical_state() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         select(&mut s, "Writer");
         let key = focus(&s, Located::Row(0));
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn pending_preview_identity_and_commit_deadline_participate_in_logical_state() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         let before = s.hash();
         s.pv_want = Some(("Writer".into(), "catalog-Film 0".into()));
@@ -1548,7 +1548,7 @@ mod tests {
 
     #[test]
     fn live_return_hydrates_the_request_time_department_and_preview() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(9, &_serial);
         select(&mut s, "Writer");
         let saved = s.memory();
@@ -1563,7 +1563,7 @@ mod tests {
 
     #[test]
     fn switching_department_resets_the_list_render_anchor() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(5, &_serial);
         s.table.sel = 8;
         let from = focus(&s, Located::Tab(0));
@@ -1585,7 +1585,7 @@ mod tests {
 
     #[test]
     fn back_emits_modal_dismissal_through_the_content_contract() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(6, &_serial);
         let ev = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
@@ -1606,7 +1606,7 @@ mod tests {
 
     #[test]
     fn joined_row_commit_pushes_detail_and_external_row_does_nothing() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut s = screen(10, &_serial);
         select(&mut s, "Writer");
         let held = focus(&s, Located::Row(0));
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn independent_instances_do_not_share_department_or_preview() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut a = screen(20, &_serial);
         let b = screen(21, &_serial);
         let mut present = crate::ui::present::Present::new();
@@ -1649,7 +1649,7 @@ mod tests {
 
     #[test]
     fn restore_preserves_department_preview_and_table_motion() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut original = screen(30, &_serial);
         select(&mut original, "Writer");
         original.preview = Some(("Writer".to_string(), "catalog-Written".to_string()));
@@ -1713,7 +1713,7 @@ mod tests {
 
     #[test]
     fn heartbeat_stays_person_for_the_separately_mounted_modal() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let s = screen(40, &_serial);
         assert_eq!(Screen::<FilmographyHost>::name(&s), "person");
     }
@@ -1728,7 +1728,7 @@ mod tests {
 
     #[test]
     fn restore_holds_stable_department_and_preview_until_async_model_arrives() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut source = screen(50, &_serial);
         select(&mut source, "Writer");
         source.preview = Some(("Writer".to_string(), "catalog-Written".to_string()));
@@ -1758,7 +1758,7 @@ mod tests {
     /// and server name are server text, so what is judged is the trailing value.
     #[test]
     fn every_credit_row_fits_the_table_in_every_language() {
-        use crate::fontcov::advances::ShippedMeasure;
+        use plx_base::fontcov::advances::ShippedMeasure;
         use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
         let credits = [
             credit("A Film With A Rather Long Title Indeed", "An Unusually Long Role Name", 2020, None),

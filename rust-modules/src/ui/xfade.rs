@@ -221,7 +221,7 @@ mod tests {
     //! `tick` reports to `ui::idle`'s process-global dirty flag (a ms ramp is invisible to the
     //! spring instrumentation, so it must say so itself). Driving an `Xfade` therefore mutates a
     //! crate global that `ui::idle`'s own "a settled screen does not repaint" assertions read, so
-    //! every test here holds `crate::testlock::serial()` — the rule in `lib.rs::testlock`, not a
+    //! every test here holds `plx_base::testlock::serial()` — the rule in `lib.rs::testlock`, not a
     //! precaution. Without it these would intermittently fail *other modules'* tests, which is the
     //! worst shape a flake can take.
     //!
@@ -249,7 +249,7 @@ mod tests {
     /// outgoing page until the 2 s keepalive hard-cut to the destination.
     #[test]
     fn a_running_ramp_asks_for_every_frame_of_itself() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         asked_to_repaint(); // drain whatever the previous test left on the shared flag
         let mut x = Xfade::new();
         x.reload(); // -> Out
@@ -269,7 +269,7 @@ mod tests {
     /// forever — the failure mode that costs the whole feature and that no floor-style gate sees.
     #[test]
     fn a_fader_at_rest_never_asks() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         asked_to_repaint(); // drain whatever the previous test left on the shared flag
         let mut x = Xfade::new(); // Idle
         for _ in 0..8 {
@@ -286,7 +286,7 @@ mod tests {
     /// server takes to answer.
     #[test]
     fn waiting_on_data_is_not_moving() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         asked_to_repaint(); // drain whatever the previous test left on the shared flag
         let mut x = Xfade::new();
         x.mount(); // -> Hold
@@ -323,7 +323,7 @@ mod tests {
     /// flicker no static read of the code would catch.
     #[test]
     fn a_reload_fades_out_commits_exactly_once_then_comes_back_to_full() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.reload();
         let mut commits = 0;
@@ -364,7 +364,7 @@ mod tests {
     /// must be unchanged from a single reload.
     #[test]
     fn a_second_reload_mid_fade_out_does_not_restart_the_ramp() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // baseline: frames to the commit for one uninterrupted reload
         let mut base = Xfade::new();
         base.reload();
@@ -410,7 +410,7 @@ mod tests {
     /// request while parked is not a lost press.
     #[test]
     fn a_reload_while_parked_at_zero_commits_on_the_very_next_frame() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.reload();
         while !x.tick(DT, false) {} // drive to the floor; content never arrives
@@ -431,7 +431,7 @@ mod tests {
     /// exists the fader has to come back to full on its own, with no further input.
     #[test]
     fn the_fade_never_wedges_at_zero_when_the_content_never_arrives() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.reload();
         while !x.tick(DT, false) {}
@@ -458,7 +458,7 @@ mod tests {
     /// happened to have left in its pending slot.
     #[test]
     fn mount_never_commits() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.mount();
         let (commits, alphas) = run(&mut x, 30, false);
@@ -472,7 +472,7 @@ mod tests {
     /// The half an async landing wants (content the screen did not schedule): ramp in, no commit.
     #[test]
     fn arrive_ramps_in_without_a_commit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.arrive();
         assert_eq!(x.alpha(), 0.0);
@@ -490,7 +490,7 @@ mod tests {
     /// `t`) from re-introducing a flicker no static read of the code would catch.
     #[test]
     fn cancel_withdraws_a_fade_out_without_ever_committing() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.reload();
         let (commits, _) = run(&mut x, 2, true);
@@ -518,7 +518,7 @@ mod tests {
     /// of motion undone, not like a whole fresh dissolve.
     #[test]
     fn a_withdrawal_costs_only_what_the_fade_had_already_spent() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut full = Xfade::new();
         full.arrive(); // a whole IN_MS ramp from the floor
         let mut want = usize::MAX;
@@ -553,7 +553,7 @@ mod tests {
     /// finish its own fade-in whichever phase the refusal landed in.
     #[test]
     fn cancel_is_refused_once_the_swap_has_happened() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         assert!(!x.cancel(), "nothing in flight");
 
@@ -590,7 +590,7 @@ mod tests {
     /// leave `Hold` + 3 in (0.357 each) = 6.
     #[test]
     fn a_dt_spike_completes_without_overshooting() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut x = Xfade::new();
         x.reload();
         let mut commits = 0;

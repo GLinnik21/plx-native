@@ -212,7 +212,7 @@ what stops five modules from re-implementing fractions of the same idiom.
 Result: BACK during a load returns in ~1 frame instead of 0.5-17 s.
 
 ### Phase B — the primitive
-Add `rust-modules/src/task.rs`: a `Job<T>` with generation guard, worker-written `settled` flag,
+Add `rust-modules/base/src/task.rs`: a `Job<T>` with generation guard, worker-written `settled` flag,
 single-flight, failure backoff, `Poll { Idle, Pending, Ready(T), Failed(Fail) }`, and a `Cancel`
 token that carries the in-flight `HttpStream` so cancellation can `shutdown(2)` a blocked socket.
 Plus `detach` for fire-and-forget. No runtime, no executor — a thread plus four atomics plus a

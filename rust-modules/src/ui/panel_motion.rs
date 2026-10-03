@@ -203,7 +203,7 @@ impl PanelMotion {
         if !crate::text::prewarm_pending() && !crate::text::background_prewarm_pending() {
             return 0;
         }
-        crate::diag::spans::span("warmdrain", || {
+        plx_base::diag::spans::span("warmdrain", || {
             let start = now_us();
             let mut done = crate::text::drain_prewarm(PREWARM_BUDGET_US, &mut now_us);
             // Live strings left over mean the budget is spent, and so does too small a remainder:
@@ -427,7 +427,7 @@ mod tests {
     /// was `warmdrain:22.7` in one frame and `warmdrain:9.8` on the menu's open frame.
     #[test]
     fn a_drain_stops_at_its_time_budget_and_the_rest_carries_over_live_first() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::text::reset_prewarm_for_test();
         queue("bg-", 5);
         crate::text::park_prewarm_as_background();
@@ -465,7 +465,7 @@ mod tests {
     /// with a real remainder, and drains alone when nothing live is queued.
     #[test]
     fn a_sliver_of_budget_left_by_the_live_queue_skips_the_background() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::text::reset_prewarm_for_test();
         queue("bg-", 3);
         crate::text::park_prewarm_as_background();

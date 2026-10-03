@@ -182,7 +182,7 @@ mod heartbeat_word_tests {
         crate::screens::registry::word::PICKER,
     ];
 
-    /// **Every caller holds `crate::testlock::serial()` for its whole body**, because deriving
+    /// **Every caller holds `plx_base::testlock::serial()` for its whole body**, because deriving
     /// this alphabet is not a read: [`overlay_words`] goes through
     /// `bridge::every_surface_word`, which mounts each surface by running real
     /// `bridge::frame`s — and a frame pumps every store. `browse`'s pump ends in `sync_roster`,
@@ -203,7 +203,7 @@ mod heartbeat_word_tests {
 
     #[test]
     fn every_manifest_route_word_is_one_the_heartbeat_prints() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let routes = route_words();
         let overlays = overlay_alphabet();
         for s in scenes() {
@@ -233,7 +233,7 @@ mod heartbeat_word_tests {
     /// is the player's.
     #[test]
     fn the_tables_are_derived_and_the_two_alphabets_stay_apart() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let routes = route_words();
         let overlays = overlay_alphabet();
         assert_eq!(
@@ -303,7 +303,7 @@ mod heartbeat_word_tests {
     /// route that exists.
     #[test]
     fn the_manifest_uses_a_subset_of_the_derived_alphabets() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let routes = route_words();
         let overlays = overlay_alphabet();
         let mut used_overlays = 0;
@@ -337,7 +337,7 @@ mod heartbeat_word_tests {
     /// thread, under the guard, and is therefore deterministic.
     #[test]
     fn deriving_the_surface_alphabet_cannot_mutate_an_unrelated_browse_owner() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();

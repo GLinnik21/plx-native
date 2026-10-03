@@ -74,7 +74,7 @@ pub(super) fn loaded_audio_page(account: &Account) -> PreferencesPage {
 
 #[test]
 fn account_constructor_is_inert_and_first_enter_emits_one_load_effect() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles);
     assert!(page.txn.pending.is_none());
     assert!(page.txn.request.is_none());
@@ -101,7 +101,7 @@ fn both_language_pickers_offer_the_full_catalog_and_an_empty_preference() {
 /// one activation path and keeps no submenu of its own.
 #[test]
 fn every_field_row_pushes_its_picker_and_nothing_else() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("pref-field-rows-push");
     let account = Account::new("pref-field-rows", 11, AudioPreferences::default());
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
@@ -123,7 +123,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
 /// confirmed snapshot and the list adopts it when it is returned to.
 #[test]
 fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("pref-parent-refresh");
     let account = Account::new("pref-parent-refresh", 12, AudioPreferences { subtitle_mode: 0, ..Default::default() });
     let mut parent = loaded_audio_page(&account);
@@ -145,7 +145,7 @@ fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
 /// The local fields have no snapshot to publish: the list re-reads the session values on its tick.
 #[test]
 fn the_field_list_rereads_a_local_value_a_picker_committed() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("pref-parent-local");
     let previous = crate::route::quality();
     crate::route::restore_quality(Quality::Original);
@@ -162,7 +162,7 @@ fn the_field_list_rereads_a_local_value_a_picker_committed() {
 /// their write lands) shows in the list's cached read-outs on its next tick.
 #[test]
 fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("pref-parent-look");
     let (size, position) = (crate::route::subtitle_size(), crate::route::subtitle_position());
     crate::route::restore_subtitle_size(crate::route::SubtitleSize::Medium);

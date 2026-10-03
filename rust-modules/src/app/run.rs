@@ -99,11 +99,11 @@ impl Frame {
 /// `app.adapters.player.mt()`. Threading a second `&MainThread` beside `&mut App` would have
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
-    let watchdog = crate::task::watchdog::LoopWatch::start();
+    let watchdog = plx_base::task::watchdog::LoopWatch::start();
     let mut clock_notice = super::clock_notice::ClockNotice::new();
     while app.running {
         watchdog.advance();
-        let _frame_scope = crate::task::FrameScope::enter();
+        let _frame_scope = plx_base::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(super::window_activity::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
@@ -118,7 +118,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
-        app.instr.mark(crate::diag::heartbeat::Phase::Top);
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Top);
         // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `ui::landgate`),
         // published at the TOP because a landing site is reachable from the dev scenarios below
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
@@ -139,7 +139,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
         ingest(app, fr);
-        app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Ingest); // ingest
 
         fr.now = clock::now();
         // Share the actual/replay frame timestamp, before spring dt is clamped.
@@ -163,7 +163,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // The `results` phase is four steps (scenarios, playback pump, clock/press, result
         // landing); three of them carry their own FRAMEDROP spans (`scen`, `pump`, `land`), so a
         // slow `results=` names which held the frame.
-        let scenarios_ok = crate::diag::spans::span("scen", || {
+        let scenarios_ok = plx_base::diag::spans::span("scen", || {
             if app.boot_initial.is_some() {
                 crate::dev::scenarios::controlled_each_frame(app, fr)
             } else {
@@ -172,13 +172,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         });
         if !scenarios_ok {
             // This iteration presents nothing, so its spans belong to no FRAMEDROP line.
-            let _ = crate::diag::spans::take();
+            let _ = plx_base::diag::spans::take();
             continue;
         }
-        crate::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
+        plx_base::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
         clock_and_press(app, fr);
-        crate::diag::spans::span("land", || unsafe { land_results(app, fr) });
-        app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
+        plx_base::diag::spans::span("land", || unsafe { land_results(app, fr) });
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Results); // results
         // **Was the player the page on top going INTO this frame?** The container's own commit
         // may take it off during `bridge::frame_with_tap` below, and the detail page it uncovers
         // has to be told to reveal the episode that played. This used to be a disagreement between
@@ -201,13 +201,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
             Ok(results) => results,
             Err(reason) => {
-                crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
+                plx_base::eventlog::log(&format!("replay: REFUSED — {reason}"));
                 app.running = false;
                 break;
             }
         };
         let tick = crate::ui::machine::Tick { ms: fr.now, dt_us: (fr.dt * 1_000_000.0) as u32 };
-        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
+        if first_controlled_frame { plx_base::eventlog::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
             tick.dt_us, app.pages.nav.tabs.stack.transition.commit_point(),
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.prepare_resources(&mut app.bridge);
@@ -237,11 +237,11 @@ pub(crate) unsafe fn run(app: &mut App) {
             std::mem::take(&mut app.inputs),
             &mut app.rec,
         ) };
-        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
+        if first_controlled_frame { plx_base::eventlog::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.resource_requests(app.bridge.take_resource_requests());
         if let Some(reason) = app.rec.failure().or_else(|| app.bridge.controlled_failure()) {
-            crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
+            plx_base::eventlog::log(&format!("replay: REFUSED — {reason}"));
             app.running = false;
             break;
         }
@@ -264,10 +264,10 @@ pub(crate) unsafe fn run(app: &mut App) {
         content_requests(app, fr);
         crate::dev::scenarios::advance_content_boot(app, fr);
         loop_requests(app);
-        app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
+        app.instr.mark(plx_base::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, fr);
         app.rec.content_results();
-        app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
+        app.instr.mark(plx_base::diag::heartbeat::Phase::TickDrain); // tick_drain
         prepare_window(app, fr);
         present_and_swap(
             app,
@@ -290,7 +290,7 @@ pub(crate) unsafe fn run(app: &mut App) {
 /// a bare units-per-second.
 fn clock_and_press(app: &mut App, fr: &mut Frame) {
     if app.boot_initial.is_some() && app.prev == 0 {
-        crate::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
+        plx_base::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
     }
     fr.dt = {
         let mut d = if app.prev != 0 {
@@ -346,7 +346,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // tick drain, so on a cold-open frame (~62 ms) every upload was over the ceiling and
     // only the forward-progress escape let ONE through. A quota of three that was really a
     // quota of one, on exactly the frames with the most textures waiting.
-    app.pages.budget.begin_frame(crate::diag::heartbeat::now_us());
+    app.pages.budget.begin_frame(plx_base::diag::heartbeat::now_us());
     // The poster adapter's frame (spec §3.3 step 3's tail): a new frame for the slot LRU and
     // every decoded image handed to the render cache as owned pixels. No GL here — the
     // upload is below, on the presenting side of the decision.
@@ -440,7 +440,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // A Tracks/More page's text, recorded in `update` or, on the mount frame, in the overlay's
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
-        crate::ui::panel_motion::PanelMotion::drain_queued_text(crate::diag::heartbeat::now_us);
+        crate::ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
         // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
         // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
         app.pages.nav.modals.preload_underlay();
@@ -448,7 +448,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         super::adapters::poster::prepare(
             &mut app.pages.budget,
             &mut ph,
-            crate::diag::heartbeat::now_us,
+            plx_base::diag::heartbeat::now_us,
         );
     }
     // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
@@ -460,7 +460,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // only ran on player frames, would leave the compositor believing our surface is still
     // opaque with an ordinary UI on it.
     crate::tv::window::opaque_route(app.player.video_plane_bound);
-    app.instr.mark(crate::diag::heartbeat::Phase::Prepare); // prepare
+    app.instr.mark(plx_base::diag::heartbeat::Phase::Prepare); // prepare
     // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
     // settled screen must never run untimed work at the loop rate (spec §8.3).
     app.instr.note_prepare();
@@ -510,7 +510,7 @@ unsafe fn present_and_swap(
         // of this frame — a read between the page and the surfaces splits its render pass.
         crate::gfx::field_frame_begin();
         let (_vx, _vy, _vw, _vh) = draw(app, fr);
-        app.instr.mark(crate::diag::heartbeat::Phase::Draw); // draw
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Draw); // draw
         // dev capture stream: grab this finished frame before the swap (after the last draw,
         // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
         // Deliberately NOT while the video plane is BOUND (the UI plane is transparent over
@@ -521,7 +521,7 @@ unsafe fn present_and_swap(
         if !app.player.video_plane_bound {
             crate::capture::tick(fr.now);
         }
-        app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Capture); // capture
         // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
         // compositor puts its video plane under ours — before the capture, so shots include it.
         #[cfg(feature = "hostsim")]
@@ -537,9 +537,9 @@ unsafe fn present_and_swap(
         }
         {
             #[cfg(feature = "threadcheck")]
-            let _present_scope = crate::task::watchdog::present_scope();
+            let _present_scope = plx_base::task::watchdog::present_scope();
             #[cfg(feature = "hostsim")]
-            crate::surface::present_supersampled();
+            plx_base::surface::present_supersampled();
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
             crate::tv::window::frame_probe_request();
@@ -553,7 +553,7 @@ unsafe fn present_and_swap(
         {
             app.buffer_flip_count = (app.buffer_flip_count + 1) % 60;
         }
-        app.instr.mark(crate::diag::heartbeat::Phase::Swap); // swap
+        app.instr.mark(plx_base::diag::heartbeat::Phase::Swap); // swap
         // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
         // idle gate skipped would pace the profiler's once-per-N-frames log off frames
         // that ran no phases at all.
@@ -586,7 +586,7 @@ unsafe fn present_and_swap(
         // The one stretch of main-thread time nothing is waiting on: spend a bounded slice of it
         // opening the theme faces and loading their glyph metrics (`text::warm_fonts_idle`), so
         // a page's first layout does not pay for them inside a transition. A no-op once warm.
-        crate::text::warm_fonts_idle(FONT_WARM_SLICE_US, crate::diag::heartbeat::now_us);
+        crate::text::warm_fonts_idle(FONT_WARM_SLICE_US, plx_base::diag::heartbeat::now_us);
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
@@ -2163,7 +2163,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             // A host Load of 0 with the clock sink off is "no video path", not an
                             // admitted slot. Counting it spends the cycle and the later failure
                             // opens the breaker, so every later title is skipped.
-                            let seam_absent = cfg!(feature = "hostsim") && !crate::devtrig::flag("clocksink");
+                            let seam_absent = cfg!(feature = "hostsim") && !plx_base::devtrig::flag("clocksink");
                             if started && !seam_absent {
                                 crate::player::preview::note_admitted();
                             } else if crate::route::url(&app.player.session).is_empty() {
@@ -2238,7 +2238,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
 /// instruments. Returns the viewport for the host-side screenshot that follows the draw.
 pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32) {
     #[cfg(feature = "threadcheck")]
-    let _draw_scope = crate::task::watchdog::draw_scope();
+    let _draw_scope = plx_base::task::watchdog::draw_scope();
             // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
             // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
             // region to be declared before rendering begins. See `egl.rs`.
@@ -2256,7 +2256,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // drawable size. At 1:1 on every television seen so far; on any 16:9 surface a
             // plain scale with zero letterbox (1080p->4K is exactly 2x); and on an unexpected
             // aspect, letterboxed rather than stretched or stuffed into a corner. See `surface`.
-            let (vx, vy, vw, vh) = crate::surface::viewport();
+            let (vx, vy, vw, vh) = plx_base::surface::viewport();
             glViewport(vx, vy, vw, vh);
             // EVERY screen draws inside ONE panic barrier. `plex_run` is `extern "C"` (main.c calls
             // it), so a panic unwinding out of a screen's draw is UB the toolchain turns into
@@ -2288,7 +2288,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
                         // and, from the acquired buffer to the swap, over the commit phase.
                         crate::tv::window::frame_probe_waiting();
-                        crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
+                        plx_base::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
                         crate::tv::window::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
@@ -2343,7 +2343,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
-                            crate::diag::spans::span("host", || crate::ui::popover::host::begin_frame(fr.underlay_moving));
+                            plx_base::diag::spans::span("host", || crate::ui::popover::host::begin_frame(fr.underlay_moving));
                         }
                         use crate::ui::frame::backdrop::Z;
                         let layers = app.pages.backdrop_layers(crate::ui::nav::page_alpha());
@@ -2371,7 +2371,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         };
                         {
                             let _declarations = crate::ui::frame::backdrop::discover(sources.clone());
-                            crate::diag::spans::span("disc", || page(Z::ALL));
+                            plx_base::diag::spans::span("disc", || page(Z::ALL));
                         }
                         sources.borrow_mut().resolve();
                         let jobs = sources.borrow().jobs();
@@ -2381,7 +2381,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
                             let reg = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
                             // `src`: one blur source job, its replay of the page prefix included.
-                            crate::diag::spans::span("src", || {
+                            plx_base::diag::spans::span("src", || {
                                 if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
                                     crate::gfx::retain_backdrop(ceiling);
                                 }
@@ -2434,7 +2434,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // A supersampled simulator render (`surface::render_scale`) exists to be
                         // captured, so it leaves the diagnostic digits out of the picture.
                         #[cfg(feature = "devtools")]
-                        if crate::surface::render_scale() == 1 {
+                        if plx_base::surface::render_scale() == 1 {
                             let fps_col = if app.buffer_flip_count < 30 {
                                 crate::ui::theme::DIAG_FLIP_A
                             } else {
@@ -2641,7 +2641,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             // was already being paid.
             let (uploads, upload_px) = super::adapters::poster::take_upload_stats();
             let (cards, cards_off) = crate::gfx::take_card_stats();
-            app.instr.note_frame_counters(crate::diag::heartbeat::FrameCounters {
+            app.instr.note_frame_counters(plx_base::diag::heartbeat::FrameCounters {
                 uploads,
                 upload_px,
                 cards,
@@ -2649,7 +2649,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             });
             // Taken on every presented frame for the counters' reason above: a span belongs to
             // the frame it ran in, never to the next slow one.
-            let spans = crate::diag::spans::take();
+            let spans = plx_base::diag::spans::take();
             for line in app.instr.frame_drop_lines(&|| {
                 format!(
                     "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}{}",
@@ -2666,7 +2666,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             // Spans recorded on a frame that did not present (`scen`/`pump`/`land`, `feed`, the
             // engine's `sfv`/`sfa`) belong to no FRAMEDROP line: left in place they would print on
             // the next presented frame's.
-            let _ = crate::diag::spans::take();
+            let _ = plx_base::diag::spans::take();
         }
 }
 
@@ -2786,7 +2786,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             let budget = app.pages.budget.take_frame_stats();
             let (carried, dropped) = app.pages.take_heartbeat_counters();
             let tail = app.instr.heartbeat_tail(
-                crate::diag::heartbeat::HeartbeatFields {
+                plx_base::diag::heartbeat::HeartbeatFields {
                     carried,
                     dropped,
                     admitted: budget.admitted,
@@ -2973,7 +2973,7 @@ mod lifecycle_regression_tests {
             player: crate::player::machine::Player::new(),
             adapters: Adapters {
                 player: crate::player::adapter::PlayerAdapter::new(unsafe {
-                    crate::task::MainThread::assume()
+                    plx_base::task::MainThread::assume()
                 }),
             },
             repause_at: -1,
@@ -2990,7 +2990,7 @@ mod lifecycle_regression_tests {
             #[cfg(target_os = "linux")]
             wslg_frame_pacing: false,
             t0: Default::default(),
-            instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
+            instr: plx_base::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {
             #[cfg(feature = "devtriggers")]
             poster_gate: Default::default(),
@@ -3112,7 +3112,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn controlled_content_boot_waits_for_the_queued_home_root() {
         use crate::ui::machine::{Fx, MachineId, NavOp};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut app = app();
         let encoded = super::super::synthetic_home_initial(1, 32517, Some("flow12".into())).unwrap();
         app.boot_initial = Some(serde_json::from_str(&encoded).unwrap());
@@ -3136,7 +3136,7 @@ mod lifecycle_regression_tests {
     fn a_recorded_raw_hang_probe_replays_without_missing_input() {
         use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
         use crate::ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut app = app();
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let initial = Initial::synthetic_home(1, 32517, None).unwrap();
@@ -3146,7 +3146,7 @@ mod lifecycle_regression_tests {
         app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
         app.rec.tick(initial.clock_start, 0.0);
         {
-            let _frame = crate::task::FrameScope::enter();
+            let _frame = plx_base::task::FrameScope::enter();
             assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
         }
         app.rec.end_frame(&|| 7);
@@ -3161,7 +3161,7 @@ mod lifecycle_regression_tests {
             app.rec = Recplay::controlled(Preflight::Replay {
                 initial: initial.clone(), recording, mode: ReplayMode::Resolve }, &initial).unwrap();
             for value in app.rec.replay_inputs() {
-                let _frame = crate::task::FrameScope::enter();
+                let _frame = plx_base::task::FrameScope::enter();
                 unsafe { replay_inject(&mut app, &mut fr, &value); }
             }
             Tap::focus(&mut app.rec, 0, None);
@@ -3174,7 +3174,7 @@ mod lifecycle_regression_tests {
     fn controlled_foreground_replays_once_without_platform_authority() {
         use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
         use crate::ui::{dispatch::Tap, machine::Tick, rec::{Header, Recording}};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
             let mut app = app();
             let initial = Initial::synthetic_home(1, 32517, None).unwrap();
@@ -3237,27 +3237,27 @@ mod lifecycle_regression_tests {
     #[test]
     #[should_panic(expected = "main-thread block: dev hang probe")]
     fn hang_probe_dispatch_uses_frame_guard() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut app = app();
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
-        let _scope = crate::task::FrameScope::enter();
+        let _scope = plx_base::task::FrameScope::enter();
         unsafe { ingress_token(&mut app, &mut fr, "hang:1"); }
     }
 
     #[cfg(feature = "devtriggers")]
     #[test]
     fn hang_probe_dispatch_raw_bypasses_frame_guard() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut app = app();
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
-        let _scope = crate::task::FrameScope::enter();
+        let _scope = plx_base::task::FrameScope::enter();
         assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
     }
 
     #[cfg(feature = "devtriggers")]
     #[test]
     fn hang_probe_dispatch_preserves_key_order() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         // Only SDL's event subsystem: no window, renderer, boot or device.
         assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
         struct Events;
@@ -3277,7 +3277,7 @@ mod lifecycle_regression_tests {
             // The labelled probe's guard panic is the observation boundary BEFORE sleeping.
             // No final drain can make an incorrectly ordered dispatch pass this assertion.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _scope = crate::task::FrameScope::enter();
+                let _scope = plx_base::task::FrameScope::enter();
                 unsafe {
                     if fifo {
                         ingest(&mut app, &mut fr);
@@ -3302,7 +3302,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn remote_fifo_exposes_independent_pointer_edges() {
         use crate::ui::machine::{Edge, InputKind, Key};
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         // SDL's event subsystem only: no window, renderer, native playback or device.
         assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
         struct Events;
@@ -3363,7 +3363,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn controlled_sdl_pointer_gestures_match_ordinary_ingress() {
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let mut observed=Vec::new();
         for controlled in [false,true] {
             let mut app=app();
@@ -3409,7 +3409,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn controlled_sdl_records_one_owned_event_after_hitmap_for_each_pointer_edge() {
         use crate::ui::{machine::Tick,rec::{MemSink,Header,Recording},screen::{Stop,Hover,Activate},Rect};
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let mut app=app();
         super::super::bridge::show_page(&mut app.pages,AppArg::Settings(crate::screens::family::SettingsPage::Root));
         frame(&mut app,0);
@@ -3462,7 +3462,7 @@ mod lifecycle_regression_tests {
     }
 
     impl Rig {
-        /// `None` means `crate::task::spawn_small_keeping` was refused by the OS (Finding 4: the
+        /// `None` means `plx_base::task::spawn_small_keeping` was refused by the OS (Finding 4: the
         /// rig must honour `task.rs`'s "a refused spawn is a return value, not a panic" contract
         /// instead of `.expect`-ing it into a panic that reads as a product regression). Nothing
         /// past the spawn point has been armed yet at that moment — `register_for_test` and
@@ -3472,7 +3472,7 @@ mod lifecycle_regression_tests {
         /// function returns `None`.
         ///
         /// **RED observed for this contract, SIMULATED (not a real OS refusal):** temporarily
-        /// change the `match crate::task::spawn_small_keeping(...)` below to unconditionally
+        /// change the `match plx_base::task::spawn_small_keeping(...)` below to unconditionally
         /// evaluate to `None` (discarding the real handle), leaving the closure and everything
         /// else untouched, then run the five tests in this module. Before this fix that
         /// substitution panicked every one of them — at the old `.expect("spawn lifecycle
@@ -3499,10 +3499,10 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
-            let worker = match crate::task::spawn_small_keeping("lifecycle-fixture", move || {
+            let worker = match plx_base::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
-                    let (mut socket, _) = match crate::testnet::accept(&listener) {
+                    let (mut socket, _) = match plx_base::testnet::accept(&listener) {
                         Ok(v) => v,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(1));
@@ -3673,13 +3673,13 @@ mod lifecycle_regression_tests {
             // not re-panic here. `.join().unwrap()` used to propagate the worker's `Err` into
             // this destructor, and a panic inside a destructor while another panic is already
             // unwinding is a Rust abort (SIGABRT) that takes down the whole test binary — every
-            // other module's result in that `make check` run along with it. `crate::task::join`
+            // other module's result in that `make check` run along with it. `plx_base::task::join`
             // (task.rs's own documented contract: a bare `.join()` outside that module is a
             // stall nobody can see) logs a panicked worker instead of re-panicking, and the
             // `if let` tolerates an absent handle on the refused-spawn path this rig can no
             // longer actually reach (`Rig` is only ever constructed with `worker: Some(..)`).
             if let Some(h) = self.worker.take() {
-                crate::task::join("lifecycle-fixture", h);
+                plx_base::task::join("lifecycle-fixture", h);
             }
             crate::player::SHARED.reset_session();
             crate::route::reset_player_control_for_test(&self.app.player.session);
@@ -3689,7 +3689,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn did_background_cancels_accepted_resolve_before_player_mount() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED did_background_cancels_accepted_resolve_before_player_mount: \
@@ -3758,7 +3758,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn did_background_suspends_created_engine_before_player_mount() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED did_background_suspends_created_engine_before_player_mount: \
@@ -3795,7 +3795,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn did_background_prevents_due_up_next_from_launching_while_suspended() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED did_background_prevents_due_up_next_from_launching_while_suspended: \
@@ -3842,7 +3842,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn foreground_due_up_next_still_requests_its_successor() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED foreground_due_up_next_still_requests_its_successor: \
@@ -3863,7 +3863,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn replacement_play_retires_failed_foreground_owner_and_lands() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED replacement_play_retires_failed_foreground_owner_and_lands: \
@@ -4050,7 +4050,7 @@ mod lifecycle_regression_tests {
     /// detail page the film was started from — the same entry, not a fresh copy of it.
     #[test]
     fn back_from_the_player_returns_to_the_detail_page_it_was_started_from() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else {
             eprintln!("SKIPPED back_from_the_player_returns_to_the_detail_page_it_was_started_from: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4077,7 +4077,7 @@ mod lifecycle_regression_tests {
     /// session was launched from (§5.1), not Home.
     #[test]
     fn an_end_of_stream_without_up_next_returns_to_the_detail_page() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else {
             eprintln!("SKIPPED an_end_of_stream_without_up_next_returns_to_the_detail_page: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4103,7 +4103,7 @@ mod lifecycle_regression_tests {
     /// page the session returns to is Home itself — the same entry, with its memory.
     #[test]
     fn back_from_a_session_started_on_home_returns_to_home() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else {
             eprintln!("SKIPPED back_from_a_session_started_on_home_returns_to_home: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4168,7 +4168,7 @@ mod lifecycle_regression_tests {
     /// then plays the successor exactly as it always has.
     #[test]
     fn after_credits_requests_no_successor_until_the_stream_ends() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!("SKIPPED after_credits_requests_no_successor_until_the_stream_ends: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4197,7 +4197,7 @@ mod lifecycle_regression_tests {
     /// successor before the stream ends.
     #[test]
     fn countdown_requests_the_successor_from_inside_the_credits() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!("SKIPPED countdown_requests_the_successor_from_inside_the_credits: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4220,7 +4220,7 @@ mod lifecycle_regression_tests {
     /// film does: back to the page the session was launched from, nothing requested.
     #[test]
     fn off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(true) else {
             eprintln!("SKIPPED off_returns_to_the_detail_page_at_the_end_of_an_episode_with_a_successor: \
                 lifecycle fixture worker thread could not be spawned");
@@ -4279,7 +4279,7 @@ mod video_plane_gate_tests {
     /// `fr.player` back as `opaque_route`'s argument fails claim 3.
     #[test]
     fn the_present_gate_answers_true_only_while_the_plane_is_bound() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut player = crate::player::machine::Player::new();
         assert!(!video_plane_bound(), "a fresh machine has no plane");

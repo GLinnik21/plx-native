@@ -123,7 +123,7 @@ pub(crate) use servers::{finish_profile_switch, finish_roster_refresh, id_of_mac
 // does — that call mints and PERSISTS a device uuid, which a host test has no business writing —
 // and `reset_servers_for_test` is what keeps the table a per-test fixture instead of a growing
 // process-global holding clients whose loopback ports closed when their test returned. Both must be
-// called under `crate::testlock::serial`.
+// called under `plx_base::testlock::serial`.
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]

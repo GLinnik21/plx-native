@@ -86,7 +86,7 @@ fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx
 
 // Synchronizing the identity registry and querying/hash-writing a screen read shared stores
 // and legacy panels. Require the caller's guard; acquiring one here would deadlock install().
-fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
+fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
         entry: EntryId(7),
         sid,
@@ -180,8 +180,8 @@ fn detail(sid: ServerId, rk: &str) -> Detail {
     }
 }
 
-fn install(d: Detail) -> crate::testlock::Serial {
-    let guard = crate::testlock::serial();
+fn install(d: Detail) -> plx_base::testlock::Serial {
+    let guard = plx_base::testlock::serial();
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }
@@ -249,7 +249,7 @@ fn pump_restore(screen: &mut DetailScreen) {
 
 #[test]
 fn logical_hash_names_the_mounted_item() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     assert_ne!(
         bare(&_guard, ServerId::UNSET, "a").hash(),
         bare(&_guard, ServerId::UNSET, "b").hash()
@@ -258,7 +258,7 @@ fn logical_hash_names_the_mounted_item() {
 
 #[test]
 fn logical_hash_names_the_full_restore_target() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut a = bare(&_guard, ServerId::UNSET, "show");
     let mut b = bare(&_guard, ServerId::UNSET, "show");
     let mut left = Spot {
@@ -280,7 +280,7 @@ fn logical_hash_names_the_full_restore_target() {
 
 #[test]
 fn logical_hash_names_the_debounce_deadline() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut a = bare(&_guard, ServerId::UNSET, "show");
     let mut b = bare(&_guard, ServerId::UNSET, "show");
     a.pending_season = Some(1);
@@ -292,7 +292,7 @@ fn logical_hash_names_the_debounce_deadline() {
 
 #[test]
 fn refresh_obligation_is_logical_state_without_a_restore_intent() {
-    let guard = crate::testlock::serial();
+    let guard = plx_base::testlock::serial();
     let mut screen = bare(&guard, ServerId::UNSET, "show");
     let none = screen.hash();
     screen.refresh = DetailRefreshPhase::Deferred;
@@ -309,7 +309,7 @@ fn refresh_obligation_is_logical_state_without_a_restore_intent() {
 
 #[test]
 fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
-    let guard = crate::testlock::serial();
+    let guard = plx_base::testlock::serial();
     let sid = ServerId::UNSET;
     for cached in [false, true] {
         for phase in [DetailRefreshPhase::None, DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
@@ -459,7 +459,7 @@ fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
 /// not labelled as the T1 pin the contract calls for until now.
 #[test]
 fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_failure() {
-    let guard = crate::testlock::serial();
+    let guard = plx_base::testlock::serial();
     let sid = ServerId::UNSET;
     for success in [false, true] {
         test_store().run(MetadataCmd::Clear);
@@ -553,7 +553,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
 #[test]
 fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let sid = ServerId::UNSET;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::metadata::set_current_for_test(test_store().state_mut(), None);
     let mut screen = bare(&_guard, sid, "show");
     let measure = crate::ui::fixture::FixtureMeasure;
@@ -797,7 +797,7 @@ fn tracks_availability_is_detail_state_not_surface_state() {
 
 #[test]
 fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut pms_state = crate::pms::PmsState::default();
     let pms_adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut pms_state, &pms_adapter, 3, crate::pms::HubState::Ready);
@@ -828,7 +828,7 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
 
 #[test]
 fn a_crew_only_item_still_gets_the_cast_and_crew_shelf() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut d = detail(ServerId::UNSET, "show");
     d.cast.clear();
     d.crew.push(crate::metadata::Cast {
@@ -1079,7 +1079,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
 
 #[test]
 fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     use crate::ui::hit::{HitMap, PointerKind};
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("hero-hit-own", "127.0.0.1", 1, "t", "c1");
@@ -2014,7 +2014,7 @@ fn leaving_the_page_resets_play_once_state_alongside_the_existing_preview_fields
 
 #[test]
 fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
     crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
@@ -2150,7 +2150,7 @@ fn a_pending_season_settle_reports_motion_from_inside_advance() {
 #[test]
 fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     let sid = ServerId::UNSET;
-    let guard = crate::testlock::serial();
+    let guard = plx_base::testlock::serial();
     let mut screen = bare(&guard, sid, "show");
     assert!(screen.detail(test_store().view()).is_none(), "no metadata installed for this test");
     let measure = crate::ui::fixture::FixtureMeasure;
@@ -2328,7 +2328,7 @@ fn a_movie_without_extras_does_not_offer_a_trailer_disc() {
 
 #[test]
 fn a_trailer_disc_requires_both_rk_and_part() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let cases = [
         crate::metadata::Extra {
             rk: String::new(),

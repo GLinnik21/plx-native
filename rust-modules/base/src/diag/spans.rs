@@ -27,18 +27,18 @@ thread_local! {
 }
 
 /// Arm the instrument — `app::boot`, beside `Instruments::new`, when `plxnative-framedrop` is set.
-pub(crate) fn arm() {
+pub fn arm() {
     ON.store(true, Relaxed);
 }
 
 #[inline]
-pub(crate) fn armed() -> bool {
+pub fn armed() -> bool {
     ON.load(Relaxed)
 }
 
 /// Run `f`, and when armed add its wall time to this frame's `name`.
 #[inline]
-pub(crate) fn span<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
+pub fn span<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
     if !armed() {
         return f();
     }
@@ -49,7 +49,7 @@ pub(crate) fn span<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
 }
 
 /// Add `ms` to this frame's `name` (the seam [`span`] and the tests share).
-pub(crate) fn note(name: &'static str, ms: f64) {
+pub fn note(name: &'static str, ms: f64) {
     SPANS.with(|s| {
         let mut s = s.borrow_mut();
         match s.iter_mut().find(|e| e.0 == name) {
@@ -65,7 +65,7 @@ pub(crate) fn note(name: &'static str, ms: f64) {
 /// This frame's spans as the `FRAMEDROP` field (`""` when none ran), and a reset for the next
 /// frame. Called once per PRESENTED frame, whether or not it crossed the threshold, so a span
 /// never carries into a later frame's line — the same rule `FrameCounters` learned in phase 11.
-pub(crate) fn take() -> String {
+pub fn take() -> String {
     SPANS.with(|s| {
         let mut s = s.borrow_mut();
         let out = format(&s);

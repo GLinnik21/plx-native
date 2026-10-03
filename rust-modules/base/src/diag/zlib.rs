@@ -51,7 +51,7 @@ fn loaded() -> bool {
 }
 
 /// gzip `src`, or `None` if zlib could not be bound (the caller then sends it uncompressed).
-pub(crate) fn gzip(src: &[u8]) -> Option<Vec<u8>> {
+pub fn gzip(src: &[u8]) -> Option<Vec<u8>> {
     if !loaded() {
         return None;
     }

@@ -5,12 +5,12 @@
 //! ends in `…` on the television. The Belarusian root shipped exactly that way ("Неабавязковыя
 //! справаздачы, звесткі пра прыватнасць і лака…"), invisible in the simulator because its newer
 //! SDL_ttf sums fractional advances while the device rounds each glyph to a whole pixel.
-//! [`crate::fontcov::advances::ShippedMeasure`] measures the shipped faces the device's way, so
+//! [`plx_base::fontcov::advances::ShippedMeasure`] measures the shipped faces the device's way, so
 //! these assertions are about the television, not the Mac. The Legal notices and Privacy & data
 //! pages carry the same guard in their own modules (`legal.rs`, `consent_text_fit_tests.rs`).
 
 use super::*;
-use crate::fontcov::advances::ShippedMeasure;
+use plx_base::fontcov::advances::ShippedMeasure;
 use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::ui::route_screen::RouteLayout;
 use crate::ui::table::TableView;

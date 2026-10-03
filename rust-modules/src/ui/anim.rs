@@ -129,7 +129,7 @@ fn log(m: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::ANIMATION))
+        .open(&plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::ANIMATION))
     {
         let _ = writeln!(f, "{m}");
     }

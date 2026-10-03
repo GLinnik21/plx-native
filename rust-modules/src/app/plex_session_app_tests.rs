@@ -24,7 +24,7 @@ fn signed_in() -> Session {
 /// for a save that serves the same content.
 #[test]
 fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("bridge-session-landing");
     struct ResetIdle;
     impl Drop for ResetIdle {
@@ -34,14 +34,14 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
     let mut bridge = Bridge::for_test(|| 0);
     session::save(&signed_in());
     crate::ui::idle::reset_for_test();
-    let _frame = crate::task::FrameScope::enter();
+    let _frame = plx_base::task::FrameScope::enter();
     bridge.land_session_cache();
     assert_eq!(crate::ui::idle::take_local_damage(), 1, "a changed session lands on the frame step");
     bridge.land_session_cache();
     assert_eq!(crate::ui::idle::take_local_damage(), 0, "one invalidation per landing");
     drop(_frame);
     session::save(&signed_in());
-    let _frame = crate::task::FrameScope::enter();
+    let _frame = plx_base::task::FrameScope::enter();
     bridge.land_session_cache();
     assert_eq!(crate::ui::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
 }
@@ -53,14 +53,14 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
 /// are the assertion here.
 #[test]
 fn login_frames_never_wait_for_the_session_io_lock() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("login-frame-storage-blocked");
     // The scratch session's own save primed the cache; start from the unloaded one a first frame
     // finds, so its `peek` has a refresh to schedule behind the held lock.
     session::invalidate_for_test();
     session::reset_reads_for_test();
     session::with_io_for_test(|| {
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         let mut bridge = Bridge::for_test(|| 0);
         let mut pages = crate::ui::dispatch::Dispatcher::new();
         crate::app::bridge::nav_root(&mut pages, crate::screens::registry::AppArg::Login);
@@ -80,14 +80,14 @@ fn login_frames_never_wait_for_the_session_io_lock() {
 /// it. A record saved before the field existed loads as NONE.
 #[test]
 fn audio_enhancements_persist_and_restore() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("audio-enhancements");
     session::save(&signed_in());
     assert_eq!(session::load().audio_enhancements(), crate::plex::AudioEnhancements::NONE, "absent field = NONE");
 
     let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     crate::player::set_audio_enhancements(enh);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     let saved = session::load();
     assert_eq!(saved.audio_enhancements(), enh);
     assert_eq!(saved.client_id, signed_in().client_id, "merged, not replaced");

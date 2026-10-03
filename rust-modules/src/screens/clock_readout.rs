@@ -61,7 +61,7 @@ impl ClockWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fontcov::advances::ShippedMeasure;
+    use plx_base::fontcov::advances::ShippedMeasure;
     use crate::ui::fit::HEADROOM;
     use crate::i18n::{language_on_this_thread_for_test, msg};
     use crate::net::keypin;
@@ -93,7 +93,7 @@ mod tests {
     /// pair changes nothing and reports nothing. Another server's fact never shows.
     #[test]
     fn the_watch_re_reads_when_the_revision_or_the_machine_moves_and_not_otherwise() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("clock-watch.invalid", 32400);
         let _scoped = keypin::Scoped::watch_machine("clock-watch-machine", &key);
         let here = Some("clock-watch-machine");

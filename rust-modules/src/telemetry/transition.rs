@@ -21,7 +21,7 @@ fn newly_enables_errors(previous: &Consent, next: &Consent) -> bool {
 /// withdrawal must not wait behind it with the old decision still published (0.6.6 published at
 /// once and wrote on its storage worker) — **and neither may this function's own caller**, the
 /// frame loop's message dispatch (`app::bridge::AppRig::deliver`). The write itself is queued onto
-/// `crate::storage_worker` for exactly that reason, same as `release/v0.6`'s
+/// `plx_base::storage_worker` for exactly that reason, same as `release/v0.6`'s
 /// `record_with_receipt`; only the in-memory publish above and the spool/native side effects run
 /// inline. A failed or refused write is logged and still honoured for this session; enabling
 /// detection remains a function of the owner's explicit transition.
@@ -48,19 +48,19 @@ pub(crate) fn commit(previous: &Consent, next: &Consent) {
 /// result — per `storage_worker`'s own contract ("Dropping a ticket cancels interest, not an
 /// already accepted durable write") — the job still runs to completion.
 fn persist_record_off_thread(next: Consent) {
-    let submitted = crate::storage_worker::submit(move || {
+    let submitted = plx_base::storage_worker::submit(move || {
         let outcome = crate::telemetry::persistence::record(&next);
         if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
-            crate::eventlog::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
+            plx_base::eventlog::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
         }
     });
     if submitted.is_err() {
-        crate::eventlog::log("telemetry: the decision could not be queued for persistence");
+        plx_base::eventlog::log("telemetry: the decision could not be queued for persistence");
     }
     // Tests want the write's effect (and `persistence::last_call_thread()`) settled before the
     // next assertion; production has no such deadline and never drains.
     #[cfg(test)]
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 }
 
 /// Publish the prospective default before touching disk, then erase every queued record and stop
@@ -85,21 +85,21 @@ pub(crate) fn forget(_prior: &Consent) {
 }
 
 fn persist_forget_off_thread() {
-    let submitted = crate::storage_worker::submit(|| {
+    let submitted = plx_base::storage_worker::submit(|| {
         let outcome = crate::telemetry::persistence::forget();
         if !matches!(
             outcome.write,
             crate::telemetry::persistence::PersistResult::Durable
                 | crate::telemetry::persistence::PersistResult::Delegated
         ) {
-            crate::eventlog::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
+            plx_base::eventlog::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
         }
     });
     if submitted.is_err() {
-        crate::eventlog::log("telemetry: sign-out could not be queued for persistence");
+        plx_base::eventlog::log("telemetry: sign-out could not be queued for persistence");
     }
     #[cfg(test)]
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 }
 
 #[cfg(test)]

@@ -1,10 +1,11 @@
-# A cargo workspace with this package as its ROOT and the storage helper as its only other member.
+# A cargo workspace with this package as its ROOT; the other members are the storage helper and the
+# `plx_base` layer crate (base/, step one of the crate split in docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
 # means the app only), and the helper is built with an explicit `-p plxnative-storage`. One
 # `Cargo.lock`, one `.cargo/config.toml` and the same target directories serve both.
 [workspace]
-members = ["storage"]
+members = ["base", "storage"]
 resolver = "2"
 
 [package]
@@ -68,10 +69,10 @@ devtools = []
 # Nothing in the dev loop constrains this: `make run`/`run-stream` touch `/tmp` only to clear and
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
-devtriggers = []
+devtriggers = ["plx_base/devtriggers"]
 # The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
 # (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
-threadcheck = []
+threadcheck = ["plx_base/threadcheck"]
 # **Cloud Lab Bridge** — the ring buffer, Blue-button upload and authenticated long-poll command
 # channel for a television in LG Cloud Test Lab, where there is no ssh, no console and no way to
 # download a file. See `rust-modules/src/lab/` and `docs/lab-diagnostics.md`.
@@ -84,7 +85,7 @@ threadcheck = []
 # it adds: a bounded in-memory copy of the lines `crate::log` already writes, one key arm, one row
 # in two menus, one overlay, pinned diagnostic POSTs and an opt-in pinned HTTPS long-poll worker.
 # Everything else compiles identically.
-lab-diagnostics = []
+lab-diagnostics = ["plx_base/lab-diagnostics"]
 
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
@@ -124,7 +125,7 @@ lab-diagnostics = []
 # (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
 # have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
-hostsim = []
+hostsim = ["plx_base/hostsim"]
 
 # Warnings are ERRORS, for both workspace packages, in every cargo invocation — build, check, test, clippy, the
 # ARM cross-build and the simulator alike. The tree reached zero warnings in all four
@@ -168,6 +169,9 @@ warnings = "deny"
 workspace = true
 
 [dependencies]
+# The base layer (ci/module-layers.ini `[base]`): event log, paths, spawn discipline, dlopen seam,
+# frame instruments. Features it has a `cfg` on are forwarded by the features above.
+plx_base = { path = "base" }
 # safe pure-Rust JPEG/PNG decoders — replaces vendored stb_image.h (~8k lines C)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
@@ -193,5 +197,8 @@ serde = "1"
 opt-level = 2
 
 [dev-dependencies]
+# The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never
+# built `cfg(test)`, so the tests here ask for them by feature.
+plx_base = { path = "base", features = ["test-support"] }
 rcgen = "0.14.10"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

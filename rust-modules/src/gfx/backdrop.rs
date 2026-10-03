@@ -126,8 +126,8 @@ pub(crate) fn canvas() -> Rect {
     Rect::new(
         0.0,
         0.0,
-        crate::surface::LOGICAL_W,
-        crate::surface::LOGICAL_H,
+        plx_base::surface::LOGICAL_W,
+        plx_base::surface::LOGICAL_H,
     )
 }
 fn union(a: Rect, b: Rect) -> Rect {
@@ -732,7 +732,7 @@ pub(crate) fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
     if discovering() {
         draw()
     } else {
-        crate::diag::spans::span(name, draw)
+        plx_base::diag::spans::span(name, draw)
     }
 }
 pub(crate) fn suppressed() -> bool {
@@ -933,7 +933,7 @@ mod tests {
 
     #[test]
     fn a_blur_source_never_contains_its_own_layer_or_above() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let layers = [0, 2, 3].map(|z| Layer {
             z: Z(z),
             rect: rect(0.0),
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn a_glass_covered_by_a_frozen_or_opaque_layer_neither_refreshes_nor_draws() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let layers = [Layer {
             z: Z(3),
             rect: rect(0.0),
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn a_glass_over_an_unchanged_region_reuses_its_source() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let d = decide(
             request(),
             &[],
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn damage_outside_a_glass_rect_does_not_refresh_it() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         assert!(
             !decide(
                 request(),
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[test]
     fn two_overlapping_glasses_at_different_z_each_sample_only_what_is_below_them() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let layers = [0, 2, 4].map(|z| Layer {
             z: Z(z),
             rect: rect(0.0),
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn the_ceiling_stops_real_primitives_and_is_restored_when_a_walk_unwinds() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         let child_stayed_below = std::cell::Cell::new(false);
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn multiple_partial_blockers_cover_a_glass_but_translucent_layers_do_not() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut layers = [
             Layer {
                 z: Z(3),
@@ -1077,7 +1077,7 @@ mod tests {
         // the surfaces band, so the heaviest-text screens under Home (a Settings row list is drawn
         // in the surface, but Home's own shelves/hero/cast rows sit BELOW the frozen boundary and
         // still walk) do not pay for building data `paint` would just discard.
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         sources.borrow_mut().begin(vec![Layer {
             z: Z(5),
@@ -1105,7 +1105,7 @@ mod tests {
 
     #[test]
     fn a_failed_capture_cannot_retry_after_its_own_band_has_started_drawing() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         sources.borrow_mut().begin(vec![]);
         let _walk = enter(sources.clone(), Z::ALL);
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn snapshot_claims_survive_layer_scopes_and_reset_for_each_source_walk() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         {
             let _walk = enter(sources.clone(), Z::OPENER);
@@ -1140,7 +1140,7 @@ mod tests {
 
     #[test]
     fn an_asset_replaced_in_the_same_texture_name_changes_its_identity() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::gfx::tex_ledger::specified(987654, 10, 10);
         let before = crate::gfx::tex_ledger::revision(987654);
         crate::gfx::tex_ledger::specified(987654, 10, 10);
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn a_changed_draw_under_a_glass_invalidates_its_retained_source() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         for (frame, color) in [1u64, 2].into_iter().enumerate() {
             sources.borrow_mut().begin(vec![]);
@@ -1173,7 +1173,7 @@ mod tests {
 
     #[test]
     fn damage_in_the_gap_between_shared_glasses_does_not_refresh_the_band() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut sources = Sources::default();
         sources.begin(vec![]);
         sources.request(Z::CHROME, rect(0.0));
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[test]
     fn text_value_packs_bytes_instead_of_one_word_per_byte() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         // Long enough that a byte-per-word encoding would visibly balloon: this is exactly the
         // shape a Settings row title or a Detail synopsis produces every discovered frame.
         let s = std::ffi::CString::new(
@@ -1231,7 +1231,7 @@ mod tests {
 
     #[test]
     fn every_changed_present_refreshes_including_the_final_settle_damage() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         for _ in 0..10 {
             assert!(
                 decide(

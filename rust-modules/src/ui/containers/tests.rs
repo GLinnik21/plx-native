@@ -159,7 +159,7 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
         SEEN.store(true, Ordering::Relaxed);
     }
 
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     SEEN.store(false, Ordering::Relaxed);
     let (mut d, mut rig, _) = booted();
     rig.seed_scrim_chrome_for_test("Captured A", "A", &["Home", "Movies", ""], 0.625);
@@ -672,7 +672,7 @@ fn a_stale_noted_envelope_is_not_preloaded_over_a_live_stack() {
 #[test]
 fn the_dispatchers_prepare_notes_the_envelope_only_after_the_page_has_rested() {
     use crate::ui::fixture::set_video_plane_corners as corners;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let n = super::modal::PRELOAD_REST_FRAMES as usize;
     let c = [[0.2, 0.4, 0.1]; 4];
     let c2 = [[0.7, 0.1, 0.3]; 4];
@@ -1354,7 +1354,7 @@ fn a_modal_foreground_spring_does_not_invalidate_the_host_snapshot() {
 #[test]
 fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
     use crate::ui::fixture::ANIMATED_PAGE;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (mut d, mut rig, _) = booted();
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(ANIMATED_PAGE)));
     let mut ms = 16;
@@ -1463,7 +1463,7 @@ fn a_page_dip_commits_at_its_floor_and_a_back_inside_the_window_withdraws_it() {
 /// cache boundary the device backend rasterises and uploads through.
 #[test]
 fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
@@ -1883,7 +1883,7 @@ fn page_draw_order(d: &Dispatcher<FixtureHost>) -> usize {
 
 #[test]
 fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.nav.tabs.stack.transition.request(true);
     d.draw(&mut rig, true); // capture
@@ -1896,7 +1896,7 @@ fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
 
 #[test]
 fn frozen_dispatch_in_reuses_the_floor_capture() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
     for i in 1..=7 { d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap); }
@@ -1910,7 +1910,7 @@ fn frozen_dispatch_in_reuses_the_floor_capture() {
 
 #[test]
 fn frozen_dispatch_resumes_live_after_settle() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.nav.tabs.stack.transition.request(true);
     d.draw(&mut rig, true);
@@ -1927,7 +1927,7 @@ fn frozen_dispatch_resumes_live_after_settle() {
 
 #[test]
 fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
     d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), ..Default::default() });
@@ -1976,7 +1976,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
 /// instead, and the capture waits for that queue to drain.
 #[test]
 fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
     let image_drawn = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -2061,7 +2061,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
 /// the alpha the visible pass drew the page image at.
 #[test]
 fn every_dip_frame_gives_the_bar_glass_the_page_it_shows_at_its_alpha() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     use crate::ui::frame::backdrop::{self, Sources, Z};
     let (mut d, mut rig) = frozen_fixture();
     let drawn_at = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -2109,7 +2109,7 @@ fn every_dip_frame_gives_the_bar_glass_the_page_it_shows_at_its_alpha() {
 
 #[test]
 fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.nav.tabs.stack.transition.request(true);
     d.draw(&mut rig, true);
@@ -2130,7 +2130,7 @@ fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
 
 #[test]
 fn held_page_backdrop_identity_is_invariant_under_alpha_only_changes() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.nav.tabs.stack.transition.request(true);
     d.draw(&mut rig, true);
@@ -2146,7 +2146,7 @@ fn held_page_backdrop_identity_is_invariant_under_alpha_only_changes() {
 
 #[test]
 fn frozen_dispatch_capture_refusal_keeps_the_live_fallback() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Refused;
     impl super::transition::PageSnapshot for Refused {
         fn available(&self) -> bool { true }
@@ -2163,7 +2163,7 @@ fn frozen_dispatch_capture_refusal_keeps_the_live_fallback() {
 
 #[test]
 fn frozen_dispatch_modal_takes_the_single_snapshot() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     d.nav.tabs.stack.transition.request(true);
     d.draw(&mut rig, true);

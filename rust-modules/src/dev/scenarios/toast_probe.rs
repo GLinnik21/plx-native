@@ -23,10 +23,10 @@ const GAP: Duration = Duration::from_secs(8);
 
 /// Called once from `app::boot`. A no-op without the trigger or with an empty value.
 pub(crate) fn arm_at_boot() {
-    let Some(text) = crate::devtrig::read("toast").filter(|t| !t.is_empty()) else { return };
-    crate::eventlog::log("toast-probe armed");
-    if crate::task::spawn("toast-probe", move || run(&text)).is_none() {
-        crate::eventlog::log("toast-probe IGNORED — the worker thread could not start");
+    let Some(text) = plx_base::devtrig::read("toast").filter(|t| !t.is_empty()) else { return };
+    plx_base::eventlog::log("toast-probe armed");
+    if plx_base::task::spawn("toast-probe", move || run(&text)).is_none() {
+        plx_base::eventlog::log("toast-probe IGNORED — the worker thread could not start");
     }
 }
 
@@ -39,6 +39,6 @@ fn run(text: &str) {
         if i > 0 {
             std::thread::sleep(GAP);
         }
-        crate::eventlog::log(&probe_line(label, &send(text, identity)));
+        plx_base::eventlog::log(&probe_line(label, &send(text, identity)));
     }
 }

@@ -7,7 +7,7 @@ use super::test_support::{frame, frame_with_tap};
 
 #[test]
 fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -107,7 +107,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
 #[test]
 fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     use crate::screens::registry::{LibraryCmd, LibraryMenuArg, LibraryMenuKind};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
@@ -183,7 +183,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
 
 #[test]
 fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

@@ -95,7 +95,7 @@ impl Initial {
     /// Restore the validated pre-work inputs into a fresh owner, never a mid-flight checkpoint or
     /// live mailbox. Runs before any `Bridge`/`Stores` exists (`app/boot.rs::construct()`), so it
     /// produces the `(PmsState, PmsAdapter)` pair rather than mutating anything global.
-    pub(crate) fn restore(&self, _mt: &crate::task::MainThread)
+    pub(crate) fn restore(&self, _mt: &plx_base::task::MainThread)
         -> Result<(super::PmsState, super::PmsAdapter), &'static str> {
         if !self.validate_boot() { return Err("Home initial state contains work or content"); }
         let state = super::PmsState {
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn initial_contents_are_owned_round_trip_and_do_not_consume_arrivals() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut o = crate::pms::test_support::Owner::default();
         seed_for_test(&mut o.state, &o.adapter, 3, HubState::Ready);
         { o.state.srcs[0].fetching = true; o.state.srcs[0].seq = 19; o.state.srcs[0].retry_s = -0.0; o.state.srcs[0].retry_n = 4; }
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn canonical_initial_state_includes_hidden_retry_and_request_fields() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut o = crate::pms::test_support::Owner::default();
         seed_for_test(&mut o.state, &o.adapter, 2, HubState::Ready);
         let initial = Initial::capture(&o.state, &o.adapter);

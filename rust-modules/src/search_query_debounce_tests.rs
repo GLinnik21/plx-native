@@ -6,7 +6,7 @@ use super::test_support::*;
 
 #[test]
 fn initial_query_scope_comes_from_the_retained_directory() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut owner = Owner::default();
     let sid = ServerId::from_raw(3);
     let directory = crate::stores::browse::DirectorySnapshot::fixture(9, 0, vec![
@@ -32,7 +32,7 @@ fn initial_query_scope_comes_from_the_retained_directory() {
 
 #[test]
 fn equal_generation_browse_owners_replace_the_favourite_snapshot() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut owner = Owner::default();
     let sid = ServerId::from_raw(3);
     let directory = |key, title: &str| crate::stores::browse::DirectorySnapshot::fixture(

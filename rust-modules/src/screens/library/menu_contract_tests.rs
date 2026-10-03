@@ -38,7 +38,7 @@ fn source_cx<'a>(
 
 #[test]
 fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("menu-anchor-contract");
     session.watching("u-menu-anchor-contract");
     let stores = crate::stores::Stores::default();
@@ -96,7 +96,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
 
 #[test]
 fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut sort = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sort, [0; 4]));
     let sorts = vec![
         SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
@@ -177,7 +177,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
 fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
     use crate::ui::focus::{FocusEngine, Outcome};
 
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (groups, sections) = source_sections();
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
     menu.apply_draft(source_draft(11, 0, &groups, &sections));
@@ -216,7 +216,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
 
 #[test]
 fn open_sources_refreshes_metadata_once_then_settles() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("menu-refresh-contract");
     session.watching("u-menu-refresh-contract");
     let stores = crate::stores::Stores::default();

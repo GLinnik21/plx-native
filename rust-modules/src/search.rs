@@ -706,7 +706,7 @@ impl SearchState {
     /// Publish a bounded catalog through the real retained-view boundary, without network work.
     #[cfg(test)]
     pub(crate) fn publish_shelves_for_test(&mut self, shelves: Vec<Shelf>) {
-        crate::testlock::assert_held("the search store (publish_shelves_for_test)");
+        plx_base::testlock::assert_held("the search store (publish_shelves_for_test)");
         // A published catalog represents completed source answers, not merely painted rows over
         // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
         self.visible = crate::plex::server_roster_gen();
@@ -738,7 +738,7 @@ impl SearchState {
 
     #[cfg(test)]
     pub(crate) fn debounce_elapsed_for_test(&self) -> f32 {
-        crate::testlock::assert_held("the search store (debounce_elapsed_for_test)");
+        plx_base::testlock::assert_held("the search store (debounce_elapsed_for_test)");
         self.settle_us as f32 / 1_000_000.0
     }
 }
@@ -975,7 +975,7 @@ fn pump_with_optional_directory(
         if state.settle_us >= SETTLE_US_TARGET {
             state.armed = false;
             if let Some(q) = terms(state.query()) {
-                crate::eventlog::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "search: q[{}ch] settled, asking {} source(s)",
                     q.chars().count(),
                     nsrc()
@@ -1020,7 +1020,7 @@ fn pump_with_optional_directory(
     let new_state = state_from_refs(&sources, asking);
     let moved = new_state != state.state;
     if moved {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "search: q[{}ch] state={}",
             state.query().trim().chars().count(),
             new_state.name()
@@ -1048,7 +1048,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
         None if state.src[i].status == Status::Answered => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "search: q[{qlen}ch] sid={i} late failure ignored — already answered"
             ));
         }
@@ -1056,7 +1056,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             let s = &mut state.src[i];
             s.status = Status::Failed;
             s.retry_cd = RETRY_FRAMES;
-            crate::eventlog::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
+            plx_base::eventlog::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
         }
         Some(items) => {
             let counts: Vec<String> = KINDS
@@ -1064,7 +1064,7 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
                 .enumerate()
                 .map(|(k, kind)| format!("{}={}", kind.hubs()[0], items[k].len()))
                 .collect();
-            crate::eventlog::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
+            plx_base::eventlog::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`.
@@ -1087,7 +1087,7 @@ fn rebuild(state: &mut SearchState) {
     let sources = live_sources(state, &live);
     let shelves = merge_refs(&sources, &favs(state));
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "search: q[{}ch] shelves={} items={}",
         state.query().trim().chars().count(),
         shelves.len(),
@@ -1240,9 +1240,9 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
     adapter.fetch[i].claim();
-    crate::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
+    plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
-    let spawned = crate::task::spawn_small("search", move || {
+    let spawned = plx_base::task::spawn_small("search", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an answer of "this server has nothing"
         let what = catch_unwind(|| {

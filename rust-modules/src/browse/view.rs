@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn directory_retains_identity_and_refreshes_prose_only_on_change() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = super::super::BrowseState::default();
         super::super::seed_two_source_table_for_owner_test(&mut state);
         state.source_mut(0).unwrap().sid = ServerId::from_raw(0);
@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn query_and_menus_are_one_retained_publication() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut owner = super::super::BrowseState::default();
         super::super::seed_two_source_table_for_owner_test(&mut owner);
         owner.set_cur(0);
@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn retained_listing_survives_edit_requery_and_reset() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = super::super::BrowseState::default();
         super::super::seed_two_source_table_for_owner_test(&mut state);
         super::super::seed_items_for_owner_test(&mut state, 2);

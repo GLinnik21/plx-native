@@ -21,9 +21,9 @@ fn profile_publication_has_one_writer_and_no_resource_scope_allocator() {
 
 #[test]
 fn profile_publication_retains_owner_assigned_generation_with_old_read() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let old = super::current_snapshot();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut publisher = super::ProfilePublisher::new(&mt);
     publisher.publish(Some(super::UserRef { uuid: "owner-a".into(), ..Default::default() }), 17);
     let a = super::current_snapshot();
@@ -38,9 +38,9 @@ fn profile_publication_retains_owner_assigned_generation_with_old_read() {
 
 #[test]
 fn live_profile_publication_triggers_the_account_audio_warm_hook() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let old = super::current_snapshot();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut publisher = super::ProfilePublisher::new(&mt);
     let observed = std::cell::RefCell::new(None);
     publisher.publish_with_warmer_for_test(Some(super::UserRef {

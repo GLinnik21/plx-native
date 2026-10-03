@@ -8,7 +8,7 @@ use super::test_support::{frame, frame_with_results};
 
 #[test]
 fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("bridge-browse-tabs");
     session.watching("u-bridge-browse-tabs");
     crate::plex::reset_servers_for_test();
@@ -51,7 +51,7 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
 #[test]
 fn production_bridges_do_not_share_browse_state_or_landings() {
     use std::io::{Read, Write};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("bridge-browse-owners");
     session.watching("u-bridge-browse-owners");
     crate::plex::reset_servers_for_test();
@@ -472,7 +472,7 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
     }
     // This existing constructor captures other global store publications. This test is
     // dispatch evidence, not the still-owed lock-free two-Bridge fixture proof.
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut rig = Bridge::for_test(|| 0);
     let mut dispatcher = Dispatcher::<AppHost>::new();
     let mut replies = Replies(Vec::new());
@@ -494,7 +494,7 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
 #[test]
 fn session_frame_read_borrows_the_bridge_publication() {
     use crate::screens::registry::AuthLike;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut rig = Bridge::for_test(|| 0);
     let retained = rig.session.publication();
     let parts = CxParts { tick: Tick::default(), press: Default::default(),
@@ -505,7 +505,7 @@ fn session_frame_read_borrows_the_bridge_publication() {
 }
 #[test]
 fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("endpoint-edges");
     crate::plex::reset_servers_for_test();
     let a = crate::plex::register_for_test("endpoint-a", "127.0.0.1", 9, "synthetic", "cid");

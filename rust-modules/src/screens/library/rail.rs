@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn rail_scroll_and_presence_animate_then_settle_outside_the_grid_region() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut rail = model();
         let (_, moving) = crate::ui::idle::scoped_motion(|| rail.step_motion(Some(29), true, 0.016));
         assert!(moving, "entering the region reports its scroll and fade motion");
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn quick_letter_steps_place_against_settled_scroll_and_keep_the_fade_margin() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut rail = model();
         rail.step_motion(Some(27), true, 0.016);
         for drive in [28, 29] {

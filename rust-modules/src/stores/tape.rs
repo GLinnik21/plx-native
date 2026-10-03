@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn p2_person_slot_kinds_are_exhaustive_and_duplicate_mail_is_rejected() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let last_local = (crate::plex::MAX_SERVERS * 3) as u32;
         for slot in 0..last_local + 2 {
             let expected = if slot == last_local { "Profile" }
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn p2_person_null_variant_mutation_cannot_be_graded() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let slot = (crate::plex::MAX_SERVERS * 3 + 1) as u32;
         let request = json!({"store":"person","slot":slot,"gen":7,"arg":["person"],"guid":"guid"});
         let admission = json!({"content_resource":true,"request":request,"admitted":true});

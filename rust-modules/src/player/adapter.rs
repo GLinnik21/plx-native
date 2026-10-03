@@ -25,7 +25,7 @@
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
 use super::engine::Engine;
-use crate::task::MainThread;
+use plx_base::task::MainThread;
 
 /// The `ENGINE` slot and its confinement, as one owned value (`App.adapters.player`).
 pub(crate) struct PlayerAdapter {
@@ -56,7 +56,7 @@ impl PlayerAdapter {
     pub(crate) fn repair_sandbox(&mut self, owner: &mut super::machine::RepairAttempt, supported: bool) {
         let Some(token) = owner.begin(supported) else { return; };
         let (tx, rx) = std::sync::mpsc::channel();
-        if crate::task::spawn_small("jail repair", move || {
+        if plx_base::task::spawn_small("jail repair", move || {
             let _ = tx.send(crate::tv::sandbox::repair());
         }) {
             self.repair = Some((token, rx));

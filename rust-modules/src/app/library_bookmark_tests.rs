@@ -8,7 +8,7 @@ use super::test_support::{frame, frame_with_tap};
 #[test]
 fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let stores = crate::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
@@ -117,7 +117,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
             }
         }
     }
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

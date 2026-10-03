@@ -30,7 +30,7 @@ fn take_root_press_at(now: std::time::Instant) -> bool {
     let mut last = LAST_REQUEST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(age) = last.map(|t| now.saturating_duration_since(t)) {
         if age < COOLDOWN {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "gohome: a root press {} ms ago still speaks for this one — ignoring it",
                 age.as_millis()
             ));
@@ -86,7 +86,7 @@ mod go_home_tests {
     /// infinite `COOLDOWN`. This one never sleeps and still grades the comparison.
     #[test]
     fn a_claim_speaks_for_exactly_the_cooldown_and_not_a_moment_longer() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let base = Instant::now();
         release_root_press();
         assert!(take_root_press_at(base), "a cold latch admits the press");
@@ -107,7 +107,7 @@ mod go_home_tests {
     /// press handed back leaves the next one live.
     #[test]
     fn a_burst_of_root_presses_is_one_platform_call_and_a_release_undoes_the_claim() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         release_root_press();
         let before = home_requests();
         for _ in 0..5 {

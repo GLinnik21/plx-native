@@ -140,7 +140,7 @@ fn top_band_focus_walks_to_the_last_section_whatever_the_count() {
 
 #[test]
 fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -157,7 +157,7 @@ fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
 
 #[test]
 fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -192,7 +192,7 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
 
 #[test]
 fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
@@ -225,7 +225,7 @@ fn the_top_band_walks_permanent_pills_not_the_section_table() {
 
 #[test]
 fn step_row_stays_inside_the_addressable_rows() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -254,7 +254,7 @@ fn vert_cannot_walk_past_the_shelf_array() {
 
 #[test]
 fn the_status_readout_tells_loading_empty_and_failed_apart() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     for (hub_state, kind, action) in [
@@ -283,7 +283,7 @@ fn the_status_readout_tells_loading_empty_and_failed_apart() {
 #[test]
 fn a_failed_home_stands_on_the_page_readout_lines() {
     use crate::ui::widgets::StatusOverlay;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
@@ -311,7 +311,7 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     use crate::net::keypin::{self, Blocked};
     use crate::ui::icons::Icon;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let key = keypin::key_of("home-clock.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
@@ -393,7 +393,7 @@ fn current_server_for_test(machine: &str) -> impl Drop {
 #[test]
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     use crate::net::keypin;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
     let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
@@ -423,7 +423,7 @@ fn observe_card(h: &mut crate::ui::card_motion::History, s: &HomeScreen, ms: u32
 #[test]
 fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
     use crate::ui::card_motion::{History, Verdict};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -446,7 +446,7 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
 #[test]
 fn the_hero_to_grid_dive_is_observed_from_card_placement_and_then_settles() {
     use crate::ui::card_motion::{History, Verdict};
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -479,7 +479,7 @@ fn no_shelves_means_no_grid_snap() {
 
 #[test]
 fn the_status_screen_takes_ok_but_never_the_top_band() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
@@ -532,7 +532,7 @@ fn pointer_hit_column_matches_the_drawn_card_at_every_snap_phase() {
 
 #[test]
 fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -573,7 +573,7 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
 
 #[test]
 fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
@@ -593,7 +593,7 @@ fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
 
 #[test]
 fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -1335,7 +1335,7 @@ fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
 
 #[test]
 fn engine_links_hero_to_the_first_shelf_and_back() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -1359,7 +1359,7 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
 
 #[test]
 fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1401,7 +1401,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
 
 #[test]
 fn down_from_the_last_shelf_never_reenters_the_offscreen_hero() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1487,7 +1487,7 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
 
 #[test]
 fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1513,7 +1513,7 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
 
 #[test]
 fn the_home_census_covers_input_motion_and_current_projection() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -1566,7 +1566,7 @@ fn paint_only_backdrop_and_spinner_state_do_not_change_the_canonical_hash() {
 
 #[test]
 fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1585,7 +1585,7 @@ fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
 
 #[test]
 fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
@@ -1603,7 +1603,7 @@ fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
 
 #[test]
 fn an_empty_loading_publication_does_not_consume_restored_viewports() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
@@ -1638,7 +1638,7 @@ fn viewport_memory_is_canonical_because_return_reuses_it() {
 
 #[test]
 fn visible_tick_emits_both_store_work_requests_after_the_step() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
@@ -1665,7 +1665,7 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
 
 #[test]
 fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1700,7 +1700,7 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
 
 #[test]
 fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
@@ -1727,7 +1727,7 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
 
 #[test]
 fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1752,7 +1752,7 @@ fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
 
 #[test]
 fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1781,7 +1781,7 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
 
 #[test]
 fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1819,7 +1819,7 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
 
 #[test]
 fn back_from_grid_folds_to_hero_before_root_back() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
@@ -1869,7 +1869,7 @@ fn enter_target(out: &[Stamped<TestHost>]) -> Option<FocusTarget<u32>> {
 
 #[test]
 fn addressed_focus_commands_reseat_only_through_enter_fresh() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -1914,7 +1914,7 @@ fn addressed_focus_commands_reseat_only_through_enter_fresh() {
 
 #[test]
 fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -1943,7 +1943,7 @@ fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
 
 #[test]
 fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     for (hub_state, expected) in [
@@ -1975,7 +1975,7 @@ fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
 
 #[test]
 fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
@@ -2027,7 +2027,7 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
 
 #[test]
 fn addressed_item_menu_uses_the_current_owned_grid_item() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
@@ -2050,7 +2050,7 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
 
 #[test]
 fn parent_read_only_api_projects_engine_focus_without_setters() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -2092,7 +2092,7 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
 /// have failed.
 #[test]
 fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -2140,7 +2140,7 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
 
 #[test]
 fn the_hero_does_not_advance_while_a_modal_covers_home() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -2169,7 +2169,7 @@ fn the_hero_does_not_advance_while_a_modal_covers_home() {
 
 #[test]
 fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -2203,7 +2203,7 @@ fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
 /// uncovered, so a capture taken at any settled moment shows the same billboard.
 #[test]
 fn a_pinned_hero_never_auto_advances() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -2230,7 +2230,7 @@ fn a_pinned_hero_never_auto_advances() {
 #[test]
 fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     use crate::plex::session::PlaintextChoice;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::plex::grant::reset_for_test();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
@@ -2334,7 +2334,7 @@ fn move_from(
 
 #[test]
 fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2359,7 +2359,7 @@ fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
 
 #[test]
 fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2393,7 +2393,7 @@ fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card
 
 #[test]
 fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_projection() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2420,7 +2420,7 @@ fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_project
 
 #[test]
 fn ok_on_the_linked_heading_opens_the_collection_page() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2441,7 +2441,7 @@ fn ok_on_the_linked_heading_opens_the_collection_page() {
 
 #[test]
 fn the_heading_keeps_focus_on_the_grid_and_reveals_its_row() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2465,7 +2465,7 @@ fn the_heading_keeps_focus_on_the_grid_and_reveals_its_row() {
 
 #[test]
 fn the_linked_heading_is_a_hover_focus_stop_that_wins_over_the_cards() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2494,7 +2494,7 @@ fn the_linked_heading_is_a_hover_focus_stop_that_wins_over_the_cards() {
 
 #[test]
 fn back_from_the_collection_page_returns_focus_to_the_heading() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     let snapshot = collection_home(&mut state, &adapter);
@@ -2518,7 +2518,7 @@ fn back_from_the_collection_page_returns_focus_to_the_heading() {
 /// next shelf's title pop in at full ink instead of sliding up with the page.
 #[test]
 fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
@@ -2654,7 +2654,7 @@ fn deliver_hero_art(path: &str) {
 /// re-arms the new neighbours on the flip itself — the same mechanism for both paths.
 #[test]
 fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::ui::tex::install(&HeroArtSpy);
     crate::ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState { busy: true, ..Default::default() });
@@ -2746,7 +2746,7 @@ fn a_manual_hero_flip_lands_on_a_preloaded_backdrop_with_no_ground_frame() {
 /// which textures the recording painter was handed.
 #[test]
 fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdrops() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     crate::ui::tex::install(&HeroArtSpy);
     crate::ui::tex::reset_for_test(64 << 20);
     HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
@@ -2835,7 +2835,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
 /// layout motion (`page_layout_moving`), or Home rides the whole 600 ms hold cap.
 #[test]
 fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);

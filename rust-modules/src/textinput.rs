@@ -122,7 +122,7 @@ mod host_test_sdl {
     pub(super) unsafe fn SDL_StartTextInput() {}
     pub(super) unsafe fn SDL_StopTextInput() {}
 }
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 use std::os::raw::{c_int, c_void};
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -485,7 +485,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// `PENDING`/`STARTED` are module singletons, so the tests that drive them must not overlap.
-    /// Module-local rather than `crate::testlock`: nothing outside this file touches either, and
+    /// Module-local rather than `plx_base::testlock`: nothing outside this file touches either, and
     /// `testlock` is for globals that move under ANOTHER module's code (see `lib.rs`).
     static BUF: Mutex<()> = Mutex::new(());
 

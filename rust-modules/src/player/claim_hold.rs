@@ -128,14 +128,14 @@ mod tests {
     const CLAIM_OFFSET_NS: i64 = 100_000_000_000;
 
     struct Rig {
-        _serial: crate::testlock::Serial,
+        _serial: plx_base::testlock::Serial,
         pa: super::super::adapter::PlayerAdapter,
     }
 
     impl Rig {
         /// A playing stream at the claim offset on the host sink.
         fn playing() -> Rig {
-            let serial = crate::testlock::serial();
+            let serial = plx_base::testlock::serial();
             crate::player::ffi_host::force_clocksink_for_test(true);
             TX.reset();
             SHARED.reset_hls_clock_for_test();
@@ -144,7 +144,7 @@ mod tests {
             crate::player::ffi_host::clock_run_for_test(CLAIM_OFFSET_NS);
             Rig {
                 _serial: serial,
-                pa: super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() }),
+                pa: super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() }),
             }
         }
         fn paused() -> Rig {

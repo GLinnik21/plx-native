@@ -81,7 +81,7 @@ rather than a message on a terminal.
 ## 2. The identity model: the id is the directory, read at runtime
 
 **The app id is not compiled in. It is the name of the directory the binary is running out of**,
-read from `/proc/self/exe` at first use (`rust-modules/src/paths.rs::app_id`, via
+read from `/proc/self/exe` at first use (`rust-modules/base/src/paths.rs::app_id`, via
 `std::env::current_exe`).
 
 That is sound because **our own package lays that directory down from the appinfo `id`, and three

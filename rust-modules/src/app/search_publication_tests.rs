@@ -7,7 +7,7 @@ use super::test_support::{frame};
 
 #[test]
 fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_split() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     use crate::stores::search::SearchCmd;
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);

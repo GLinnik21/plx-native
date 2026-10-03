@@ -21,7 +21,7 @@ use super::wire::{
     ErrorCode,
 };
 
-pub(crate) const NAME: &str = crate::paths::runtime_file::STORAGE_DIAGNOSTICS;
+pub(crate) const NAME: &str = plx_base::paths::runtime_file::STORAGE_DIAGNOSTICS;
 const LIMIT: usize = 16 * 1024;
 const MARKER: &str = "truncated value=true\n";
 
@@ -122,7 +122,7 @@ fn mailbox() -> Option<Arc<Mailbox>> {
             wake: Condvar::new(),
         });
         let owned = mailbox.clone();
-        if crate::task::spawn("storage diagnostics", move || run(owned)).is_none() {
+        if plx_base::task::spawn("storage diagnostics", move || run(owned)).is_none() {
             return None;
         }
         *worker = Some(mailbox);
@@ -188,7 +188,7 @@ fn publish_if_enabled(
 }
 fn run(mailbox: Arc<Mailbox>) {
     let _block = guard();
-    let root = crate::paths::runtime_dir();
+    let root = plx_base::paths::runtime_dir();
     let mut snapshot = Snapshot::boot();
     let mut published = None;
     publish_if_enabled(&mut snapshot, root, &mut published);
@@ -215,8 +215,8 @@ fn run(mailbox: Arc<Mailbox>) {
         publish_if_enabled(&mut snapshot, root, &mut published);
     }
 }
-fn guard() -> crate::task::BlockingGuard {
-    crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage diagnostics") })
+fn guard() -> plx_base::task::BlockingGuard {
+    plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("storage diagnostics") })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,10 +294,10 @@ impl Snapshot {
             (Directory::Tmp, PathBuf::from("/tmp")),
             (
                 Directory::Runtime,
-                crate::paths::runtime_dir().to_path_buf(),
+                plx_base::paths::runtime_dir().to_path_buf(),
             ),
         ];
-        for path in crate::paths::session_candidates() {
+        for path in plx_base::paths::session_candidates() {
             let Some(parent) = path.parent() else {
                 continue;
             };
@@ -308,7 +308,7 @@ impl Snapshot {
                 Directory::MediaDeveloper
             } else if parent == Path::new("/media/internal") {
                 Directory::MediaInternal
-            } else if parent == crate::paths::app_dir() {
+            } else if parent == plx_base::paths::app_dir() {
                 Directory::AppDir
             } else {
                 Directory::LegacyAppDir
@@ -333,8 +333,8 @@ impl Snapshot {
         groups.truncate(n.max(0) as usize);
         Self {
             seq: 0,
-            app_id: Identifier::new(crate::paths::app_id()),
-            flavour: Identifier::new(crate::paths::flavour().unwrap_or("stable")),
+            app_id: Identifier::new(plx_base::paths::app_id()),
+            flavour: Identifier::new(plx_base::paths::flavour().unwrap_or("stable")),
             version: Identifier::new(env!("PLX_VERSION")),
             uid: unsafe { libc::getuid() },
             euid: unsafe { libc::geteuid() },
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn formatter_accepts_only_bounded_identifiers_and_fixed_labels() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for bad in [
             "/private/account",
             "token=secret",
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[test]
     fn publication_is_0640_even_under_a_restrictive_umask() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct Mask(libc::mode_t);
         impl Drop for Mask {
             fn drop(&mut self) {
@@ -1059,7 +1059,7 @@ mod tests {
 
     #[test]
     fn unsafe_destinations_and_directory_symlinks_are_rejected() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = Root::new();
         let target = root.0.join("target");
         std::fs::write(&target, b"untouched").unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
 
     #[test]
     fn publication_failure_cleans_temp_and_preserves_previous_snapshot() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = Root::new();
         publish(&root.0, b"previous").unwrap();
         assert!(publish_with(&root.0, b"replacement", || Err(
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn duplicate_status_is_coalesced_and_recovery_is_published() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = Root::new();
         let mut snapshot = fixture();
         snapshot.probes.push(probe(Directory::Runtime, &root.0));
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn probe_creates_one_byte_and_removes_only_its_unique_file() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = Root::new();
         let unrelated = root.0.join("untouched");
         std::fs::write(&unrelated, b"sentinel").unwrap();
@@ -1168,9 +1168,9 @@ mod tests {
 
     #[test]
     fn filesystem_work_is_refused_inside_a_frame() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let root = Root::new();
-        let _frame = crate::task::FrameScope::enter();
+        let _frame = plx_base::task::FrameScope::enter();
         assert!(std::panic::catch_unwind(|| publish(&root.0, b"schema=1\n")).is_err());
         assert!(std::panic::catch_unwind(|| probe(Directory::Runtime, &root.0)).is_err());
         assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
@@ -1195,7 +1195,7 @@ mod tests {
             .0;
         let install = pre_boot.find("\"install: id=").expect("install line");
         let app_dir = pre_boot
-            .find("crate::paths::app_dir_line()")
+            .find("plx_base::paths::app_dir_line()")
             .expect("appdir line");
         assert!(install < app_dir);
         let body = source
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn disable_prevents_a_later_status_from_republishing_the_deleted_snapshot() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn disable_does_not_wait_for_an_in_progress_publication() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         DISABLED.store(false, Ordering::Release);
         let root = Root::new();
         let local = Arc::new(Mailbox {

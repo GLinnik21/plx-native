@@ -67,6 +67,22 @@ class Resolution(unittest.TestCase):
                       'b.rs': '', 'c.rs': ''})
         self.assertEqual(found, {('crate', 'a', False)})
 
+    def test_a_split_layer_crate_is_read_as_part_of_the_same_module_tree(self):
+        # `rust-modules/base/` (package `plx_base`) beside `rust-modules/src`: its modules are the
+        # crate's own modules again, and `plx_base::x::f` names `x` from any module of the app.
+        files = {'src/lib.rs': 'mod a; fn root() { plx_base::leaf::f(); }',
+                 'src/a.rs': 'use plx_base::leaf::g; fn h() { plx_base::dynlib!(); }',
+                 'base/Cargo.toml': '[package]\nname = "plx_base"\n',
+                 'base/src/lib.rs': 'pub mod leaf; pub mod dynlib;',
+                 'base/src/leaf.rs': 'pub fn f() { crate::dynlib::x(); }',
+                 'base/src/dynlib.rs': '#[macro_export]\nmacro_rules! dynlib { () => {} }'}
+        with Tree(files) as tree:
+            crate = module_graph.Crate(tree.root / 'src')
+        found = {(module_graph.name(r.source), module_graph.name(r.target), r.test) for r in crate.refs}
+        self.assertEqual(found, {('crate', 'leaf', False), ('a', 'leaf', False), ('a', 'dynlib', False),
+                                 ('leaf', 'dynlib', False)})
+        self.assertEqual(sorted(crate.extern_crates), ['plx_base'])
+
     def test_generic_arguments_start_their_own_path(self):
         found = refs({'lib.rs': LIB, 'a.rs': 'fn f() { crate::b::D::<crate::c::H>::new(); }',
                       'b.rs': '', 'c.rs': ''})

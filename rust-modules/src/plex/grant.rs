@@ -167,7 +167,7 @@ pub(crate) fn account_key(account_token: &str) -> String {
     }
     let mut input = b"plx-consent:".to_vec();
     input.extend_from_slice(account_token.as_bytes());
-    crate::sha256::sha256(&input)[..8].iter().map(|b| format!("{b:02x}")).collect()
+    plx_base::sha256::sha256(&input)[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// **One insecure-only server, as a read-out needs it** — which server, whose it is, whether the
@@ -369,7 +369,7 @@ fn mint_consented(
     }
     if !already {
         // The authority only — never the machine id (a household fingerprint) nor the token.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "security: consented plaintext credentials for one server at {}",
             origin.log_form()
         ));
@@ -403,7 +403,7 @@ pub(crate) fn granted_machines() -> Vec<String> {
 pub(crate) fn revoke(machine_id: &str) -> bool {
     let removed = retain(|g| g.machine_id != machine_id);
     if removed {
-        crate::eventlog::log("security: plaintext credentials withdrawn for one server");
+        plx_base::eventlog::log("security: plaintext credentials withdrawn for one server");
     }
     removed
 }
@@ -418,7 +418,7 @@ pub(crate) fn revoke(machine_id: &str) -> bool {
 /// A pending re-discovery ([`STRANDED`]) goes too: the new identity discovers everything itself.
 pub(crate) fn identity_changed() {
     #[cfg(test)]
-    crate::testlock::assert_held("the plaintext grant table (identity_changed)");
+    plx_base::testlock::assert_held("the plaintext grant table (identity_changed)");
     IDENTITY.fetch_add(1, Ordering::AcqRel);
     ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     {
@@ -429,7 +429,7 @@ pub(crate) fn identity_changed() {
     take_stranded();
     clear_offers();
     if retain(|_| false) {
-        crate::eventlog::log("security: plaintext credentials withdrawn — identity changed");
+        plx_base::eventlog::log("security: plaintext credentials withdrawn — identity changed");
     }
     moved();
 }
@@ -440,7 +440,7 @@ pub(crate) fn identity_changed() {
 /// the network and — the person's consent being persisted — mints again without asking.
 pub(crate) fn network_changed() {
     #[cfg(test)]
-    crate::testlock::assert_held("the plaintext grant table (network_changed)");
+    plx_base::testlock::assert_held("the plaintext grant table (network_changed)");
     NETWORK.fetch_add(1, Ordering::AcqRel);
     {
         let grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -454,7 +454,7 @@ pub(crate) fn network_changed() {
     }
     clear_offers();
     if retain(|_| false) {
-        crate::eventlog::log("security: plaintext credentials withdrawn — network continuity unknown");
+        plx_base::eventlog::log("security: plaintext credentials withdrawn — network continuity unknown");
     }
     moved();
 }
@@ -478,7 +478,7 @@ pub(crate) fn roster_replaced(installed: &[(String, Origin)]) {
         installed.iter().any(|(machine, origin)| *machine == g.machine_id && *origin == g.origin)
     });
     if removed {
-        crate::eventlog::log("security: plaintext credentials withdrawn — the roster no longer installs them");
+        plx_base::eventlog::log("security: plaintext credentials withdrawn — the roster no longer installs them");
     }
 }
 
@@ -572,7 +572,7 @@ fn refuse(machine_id: &str) {
     drop(grants);
     if removed {
         super::servers::regrade_credentials();
-        crate::eventlog::log("security: plaintext credentials withdrawn for one server");
+        plx_base::eventlog::log("security: plaintext credentials withdrawn for one server");
     }
 }
 
@@ -591,7 +591,7 @@ pub(crate) fn record(
     account: &str,
     machine_id: &str,
     choice: PlaintextChoice,
-) -> Result<(), crate::storage_worker::SubmitError> {
+) -> Result<(), plx_base::storage_worker::SubmitError> {
     answer(account, machine_id, choice);
     if account.is_empty() {
         return Ok(());
@@ -634,7 +634,7 @@ fn written(answer: &Answer, landed: bool) {
         unsaved.remove(i);
     } else {
         if unsaved[i].attempts == 1 {
-            crate::eventlog::log("security: a refused plaintext connection was not saved yet — retrying");
+            plx_base::eventlog::log("security: a refused plaintext connection was not saved yet — retrying");
         }
         unsaved[i].in_flight = false;
     }
@@ -858,10 +858,10 @@ fn retain(keep: impl Fn(&PlaintextGrant) -> bool) -> bool {
     removed
 }
 
-/// Empty the table (the generations keep counting). Under [`crate::testlock::serial`].
+/// Empty the table (the generations keep counting). Under [`plx_base::testlock::serial`].
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
-    crate::testlock::assert_held("the plaintext grant table (reset)");
+    plx_base::testlock::assert_held("the plaintext grant table (reset)");
     let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
     grants.clear();
     COUNT.store(0, Ordering::Release);
@@ -961,7 +961,7 @@ mod tests {
     /// or the identity or the network moves.
     #[test]
     fn the_authority_follows_the_grant_table_live() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         let store = CredentialPolicy::HttpsOnly;
@@ -993,7 +993,7 @@ mod tests {
     /// address credentialed.
     #[test]
     fn a_new_grant_replaces_the_servers_previous_origin() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         mint(scope(), "m", &lan(), &eligible()).expect("eligible");
@@ -1068,7 +1068,7 @@ mod tests {
     /// same television (or no account at all) captures nothing, and is asked again.
     #[test]
     fn consent_is_honoured_only_for_the_account_that_gave_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         reset_for_test();
         let owner = account_key("owner-token");
         assert_eq!(owner.len(), 16);
@@ -1097,7 +1097,7 @@ mod tests {
     /// seconds) captured *Allowed*; when it settles it must not mint the grant back.
     #[test]
     fn a_capture_from_before_a_revocation_never_mints_the_grant_back() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         let ask = PlaintextAsk::undecided().with("m", PlaintextChoice::Allowed);
@@ -1121,7 +1121,7 @@ mod tests {
     #[test]
     fn a_refusal_whose_write_failed_is_written_again_until_it_lands() {
         use crate::plex::session::{Session, TempSession};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _sess = TempSession::new("grant-unsaved-refusal");
         crate::plex::reset_servers_for_test();
         reset_for_test();
@@ -1129,7 +1129,7 @@ mod tests {
         // The store cannot be read: an empty client id is the locked/blocked read.
         crate::plex::session::save(&Session::default());
         record(&account, "m", PlaintextChoice::Revoked).expect("queued");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         assert_eq!(choices(&[], "acct"), vec![("m".to_owned(), PlaintextChoice::Revoked)],
             "the refusal holds this launch at once");
         // The store reads again — still holding the answer the refusal replaced.
@@ -1138,7 +1138,7 @@ mod tests {
         let mut clock = UpgradeRetry::default();
         for now in (0..=60_000u32).step_by(500) {
             let _ = clock.due(now);
-            crate::storage_worker::drain_for_test();
+            plx_base::storage_worker::drain_for_test();
         }
         assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "m"), PlaintextChoice::Revoked,
             "a restart would read back Allowed");
@@ -1152,7 +1152,7 @@ mod tests {
     #[test]
     fn an_unsaved_refusal_never_writes_into_the_next_session() {
         use crate::plex::session::{Session, TempSession};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _sess = TempSession::new("grant-unsaved-identity");
         crate::plex::reset_servers_for_test();
         reset_for_test();
@@ -1160,7 +1160,7 @@ mod tests {
         // The store cannot be read: the refusal's write fails and stays queued.
         crate::plex::session::save(&Session::default());
         record(&old, "m", PlaintextChoice::Revoked).expect("queued");
-        crate::storage_worker::drain_for_test();
+        plx_base::storage_worker::drain_for_test();
         // Sign-out, then another account signs in and allows its own server.
         identity_changed();
         let new = account_key("new-acct");
@@ -1170,7 +1170,7 @@ mod tests {
         let mut clock = UpgradeRetry::default();
         for now in (0..=60_000u32).step_by(500) {
             let _ = clock.due(now);
-            crate::storage_worker::drain_for_test();
+            plx_base::storage_worker::drain_for_test();
         }
         let after = crate::plex::session::peek();
         assert_eq!(after.plaintext_consent, next.plaintext_consent,
@@ -1184,7 +1184,7 @@ mod tests {
     /// reshuffle, a friend's share advertising the same private address) gets no credential there.
     #[test]
     fn a_grant_admits_only_the_server_it_was_minted_for() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         mint(scope(), "a", &lan(), &eligible()).expect("eligible");
@@ -1200,7 +1200,7 @@ mod tests {
     /// requires HTTPS) must not be overridden by re-credentialing the cached plaintext one.
     #[test]
     fn a_remembered_origin_is_allowed_by_the_build_alone() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         mint(scope(), "a", &lan(), &eligible()).expect("eligible");
@@ -1215,7 +1215,7 @@ mod tests {
     /// a reach or a mint withdraws it, and the generations moving kill it with the grants.
     #[test]
     fn an_offer_follows_the_fresh_verdict_the_answer_and_the_generations() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_for_test();
         let verdict = |eligibility| PlaintextVerdict {

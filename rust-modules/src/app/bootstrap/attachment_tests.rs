@@ -16,7 +16,7 @@ fn initial_for(saved: Session, entropy: Option<[u8; 16]>) -> Initial {
 
 #[test]
 fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let temp = session::TempSession::new("recording-attachment-race");
     temp.assert_only_target();
     let root = temp.path().parent().unwrap().to_path_buf();

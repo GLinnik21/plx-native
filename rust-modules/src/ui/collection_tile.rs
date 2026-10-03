@@ -445,7 +445,7 @@ pub(crate) fn draw_fan_name(p: Painter, rest: Rect, r: Rect, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fontcov::advances::ShippedMeasure;
+    use plx_base::fontcov::advances::ShippedMeasure;
 
     fn tile(w: f32) -> Rect { Rect::new(0.0, 0.0, w, w * 1.5) }
     fn fit(name: &str, w: f32) -> FittedName {

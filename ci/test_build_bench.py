@@ -51,21 +51,24 @@ def read(p):
         return open(p).read()
     except OSError:
         return ""
-if os.environ.get("FAKE_FAIL_ON_EDIT") and "build-bench edit" in read("src/cbuf.rs") + read("src/ui/mod.rs"):
+EDITED = ("base/src/cbuf.rs", "src/coldstart.rs", "src/ui/mod.rs")
+if os.environ.get("FAKE_FAIL_ON_EDIT") and "build-bench edit" in "".join(read(p) for p in EDITED):
     sys.stderr.write("error: fake cargo failed on the edited tree\n")
     sys.exit(101)
 if "--no-run" in args:
     # cargo judges a path package by mtime: a restored file is stale until the next build
-    sig = read("src/cbuf.rs") + read("src/ui/mod.rs") + str([os.stat(p).st_mtime_ns for p in ("src/cbuf.rs", "src/ui/mod.rs")])
+    sig = "".join(read(p) for p in EDITED) + str([os.stat(p).st_mtime_ns for p in EDITED])
     state = os.environ["FAKE_STATE"] + "." + (os.environ.get("CARGO_TARGET_DIR") or "target").replace("/", "_")
     fresh = read(state) == sig and not os.environ.get("FAKE_ALWAYS_DIRTY")
     open(state, "w").write(sig)
     print("   Compiling noise on stdout that is not JSON")
     print(json.dumps({"reason": "compiler-artifact", "package_id": "registry+x#serde@1.0.0", "fresh": True}))
+    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules/base#plx_base@0.0.0", "fresh": fresh}))
     print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/rust-modules#plxnative-modules@0.7.0", "fresh": fresh}))
 elif args[:2] == ["test", "--lib"]:
     print("running 5432 tests")
-    print("test result: ok. 5425 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 1.00s")
+    print("test result: ok. 5300 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 1.00s")
+    print("test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s")
 elif args[0] == "rustc":
     tgt = args[args.index("--target") + 1]
     tdir = args[args.index("--target-dir") + 1]
@@ -84,9 +87,11 @@ SCRATCH_MAKEFILE = r'''print-bench-config:
 	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a' \
 	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'RELEASE=$(RELEASE)'
 '''
-LEAF = "rust-modules/src/cbuf.rs"
+LEAF = "rust-modules/base/src/cbuf.rs"
+APP_LEAF = "rust-modules/src/coldstart.rs"
 HUB = "rust-modules/src/ui/mod.rs"
-SRC_FILES = {LEAF: "pub fn leaf() {}\n", HUB: "pub fn hub() {}", "rust-modules/src/lib.rs": "mod cbuf;\n"}
+SRC_FILES = {LEAF: "pub fn leaf() {}\n", APP_LEAF: "pub fn app() {}\n", HUB: "pub fn hub() {}",
+             "rust-modules/src/lib.rs": "mod coldstart;\n"}
 
 
 def git(repo, *args):
@@ -219,7 +224,7 @@ class ShapeTests(unittest.TestCase):
             self.assertTrue(inc)
             self.assertTrue(all(c["tdir"] == "target-fast" and c["args"] == list(bb.HOST_TEST_BUILD_ARGS)
                                 for c in inc), inc)
-            self.assertIn(["test", "--lib"], [c["args"] for c in plain])  # the suite itself
+            self.assertIn(list(bb.HOST_TEST_ARGS), [c["args"] for c in plain])  # the suite itself
             arm = [c for c in calls if c["args"][0] == "rustc"]
             self.assertEqual(len(arm), 1)
             self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "arm-unknown-linux-gnueabi",

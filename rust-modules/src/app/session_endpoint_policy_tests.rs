@@ -5,7 +5,7 @@ mod tests {
     use crate::auth::owner::{SessionEvent, SessionWork};
     use crate::plex::session::{self, Session, SourceRef, ServerRef, UserRef};
 
-    struct Cleanup<'a>(&'a crate::task::MainThread);
+    struct Cleanup<'a>(&'a plx_base::task::MainThread);
     impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
@@ -20,8 +20,8 @@ mod tests {
 
     #[test]
     fn endpoint_request_refusal_early_return_and_retoken_release_exact_admission() {
-        let _lock = crate::testlock::serial();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let _lock = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
         for scenario in 0..4 {
             let tmp = session::TempSession::new("owner-endpoint-policy");
             let _cleanup = Cleanup(&mt);

@@ -5,8 +5,8 @@ use crate::plex::session::{self, Session};
 
 #[test]
 fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
-    let _serial = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _serial = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     for partial in [false, true] {
         let temp = session::TempSession::new(if partial {
             "recording-erase-partial"
@@ -118,8 +118,8 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
 
 #[test]
 fn replay_cannot_authorize_erasure_of_a_recording_target() {
-    let _serial = crate::testlock::serial();
-    let mt = unsafe { crate::task::MainThread::assume() };
+    let _serial = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
     let temp = session::TempSession::new("replay-no-erasure");
     temp.assert_only_target();
     let before = std::fs::read(temp.path()).unwrap();

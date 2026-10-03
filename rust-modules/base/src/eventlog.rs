@@ -4,18 +4,18 @@
 //! guards every line passes on the way, and [`ring`] is the lab's tap. It lives in the base layer
 //! (docs/module-layers.md) and names nothing outside itself but `paths`, so any module may log
 //! without naming the application, and the log closes no module cycle. It
-//! used to be `crate::log` in `lib.rs`, and reaching the lab ring through `lab` from there put every
+//! used to be `log` in `lib.rs`, and reaching the lab ring through `lab` from there put every
 //! caller above the whole app in the module graph.
 
 /// The redaction pass every line takes before the file write ([`scrub::scrub_local`]), and the
 /// stricter one a Cloud Lab upload takes ([`scrub::scrub`]). **Ungated**: its assertions must run in
 /// the default `make check`. See the module's doc for why there are two exits and why only the
 /// remote one may drop a line.
-pub(crate) mod scrub;
+pub mod scrub;
 /// The bounded in-memory record ring, tapped by [`log`] one call below the redaction. Behind the
 /// lab feature: a build without it has nothing to put in a ring.
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) mod ring;
+pub mod ring;
 
 /// Strip any PMS/plex.tv token from a line bound for the event log.
 ///
@@ -32,7 +32,7 @@ pub(crate) mod ring;
 ///
 /// Cheap by construction: the `find` is a no-op scan for the overwhelming majority of lines, and
 /// the log is written a few times a second at most, never per frame.
-pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
+pub fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
     const KEY: &str = "X-Plex-Token=";
     if !m.contains(KEY) {
         return std::borrow::Cow::Borrowed(m);
@@ -56,7 +56,7 @@ pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
 /// The event log's path. One definition, because three things open this file: `log` below,
 /// the simulator binary (which truncates it at startup), and `src/main.c` on the television — and
 /// the last of those cannot see this module, which is what [`crate::paths::ENV_STEERABLE`] guarantees.
-pub(crate) fn events_log() -> std::path::PathBuf {
+pub fn events_log() -> std::path::PathBuf {
     crate::paths::in_runtime_dir(crate::paths::runtime_file::EVENTS)
 }
 
@@ -101,7 +101,7 @@ fn write_log_line(writer: &mut impl std::io::Write, line: &str) -> std::io::Resu
 /// surface (`make run` fetches it). The ONE shared sink; modules bring it in as `use crate::eventlog::log;`.
 ///
 /// Every line goes through [`redact_tokens`] first — see its doc for why the guard lives here.
-pub(crate) fn log(m: &str) {
+pub fn log(m: &str) {
     // Through the instance root, not a literal: several host simulators run at once, and one
     // shared event log would interleave their lines into something no run can be graded from.
     // On the television the root is `/tmp`, so this is byte-for-byte the path it always was —
@@ -113,7 +113,7 @@ pub(crate) fn log(m: &str) {
     let line = crate::eventlog::scrub::scrub_local(m);
     // The lab ring taps the log HERE, one call below the redaction, so it is by construction a
     // strict subset of the file every other tool reads and inherits the credential backstop above.
-    // Compiled out without the `lab-diagnostics` feature — see `crate::lab`.
+    // Compiled out without the `lab-diagnostics` feature — see `lab`.
     #[cfg(feature = "lab-diagnostics")]
     crate::eventlog::ring::record(&line);
     if let Ok(mut f) = open_private_log_append(&p) {

@@ -178,7 +178,7 @@ impl HubsStore {
     #[cfg(test)]
     pub(crate) fn controlled(&mut self, cmd: Option<HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
-        crate::testlock::assert_held("controlled hubs store");
+        plx_base::testlock::assert_held("controlled hubs store");
         self.prepare_command(cmd.as_ref());
         let command = cmd.is_some();
         let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
@@ -192,7 +192,7 @@ impl HubsStore {
         directory: crate::stores::browse::DirectoryView<'_>,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         #[cfg(test)]
-        crate::testlock::assert_held("controlled hubs store with Browse owner");
+        plx_base::testlock::assert_held("controlled hubs store with Browse owner");
         self.prepare_command(cmd.as_ref());
         let command = cmd.is_some();
         let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
@@ -231,7 +231,7 @@ mod contract_tests {
 
     #[test]
     fn every_reset_entry_point_retires_workers_and_accepts_new_landings() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
         for path in ["run", "run_with_directory", "controlled", "controlled_with_directory"] {
             let mut store = HubsStore::default();
@@ -278,7 +278,7 @@ mod contract_tests {
 
     #[test]
     fn controlled_hubs_uses_the_supplied_directory() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test(
             "hubs-owned", "127.0.0.1", 9, "synthetic", "fixture");
@@ -311,7 +311,7 @@ mod contract_tests {
     /// mailbox nobody reads any more.
     #[test]
     fn a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut a = HubsStore::default();
         let b = HubsStore::default();
         let a_adapter = a.adapter();

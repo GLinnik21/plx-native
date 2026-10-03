@@ -87,7 +87,7 @@ pub(crate) fn install_panic_logger() {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH))
+            .open(&plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::CRASH))
         {
             let _ = writeln!(f, "{line}");
         }
@@ -382,7 +382,7 @@ pub(super) fn install_pms_owned(
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
 /// exit is the process exit code `plex_run` returns.
 ///
-/// `mt`, THE main-thread token, is minted once by `plex_run` itself (`crate::task::MainThread::
+/// `mt`, THE main-thread token, is minted once by `plex_run` itself (`plx_base::task::MainThread::
 /// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,
 /// from where a `&mut PlayerAdapter` is the proof it is still held: the ACB/Starfish seam takes
 /// `&MainThread` (which is `!Send`, so `task::spawn` rejects any closure that captured one), and
@@ -390,7 +390,7 @@ pub(super) fn install_pms_owned(
 pub(crate) unsafe fn boot(
     pms_host: *const c_char,
     pms_port: c_int,
-    mt: crate::task::MainThread,
+    mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight,
 ) -> Result<App, c_int> {
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
@@ -424,7 +424,7 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
 }
 
 pub(crate) unsafe fn construct(
-    pms_host: *const c_char, pms_port: c_int, mt: crate::task::MainThread,
+    pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
     deferred: Option<crate::plex::session::DeferredLoad>,
 ) -> Result<App, c_int> {
@@ -522,7 +522,7 @@ pub(crate) unsafe fn construct(
         log("GL ctx failed");
         return Err(1);
     }
-    crate::surface::probe(win);
+    plx_base::surface::probe(win);
     // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so
     // `fps=` reports the true GPU render rate. WSLg's X11/GLX swap accepts interval 1 without
     // blocking, so the software budget in `run` follows the same switch.
@@ -541,7 +541,7 @@ pub(crate) unsafe fn construct(
         }
         // A CPU rasterizer's frame time is not a main-thread hang (`task::runtime_check`).
         #[cfg(feature = "threadcheck")]
-        crate::task::runtime_check::note_renderer(renderer.as_deref());
+        plx_base::task::runtime_check::note_renderer(renderer.as_deref());
     }
     // The system on-screen keyboard, PROBED — see `crate::textinput`'s module doc. Both facts
     // on this line are preconditions that fail in complete silence, and nothing in this tree
@@ -750,10 +750,10 @@ pub(crate) unsafe fn construct(
             captured_dev_sources(&dev_servers.unwrap_or_default())),
     };
     let mut bridge = if controlled {
-        super::bridge::Bridge::controlled_home(crate::diag::heartbeat::now_us,
+        super::bridge::Bridge::controlled_home(plx_base::diag::heartbeat::now_us,
             initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
     } else {
-        super::bridge::Bridge::new(crate::diag::heartbeat::now_us, session_init,
+        super::bridge::Bridge::new(plx_base::diag::heartbeat::now_us, session_init,
             crate::telemetry::consent::current().unwrap_or_default(), &mt)
     };
     // Construct the one dispatcher before bootstrap commands; move this same queue into App.
@@ -952,7 +952,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!crate::devtrig::listed(&initial.triggers, "noidle"));
+        crate::ui::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -1106,12 +1106,12 @@ pub(crate) unsafe fn construct(
         .and_then(|s| s.parse().ok())
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
-    let mut instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    let mut instr = plx_base::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
     if let Some(slow_ms) = crate::dev::scenarios::framering_ms().filter(|_| !controlled) {
         instr.arm_ring(slow_ms);
     }
     if framedrop_on {
-        crate::diag::spans::arm();
+        plx_base::diag::spans::arm();
     }
 
     let last_input = initial.as_ref().map_or_else(clock::now, |initial| initial.clock_start);
@@ -1436,7 +1436,7 @@ pub(crate) unsafe fn construct(
     if app.scenarios.dev.nobudget {
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
         #[cfg(feature = "devtriggers")]
-        crate::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
+        plx_base::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");

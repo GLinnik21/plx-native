@@ -7,6 +7,9 @@ pub(super) const HANG_FATAL_MS: u64 = 2000;
 const LINGER_MS: u64 = 3000;
 #[derive(Clone, Copy)]
 pub(super) enum Issue {
+    // Built by `blocking::assert_may_block`, which is compiled out while `test-support` stands in
+    // for `cfg(test)` (a dependent's tests); this crate's own tests construct it.
+    #[cfg_attr(not(test), allow(dead_code))]
     Guard,
     /// `gpu_phase`: the stall was sampled inside a GL-work scope (`frame draw`, `gl readback`, `gl present`).
     Hang { ms: u64, gpu_phase: bool },
@@ -36,7 +39,7 @@ pub(super) fn fatal(dev: bool, policy: Policy, issue: Issue) -> bool {
 /// desktop drivers report: Apple Software Renderer (macOS), Mesa llvmpipe / softpipe / swrast
 /// ("Software Rasterizer"), SwiftShader, and WARP ("Microsoft Basic Render Driver", WSLg's D3D12
 /// fallback). Anything else, the television's Mali included, is hardware.
-pub(crate) fn software_renderer(renderer: &str) -> bool {
+pub fn software_renderer(renderer: &str) -> bool {
     const NAMES: &[&str] = &[
         "software renderer", "software rasterizer", "llvmpipe", "softpipe", "swiftshader",
         "basic render driver",
@@ -49,7 +52,7 @@ static SOFTWARE_GL: AtomicBool = AtomicBool::new(false);
 
 /// Record the context's `GL_RENDERER` once at GL init. `None` (a null string) is unknown and
 /// stays hardware: the watchdog must never become lenient because a string could not be read.
-pub(crate) fn note_renderer(renderer: Option<&str>) {
+pub fn note_renderer(renderer: Option<&str>) {
     let software = renderer.is_some_and(software_renderer);
     SOFTWARE_GL.store(software, Ordering::Release);
     if software {
@@ -78,10 +81,10 @@ impl KillLatch {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Warning {
-    pub(crate) kind: &'static str,
-    pub(crate) ms: u64,
-    pub(crate) label: &'static str,
+pub struct Warning {
+    pub kind: &'static str,
+    pub ms: u64,
+    pub label: &'static str,
     until: Option<u64>,
 }
 #[derive(Default)]
@@ -103,7 +106,7 @@ fn now() -> u64 {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     ORIGIN.get_or_init(Instant::now).elapsed().as_millis().min(u64::MAX as u128) as u64
 }
-pub(crate) fn warning() -> Option<Warning> {
+pub fn warning() -> Option<Warning> {
     // Never wait behind an observer on the frame thread.
     WARNING.try_lock().ok().and_then(|s| s.visible(now()))
 }
@@ -116,15 +119,15 @@ pub(super) fn reset_warning() {
 pub(super) fn end(ms: u64) {
     WARNING.lock().unwrap_or_else(|e| e.into_inner()).end(now(), ms);
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub(super) fn guard(label: &'static str) {
     let mut s = WARNING.lock().unwrap_or_else(|e| e.into_inner());
     s.0 = Some(Warning { kind: "BLOCK", ms: 0, label, until: Some(now().saturating_add(LINGER_MS)) });
 }
 
 /// Publish a warning without starting the watchdog or sleeping; restore even after an assertion.
-#[cfg(test)]
-pub(crate) fn with_warning_for_test(f: impl FnOnce()) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_warning_for_test(f: impl FnOnce()) {
     crate::testlock::assert_held("runtime warning fixture");
     struct Restore(Option<Warning>);
     impl Drop for Restore {

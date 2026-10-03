@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn a_reader_that_runs_before_the_first_frame_sees_the_rest_values() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         publish(1.0, 1.0, None);
         set_blur_dissolve(false);
         assert_eq!(page_alpha(), 1.0);
@@ -149,7 +149,7 @@ mod tests {
     /// the dip it replaces.
     #[test]
     fn the_pending_pill_overrides_and_the_blur_prototype_reads_the_ramp_inverted() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         publish(0.25, 1.0, Some(2));
         assert_eq!(view_tab(0), 2, "the capsule travels to the queued destination");
         assert_eq!(page_alpha(), 0.25);

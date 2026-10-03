@@ -3,7 +3,7 @@
 //! in and the one door callers go through.
 //!
 //! **Blocking.** One platform round trip, so [`toast`] must run on a worker, never on the frame
-//! thread; it asserts that itself (`crate::task::assert_may_block`).
+//! thread; it asserts that itself (`plx_base::task::assert_may_block`).
 //!
 //! **Without a platform bus** (the simulator, a host test, or no port installed) nothing here
 //! touches one: a log line and [`Outcome::NoBus`].
@@ -50,13 +50,13 @@ pub(crate) fn toast(message: &str) -> Outcome {
 
 /// One attempt under the chosen [`Identity`], reply and grade both. Blocks.
 pub(crate) fn send(message: &str, identity: Identity) -> Sent {
-    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("LS2 toast") });
+    let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("LS2 toast") });
     (super::port().deliver_toast)(message, identity)
 }
 
 /// What an absent port answers: nothing was sent, and the log says so.
 pub(super) fn deliver_without_port(_message: &str, identity: Identity) -> Sent {
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "toast: no platform port — {identity:?} toast not sent"
     ));
     Sent { reply: None, outcome: Outcome::NoBus }

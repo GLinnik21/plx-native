@@ -120,7 +120,7 @@ enough to mislead. `05.40.20.01` is webOS **4.10.0**, not 5. The mapping is in e
 
 ## 3. What was done
 
-### 3.1 Runtime library binding (`rust-modules/src/dynlib.rs`)
+### 3.1 Runtime library binding (`rust-modules/base/src/dynlib.rs`)
 
 FFmpeg, libcurl and libAcbAPI are `dlopen`'d by SONAME candidate list instead of linked. The
 `dynlib!` macro takes a block shaped exactly like the `extern "C"` block it replaces, so no call

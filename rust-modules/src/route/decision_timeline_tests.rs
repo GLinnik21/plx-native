@@ -314,7 +314,7 @@ fn every_concurrent_scrobble_drain_waits_for_the_same_taken_handle() {
 #[test]
 fn timeline_lease_cannot_cross_engine_teardown() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
     apply_plan(&mut ps, 
@@ -356,7 +356,7 @@ fn timeline_lease_cannot_cross_engine_teardown() {
 #[test]
 fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
     ps.request = Some(PlaybackRequest {

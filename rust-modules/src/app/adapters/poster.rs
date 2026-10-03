@@ -448,10 +448,10 @@ fn store() -> MutexGuard<'static, Store> {
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
-    crate::cbuf::as_bytes(&s.key)
+    plx_base::cbuf::as_bytes(&s.key)
 }
 fn set_key(s: &mut Pslot, key: &str) {
-    crate::cbuf::set_bytes(&mut s.key, key);
+    plx_base::cbuf::set_bytes(&mut s.key, key);
 }
 
 // (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
@@ -595,7 +595,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
 /// Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the server
 /// for the pixels they will draw; the logical box stays the caller's.
 fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
-    let n = crate::surface::render_scale() as i64;
+    let n = plx_base::surface::render_scale() as i64;
     c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
 }
 
@@ -609,7 +609,7 @@ fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, pn
 fn warn_key_refused(len: usize) {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, Ordering::Relaxed) {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
         ));
     }
@@ -695,7 +695,7 @@ fn log_residency() {
     st.rearmed = rearmed;
     st.refused = refused;
     drop(st);
-    crate::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
+    plx_base::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
 /// The settle half of the instrument (see [`log_residency`]'s doc for the gap it closes): called
@@ -727,7 +727,7 @@ fn log_residency_settled(store_idle_this_frame: bool) {
     st.rearmed = rearmed;
     st.refused = refused;
     drop(st);
-    crate::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
+    plx_base::eventlog::log(&format!("posters: residency lost={lost} rearmed={rearmed} refused={refused}"));
 }
 
 /// Test-visible read of the two original totals, so a test grades the counters through the same
@@ -759,7 +759,7 @@ fn residency_last_emitted_for_test() -> (u64, u64) {
 
 /// Force the interval throttle's clock back to "no line written yet", so a test's first call
 /// through [`log_residency`] is deterministically unthrottled regardless of what an earlier test
-/// (serialized the same way, through [`crate::testlock::serial`]) wrote a moment before. Leaves
+/// (serialized the same way, through [`plx_base::testlock::serial`]) wrote a moment before. Leaves
 /// the process-wide totals alone — those are graded by delta, exactly as [`reset_key_memo`]
 /// leaves `plex::reset_servers_for_test` to the registry it resets.
 #[cfg(test)]
@@ -1446,7 +1446,7 @@ impl ArtFail {
 ///
 /// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
 /// `&X-Plex-Token=…` (see [`poster_key`], and the test that pins the token to the end of it), and
-/// `crate::eventlog::redact_tokens`' own doc states the policy that backstop exists to make redundant — no
+/// `plx_base::eventlog::redact_tokens`' own doc states the policy that backstop exists to make redundant — no
 /// call site formats a URL into a log line in the first place. The server is named by its registry
 /// SLOT NUMBER, the handle `plex: server slot N registered at …` already prints, and by nothing
 /// else: not the address, not the machine identifier, not the friendly name (which defaults to the
@@ -1465,7 +1465,7 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // two), so two workers can reach the same cause for the same server at once and only
     // the one that flipped the bit may write the line.
     if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "posters: art fetch FAILED on server {} - {} (permanent responses are final; transient failures retry with backoff while the tile is on screen; further ones like this are silent)",
             srv.raw(),
             cause.why()
@@ -1496,7 +1496,7 @@ fn disk_namespace(client: &crate::plex::Client) -> String {
 pub(crate) fn log_cache_stats() {
     let s = crate::imgcache::stats();
     let queued = note_backlog(&store().slots);
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "imgcache: hits={} misses={} writes={} evictions={} entries={} bytes={} fetches={} queued_bytes={} peak_queued_bytes={} gpu_bytes={}",
         s.hit, s.miss, s.write, s.eviction, s.entries, s.bytes,
         FETCHES.load(Ordering::Relaxed), queued, BACKLOG_PEAK.load(Ordering::Relaxed), tex::resident_bytes(),
@@ -1700,7 +1700,7 @@ fn poster_worker() {
                         px = img::img_malloc_copy(&out.px, || format!("{}x{} collection {rk} fan", out.w, out.h));
                         (w, h) = (out.w as c_int, out.h as c_int);
                     }
-                    fan::Got::Final => crate::eventlog::log(&format!(
+                    fan::Got::Final => plx_base::eventlog::log(&format!(
                         "posters: collection {rk} has no usable member art - its card draws the neutral tile"
                     )),
                     fan::Got::Transient => transient = true,
@@ -1766,7 +1766,7 @@ pub(crate) fn init() {
     // filter_map, not map: a refused worker is one fewer decoder, not a dead app. Artwork degrades
     // to whatever the survivors can fetch (and to nothing at all if both are refused).
     let handles: Vec<JoinHandle<()>> = (0..2)
-        .filter_map(|_| crate::task::spawn("poster", poster_worker))
+        .filter_map(|_| plx_base::task::spawn("poster", poster_worker))
         .collect();
     store().workers = handles;
     refresh::init();
@@ -1783,7 +1783,7 @@ pub(crate) fn shutdown() {
     for h in handles {
         // these park in `stream::http_get`, whose socket nothing outside the call can reach —
         // so an app exit against a stalled PMS waits out SO_RCVTIMEO here. Measured, not fixed.
-        crate::task::join("poster", h);
+        plx_base::task::join("poster", h);
     }
     // free pending decodes, then every resident texture (main thread for GL); workers are joined
     let mut to_free = Vec::with_capacity(PT_CAP);
@@ -1812,7 +1812,7 @@ mod tests {
     //! texture and no test binary on this host links GL. That boundary is exactly why [`victim`]
     //! and [`idle_of`] were split out of [`lookup`]/[`store_idle`] in the first place.
     //!
-    //! The key-building tests are the exception and take [`crate::testlock::serial`]: they need a
+    //! The key-building tests are the exception and take [`plx_base::testlock::serial`]: they need a
     //! server in the registry, which is a crate global. They still touch no socket and no GL —
     //! `poster_key` only formats a string.
     use super::*;
@@ -1848,7 +1848,7 @@ mod tests {
     /// the load-bearing half: an owned `BrowseStore::pump` adopts every registered slot as a source
     /// and spawns a discovery worker for it, so a server left behind here would have another module's tests
     /// dialling a dead loopback port on a background thread.
-    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
@@ -1858,7 +1858,7 @@ mod tests {
     /// `register_for_test`, not the public `register`: the latter resolves the device id through
     /// `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
     fn one_server() -> (Fresh, ServerId, &'static str) {
-        let g = crate::testlock::serial();
+        let g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         reset_key_memo();
         let tok = "tok-poster-test";
@@ -2717,7 +2717,7 @@ mod tests {
     /// The two counters behind `posters: residency lost=… rearmed=…` (issue #107): the route
     /// heartbeat's `evicted_hot=` cannot distinguish "eviction never fired" from "eviction fired
     /// and the re-arm worked", so these are graded directly rather than through the log line's
-    /// throttle. `one_server` takes [`crate::testlock::serial`], which is what keeps this test's
+    /// throttle. `one_server` takes [`plx_base::testlock::serial`], which is what keeps this test's
     /// deltas exact against the other tests in this file that drive real eviction through the
     /// installed cache (`a_rejected_decode_cannot_leave_the_real_source_claiming_ready`,
     /// `a_ready_source_hit_recovers_after_its_texture_is_evicted`).
@@ -3152,7 +3152,7 @@ mod tests {
     /// it to consume the wake — undoing the idle behaviour the app depends on.
     #[test]
     fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::ui::idle::reset_for_test();
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
@@ -3279,7 +3279,7 @@ mod tests {
     /// runs every frame the store is quiet, and most quiet frames follow another quiet frame.
     #[test]
     fn a_settled_frame_with_nothing_new_writes_no_second_line() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         reset_residency_log_for_test();
         let (lost, rearmed) = residency_counts_for_test();
         {
@@ -3389,7 +3389,7 @@ mod tests {
     /// otherwise no draw probes the slot again and it remains parked until an unrelated frame.
     #[test]
     fn a_due_parked_retry_invalidates_the_frame_gate() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::ui::idle::reset_for_test();
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
@@ -3430,7 +3430,7 @@ mod tests {
     /// advertised one-second backoff even begins.
     #[test]
     fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::ui::idle::reset_for_test();
         let mut s = Pslot {
             state: P_LOADING,

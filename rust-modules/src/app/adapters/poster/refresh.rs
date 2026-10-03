@@ -62,7 +62,7 @@ pub(super) fn enqueue(client: &'static crate::plex::Client, path: String, key: D
 
 pub(super) fn init() {
     *QUEUE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Queue { running: true, ..Default::default() });
-    let worker = crate::task::spawn("image-refresh", run);
+    let worker = plx_base::task::spawn("image-refresh", run);
     if worker.is_none() {
         QUEUE.lock().unwrap_or_else(|e| e.into_inner()).as_mut().unwrap().running = false;
     }
@@ -76,7 +76,7 @@ pub(super) fn shutdown() {
     }
     READY.notify_all();
     if let Some(h) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        crate::task::join("image-refresh", h);
+        plx_base::task::join("image-refresh", h);
     }
 }
 
@@ -123,7 +123,7 @@ mod tests {
     }
     #[test]
     fn refreshes_are_bounded_deduplicated_and_retired_with_the_account() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("refresh-fixture", "127.0.0.1", 1, "fixture", "fixture");
         let client = crate::plex::client_for(sid).unwrap();

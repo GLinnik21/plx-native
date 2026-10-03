@@ -179,7 +179,7 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
     }
 }
 
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 
 // ------------------------------------------------------------------------------------------
 // EXPERIMENT (`/tmp/plxnative-opaque`): declare the UI surface OPAQUE where nothing is behind it
@@ -251,7 +251,7 @@ struct RegistryListener {
 /// is already mapped; this only avoids naming these particular symbols in `DT_NEEDED`.
 #[cfg(not(feature = "hostsim"))]
 fn wl_sym(name: &str) -> Option<*mut c_void> {
-    crate::dynlib::Handle::self_handle()
+    plx_base::dynlib::Handle::self_handle()
         .sym(name)
         .filter(|p| !p.is_null())
 }
@@ -312,7 +312,7 @@ unsafe extern "C" fn on_global(
 /// armed; returns without touching the surface's current (NULL) region either way.
 #[cfg(not(feature = "hostsim"))]
 pub(crate) fn opaque_region_init() {
-    if !crate::devtrig::flag("opaque") {
+    if !plx_base::devtrig::flag("opaque") {
         return;
     }
     let (display, surface) = unsafe { (G_WL_DISPLAY, G_WL_SURFACE) };
@@ -380,7 +380,7 @@ pub(crate) fn opaque_region_init() {
     // Surface-local coordinates. `viewport()` is the rect the renderer actually draws into, which
     // is the whole 1920x1080 surface on every set seen so far and is the honest answer on a
     // letterboxed one, where the bars are not ours to claim.
-    let (vx, vy, vw, vh) = crate::surface::viewport();
+    let (vx, vy, vw, vh) = plx_base::surface::viewport();
     let region = unsafe {
         let r = ctor(
             compositor,
@@ -479,7 +479,7 @@ pub(crate) fn opaque_route(_player: bool) {}
 // compiled only with `devtriggers` (and not in the simulator); the shipping build has the empty
 // stubs at the end of this section.
 #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
-crate::devtrig::latched_flag!(
+plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-framecb` — see the section comment above.
     pub(crate) fn frame_probe_armed = "framecb";
 );
@@ -750,7 +750,7 @@ mod wayland_tests {
 
     #[test]
     fn failed_refresh_cannot_reuse_a_previous_surface() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         unsafe {
             let mut display = 0u8;
             let mut surface = 0u8;
@@ -767,7 +767,7 @@ mod wayland_tests {
 
     #[test]
     fn background_release_and_foreground_refresh_replace_the_borrow() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         unsafe {
             let mut display = 0u8;
             let mut surface = 0u8;
@@ -802,7 +802,7 @@ mod wayland_tests {
 
     #[test]
     fn foreign_or_incomplete_wm_info_cannot_supply_wayland_handles() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         unsafe {
             for subsystem in [0i32, 4, 6] {
                 let mut info = [0u8; 512];

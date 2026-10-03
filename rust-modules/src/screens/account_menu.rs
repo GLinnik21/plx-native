@@ -493,7 +493,7 @@ impl LogicalState for AccountMenuScreen {
 /// All eleven moved by NAME from `ui/account_menu.rs` (restructure phase 10). They drive the pure
 /// functions — `Session::account`, [`account_form`] and the [`FormTable`] lookups over it (a press resolves by row identity, never by position) — with sessions built in the test,
 /// so they touch no global and need no lock; the seventh drives the live `session::set_current`
-/// and takes `crate::testlock::serial()` for its whole body.
+/// and takes `plx_base::testlock::serial()` for its whole body.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,7 +569,7 @@ mod tests {
             vec!["Sign out", "Settings"]);
         assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-menu-verdict");
         crate::plex::session::save(&s);
         let mut menu = AccountMenuScreen::new(EntryId(0));
@@ -588,7 +588,7 @@ mod tests {
     /// menu (the verdict landing while *Change profile* is focused).
     #[test]
     fn a_refused_roster_never_opens_the_menu_on_sign_out() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-menu-safe-open");
         crate::plex::session::save(&local(Session { account_token: "acct".into(),
             ..Default::default() }));
@@ -627,7 +627,7 @@ mod tests {
     }
     #[test]
     fn session_refresh_rebuilds_an_open_account_menu() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-menu-refresh");
         let mut saved = local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() });
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn session_refresh_preserves_action_identity_when_rows_move() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-action-identity");
         let mut menu = AccountMenuScreen::new(EntryId(0));
         menu.build(false);
@@ -770,7 +770,7 @@ mod tests {
     /// Takes `testlock::serial()` for the whole test — the publication resource is process-global.
     #[test]
     fn the_live_profile_global_feeds_the_header() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let restore = crate::plex::session::current_snapshot();
         let s = local(Session {
             account_token: "acct".into(),
@@ -944,7 +944,7 @@ mod tests {
                 // Only the nameless menu is app text end to end; a real profile name is server
                 // text that may push the hug to the cap, where it ellipsizes.
                 if name.is_none() {
-                    out.extend(table.menu_cap_failure(&crate::fontcov::advances::ShippedMeasure, &what));
+                    out.extend(table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, &what));
                 }
                 out.extend(table.app_fit_failures(crate::ui::table::MENU_MAX_W, &what));
                 out.extend(table.app_fit_failures_hugged(&what));

@@ -41,14 +41,14 @@ impl FrameCache {
     }
     /// No GL context in a host test: this always declines, exactly as `render_available` says, so
     /// every caller falls back to the `capture`/`draw` copy path exercised by this file's tests.
-    pub(super) fn render_into(&mut self) -> Option<crate::surface::PageTarget> {
+    pub(super) fn render_into(&mut self) -> Option<plx_base::surface::PageTarget> {
         None
     }
-    pub(super) fn rendered(&mut self, target: crate::surface::PageTarget) {
+    pub(super) fn rendered(&mut self, target: plx_base::surface::PageTarget) {
         self.finish_render(target);
         self.draw();
     }
-    pub(super) fn finish_render(&mut self, target: crate::surface::PageTarget) {
+    pub(super) fn finish_render(&mut self, target: plx_base::surface::PageTarget) {
         drop(target);
         self.snapshot = Some(PIXELS.with(|p| p.borrow().clone()));
     }
@@ -127,7 +127,7 @@ fn embedded_alert_frame(settled: bool, later_scope: bool) -> Vec<&'static str> {
 
 #[test]
 fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
     assert_eq!(embedded_alert_frame(false, true), expected, "opening frame");
@@ -139,7 +139,7 @@ fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
 
 #[test]
 fn cache_off_and_no_later_scope_explain_the_old_green_paths() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
     {
         let _reset = Reset::new(true);
@@ -154,7 +154,7 @@ fn cache_off_and_no_later_scope_explain_the_old_green_paths() {
 #[test]
 fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
     use crate::ui::decision_alert::{Answers, DecisionAlert};
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let mut alert = DecisionAlert::new();
     alert.open_card(c"Details", vec!["support".into()], Answers::One);
@@ -174,7 +174,7 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
 fn a_field_keeps_its_dither_through_every_motion() {
     use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
     use crate::ui::popover::host::begin_frame;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     frame_begin(1.0 / 60.0);
     begin_frame(false);
     assert_eq!(crate::gfx::dither_for_field(700.0, 700.0), crate::gfx::DITHER_LSB, "at rest, the field pays");

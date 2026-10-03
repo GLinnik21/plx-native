@@ -6,7 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
+use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
 
 // What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
@@ -360,8 +360,8 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let (vx, vy, s) = match unsafe { CLIP_TARGET } {
         Some((tx, ty, ts, _, _)) => (tx, ty, ts),
         None => {
-            let (vx, vy, _, _) = crate::surface::viewport();
-            (vx, vy, crate::surface::scale())
+            let (vx, vy, _, _) = plx_base::surface::viewport();
+            (vx, vy, plx_base::surface::scale())
         }
     };
     // **Round each EDGE in physical space; derive the extent as the difference of the two rounded
@@ -463,7 +463,7 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     if !frame_clear_allowed() {
         return;
     }
-    crate::diag::spans::span("clear", || unsafe {
+    plx_base::diag::spans::span("clear", || unsafe {
         glClearColor(r, g, b, a);
         glClear(GL_COLOR_BUFFER_BIT);
     });
@@ -773,7 +773,7 @@ fn glsl_preamble(ty: c_uint) -> &'static CStr {
 /// the source untouched — at scale 1, so the default simulator compiles what the television does.
 #[cfg(feature = "hostsim")]
 unsafe fn supersample_aa(src: *const c_char) -> Option<std::ffi::CString> {
-    let n = crate::surface::render_scale();
+    let n = plx_base::surface::render_scale();
     if n <= 1 {
         return None;
     }
@@ -2075,7 +2075,7 @@ pub(crate) fn draw_art_wash(
 pub(crate) fn snap(v: f32) -> f32 {
     #[cfg(feature = "hostsim")]
     {
-        let n = crate::surface::render_scale();
+        let n = plx_base::surface::render_scale();
         if n > 1 {
             return (v * n as f32).round() / n as f32;
         }
@@ -2565,7 +2565,7 @@ impl FrameCache {
     /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
     /// construct dispatchers without a GL context; they must take the live fallback.
     pub(crate) fn render_available(&self) -> bool {
-        let (x, y, w, h) = crate::surface::viewport();
+        let (x, y, w, h) = plx_base::surface::viewport();
         unsafe { IPROG != 0 && !self.off && !self.fbo_off && x == 0 && y == 0 && w > 0 && h > 0 }
     }
 
@@ -2588,14 +2588,14 @@ impl FrameCache {
         if video_plane_refuses("FrameCache::capture") {
             return false;
         }
-        let (vx, vy, vw, vh) = crate::surface::viewport();
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
         if vw <= 0 || vh <= 0 {
             return false;
         }
         unsafe {
             self.ensure_tex(vw, vh);
             glBindTexture(GL_TEXTURE_2D, self.tex);
-            crate::diag::spans::span("cap", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
+            plx_base::diag::spans::span("cap", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
             if !self.checked {
                 self.checked = true;
                 let e = glGetError();
@@ -2630,7 +2630,7 @@ impl FrameCache {
     }
 
     /// **Draw the page INTO the cache rather than copying it out afterwards.** Binds an FBO over
-    /// the cache's texture as the page's target ([`crate::surface::PageTarget`]) and returns the
+    /// the cache's texture as the page's target ([`plx_base::surface::PageTarget`]) and returns the
     /// guard; the page is then drawn exactly as it would be to the frame, and
     /// [`rendered`](Self::rendered) closes it and puts it on the frame as one quad.
     ///
@@ -2643,14 +2643,14 @@ impl FrameCache {
     /// `None` — the caller copies instead — inside a blur source pass, on a video-plane frame, on
     /// a letterboxed drawable (the texture is the viewport's size and would not line up with a
     /// viewport that does not start at the origin), and once the FBO has proved incomplete.
-    pub(crate) fn render_into(&mut self) -> Option<crate::surface::PageTarget> {
+    pub(crate) fn render_into(&mut self) -> Option<plx_base::surface::PageTarget> {
         if self.off || self.fbo_off || blur_source_pass() {
             return None;
         }
         if video_plane_refuses("FrameCache::render_into") {
             return None;
         }
-        let (vx, vy, vw, vh) = crate::surface::viewport();
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
         if vw <= 0 || vh <= 0 || vx != 0 || vy != 0 {
             return None;
         }
@@ -2662,7 +2662,7 @@ impl FrameCache {
                 glBindFramebuffer(GL_FRAMEBUFFER, f);
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self.tex, 0);
                 let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-                glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+                glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
                 if st != GL_FRAMEBUFFER_COMPLETE {
                     log(&format!(
                         "frame cache: FBO {vw}x{vh} incomplete (status=0x{st:x}) — copying instead"
@@ -2674,7 +2674,7 @@ impl FrameCache {
                 self.fbo = f;
             }
             self.valid = false;
-            let target = crate::surface::PageTarget::enter(self.fbo);
+            let target = plx_base::surface::PageTarget::enter(self.fbo);
             // A fresh pass over the texture: a clear is what tells a tiler it need not load the
             // previous capture's tiles first. The page's own `frame_clear` lays its ground next.
             glClearColor(0.0, 0.0, 0.0, 0.0);
@@ -2685,14 +2685,14 @@ impl FrameCache {
 
     /// Close a [`render_into`](Self::render_into): the frame's framebuffer is bound again, the
     /// texture holds the page, and the page goes onto the frame from it as one quad.
-    pub(crate) fn rendered(&mut self, target: crate::surface::PageTarget) {
+    pub(crate) fn rendered(&mut self, target: plx_base::surface::PageTarget) {
         self.finish_render(target);
         self.draw();
     }
 
     /// Finish a capture without compositing it yet. Page transitions clear the app ground and
     /// apply their alpha only to this texture, never to the page rendered into it.
-    pub(crate) fn finish_render(&mut self, target: crate::surface::PageTarget) {
+    pub(crate) fn finish_render(&mut self, target: plx_base::surface::PageTarget) {
         drop(target);
         self.valid = true;
         SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
@@ -2886,7 +2886,7 @@ pub(crate) fn draw_tex_carded_still(
     true
 }
 
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 
 // ============================== backdrop blur ================================
 // The frosted ground under a popover panel: a blurred snapshot of what the frame had drawn BEHIND
@@ -3026,17 +3026,17 @@ const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 fn blur_taps() -> [f32; 2] {
     static SEEN: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let Some(v) = crate::devtrig::read("blurtaps") else {
+        let Some(v) = plx_base::devtrig::read("blurtaps") else {
             return BLUR_TAPS;
         };
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
         match (it.next(), it.next()) {
             (Some(Ok(a)), Some(Ok(b))) if a > 0.0 && b > a => {
-                crate::eventlog::log(&format!("glass: blur taps swept to {a},{b}"));
+                plx_base::eventlog::log(&format!("glass: blur taps swept to {a},{b}"));
                 [a, b]
             }
             _ => {
-                crate::eventlog::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
+                plx_base::eventlog::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
                 BLUR_TAPS
             }
         }
@@ -3214,7 +3214,7 @@ pub(crate) fn retain_backdrop(z: backdrop::Z) -> bool {
         glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
         glBindTexture(GL_TEXTURE_2D, texture.0);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
         if glGetError() != GL_NO_ERROR { return false; }
         let mut chain = c.clone();
         chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
@@ -3306,8 +3306,8 @@ const STANDING_RIMCLEAR: f32 = 0.6;
 fn rimclear_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::devtrig::read("rimclear")?.trim().parse::<f32>().ok()?;
-        crate::eventlog::log(&format!("glass: rim scrim shed swept to {v}"));
+        let v = plx_base::devtrig::read("rimclear")?.trim().parse::<f32>().ok()?;
+        plx_base::eventlog::log(&format!("glass: rim scrim shed swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3320,8 +3320,8 @@ fn rimclear_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::devtrig::read("tracksharp")?.trim().parse::<f32>().ok()?;
-        crate::eventlog::log(&format!("glass: rim sharp source swept to {v}"));
+        let v = plx_base::devtrig::read("tracksharp")?.trim().parse::<f32>().ok()?;
+        plx_base::eventlog::log(&format!("glass: rim sharp source swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3335,8 +3335,8 @@ fn sharp_sweep() -> Option<f32> {
 fn deep_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::devtrig::read("paneldeep")?.trim().parse::<f32>().ok()?;
-        crate::eventlog::log(&format!("glass: panel deep-sample radius swept to {v}"));
+        let v = plx_base::devtrig::read("paneldeep")?.trim().parse::<f32>().ok()?;
+        plx_base::eventlog::log(&format!("glass: panel deep-sample radius swept to {v}"));
         Some(v.max(0.0))
     })
 }
@@ -3537,7 +3537,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
     static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)>> =
         std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::devtrig::read("tracklens")?;
+        let v = plx_base::devtrig::read("tracklens")?;
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>().ok());
         let (b, l, w) = (it.next()??, it.next()??, it.next()??);
         // The chamfer's two weights are OPTIONAL: three fields is the geometry alone, five adds the
@@ -3553,7 +3553,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
             edge_a.map(|v| v.clamp(0.0, 1.0)),
             shade.map(|v| v.clamp(0.0, 1.0)),
         );
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "glass: track swept to bevel={} lens={} spec={} edge={:?} shade={:?}",
             out.0, out.1, w, out.3, out.4
         ));
@@ -3949,7 +3949,7 @@ fn blur_lazy_init() -> bool {
         // says what goes wrong if it is left behind.
         use_prog(PROG);
 
-        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let (gx, gy, gw, gh) = plx_base::surface::viewport();
         let ((mw, mh), (sw, sh)) = blur_dims(gw, gh);
         let build = || -> Option<BlurChain> {
             let grab = cap_tex(gw, gh);
@@ -4233,7 +4233,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                 note_px(Class::Blur, (tw as f64) * (th as f64));
                 // Supersampled, the chain's texels are `1/n` the authored size they are on a
                 // television; widening the offsets by `n` keeps the frosting's authored radius.
-                let tap = tap * crate::surface::render_scale() as f32;
+                let tap = tap * plx_base::surface::render_scale() as f32;
                 glUniform2f(BL_TEXEL, tap / c.sw as f32, tap / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -4255,7 +4255,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
             note_px(Class::Blur, (r2w as f64) * (r2h as f64));
-            let up = BLUR_UP_TAP * crate::surface::render_scale() as f32;
+            let up = BLUR_UP_TAP * plx_base::surface::render_scale() as f32;
             glUniform2f(BL_TEXEL, up / c.mw as f32, up / c.mh as f32);
             // The Settings kernel adds an even pair of extra passes, so both the ordinary and
             // modal chains finish in `a`. The assertion at entry keeps that property structural.
@@ -4263,8 +4263,8 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
-        let (vx, vy, vw, vh) = crate::surface::viewport();
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
         // Publish what was actually grabbed, not what was asked for — see [`blur_publish`].
@@ -4551,10 +4551,10 @@ impl<const N: usize> GroundProbe<N> {
         }
         let (w, h) = (self.px * N as c_int, self.px);
         let mut buf = vec![0u8; (w * h * 4) as usize];
-        crate::diag::spans::span("gndread", || {
+        plx_base::diag::spans::span("gndread", || {
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
-            glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+            glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
         });
         self.fence = None;
         self.ready = Some(buf);
@@ -4582,7 +4582,7 @@ impl<const N: usize> GroundProbe<N> {
                 }
                 let (tex, _) = self.target?;
                 let px = self.px;
-                crate::diag::spans::span("gndkick", || {
+                plx_base::diag::spans::span("gndkick", || {
                     glBindTexture(GL_TEXTURE_2D, tex);
                     for (i, &(x, y)) in origins.iter().enumerate() {
                         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
@@ -4640,7 +4640,7 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
-        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let (gx, gy, gw, gh) = plx_base::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
         let origins: [(c_int, c_int); GROUND_TAPS] = std::array::from_fn(|i| {
@@ -4856,7 +4856,7 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some();
-        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let (gx, gy, gw, gh) = plx_base::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int;
         let origins: [(c_int, c_int); CONTROL_GROUND_TAPS] = std::array::from_fn(|i| {
@@ -4871,7 +4871,7 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
         let Some(buf) = probe.step(have, &origins, "control ground") else {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         };
-        let taps: [[f32; 3]; CONTROL_GROUND_TAPS] = crate::diag::spans::span("gndmean", || {
+        let taps: [[f32; 3]; CONTROL_GROUND_TAPS] = plx_base::diag::spans::span("gndmean", || {
             std::array::from_fn(|i| {
                 diffuse_ground_mean_u8(probe_tap(&buf, i, CONTROL_GROUND_TAP_PX, CONTROL_GROUND_TAPS))
             })
@@ -5042,7 +5042,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
     #[allow(unreachable_code)]
     {
         if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "videoplane: refused {what} — the plane is not in our framebuffer to sample"
             ));
         }
@@ -5099,8 +5099,8 @@ impl Drop for DirectPass {
             CLIP_TARGET = None;
             CULL_RECT = None;
             glDisable(GL_SCISSOR_TEST);
-            glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
-            let (vx, vy, vw, vh) = crate::surface::viewport();
+            glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+            let (vx, vy, vw, vh) = plx_base::surface::viewport();
             glViewport(vx, vy, vw, vh);
             glEnable(GL_BLEND);
         }
@@ -5130,7 +5130,7 @@ pub(crate) fn blur_direct_scale() -> Option<u32> {
     // Supersampled, the drawable is `n`x the canvas, so the divisor grows by `n` to render the
     // source at the same AUTHORED resolution a television does — the same material, not a finer one.
     (!unsafe { BLUR_DIRECT_OFF })
-        .then_some(BLUR_DIRECT_SCALE * crate::surface::render_scale() as u32)
+        .then_some(BLUR_DIRECT_SCALE * plx_base::surface::render_scale() as u32)
 }
 
 /// The backdrop source, rendered by DRAWING THE SCENE AGAIN at 1/`scale` per axis, instead of
@@ -5257,7 +5257,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         // texels, and a texel covers `scale` authored pixels, so the offsets that give the shipped
         // look at quarter resolution have to shrink in proportion at any finer divisor. Without
         // this a scale sweep changes two variables at once and measures neither.
-        let tap_k = 4.0 * crate::surface::render_scale() as f32 / scale as f32;
+        let tap_k = 4.0 * plx_base::surface::render_scale() as f32 / scale as f32;
         for (i, taps) in blur_taps().iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
@@ -5300,8 +5300,8 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
-        let (vx, vy, vw, vh) = crate::surface::viewport();
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
         let e = glGetError();
@@ -5702,7 +5702,7 @@ fn fbo_target(w: c_int, h: c_int, who: &str) -> Option<(c_uint, c_uint)> {
         glBindFramebuffer(GL_FRAMEBUFFER, f);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
         let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
         if st != GL_FRAMEBUFFER_COMPLETE {
             log(&format!(
                 "{who}: FBO {w}x{h} incomplete (status=0x{st:x}) — {who} off"
@@ -5845,7 +5845,7 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
         //    FBO = frozen screen), full viewport, blend back on (func untouched). Program binding
         //    needs no restore — every draw fn binds its own lazily (use_prog); texture unit 0
         //    stays active; vertex state untouched.
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
         glViewport(0, 0, CAP_W, CAP_H);
         glEnable(GL_BLEND);
 
@@ -5912,7 +5912,7 @@ fn field_passes(gw: c_int) -> Option<u32> {
 
 fn field_lazy_init() -> bool {
     unsafe {
-        let view = crate::surface::viewport();
+        let view = plx_base::surface::viewport();
         if let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() {
             if c.view == view {
                 return true;
@@ -6084,7 +6084,7 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
             Some(tex) if tex != 0 => tex,
             _ => {
                 glBindTexture(GL_TEXTURE_2D, c.grab);
-                crate::diag::spans::span("fieldcopy", || {
+                plx_base::diag::spans::span("fieldcopy", || {
                     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh)
                 });
                 c.grab
@@ -6128,7 +6128,7 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
         }
 
         // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
         glViewport(gx, gy, gw, gh);
         glEnable(GL_BLEND);
 
@@ -6219,7 +6219,7 @@ unsafe fn field_readback(c: &FieldChain) -> Option<[[f32; 3]; FIELD_CELLS]> {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     let mut buf = [0u8; FIELD_CELLS * 4];
     glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
-    crate::diag::spans::span("fieldread", || {
+    plx_base::diag::spans::span("fieldread", || {
         glReadPixels(
             0,
             0,
@@ -6230,7 +6230,7 @@ unsafe fn field_readback(c: &FieldChain) -> Option<[[f32; 3]; FIELD_CELLS]> {
             buf.as_mut_ptr() as *mut c_void,
         )
     });
-    glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+    glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
     glViewport(gx, gy, gw, gh);
 
     // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` (and the page
@@ -7087,7 +7087,7 @@ mod tests {
     /// lifting hands the cadence back where it was.
     #[test]
     fn a_frozen_page_answers_its_ground_from_the_last_reading() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let last = Some([0.25f32, 0.5, 0.75]);
         let (g0, c0) = unsafe {
             GROUND_RGB = last;
@@ -7118,7 +7118,7 @@ mod tests {
 
     #[test]
     fn discovery_does_not_advance_a_cached_control_ground_probe() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         use crate::gfx::backdrop::{self, Sources};
         use std::{cell::RefCell, rc::Rc};
 
@@ -7452,7 +7452,7 @@ mod tests {
     /// Both halves are graded here, as the sequence the renderer actually runs.
     #[test]
     fn i_two_glass_surfaces_share_one_grab_and_give_it_back() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let bar = (500.0f32, 40.0, 900.0, 76.0);
         let btn = (520.0f32, 150.0, 200.0, 60.0);
         let take = |prev: [f32; 4], r: (f32, f32, f32, f32)| {
@@ -7705,7 +7705,7 @@ mod tests {
 mod recording_clear_tests {
     #[test]
     fn text_prewarm_cannot_clear_the_visible_frame() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old = super::set_page_frozen(false);
         assert!(super::frame_clear_allowed());
         super::without_frame_clear(|| {
@@ -7717,7 +7717,7 @@ mod recording_clear_tests {
 
     #[test]
     fn recording_clear_scope_restores_after_nesting_and_unwind() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old = super::set_page_frozen(false);
         super::without_frame_clear(|| {
             let _ = std::panic::catch_unwind(|| super::without_frame_clear(|| panic!("screen")));

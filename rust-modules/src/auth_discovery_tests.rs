@@ -1110,7 +1110,7 @@ fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Res
 /// pinned LAN candidate must win outright, and no plaintext origin may ever be activated.
 #[test]
 fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_handshake() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !(crate::net::global_init() && crate::net::available()) {
         eprintln!("curl unavailable on this host; skipping");
         return;
@@ -1158,7 +1158,7 @@ fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_han
     // The same race, through `race_batch`'s real worker, taught the session the LAN leaf's key.
     assert_eq!(
         learned_pin("e2e95mid"),
-        Some(crate::spki::pin_from_spki_der(&cert.spki_der)),
+        Some(plx_base::spki::pin_from_spki_der(&cert.spki_der)),
         "a verified, accepted LAN answer is remembered"
     );
 }
@@ -1173,7 +1173,7 @@ fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_han
 /// admit that rather than blame the CA store, and the test says which one it saw.
 #[test]
 fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !(crate::net::global_init() && crate::net::available()) {
         eprintln!("curl unavailable on this host; skipping");
         return;
@@ -1182,7 +1182,7 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
     let _ca = TestCaGuard::install(&cert.pem, "expired-leaf");
     let port = crate::net::spawn_dual_protocol(std::sync::Arc::clone(&cert), identity_json("expired"));
 
-    let log = crate::eventlog::events_log();
+    let log = plx_base::eventlog::events_log();
     let before = std::fs::metadata(&log).map_or(0, |m| m.len());
     let out = crate::net::request_result_evidence(
         &format!("https://127.0.0.1:{port}/identity"),
@@ -1218,7 +1218,7 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
 /// `resolve_roster_using` — what a boot actually stores is `SourceRef::origin_url`.
 #[test]
 fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !(crate::net::global_init() && crate::net::available()) {
         eprintln!("curl unavailable on this host; skipping");
         return;
@@ -1271,7 +1271,7 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
 /// `CredentialPolicy::HttpsOnly` that must never become the reachable origin.
 #[test]
 fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_only_not_reach_at() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !(crate::net::global_init() && crate::net::available()) {
         eprintln!("curl unavailable on this host; skipping");
         return;
@@ -1466,7 +1466,7 @@ fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
 
 #[test]
 fn a_changed_refresh_republishes_reached_unauthorized_and_offline_after_registry_replacement() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let old = [
         crate::plex::register_for_test("yes", "10.0.0.1", 32400, "old", "cid"),
@@ -2317,7 +2317,7 @@ fn every_route_server(relay: bool) -> Resource {
 /// and carry the plaintext answer's closed facts — a loopback literal on a `local` connection.
 #[test]
 fn e2e_insecure_only_evidence_names_the_failed_tls_handshake() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !(crate::net::global_init() && crate::net::available()) {
         eprintln!("curl unavailable on this host; skipping");
         return;
@@ -2583,7 +2583,7 @@ fn plx10_offer(resolved: &Resolution) -> Option<&PlaintextVerdict> {
 /// named an `http://` origin, and no grant exists.
 #[test]
 fn plx10_before_consent_an_eligible_lan_answer_is_offered_and_no_token_goes_over_plaintext() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let (resolved, admitted) = plx10_discover(issue_95_account(false), &PlaintextAsk::undecided());
@@ -2611,7 +2611,7 @@ fn plx10_before_consent_an_eligible_lan_answer_is_offered_and_no_token_goes_over
 /// same host on another port, not another host.
 #[test]
 fn plx10_after_consent_the_token_goes_only_to_the_exact_verified_origin() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
@@ -2634,7 +2634,7 @@ fn plx10_after_consent_the_token_goes_only_to_the_exact_verified_origin() {
 /// relay), and no admission ever names an `http://` origin.
 #[test]
 fn plx10_consent_never_downgrades_an_ineligible_topology() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
     let variants: Vec<(&str, Resource)> = vec![
         ("relay verifies", issue_95_account(true)),
@@ -2674,7 +2674,7 @@ fn plx10_consent_never_downgrades_an_ineligible_topology() {
 /// sign-in.
 #[test]
 fn plx10_an_https_origin_refused_at_admission_is_not_a_reason_to_go_plaintext() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
     fn dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: Duration) -> (i32, Vec<u8>) {
@@ -2704,7 +2704,7 @@ fn plx10_an_https_origin_refused_at_admission_is_not_a_reason_to_go_plaintext() 
 /// otherwise carry the token to an origin nothing re-proved.
 #[test]
 fn plx10_a_fresh_verdict_that_does_not_reach_the_granted_origin_revokes_the_grant() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
     let silent = |_: &Origin, _: Option<&crate::plex::ResolvePin>, _: Duration| (0, Vec::new());
     for (label, resource, dial) in [
@@ -2767,15 +2767,15 @@ fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules
 /// that did not would fail here rather than skip.
 #[test]
 fn a_verified_tls_answer_carries_the_leaf_pin_only_when_asked() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = std::sync::Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
     let _ca = TestCaGuard::install(&cert.pem, "pin-learn");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
 
     let asked = identity_request(port, "https", true).expect("a trusted loopback leaf verifies");
-    assert_eq!(asked.peer_pin, crate::spki::pin_from_pem(&cert.pem), "the served leaf's pin");
-    assert_eq!(asked.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)), "the key pair's pin");
+    assert_eq!(asked.peer_pin, plx_base::spki::pin_from_pem(&cert.pem), "the served leaf's pin");
+    assert_eq!(asked.peer_pin, Some(plx_base::spki::pin_from_spki_der(&cert.spki_der)), "the key pair's pin");
 
     let not_asked = identity_request(port, "https", false).expect("verifies");
     assert_eq!(not_asked.peer_pin, None, "an ordinary request pays for no chain and learns nothing");
@@ -2786,19 +2786,19 @@ fn a_verified_tls_answer_carries_the_leaf_pin_only_when_asked() {
 /// server does), so the order is what is being proved, not an accident of a one-element list.
 #[test]
 fn the_pin_is_the_leaf_of_a_ca_issued_chain_not_its_issuer() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = Arc::new(crate::net::mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-30), ymd_from_now(30)).serving_chain());
     let _ca = TestCaGuard::install(&cert.pem, "pin-ca-issued");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m"));
     let resp = identity_request(port, "https", true).expect("a leaf chaining to the trusted CA verifies");
-    assert_eq!(resp.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)));
-    assert_ne!(resp.peer_pin, crate::spki::pin_from_pem(&cert.pem), "not the CA's key");
+    assert_eq!(resp.peer_pin, Some(plx_base::spki::pin_from_spki_der(&cert.spki_der)));
+    assert_ne!(resp.peer_pin, plx_base::spki::pin_from_pem(&cert.pem), "not the CA's key");
 }
 
 #[test]
 fn plaintext_and_failed_verification_learn_no_pin() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
     let _ca = TestCaGuard::install(&cert.pem, "pin-none");
@@ -2820,7 +2820,7 @@ fn plaintext_and_failed_verification_learn_no_pin() {
 /// the same strictly verified connection comes back with no pin at all.
 #[test]
 fn only_the_learning_probe_reads_the_peer_key() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = Arc::new(crate::net::mint_cert(&["127.0.0.1"]));
     let _ca = TestCaGuard::install(&cert.pem, "pin-http");
@@ -2834,12 +2834,12 @@ fn only_the_learning_probe_reads_the_peer_key() {
     assert_eq!(plain_probe.peer_pin, None, "a probe that did not ask");
     let learning = crate::http::request_probe_learning_key(&origin, IDENTITY, get, &hdr, 4096, 5, None)
         .expect("answers");
-    assert_eq!(learning.peer_pin, Some(crate::spki::pin_from_spki_der(&cert.spki_der)));
+    assert_eq!(learning.peer_pin, Some(plx_base::spki::pin_from_spki_der(&cert.spki_der)));
 }
 
 /// What the session remembers for `machine_id`, once the queued write has landed.
 fn learned_pin(machine_id: &str) -> Option<String> {
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     crate::plex::session::peek().server_key_pin(machine_id).map(str::to_owned)
 }
 
@@ -2871,13 +2871,13 @@ fn probe_and_learn(scheme: &str, port: u16, machine_id: &str, location: probe::L
 /// the session without an entry.
 #[test]
 fn an_accepted_identity_over_verified_tls_is_remembered_and_nothing_else_is() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let _session = crate::plex::session::TempSession::new("pin-learn-accept");
     let cert = Arc::new(crate::net::mint_cert(&[&learn_host(), "127.0.0.1"]));
     let _ca = TestCaGuard::install(&cert.pem, "pin-learn-accept");
     let port = crate::net::spawn_dual_protocol(Arc::clone(&cert), identity_json("m-real"));
-    let want = crate::spki::pin_from_spki_der(&cert.spki_der);
+    let want = plx_base::spki::pin_from_spki_der(&cert.spki_der);
 
     // A different machine answering at the address: WrongServer, and no key is anyone's.
     assert_eq!(probe_and_learn("https", port, "m-other", probe::Location::Local), Outcome::WrongServer);
@@ -2904,7 +2904,7 @@ fn an_accepted_identity_over_verified_tls_is_remembered_and_nothing_else_is() {
 
 #[test]
 fn an_identity_that_fails_verification_teaches_no_key() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let _session = crate::plex::session::TempSession::new("pin-learn-unverified");
     // The server's certificate is NOT in the trust store this request verifies against.
@@ -2921,7 +2921,7 @@ fn an_identity_that_fails_verification_teaches_no_key() {
 #[test]
 fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
     use std::os::unix::fs::MetadataExt;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let session = crate::plex::session::TempSession::new("pin-learn-replace");
     let file = session.path();
@@ -2934,18 +2934,18 @@ fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
     let port_b = crate::net::spawn_dual_protocol(Arc::clone(&second), identity_json("m-real"));
 
     assert_eq!(probe_and_learn("https", port_a, "m-real", probe::Location::Local), Outcome::Reachable);
-    assert_eq!(learned_pin("m-real"), Some(crate::spki::pin_from_spki_der(&first.spki_der)));
+    assert_eq!(learned_pin("m-real"), Some(plx_base::spki::pin_from_spki_der(&first.spki_der)));
 
     let stamp = |f: &std::path::Path| (std::fs::read(f).unwrap(), std::fs::metadata(f).unwrap().ino());
     let before = stamp(&file);
     assert_eq!(probe_and_learn("https", port_a, "m-real", probe::Location::Local), Outcome::Reachable);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     assert_eq!(stamp(&file), before, "the same key again must not rewrite the session file");
 
     drop(ca_a);
     let _ca_b = TestCaGuard::install(&second.pem, "pin-learn-replace-b");
     assert_eq!(probe_and_learn("https", port_b, "m-real", probe::Location::Local), Outcome::Reachable);
-    assert_eq!(learned_pin("m-real"), Some(crate::spki::pin_from_spki_der(&second.spki_der)));
+    assert_eq!(learned_pin("m-real"), Some(plx_base::spki::pin_from_spki_der(&second.spki_der)));
     let after = crate::plex::session::peek();
     assert_eq!(after.server_key_pins.len(), 1, "one entry per machine");
     assert_ne!(stamp(&file), before);
@@ -2959,7 +2959,7 @@ fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
 /// leaves the proxy's key stored.
 #[test]
 fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let _session = crate::plex::session::TempSession::new("pin-learn-flap");
     // Different subjects, so one bundle can trust both: a CA-issued leaf behind the plex.direct
@@ -3008,7 +3008,7 @@ fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key()
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         learned_pin("flapmid"),
-        Some(crate::spki::pin_from_spki_der(&direct.spki_der)),
+        Some(plx_base::spki::pin_from_spki_der(&direct.spki_der)),
         "the pin is the plex.direct leaf's; the custom host's answer wrote nothing"
     );
 }
@@ -3045,7 +3045,7 @@ fn expired_server(tag: &str) -> (Arc<crate::net::TestCert>, TestCaGuard, u16) {
 
 #[test]
 fn an_expired_leaf_is_served_when_its_remembered_key_is_known() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let (cert, _ca, port) = expired_server("clock-expired");
     let _key = remember(port, &cert);
@@ -3061,7 +3061,7 @@ fn an_expired_leaf_is_served_when_its_remembered_key_is_known() {
 
 #[test]
 fn a_not_yet_valid_leaf_is_served_when_its_remembered_key_is_known() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = not_yet_valid_leaf(&["127.0.0.1"]);
     let (_ca, port) = serve_trusted(&cert, "clock-not-yet");
@@ -3072,7 +3072,7 @@ fn a_not_yet_valid_leaf_is_served_when_its_remembered_key_is_known() {
 
 #[test]
 fn an_expired_leaf_whose_key_differs_from_the_remembered_one_is_refused_with_a_pin_mismatch() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let (_cert, _ca, port) = expired_server("clock-other-key");
     let someone_else = crate::net::mint_cert(&["127.0.0.1"]);
@@ -3089,7 +3089,7 @@ fn an_expired_leaf_whose_key_differs_from_the_remembered_one_is_refused_with_a_p
 
 #[test]
 fn an_expired_leaf_for_another_name_is_refused_even_with_its_key_remembered() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     // The leaf is issued for a name that is not the one dialled: the host check stays ON in key
     // mode, so remembering the key cannot make any certificate the server's for any name.
@@ -3103,7 +3103,7 @@ fn an_expired_leaf_for_another_name_is_refused_even_with_its_key_remembered() {
 
 #[test]
 fn an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let (_cert, _ca, port) = expired_server("clock-no-key");
     let _watched = crate::net::keypin::Scoped::watch(&key_of_port(port));
@@ -3118,7 +3118,7 @@ fn an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
 
 #[test]
 fn an_untrusted_issuer_is_refused_even_with_the_leafs_key_remembered() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     // Valid dates, but the CA this request trusts is not the one that issued the leaf: the date
     // fallback is for dates only.
@@ -3135,7 +3135,7 @@ fn an_untrusted_issuer_is_refused_even_with_the_leafs_key_remembered() {
 
 #[test]
 fn a_valid_leaf_is_served_strictly_and_key_mode_is_never_engaged() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = valid_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-valid");
@@ -3150,7 +3150,7 @@ fn a_valid_leaf_is_served_strictly_and_key_mode_is_never_engaged() {
 
 #[test]
 fn a_key_mode_answer_carries_no_peer_pin_and_teaches_nothing() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let (cert, ca, port) = expired_server("clock-no-learn");
     let _key = remember(port, &cert);
@@ -3172,7 +3172,7 @@ fn a_key_mode_answer_carries_no_peer_pin_and_teaches_nothing() {
 
 #[test]
 fn after_a_fallback_succeeds_later_requests_make_one_handshake_until_the_pin_changes() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-latch");
@@ -3198,7 +3198,7 @@ fn after_a_fallback_succeeds_later_requests_make_one_handshake_until_the_pin_cha
 
 #[test]
 fn a_pin_mismatch_in_key_mode_clears_the_latch_and_is_the_failure() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-latch-mismatch");
@@ -3223,7 +3223,7 @@ fn a_pin_mismatch_in_key_mode_clears_the_latch_and_is_the_failure() {
 
 #[test]
 fn a_post_body_survives_the_retry_once_and_intact() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let cert = expired_leaf(&["127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "clock-post");
@@ -3263,7 +3263,7 @@ fn a_post_body_survives_the_retry_once_and_intact() {
 /// reason") the next strict failure ends it, so *Try again* stops blaming a clock that is right.
 #[test]
 fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_control_plane() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     let (_cert, ca, port) = expired_server("clock-later-control");
     let key = key_of_port(port);

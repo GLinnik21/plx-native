@@ -166,7 +166,7 @@ def nightly_stamp_date(stamp: str) -> "str | None":
 DEV_RS = ROOT / "rust-modules/src/dev.rs"
 # `CONTROLLED` moved with the trigger primitives (`flag`/`read`/`controlled_trigger`) to the base
 # layer, so the catalog's two arrays now live in two files: `DIAG` in `dev.rs`, `CONTROLLED` here.
-DEVTRIG_RS = ROOT / "rust-modules/src/devtrig.rs"
+DEVTRIG_RS = ROOT / "rust-modules/base/src/devtrig.rs"
 
 # Names that are real `plxnative-*` bytes in every configuration ON PURPOSE, so a hit here is not a
 # leak — allowlisted once, with the reason, rather than excluded from the catalog silently.
@@ -1426,7 +1426,7 @@ for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
 # properly by `fontcov.rs`'s cmap gate in `make check`; this only catches "it is not there".
 _cjk = ROOT / "pkg/appfont-cjk.ttf"
 check(_cjk.exists() and _cjk.stat().st_size > 15_000_000,
-      "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/src/fontcov.rs)")
+      "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/base/src/fontcov.rs)")
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")
 # One OFL text covers both faces: Inter's and Noto CJK's licence bodies are byte-identical after

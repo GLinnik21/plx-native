@@ -21,12 +21,12 @@ struct RetireResult {
 /// Discard every obsolete bookmark location. Failure is soft: a stale convenience file must never
 /// prevent the app from reaching Home.
 pub(crate) fn retire() {
-    let result = retire_paths(&crate::paths::obsolete_last_place_candidates());
+    let result = retire_paths(&plx_base::paths::obsolete_last_place_candidates());
     if result.removed != 0 {
-        crate::eventlog::log("coldstart: discarded obsolete last-page bookmark");
+        plx_base::eventlog::log("coldstart: discarded obsolete last-page bookmark");
     }
     if result.failed != 0 {
-        crate::eventlog::log("coldstart: could not remove every obsolete last-page bookmark");
+        plx_base::eventlog::log("coldstart: could not remove every obsolete last-page bookmark");
     }
 }
 

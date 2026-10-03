@@ -137,7 +137,7 @@ fn select_with_fetch(
         if st.running { return; }
         st.running = true;
     }
-    let spawned = crate::task::spawn_small("sidecar", move || loop {
+    let spawned = plx_base::task::spawn_small("sidecar", move || loop {
         let (gen, selection) = {
             let mut st = state();
             let Some(request) = st.pending.take() else {
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn styled_sidecar_source_survives_seek_and_off_on_but_not_new_items() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
         let server = crate::plex::ServerId::from_raw(0);
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn styled_sidecar_adopts_font_attachments_that_arrive_after_its_download() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
         super::super::ass_source::reset();
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn identical_stream_ids_on_different_servers_do_not_reuse_the_sidecar() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
         let key = "/library/streams/42";
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn styled_sidecars_never_draw_a_flattened_second_caption() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset();
         let until = Instant::now() + Duration::from_secs(2);
         while state().running && Instant::now() < until {
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn sidecar_picks_share_one_worker_and_drop_abandoned_answers() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         reset();
         // A prior route test may have left its now-abandoned worker finishing a no-client
         // result. Let that worker retire before installing this test's controlled transport.
@@ -680,7 +680,7 @@ mod tests {
     /// keyless one, a bitmap one and a selected EMBEDDED track are all nothing to both.
     #[test]
     fn restore_uses_shared_server_selected_sidecar() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sidecar = |id: i64, codec: &str, key: &str, selected: bool, external: bool| crate::metadata::Stream {
             id,
             codec: codec.into(),

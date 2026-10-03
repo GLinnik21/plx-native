@@ -963,7 +963,7 @@ mod draw_frame_tests {
     #[test]
     fn only_the_visible_walk_records_stops() {
         use crate::ui::frame::backdrop::{self, Z};
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let store = crate::ui::fixture::FixtureView::default();
         let cx = cx(&m, &store);
@@ -1006,7 +1006,7 @@ mod draw_frame_tests {
     /// The RAII scissor: nested scopes narrow and restore in order, and nothing is left set.
     #[test]
     fn the_clip_scope_nests_and_restores() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let store = crate::ui::fixture::FixtureView::default();
         let cx = cx(&m, &store);
@@ -1035,7 +1035,7 @@ mod draw_frame_tests {
     /// each closes.
     #[test]
     fn a_nested_scope_intersects_the_enclosing_one_and_restores_it() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let store = crate::ui::fixture::FixtureView::default();
         let cx = cx(&m, &store);

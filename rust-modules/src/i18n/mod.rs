@@ -256,7 +256,7 @@ pub(crate) fn set_saved_preference(value: Preference) {
 
 #[cfg(test)]
 pub(crate) fn saved_preference_for_test(value: Preference) -> Preference {
-    crate::testlock::assert_held("saved language preference");
+    plx_base::testlock::assert_held("saved language preference");
     let previous = saved_preference();
     set_saved_preference(value);
     previous
@@ -360,7 +360,7 @@ pub(crate) fn initialize(preference: Preference, controlled: bool) {
             cx.language = Language::Pseudo;
         }
     }
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "locale: source={} preference={} ui={} format={} clock={:?}",
         if info.is_some() {
             "settings"
@@ -375,7 +375,7 @@ pub(crate) fn initialize(preference: Preference, controlled: bool) {
         cx.clock()
     ));
     if CURRENT.set(cx).is_err() {
-        crate::eventlog::log("locale: initialization already completed");
+        plx_base::eventlog::log("locale: initialization already completed");
     }
 }
 #[derive(Default)]
@@ -406,12 +406,12 @@ fn platform_locale() -> Option<SystemLocale> {
         crate::tv::LocaleReply::Reply(raw) => {
             let info = parse_reply(&raw);
             if info.is_none() {
-                crate::eventlog::log("locale: settings refused or returned malformed localeInfo");
+                plx_base::eventlog::log("locale: settings refused or returned malformed localeInfo");
             }
             info
         }
         crate::tv::LocaleReply::Unavailable => {
-            crate::eventlog::log("locale: settings unavailable; using fallback");
+            plx_base::eventlog::log("locale: settings unavailable; using fallback");
             None
         }
     }

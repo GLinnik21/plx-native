@@ -7,7 +7,7 @@ use super::test_support::{frame};
 
 #[test]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-hold");
     session.watching("u-library-shelf-hold");
     struct Cleanup;

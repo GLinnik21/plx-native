@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn dv_caps_getters_are_frame_safe() {
         let cache = DvCache::new();
-        let frame = crate::task::FrameScope::enter();
+        let frame = plx_base::task::FrameScope::enter();
         assert_eq!(cache.get().capability, DvCapability::Unknown);
         let _ = super::capability();
         drop(frame);

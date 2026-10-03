@@ -60,7 +60,7 @@ fn a_part_with_no_dolby_vision_reports_no_record() {
 #[test]
 fn dv_presentation_reads_are_frame_safe() {
     prewarm_dv_latches();
-    let frame = crate::task::FrameScope::enter();
+    let frame = plx_base::task::FrameScope::enter();
     let _ = crate::devcaps::dv::capability();
     let dovi = Dovi {
         present: true,

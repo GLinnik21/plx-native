@@ -279,7 +279,7 @@ impl ViewStateState {
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
     // operation to skip and log rather than take to the wrong machine.
     if crate::plex::client_for(sid).is_none() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "viewstate: rk={rk} {} DROPPED — server {} is not registered",
             w.name(),
             sid.raw()
@@ -428,7 +428,7 @@ impl ViewStateState {
         // one PMS write with no line at all, which is what the request-time check above exists to
         // prevent, so it says so here too.
         let Some(c) = crate::plex::client_for(req.sid) else {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
                 req.rk,
                 req.w.name(),
@@ -438,7 +438,7 @@ impl ViewStateState {
         };
         let (id, sid, rk, w, guid) = (req.id, req.sid, req.rk.clone(), req.w, req.guid.clone());
         let worker_adapter = Arc::clone(adapter);
-        let spawned = crate::task::spawn_small("viewstate", move || {
+        let spawned = plx_base::task::spawn_small("viewstate", move || {
             // Filled OUTSIDE the guard, so a panicking write still lands (as a failure) rather than
             // latching the queue behind a worker that will never report.
             let done = catch_unwind(move || {
@@ -467,7 +467,7 @@ impl ViewStateState {
             self.retry_cd = RETRY_FRAMES;
             return;
         }
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "viewstate: rk={} {} → server {} (off-thread)",
             req.rk,
             w.name(),
@@ -504,7 +504,7 @@ pub(crate) fn pump_with_gate(
         if exact {
             let r = self.sent.take().expect("the exact in-flight request remains present");
             let done = completion.done;
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} ok={} others={}",
                 r.rk,
                 r.w.name(),
@@ -527,7 +527,7 @@ pub(crate) fn pump_with_gate(
                 self.want_detail = Some(detail);
             }
         } else {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "viewstate: completion {} ignored — in-flight identity is {}",
                 completion.id.0,
                 self.sent.as_ref().map(|request| request.id.0.to_string())
@@ -700,7 +700,7 @@ fn fan_out(
         // Never a silent no-op. With two sources registered, a title that cannot be identified
         // portably is one whose watch state WILL disagree between them, and this line is the only
         // place that says so.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "viewstate: fanout SKIPPED — rk={rk} on server {} has no guid",
             sid.raw()
         ));
@@ -716,7 +716,7 @@ fn fan_out(
             continue;
         };
         let ok = w.perform(dst, &key);
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "viewstate: fanout {guid} {} → server {} rk={key} ok={}",
             w.name(),
             id.raw(),
@@ -768,7 +768,7 @@ fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
                 Some(k) if k.is_empty() => "not held".to_string(),
                 Some(k) => format!("holds {}", k.len()),
             };
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "viewstate: fanout {guid} server {}: {outcome}",
                 id.raw()
             ));
@@ -843,7 +843,7 @@ pub(crate) fn run(
 mod tests {
     #[test]
     fn owner_callback_receives_the_optimistic_browse_edit_before_run_returns() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "viewstate-owner", "127.0.0.1", 9, "synthetic", "fixture");
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn stores_route_the_optimistic_edit_to_the_addressed_browse_owner() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "viewstate-stores-owner", "127.0.0.1", 9, "synthetic", "fixture");
@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn owner_callback_receives_fanout_edits_and_the_terminal_hubs_invalidation() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
                 let origin = ServerId::from_raw(0);
         let other = ServerId::from_raw(1);
         let mut state = ViewStateState::default();
@@ -969,7 +969,7 @@ mod tests {
 
     #[test]
     fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
         crate::plex::reset_servers_for_test();
                 let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
@@ -1286,7 +1286,7 @@ mod tests {
     /// this, for every copy the worker reported, is the next test — this one is about the edit.)
     #[test]
     fn the_landing_flips_another_sources_copy_the_press_could_not_reach() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the page is mounted on the SHARE's copy, which the press on our own copy never touched
         crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
@@ -1324,7 +1324,7 @@ mod tests {
     /// pure test above would still be green.
     #[test]
     fn the_landing_applies_the_workers_whole_report_and_retires_the_write() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the mounted page is the SHARE's copy — the one the press could not reach
         crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
@@ -1372,7 +1372,7 @@ mod tests {
 
     #[test]
     fn only_the_exact_monotone_request_identity_can_retire_a_flight() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         let first = req(&mut state, "before-reset", Write::Watched, None);
@@ -1400,7 +1400,7 @@ mod tests {
 
     #[test]
     fn deferred_detail_refresh_keeps_the_originating_page_address() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let target = crate::stores::viewstate::DetailRefresh {
             sid: SRV_B,
             rk: "origin-show".into(),

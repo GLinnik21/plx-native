@@ -3,7 +3,7 @@
 //! Three pieces were lifted out of `lab/` on 2026-08-29 when a second consumer appeared. They were
 //! written for the Cloud Lab bridge, they were correct, and none of them was lab-shaped. Two of
 //! them, the redaction pass and the record ring, are the event log's own guards and now live
-//! under it as `crate::eventlog::{scrub, ring}` (docs/module-layers.md: the log is a leaf every
+//! under it as `plx_base::eventlog::{scrub, ring}` (docs/module-layers.md: the log is a leaf every
 //! module names, so it cannot name `diag`, which names the Plex layer). The third stays here:
 //!
 //! * [`zlib`] — `dlopen`'d `compress2` plus a gzip envelope, in its own one-symbol table.
@@ -191,7 +191,7 @@ fn event_for_impl(e: schema::DiagEvent, server: ServerContext, stamp: Option<Sta
     // the NEXT sign-in's identifier at send time (`sender::wire_body` attaches the identifier
     // current at the send, not at the capture). The handled playback error already went this way.
     //
-    // Deliberately not logged. `crate::eventlog::log` writes the event log, and an event stream duplicated
+    // Deliberately not logged. `plx_base::eventlog::log` writes the event log, and an event stream duplicated
     // into the primary debugging surface would double its volume to say nothing new — every one of
     // these is derived from a line already there.
     let record = crate::telemetry::queue::Record {
@@ -319,17 +319,6 @@ fn random_uuid_v4() -> Option<String> {
     ))
 }
 
-// Gated to their present consumer, which is still only the lab bridge. The telemetry client turned
-// out not to want either — it frames its own bodies and posts them uncompressed — so this stayed a
-// one-consumer gate rather than widening, and there is no `feature = "telemetry"` to widen to (see
-// `Cargo.toml`: that feature existed, gated nothing, and is gone). Deliberately not widened ahead
-// of a caller either way, because `warnings = "deny"` turns "compiled but unused" into a build
-// error, and that is the check doing the work here.
-pub(crate) mod heartbeat; // the frame's own instruments: the eight phase stamps, FRAMEDROP, worstframe=/worstprep=
-pub(crate) mod spans; // named sub-spans of one frame (results, update, draw), printed on its FRAMEDROP line
-#[cfg(feature = "lab-diagnostics")]
-pub(crate) mod zlib;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,7 +345,7 @@ mod tests {
     /// `telemetry::consent`'s own snapshot-install tests, since this module reads that same
     /// `CURRENT` global.
     fn with_consent_snapshot(body: impl FnOnce()) {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = consent::current();
         clear_deferred();
         body();

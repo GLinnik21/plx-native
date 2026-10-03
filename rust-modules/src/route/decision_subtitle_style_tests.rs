@@ -22,7 +22,7 @@ fn recv(rx: &mpsc::Receiver<bool>) -> bool {
 /// reports the durable write, which the next load reads back.
 #[test]
 fn select_publishes_the_live_value_before_the_write_and_persists_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("select-style");
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
@@ -46,7 +46,7 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
 /// survive the older write's completion: the worker touches the durable file only.
 #[test]
 fn select_never_republishes_when_the_write_completes() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = crate::plex::session::TempSession::new("select-no-republish");
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
@@ -62,7 +62,7 @@ fn select_never_republishes_when_the_write_completes() {
 /// stays for this session (it is the durable write that failed, not the pick).
 #[test]
 fn select_reports_a_failed_write_and_keeps_the_live_value() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let session = crate::plex::session::TempSession::new("select-failed");
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);

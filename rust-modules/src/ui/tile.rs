@@ -8,10 +8,10 @@
 //! the library reaching into the row. [`TileFacts`] is itself a [`Tile`]. Phase 3a:
 //! `widgets::poster_mark` reads through [`Tile`].
 //!
-//! The trait itself is `crate::tile::Tile`, defined in `base` so that the data layer can implement
+//! The trait itself is `plx_base::tile::Tile`, defined in `base` so that the data layer can implement
 //! it without naming `ui` (and `ui` without naming the data layer); this is its library spelling.
 
-pub(crate) use crate::tile::Tile;
+pub(crate) use plx_base::tile::Tile;
 
 /// What an item IS, as far as a tile's caption and art care. The library draws a season, an
 /// episode and a collection differently from everything else, so those three are named; a movie

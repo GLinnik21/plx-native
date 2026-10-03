@@ -555,7 +555,7 @@ pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
         "soc": hw.board,
         "revision": hw.hw_revision,
         "rtkmem": crate::tv::sandbox::context(),
-        "install": crate::paths::install_kind(),
+        "install": plx_base::paths::install_kind(),
     });
 }
 

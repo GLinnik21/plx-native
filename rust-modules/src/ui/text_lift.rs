@@ -126,7 +126,7 @@ pub(crate) fn draw_focused(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testlock;
+    use plx_base::testlock;
     use crate::ui::draw_census;
 
     const DT: f32 = 1.0 / 60.0;

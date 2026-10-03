@@ -1002,8 +1002,8 @@ pub(crate) struct RootPage {
     state: RootState,
     session_watch: crate::plex::session::VisibleSessionWatch,
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
-    pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
-    pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
+    pending_auto: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
+    pending_trailer: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
     /// The servers the signed-in account answered crate::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1360,7 +1360,7 @@ impl RootPage {
                 }
                 // OFF is immediate: `grant::record` withdraws the grant NOW, before the
                 // preferences write lands, and records the revocation for this account.
-                crate::eventlog::log("settings: unencrypted connections turned off for one server");
+                plx_base::eventlog::log("settings: unencrypted connections turned off for one server");
                 let account = crate::plex::grant::account_key(&self.session_snapshot.account_token);
                 if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
                     self.pending_plaintext = Some((machine, false));

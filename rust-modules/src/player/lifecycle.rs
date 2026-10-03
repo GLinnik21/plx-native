@@ -1300,7 +1300,7 @@ mod transport_pause_contract_tests {
 
     #[test]
     fn a_refused_native_pause_or_play_cannot_diverge_the_feed_gate() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
         crate::player::TX.commit_paused(false);
         let old_rebuffering = crate::player::SHARED
@@ -1325,7 +1325,7 @@ mod transport_pause_contract_tests {
             rebuffering: old_rebuffering,
         };
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
-            crate::task::MainThread::assume()
+            plx_base::task::MainThread::assume()
         });
 
         crate::player::force_pause_result_for_test(Some(0));
@@ -1354,7 +1354,7 @@ mod transport_pause_contract_tests {
     #[test]
     fn refused_foreground_play_retries_the_native_clock_without_a_second_load() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
         struct Restore(bool);
         impl Drop for Restore {
@@ -1369,7 +1369,7 @@ mod transport_pause_contract_tests {
         crate::player::SHARED.reset_hls_clock_for_test();
         crate::player::TX.commit_paused(false);
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
-            crate::task::MainThread::assume()
+            plx_base::task::MainThread::assume()
         });
         crate::player::force_pause_result_for_test(Some(1));
         assert!(set_transport_paused(&mut pa, true));

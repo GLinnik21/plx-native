@@ -425,7 +425,7 @@ mod two_owner_tests {
     /// against the broken shape.
     #[test]
     fn a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
         let a_rk = "owner-a-item";
         let b_rk = "owner-b-item";

@@ -505,7 +505,7 @@ impl Replay {
         // with an unrelated state mismatch. Dedicated counters identify the exact subcategory.
         self.input_diffs += 1;
         let hashes=hashes.map(|(expected,got)|format!(" expected={expected:#018x} got={got:#018x}")).unwrap_or_default();
-        crate::eventlog::log(&format!("replay: input diverge f={} resolution_index={index} reason={reason} resolution={}{hashes}",
+        plx_base::eventlog::log(&format!("replay: input diverge f={} resolution_index={index} reason={reason} resolution={}{hashes}",
             self.rec.frames.get(self.at).map_or(self.at as u64,|f|f.f), if focus { "focus" } else { "hit" }));
     }
     fn same(&self) -> bool {
@@ -588,7 +588,7 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
                 replay.result_diffs += 1;
                 // The payload may be household data. Only the frame, ordinal and finite reason
                 // belong in the shareable event log, never either side's serialized result.
-                crate::eventlog::log(&format!("replay: result diverge f={} index={} reason={}",
+                plx_base::eventlog::log(&format!("replay: result diverge f={} index={} reason={}",
                     frame.map_or(replay.at as u64, |f| f.f), replay.result_at,
                     if expected.is_some() { "changed" } else { "extra" }));
             }
@@ -750,10 +750,10 @@ impl Recplay {
                 if expected.is_none_or(|value| value["from"] != from || value["e"] != name
                     || value["payload"] != payload) {
                     replay.effect_diffs += 1;
-                    crate::eventlog::log(&format!("replay: effect diverge f={} index={}",
+                    plx_base::eventlog::log(&format!("replay: effect diverge f={} index={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.effect_at));
                     if replay.at < 3 {
-                        crate::eventlog::log(&format!("replay: effect trace kind={name} from={from} event={} tick_ms={} tick_dt={}",
+                        plx_base::eventlog::log(&format!("replay: effect trace kind={name} from={from} event={} tick_ms={} tick_dt={}",
                             payload.get("delivery").and_then(|v| v.get("event")).and_then(Value::as_str).unwrap_or("none"),
                             payload.pointer("/delivery/body/ms").and_then(Value::as_u64).unwrap_or(0),
                             payload.pointer("/delivery/body/dt_us").and_then(Value::as_u64).unwrap_or(0)));
@@ -786,7 +786,7 @@ impl Recplay {
         match mode {
             super::bootstrap::Preflight::Live => Err("controlled recorder requires an explicit mode"),
             super::bootstrap::Preflight::Record => {
-                let dir = crate::paths::runtime_dir().join("plxnative-recordings").join("latest");
+                let dir = plx_base::paths::runtime_dir().join("plxnative-recordings").join("latest");
                 let sink = DirSink::create(&dir).map_err(|_| "cannot create private recording")?;
                 Self::recording_with_sink(initial, Box::new(sink))
             }
@@ -938,7 +938,7 @@ impl Recplay {
                 });
                 if expected_body.as_ref() != Some(&encoded) {
                     replay.input_diffs += 1;
-                    crate::eventlog::log(&format!("replay: input diverge f={} input_index={} reason={}",
+                    plx_base::eventlog::log(&format!("replay: input diverge f={} input_index={} reason={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
                         if expected.is_some() { "changed" } else { "extra" }));
                 }
@@ -989,7 +989,7 @@ impl Recplay {
                     if let Some(rec_bit) = fr.present {
                         if rec_bit != bit {
                             r.present_diffs += 1;
-                            crate::eventlog::log(&format!("replay: present f={} recorded={rec_bit} got={bit}", fr.f));
+                            plx_base::eventlog::log(&format!("replay: present f={} recorded={rec_bit} got={bit}", fr.f));
                         }
                     }
                 }
@@ -1046,7 +1046,7 @@ impl Recplay {
                 }
                 if let Err(e) = r.w.flush_frame() {
                     r.failure = Some("recording storage failure");
-                    crate::eventlog::log(&format!("rec: write failed, stopping: {e:?}"));
+                    plx_base::eventlog::log(&format!("rec: write failed, stopping: {e:?}"));
                 }
                 r.events = false;
                 r.f += 1;
@@ -1074,7 +1074,7 @@ impl Recplay {
                 // result); `extra` means the recording had none left for that store.
                 for (frame, ord, why) in gate.take_diffs() {
                     r.land_diffs += 1;
-                    crate::eventlog::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
+                    plx_base::eventlog::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
                 }
                 if let Some(fr) = r.rec.frames.get(r.at) {
                     if fr.readiness.is_some() {
@@ -1084,12 +1084,12 @@ impl Recplay {
                     if r.input_at < scripts {
                         let missing = scripts - r.input_at;
                         r.input_diffs += missing as u64;
-                        crate::eventlog::log(&format!("replay: input diverge f={} input_index={} reason=missing count={missing}",
+                        plx_base::eventlog::log(&format!("replay: input diverge f={} input_index={} reason=missing count={missing}",
                             fr.f, r.input_at));
                     }
                     for index in r.result_at..fr.results.len() {
                         r.result_diffs += 1;
-                        crate::eventlog::log(&format!("replay: result diverge f={} index={} reason=missing", fr.f, index));
+                        plx_base::eventlog::log(&format!("replay: result diverge f={} index={} reason=missing", fr.f, index));
                     }
                     r.effect_diffs += fr.effects.len().saturating_sub(r.effect_at) as u64;
                     if let Some(expected) = fr.st {
@@ -1097,7 +1097,7 @@ impl Recplay {
                         let got = hash();
                         if got != expected {
                             r.diverged += 1;
-                            crate::eventlog::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "replay: diverge f={} expected={expected:#018x} got={got:#018x} inputs={}",
                                 fr.f,
                                 fr.inputs.len()
@@ -1117,12 +1117,12 @@ impl Recplay {
                     // end: until the recording is exhausted, "not yet" and "never" look alike.
                     for (ord, frame, count) in gate.unmatched_counts() {
                         r.land_diffs += u64::from(count);
-                        crate::eventlog::log(&format!(
+                        plx_base::eventlog::log(&format!(
                             "replay: land diverge f={frame} store={ord} reason={}",
                             crate::ui::landgate::Diff::Missing.name()
                         ));
                     }
-                    crate::eventlog::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "replay: done frames={} graded={} diverged={} present_diffs={} input_diffs={} result_diffs={} land_diffs={} effect_diffs={} focus_diffs={} hit_diffs={} verdict={}",
                         r.rec.frames.len(),
                         r.graded,
@@ -1161,9 +1161,9 @@ impl Recplay {
         if let Recplay::Recording(r) = self {
             if r.w.finish().is_err() {
                 failed = true;
-                crate::eventlog::log("rec: final storage flush failed");
+                plx_base::eventlog::log("rec: final storage flush failed");
             } else if !failed {
-                crate::eventlog::log("rec: finished");
+                plx_base::eventlog::log("rec: finished");
             }
         }
         failed
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn two_bridge_recorders_own_their_landing_lifecycle() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         crate::ui::landgate::disarm();
         let initial = super::super::bootstrap::Initial::synthetic_home(
             1, 32517, Some("root".into())).unwrap();
@@ -1365,7 +1365,7 @@ mod tests {
     #[test]
     fn controlled_replay_retains_capture_readiness_when_the_gpu_finishes_earlier() {
         use crate::ui::dispatch::Tap;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         let sink = crate::ui::rec::MemSink::default();
         let segments = sink.segments.clone();
@@ -1411,7 +1411,7 @@ mod tests {
     #[test]
     fn controlled_replay_supplies_recorded_text_readiness() {
         use crate::ui::dispatch::Tap;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         let sink = crate::ui::rec::MemSink::default();
         let segments = sink.segments.clone();
@@ -1446,7 +1446,7 @@ mod tests {
 
     #[test]
     fn capture_readiness_must_be_consumed_exactly_once() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         for calls in 0..=2 {
             let recording = Recording { header: Header::new(state_fp(), &initial),
@@ -1518,7 +1518,7 @@ mod tests {
     fn product_none_focus_and_missing_extra_truth_never_false_same() {
         use crate::ui::dispatch::Tap;
         // end_frame consumes the process-wide landing diffs even in this geometry-only case.
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,None).unwrap();
         let record=||Recording {header:Header::new(state_fp(),&initial),frames:vec![crate::ui::rec::Frame {
             f:0,focus:Some(None),st:Some(7),..Default::default()}],metrics:Default::default(),stopped_at:None};
@@ -1665,7 +1665,7 @@ mod tests {
 
     #[test]
     fn product_replay_uses_captured_metrics_and_missing_queries_refuse_same() {
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let (recording,expected)=product_settings_recording();
         assert!(!recording.metrics.is_empty(),"real product resolution must capture measurements");
         for mode in [ReplayMode::Targets,ReplayMode::Resolve] {
@@ -1686,7 +1686,7 @@ mod tests {
 
     #[test]
     fn product_record_and_resolve_query_order_is_identical() {
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap();
         let sink=crate::ui::rec::MemSink::default();
         let segments=sink.segments.clone();
@@ -1707,9 +1707,9 @@ mod tests {
     #[test]
     fn product_controlled_bridge_replay_is_font_free_and_fails_before_attachment() {
         use crate::ui::dispatch::Rig;
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,None).unwrap();
-        let mt=unsafe {crate::task::MainThread::assume()};
+        let mt=unsafe {plx_base::task::MainThread::assume()};
         let mut bridge=super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,true);
         bridge.split().measure.width(c"no fonts loaded",28,false);
         assert!(bridge.take_measurements().is_err(),"construction-order violations must latch");
@@ -1731,7 +1731,7 @@ mod tests {
     fn product_recorded_continuations_preserve_cross_group_memory_without_avalanche() {
         use crate::ui::{dispatch::Dispatcher,machine::{Tick,Key}};
         use super::super::bridge;
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let run=|rec:&mut Recplay,changed:bool| {
             let mut d=Dispatcher::<Product>::new();
             let mut rig=bridge::Bridge::for_test(||0);
@@ -1788,7 +1788,7 @@ mod tests {
 
     #[test]
     fn product_targets_and_resolve_grade_pointwise_and_continue_before_effects() {
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let (recording,expected)=product_settings_recording();
         validate_resolution_recording(&recording).unwrap();
         assert!(recording.frames.iter().all(|f|f.focus.is_some()));
@@ -1813,7 +1813,7 @@ mod tests {
 
     #[test]
     fn product_resolution_tape_rejects_missing_extra_order_and_impossible_targets() {
-        let _serial=crate::testlock::serial();
+        let _serial=plx_base::testlock::serial();
         let (recording,_)=product_settings_recording();
         for mode in [ReplayMode::Targets,ReplayMode::Resolve] {
             for case in 0..9 {
@@ -1862,7 +1862,7 @@ mod tests {
     #[test]
     fn product_recording_observes_post_drain_focus_including_none() {
         use crate::ui::dispatch::Tap;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         let sink = crate::ui::rec::MemSink::default();
         let segments = sink.segments.clone();
@@ -1885,7 +1885,7 @@ mod tests {
 
     #[test]
     fn confirmed_erasure_retires_buffered_writer_before_owner_drain() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(17,32517,None).unwrap();
         let sink = crate::ui::rec::MemSink::default();
         let segments = sink.segments.clone();
@@ -1918,7 +1918,7 @@ mod tests {
             fn manifest(&mut self, _: &str) -> std::io::Result<()> { Ok(()) }
             fn segment(&mut self, _: u32) -> std::io::Result<Box<dyn std::io::Write>> { Ok(Box::new(Disk(self.0))) }
         }
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
         for midwrite in [false, true] {
             let writer = Writer::open(Box::new(Disk(midwrite)), &Header::new(state_fp(), &initial), 0).unwrap();
@@ -1972,7 +1972,7 @@ mod tests {
     #[test]
     fn direct_and_owned_inputs_share_one_ordered_replay_ledger() {
         use crate::ui::dispatch::Tap;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         let event = super::super::bridge::script_key(crate::ui::machine::Key::Down,
             Tick { ms: 16, dt_us: 0 }).remove(0);
@@ -2065,7 +2065,7 @@ mod tests {
 
     #[test]
     fn recording_header_contains_home_boot_contents_and_hashes_hidden_state() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = crate::pms::PmsState::default();
         let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
         crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
@@ -2086,7 +2086,7 @@ mod tests {
         use crate::ui::dispatch::Tap;
         use crate::ui::machine::{Addr, MachineId, RequestId};
         use crate::screens::registry::AppMsg;
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = crate::pms::PmsState::default();
         let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
         crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
@@ -2166,7 +2166,7 @@ mod tests {
 
     #[test]
     fn the_application_bridge_records_its_real_drain_and_lifecycle() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
@@ -2369,7 +2369,7 @@ mod tests {
     /// 927 of 928 frames diverging because a spring started a frame early never re-converges.
     #[test]
     fn a_hubs_landing_is_delivered_on_its_recorded_frame_during_replay() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
@@ -2397,7 +2397,7 @@ mod tests {
     /// only ever DELAY an arrival — it can neither invent one nor hide one.
     #[test]
     fn a_hubs_landing_the_recording_never_saw_is_delivered_at_once_and_counted() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
@@ -2513,7 +2513,7 @@ mod tests {
 
     #[test]
     fn session_discriminates_product_hash_with_all_other_terms_equal() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let base = super::super::bridge::Bridge::for_test(|| 0);
         let mut other = super::super::bridge::Bridge::for_test(|| 0);
         let initial = base.session_subhash();
@@ -2531,7 +2531,7 @@ mod tests {
 
     #[test]
     fn session_recorded_hash_is_graded_through_the_same_run_tail() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let base = super::super::bridge::Bridge::for_test(|| 0);
         let mut other = super::super::bridge::Bridge::for_test(|| 0);
         for changed in [false, true] {
@@ -2606,7 +2606,7 @@ mod tests {
 
     #[test]
     fn identical_unsupported_effect_markers_cannot_be_same() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let bridge = super::super::bridge::Bridge::for_test(|| 0);
         let mut recording = record_session_frame(&bridge);
         let payload = json!({"unsupported":"unsupported Home screen delivery"});

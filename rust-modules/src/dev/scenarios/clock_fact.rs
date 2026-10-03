@@ -27,10 +27,10 @@ pub(crate) fn parse(value: &str) -> Option<Planted> {
 /// Called once from `app::boot`, after the session's key projection. A no-op without the trigger;
 /// a value that names no fact is logged and ignored.
 pub(crate) fn arm_at_boot() {
-    let Some(value) = crate::devtrig::read("clockfact") else { return };
+    let Some(value) = plx_base::devtrig::read("clockfact") else { return };
     match parse(&value) {
         Some(fact) => keypin::plant(fact),
-        None => crate::eventlog::log("clockfact IGNORED — expected nokey, keychanged or engaged[:<year>]"),
+        None => plx_base::eventlog::log("clockfact IGNORED — expected nokey, keychanged or engaged[:<year>]"),
     }
 }
 

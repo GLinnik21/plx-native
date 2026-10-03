@@ -114,7 +114,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `check-cargo-lint` (clippy + the lab-diagnostics type-check), `check-cargo-unit-default` and
   `check-cargo-unit-hostsim`, and CI runs those three plus `check-python` as four parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`) behind an aggregator named
-  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib`
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
@@ -130,7 +130,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   SDL event loop where no host test can see it. Needs the **clippy component on nightly** (rustup's
   default profile ships it; a `--profile minimal` nightly does not).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
-  `cargo test --lib` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  `cargo test --lib -p plxnative-modules -p plx_base` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
   forwards a test-name filter; the `test result:` line is cargo's own. Use it for a long series of
   small edits in one lane: an edit-rebuild is ~10 s against 31-32 s non-incremental, flat across
@@ -145,12 +145,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
-    `cargo test --lib --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    `cargo test --lib -p plxnative-modules -p plx_base --no-run --timings`, then `make check-cargo-unit-default` runs against what that
     built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo +nightly test --lib --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -189,7 +189,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
   a machine-readable document (git sha, `rustc +nightly -V`, host, per-run load and swap). Rows:
-  a **no-op** host test build (`cargo test --lib --no-run`; it reports from cargo's JSON `fresh`
+  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
   leaf file (`cbuf.rs`) and to a hub (`ui/mod.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
@@ -394,7 +394,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **`LAB=1`** adds a THIRD cargo feature, `lab-diagnostics` — the **Cloud Lab bridge** that gets
   logs off and app-level commands onto a television in **LG Cloud Test Lab**, where there is no
   ssh, no console, no stdout and no way to download a file, so the entire `/tmp` trigger surface
-  and every recipe in this file is unreachable. In a lab build `crate::eventlog::log` also feeds a bounded in-memory ring (4000
+  and every recipe in this file is unreachable. In a lab build `plx_base::eventlog::log` also feeds a bounded in-memory ring (4000
   records / 768 KiB), a configured remote key or a **Send diagnostics** row in the account /
   player-overflow menu snapshots it together with `player::Diag`, `webos` and `devcaps`, scrubs it
   again, gzips it and POSTs it over **pinned** TLS to `tools/plxnative-lab` on the dev Mac. An
@@ -445,7 +445,7 @@ requirement for one exact name, which cannot express "either of these", and a na
 kills the process at `exec()` — before `main`, before the event log exists. So they are
 **`dlopen`'d by SONAME candidate list**:
 
-- **`rust-modules/src/dynlib.rs`** is the one door. `dynlib!` takes a block shaped exactly like the
+- **`rust-modules/base/src/dynlib.rs`** is the one door. `dynlib!` takes a block shaped exactly like the
   `extern "C"` block it replaces and emits same-named wrappers, so call sites don't change.
   Loading is **all-or-nothing** — every symbol resolves or the table stays empty and the missing
   names go to the event log. Read that module's doc before adding a library to it; the rule is
@@ -669,13 +669,13 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `getaddrinfo`, walks either address family, and speaks cleartext. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
-- `rust-modules/src/diag/` — **the redaction pass and the diagnostic plumbing every off-device
-  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::eventlog::log` runs
+- `rust-modules/base/src/eventlog/` (`scrub.rs`, `ring.rs`) with `rust-modules/src/diag/` — **the redaction pass and the diagnostic plumbing every off-device
+  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `plx_base::eventlog::log` runs
   `scrub_local` on every line in every build, so credentials, hosts, bare addresses, Plex GUIDs,
   search queries and this household's names are rewritten **before the write**, not on the way out.
   **Two exits, differing in exactly one respect** — `scrub` (network) may DROP a line it cannot
   make safe; `scrub_local` (disk) may only rewrite one, because a line silently vanishing from the
-  primary debugging surface is worse than a leaky one. `ring.rs`/`zlib.rs` stay feature-gated to
+  primary debugging surface is worse than a leaky one. `eventlog/ring.rs` and `diag/zlib.rs` (both in `plx_base`) stay feature-gated to
   their consumer. Lifted out of `lab/` on 2026-08-29 — which also fixed the fact that the 31
   assertions guarding this function **never ran in `make check`**, `lab/` being wholly behind a
   feature the default gate does not build.
@@ -688,7 +688,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `storage_worker` and no direct file I/O, but worker startup holds `storage_worker::SHARED` across
   `task::spawn`, whose refusal logs. A `peek()` that schedules a refresh from that log tries to take
   `SHARED` again and deadlocks; `CACHE` and `REFRESH` are released before queue admission.
-- `rust-modules/src/task/blocking.rs` / `watchdog.rs` — frame scopes reject synchronous work.
+- `rust-modules/base/src/task/blocking.rs` / `watchdog.rs` — frame scopes reject synchronous work.
   Tests keep catchable panics. Release guards log elapsed time once per label; the watchdog logs
   once above 250 ms and once on recovery, polling every 100 ms after the first present.
   Developer builds (`threadcheck`) write the fatal guard log and abort before an unallowed call executes.
@@ -729,7 +729,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   free selector. The aggregate notice drain in `app/bridge.rs` delivers `StoreChanged` to live
   pages; `metadata` reads go through `MetadataView`, which borrows from the owner (`&'a`), not
   a compatibility global or mailbox.
-- `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
+- `rust-modules/base/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
   `ff.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
@@ -739,7 +739,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. The fourth is `diag/zlib.rs`, which binds **one** symbol — `compress2` — in
+  nine gated releases. The fourth is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
   default set, so an ordinary binary really does have three. (**ACB** is the same idea but not this
@@ -1151,7 +1151,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `ok=1`, and the session write dropped ENOENT into a best-effort save. Both now log loudly.
 - **Three resolutions, and they are not the same number.** The UI is authored at a fixed logical
   `1920x1080` (`SCR_W`/`SCR_H`) and the video track is full-panel `1920x1080`. The **drawable** —
-  what GL renders into — is read back at boot by `rust-modules/src/surface.rs` and is what
+  what GL renders into — is read back at boot by `rust-modules/base/src/surface.rs` and is what
   `glViewport` uses; it has been 1920x1080 on every device so far, so `surface::scale()` is 1.0 and
   nothing scales. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
   `3840x2160` on the dev TV, whose UI surface is 1080p. It is a diagnostic — **never a layout
@@ -1267,7 +1267,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib` runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base` (a bare `cargo test --lib` runs the application crate only and skips `plx_base`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
 `--features hostsim`, because the host feed seam only exists there and the tests that need it are
 compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
@@ -1276,7 +1276,7 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
@@ -1585,7 +1585,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   post-unbind (the failure read-out, teardown) player frames are gated exactly like Home, which is
   why `PlayerScreen::clock_fingerprint` exists: every clock-driven player animator reports motion
   through it once the route no longer gets a free pass.
-- **The heartbeat's WIRE ORDER, since phase 11** (`diag/heartbeat.rs::heartbeat_tail` is the one
+- **The heartbeat's WIRE ORDER, since phase 11** (`rust-modules/base/src/diag/heartbeat.rs::heartbeat_tail` is the one
   definition; anything here that disagrees with it is this file being stale):
   `loop= route= [overlay=] [pos= play=] [vtick= vgap=] fps= [load= snap= period=] [worstframe=
   worstprep=] carried= dropped= budget=<admitted>/<refused>[/solo:<class>] evicted_hot= [rec=]
@@ -1750,10 +1750,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   the path grep alone silently under-reports. This line carried that grep alone and called it
   complete.
   **Since UI restructure phase 10 the ARMS live in `rust-modules/src/dev/scenarios.rs`, not
-  scattered through `app/{boot,run,content,mod}.rs`** — `rust-modules/src/devtrig.rs` is the one
+  scattered through `app/{boot,run,content,mod}.rs`** — `rust-modules/base/src/devtrig.rs` is the one
   door onto `/tmp` itself (a base-layer module; `dev.rs` keeps the application-layer half), and the
   catalog command above names its `devtrig::flag`/`devtrig::read` calls.
-  **Every read goes through `rust-modules/src/devtrig.rs`, gated on the `devtriggers` cargo feature —
+  **Every read goes through `rust-modules/base/src/devtrig.rs`, gated on the `devtriggers` cargo feature —
   read that module's doc (and `dev.rs`'s) before adding a trigger, and never open a `/tmp` path
   directly.** Default builds are unchanged; `RELEASE=1` drops the feature, and then
   `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own

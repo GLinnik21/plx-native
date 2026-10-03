@@ -29,7 +29,7 @@
 //!
 //! # One path per process
 //!
-//! The candidate list is a SEARCH ORDER, for [`crate::paths`]' reason: which of the two `/media`
+//! The candidate list is a SEARCH ORDER, for [`plx_base::paths`]' reason: which of the two `/media`
 //! directories is writable depends on the jail profile. But a search order applied independently to
 //! reads and writes is a split brain — read the file that exists, write the first that accepts, and
 //! on a set where those differ every record written is invisible to the next read. Resolved once,
@@ -69,7 +69,7 @@ fn path() -> Option<PathBuf> {
 /// writable, and picking a fresh empty file over one holding a crash report is the one ordering
 /// that loses the report this whole module exists to keep.
 fn resolve() -> Option<PathBuf> {
-    let cands = crate::paths::telemetry_spool_candidates();
+    let cands = plx_base::paths::telemetry_spool_candidates();
     if let Some(p) = cands.iter().find(|p| p.exists()) {
         return Some(p.clone());
     }
@@ -96,7 +96,7 @@ fn read_locked() -> Vec<Record> {
     if d.dropped_bytes > 0 {
         // Expected after a power cut, and worth one line either way: a non-zero count after a CLEAN
         // shutdown means something worse than a torn write.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: spool recovered {} records, {} bytes discarded",
             d.records.len(),
             d.dropped_bytes
@@ -204,7 +204,7 @@ fn append_locked(r: &Record) -> bool {
     let Some(p) = path() else { return false };
     let Some(frame) = queue::encode(r) else {
         // Dropped where there is a caller to blame, rather than becoming a frame no reader accepts.
-        crate::eventlog::log("telemetry: record over the per-record cap, dropped");
+        plx_base::eventlog::log("telemetry: record over the per-record cap, dropped");
         return false;
     };
 
@@ -222,7 +222,7 @@ fn append_locked(r: &Record) -> bool {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&p);
     let Ok(mut f) = opened else {
-        crate::eventlog::log("telemetry: could not open the spool for append");
+        plx_base::eventlog::log("telemetry: could not open the spool for append");
         return false;
     };
     let Ok(meta) = f.metadata() else { return false };
@@ -230,7 +230,7 @@ fn append_locked(r: &Record) -> bool {
         || meta.uid() != unsafe { libc::geteuid() }
         || meta.permissions().mode() & 0o077 != 0
     {
-        crate::eventlog::log("telemetry: refused an unsafe spool file");
+        plx_base::eventlog::log("telemetry: refused an unsafe spool file");
         return false;
     }
     if f.write_all(&frame).is_err() {
@@ -259,7 +259,7 @@ fn write_locked(records: &[Record]) -> bool {
     if dropped > 0 {
         // Never silent. A queue that discards without saying so is a queue whose numbers are wrong
         // in a direction nobody can see.
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: spool over cap, dropped {dropped} oldest records"
         ));
         settle_discarded(records, &kept);
@@ -286,7 +286,7 @@ pub(crate) fn commit_retiring(retired: &[String]) {
     let _g = lock();
     let keep = queue::ack(read_locked(), retired);
     if !write_locked(&keep) {
-        crate::eventlog::log("telemetry: could not persist the spool to ANY candidate path");
+        plx_base::eventlog::log("telemetry: could not persist the spool to ANY candidate path");
     }
 }
 
@@ -317,7 +317,7 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
         all = queue::purge(all, queue::Category::Usage);
     }
     if all.len() != before {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: withdrawal purged {} queued records",
             before - all.len()
         ));
@@ -347,9 +347,9 @@ pub(crate) fn purge_all_local() {
         return; // nothing queued: no file is created just to be empty
     }
     if write_locked(&[]) {
-        crate::eventlog::log(&format!("telemetry: local erasure purged {n} queued records"));
+        plx_base::eventlog::log(&format!("telemetry: local erasure purged {n} queued records"));
     } else {
-        crate::eventlog::log("telemetry: could not persist the emptied spool to ANY candidate path");
+        plx_base::eventlog::log("telemetry: could not persist the emptied spool to ANY candidate path");
     }
 }
 
@@ -364,8 +364,8 @@ fn test_path() -> Option<PathBuf> {
 /// Point this process's spool at `p` for the duration of a test.
 ///
 /// There is one spool per process by design, so without this every test in the suite would share
-/// one file under the build directory — the cross-test pollution `crate::testlock` exists for,
-/// arriving by a path nobody would think to grep. Callers hold [`crate::testlock::serial`].
+/// one file under the build directory — the cross-test pollution `plx_base::testlock` exists for,
+/// arriving by a path nobody would think to grep. Callers hold [`plx_base::testlock::serial`].
 ///
 /// **Also forgets [`ON_DISK`].** It is a per-PROCESS count, sound in production because `path()`
 /// is a `OnceLock` and the file never moves — but a test moves it, and a stale count from whichever
@@ -385,7 +385,7 @@ mod tests {
     use crate::telemetry::queue::{Category, Dest};
 
     /// A scratch spool path, unique per test, removed on drop. Everything here holds
-    /// [`crate::testlock::serial`] as well — the path override, `LOCK` and the spool file itself
+    /// [`plx_base::testlock::serial`] as well — the path override, `LOCK` and the spool file itself
     /// are all process-global, so two of these running at once would grade each other's file.
     struct Scratch(PathBuf);
 
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn a_watched_report_the_spool_discards_is_settled_as_failed() {
         use crate::telemetry::delivery::{self, DeliveryState};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("discard");
         delivery::forget();
         let standing = Record { category: Category::Errors, dest: Dest::Sentry, ..rec("standing") };
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn a_watched_append_refuses_an_ended_tenure() {
         use crate::telemetry::delivery::{self, DeliveryState};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("watched-tenure");
         delivery::forget();
         let tenure = delivery::tenure();
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn compaction_can_settle_the_report_being_appended() {
         use crate::telemetry::delivery::{self, DeliveryState};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("watched-trim");
         delivery::forget();
         let full: Vec<_> = (0..queue::MAX_RECORDS).map(|i| Record {
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn conditional_append_rechecks_permission_before_the_record_exists() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("conditional");
 
         assert_eq!(append_if(&rec("withdrawn"), || false), None);
@@ -516,7 +516,7 @@ mod tests {
     /// against a number nobody has.
     #[test]
     fn a_record_queued_while_a_flush_was_sending_survives_the_commit() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("flushwindow");
 
         append(&rec("already-here"));
@@ -543,7 +543,7 @@ mod tests {
     /// whichever of two interleaved writers finished first.
     #[test]
     fn parallel_producers_yield_one_record_each() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("parallel");
 
         const N: usize = 24;
@@ -571,7 +571,7 @@ mod tests {
     /// empty queue.
     #[test]
     fn a_torn_frame_leaves_every_earlier_record_intact() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let s = Scratch::new("torn");
 
         append(&rec("first"));
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn a_precreated_spool_symlink_cannot_redirect_telemetry_bytes() {
         use std::os::unix::fs::symlink;
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let s = Scratch::new("symlink");
         let victim = s.0.with_extension("victim");
         std::fs::write(&victim, b"unchanged").unwrap();
@@ -607,7 +607,7 @@ mod tests {
     /// may never run.
     #[test]
     fn the_cap_applies_with_nothing_draining_the_spool() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("cap");
 
         for i in 0..(queue::MAX_RECORDS + 40) {
@@ -637,7 +637,7 @@ mod tests {
     /// indefinitely — the one outcome a withdrawal exists to prevent.
     #[test]
     fn a_withdrawal_purges_its_own_category_and_leaves_the_other() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("withdraw");
 
         append(&rec("a-usage"));
@@ -658,7 +658,7 @@ mod tests {
     /// its consent was the one press that queued it, not either switch.
     #[test]
     fn a_withdrawal_never_touches_a_one_off_record() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("withdraw-oneoff");
 
         append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
@@ -674,7 +674,7 @@ mod tests {
     /// all local data remove every queued report; a one-off surviving either would contradict both.
     #[test]
     fn a_local_erasure_purges_a_one_off_record_too() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _s = Scratch::new("erase-oneoff");
 
         append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
@@ -693,7 +693,7 @@ mod tests {
     /// app. The mode is the one property of this file that no other test would notice losing.
     #[test]
     fn the_spool_is_not_readable_by_other_users() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let s = Scratch::new("mode");
         append(&rec("one"));
 

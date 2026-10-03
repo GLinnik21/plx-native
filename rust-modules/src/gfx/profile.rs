@@ -68,7 +68,7 @@ pub(crate) fn dial_armed() -> bool {
 #[cfg(feature = "devtriggers")]
 mod imp {
     use crate::hwcnt::{self, Sample, COUNTERS};
-    use crate::eventlog::log;
+    use plx_base::eventlog::log;
     use std::cell::RefCell;
     use std::fs::{File, OpenOptions};
     use std::io::{BufWriter, Write};
@@ -314,7 +314,7 @@ mod imp {
                 return;
             }
         };
-        let path = crate::paths::in_runtime_dir(crate::paths::runtime_file::HARDWARE_COUNTERS);
+        let path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::HARDWARE_COUNTERS);
         let file = match OpenOptions::new()
             .create(true)
             .truncate(true)

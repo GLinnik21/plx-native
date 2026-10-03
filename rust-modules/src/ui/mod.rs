@@ -157,7 +157,7 @@ pub fn guard(f: impl FnOnce()) {
         // an already-flooding stream while telling nobody anything new. One line marks that the
         // barrier is what is keeping the app alive; the hook's lines say what is wrong.
         if !GUARD_RECOVERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::eventlog::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
+            plx_base::eventlog::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
         }
     }
 }
@@ -1946,7 +1946,7 @@ mod tests {
     fn a_glass_under_a_frozen_host_boundary_is_skipped_not_asserted() {
         use frame::backdrop::{self, Layer, Sources, Z};
         use std::{cell::RefCell, rc::Rc};
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         sources.borrow_mut().begin(vec![Layer {
             z: Z::surface(0),
@@ -1970,7 +1970,7 @@ mod tests {
     fn a_glass_in_the_surfaces_band_still_asserts() {
         use frame::backdrop::{self, Sources, Z};
         use std::{cell::RefCell, rc::Rc};
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
         sources.borrow_mut().begin(vec![]);
         let _walk = backdrop::discover(sources.clone());
@@ -1992,7 +1992,7 @@ mod spring_tests {
     /// `Spring` side of it.
     #[test]
     fn spring_jump_reports_only_when_it_changes_something() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut s = Spring::at(1.0);
         note_present(10_000);

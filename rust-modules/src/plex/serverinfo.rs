@@ -167,7 +167,7 @@ pub(super) fn refresh(id: ServerId) {
     if INFLIGHT[i].swap(true, Relaxed) {
         return; // a fetch for THIS server is already in flight; it answers for this one too
     }
-    let spawned = crate::task::spawn_small("serverinfo", move || {
+    let spawned = plx_base::task::spawn_small("serverinfo", move || {
         fetch_once(id, c);
         INFLIGHT[i].store(false, Relaxed);
     });
@@ -187,7 +187,7 @@ pub(super) fn refresh(id: ServerId) {
 fn fetch_once(id: ServerId, c: &Client) {
     let Some(i) = slot(id) else { return };
     let Some(mc) = c.server_root() else {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "pms: server {i} info unavailable (GET / failed) — subscription stays unknown"
         ));
         return;
@@ -199,9 +199,9 @@ fn fetch_once(id: ServerId, c: &Client) {
     // to EVERY server, deliberately: it is a "what does a free server look like" switch, not a
     // per-server override. Checked here, once per fetch, rather than in `subscription()` — that
     // accessor is on per-frame paths and `devtrig::flag` is a filesystem stat.
-    if crate::devtrig::flag("nopass") {
+    if plx_base::devtrig::flag("nopass") {
         #[cfg(feature = "devtriggers")]
-        crate::eventlog::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
+        plx_base::eventlog::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
         sub = Subscription::No;
     }
     store(id, sub, &mc.version);
@@ -210,7 +210,7 @@ fn fetch_once(id: ServerId, c: &Client) {
     // `machineIdentifier` that really identifies one is a permanent household fingerprint
     // (`servers::register` keeps it out of the log for the same reason), and the address is the
     // owner's. The token never appears: the URL is built and consumed inside `get_json`.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "pms: server {i} version={} plexPass={}",
         if mc.version.is_empty() {
             "unknown"
@@ -253,7 +253,7 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
 /// [`store`] is this module's private seam, and the suites that need it are the ones grading its
 /// READERS — `player::playing_subscription` and `screens::detail::hero::item_subscription`, both of which
 /// answer "whose server is this item on" and neither of which can reach a real PMS. Callers must
-/// hold `crate::testlock::serial()`: the slot arrays are crate globals, and they deliberately
+/// hold `plx_base::testlock::serial()`: the slot arrays are crate globals, and they deliberately
 /// outlive `servers::reset_for_test` (they are keyed on the SLOT, not on the client), so a test
 /// must seed every slot it reads rather than assume a boot state.
 #[cfg(test)]
@@ -347,13 +347,13 @@ mod tests {
     #[test]
     fn one_servers_plex_pass_is_never_read_as_the_others() {
         use super::super::servers;
-        struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+        struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
         impl Drop for Fresh {
             fn drop(&mut self) {
                 servers::reset_for_test();
             }
         }
-        let _g = Fresh(crate::testlock::serial());
+        let _g = Fresh(plx_base::testlock::serial());
         servers::reset_for_test();
         let reg =
             |m: &str, host: &str| servers::register_with_client_id(m, host, 32400, "tok", "cid");
@@ -439,7 +439,7 @@ mod tests {
     /// this borrows its isolation helper.
     #[test]
     fn a_landed_server_fact_asks_the_frame_gate_to_repaint() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         // `frame_begin` forgets last frame's motion, `note_present` retires the 2 s keepalive, and
         // `should_present` TAKES-AND-CLEARS — so each call answers for exactly the frames since the
         // previous one, and nothing but the store below can be what answered.

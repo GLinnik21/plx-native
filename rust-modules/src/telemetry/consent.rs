@@ -472,7 +472,7 @@ pub(crate) fn errors_id() -> Option<String> {
 /// may not name.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn state_override() -> Option<Consent> {
-    let spec = crate::devtrig::read("consentstate")?;
+    let spec = plx_base::devtrig::read("consentstate")?;
     // An answered record as `consent::apply` would have written it: errors on at `scope` with a
     // freshly minted Crash report ID, or errors off with nothing kept.
     let answered = |errors: bool, scope: u32| Consent {
@@ -488,11 +488,11 @@ pub(crate) fn state_override() -> Option<Consent> {
         "yes7" => answered(true, ONBOARDING_REPORT_SCOPE),
         "no" => answered(false, 0),
         other => {
-            crate::eventlog::log(&format!("dev: consentstate — unknown value {other:?}, ignored"));
+            plx_base::eventlog::log(&format!("dev: consentstate — unknown value {other:?}, ignored"));
             return None;
         }
     };
-    crate::eventlog::log(&format!("dev: consentstate={spec} — booting with that consent record"));
+    plx_base::eventlog::log(&format!("dev: consentstate={spec} — booting with that consent record"));
     Some(consent)
 }
 
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn report_permission_now_reads_the_snapshot() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
         if let Ok(mut g) = CURRENT.write() {
             *g = None;
@@ -792,7 +792,7 @@ mod tests {
     /// stale-policy yes, or an unanswered decision, yields no id however the field is set.
     #[test]
     fn the_errors_id_accessor_fails_closed_with_the_gate() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
         install(Consent {
             asked_version: POLICY_VERSION - 1,
@@ -834,7 +834,7 @@ mod tests {
             "an answer to an older policy is not an answer to this one"
         );
         assert!(should_ask(&old, false));
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
         install(old);
         assert!(
@@ -857,7 +857,7 @@ mod tests {
     /// The event path fails CLOSED: with nothing installed, nothing is allowed.
     #[test]
     fn the_event_path_fails_closed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
 
         install(Consent::default());
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn every_published_decision_invalidates_an_in_flight_sender_batch() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
         let before = revision();
         install(Consent {

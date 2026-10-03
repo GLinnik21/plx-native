@@ -116,7 +116,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
 #[test]
 fn opening_settings_never_writes_the_session_file() {
     use std::os::unix::fs::MetadataExt;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let sess = scratch_session("surface-no-session-write");
     let file = sess.path();
     let before = std::fs::metadata(&file).expect("the scratch session exists");
@@ -153,7 +153,7 @@ fn opening_settings_never_writes_the_session_file() {
 /// budget specifically. The device capture is still what finally settles a real elide.
 #[test]
 fn every_root_detail_line_fits_a_known_good_width() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-detail-widths");
     let page = RootPage::new(EntryId(0), crate::stores::browse::DirectoryView::empty_for_test());
     let sz = theme::size::CAPTION;

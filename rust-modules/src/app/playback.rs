@@ -186,7 +186,7 @@ pub(crate) fn play_automatically(
 ) -> bool {
     use crate::plex::session::DirectPlayMode;
     crate::route::restore_direct_play_mode(DirectPlayMode::Auto);
-    let _ = crate::storage_worker::submit_retained(|| {
+    let _ = plx_base::storage_worker::submit_retained(|| {
         if !crate::route::set_direct_play_mode(DirectPlayMode::Auto) {
             log("play automatically: the Direct Play preference was not saved");
         }
@@ -1163,7 +1163,7 @@ mod paused_seek_tests {
     /// Every state this touches is a crate global, so the body holds `testlock::serial()`.
     #[test]
     fn a_scrub_commit_taken_while_paused_arms_the_repause_instead_of_resuming() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let was_paused = crate::player::TX.paused.load(Relaxed);
         crate::player::TX.paused.store(true, Relaxed);
         let mut repause_at = 0i64;
@@ -1188,7 +1188,7 @@ mod paused_seek_tests {
     /// armed the override unconditionally, which would re-pause a film nobody had paused.
     #[test]
     fn a_scrub_commit_taken_while_playing_arms_no_repause() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let was_paused = crate::player::TX.paused.load(Relaxed);
         crate::player::TX.paused.store(false, Relaxed);
         set_resume_pend(false);
@@ -1384,7 +1384,7 @@ mod player_return_tests {
     /// the page that comes back is compared to the page that was left, as an argument.
     #[test]
     fn a_session_returns_to_the_screen_it_was_launched_from() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-launch");
         for launched_from in [
             AppArg::Home,
@@ -1428,7 +1428,7 @@ mod player_return_tests {
     /// picks one of them.
     #[test]
     fn a_detail_return_names_the_item_that_was_mounted() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-detail");
         let mut p = Pages::new();
         p.stand_on(AppArg::Home);
@@ -1455,7 +1455,7 @@ mod player_return_tests {
     /// comes back at `col = 0` grades nothing.
     #[test]
     fn the_page_underneath_keeps_the_spot_it_was_left_at() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-spot");
         let mut p = Pages::new();
         p.stand_on(AppArg::Home);
@@ -1494,7 +1494,7 @@ mod player_return_tests {
     /// with no seed, and land the exit on Home from the second episode onward.
     #[test]
     fn auto_advance_keeps_the_page_the_user_came_from() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-upnext");
         let mut p = Pages::new();
         p.stand_on(AppArg::Home);
@@ -1527,7 +1527,7 @@ mod player_return_tests {
     /// that nobody seeded (`show_page(Player)`'s foreground restore) inherits nothing.
     #[test]
     fn a_second_play_inside_the_push_keeps_the_origin_and_leaves_no_seed() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-dip");
         let mut p = Pages::new();
         p.d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::PageDip::new());
@@ -1564,7 +1564,7 @@ mod player_return_tests {
     /// one holds an `EntryId` that names nothing.
     #[test]
     fn an_origin_that_is_gone_falls_back_to_home() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-strand");
         let mut p = Pages::new();
         p.stand_on(AppArg::Home);
@@ -1604,7 +1604,7 @@ mod player_return_tests {
 
     #[test]
     fn a_guid_only_person_returns_to_its_retained_entry() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-guid-only");
         let mut p = Pages::new();
         let arg = AppArg::Content(ContentArg::Person { sid: A, key: String::new(),
@@ -1623,7 +1623,7 @@ mod player_return_tests {
     /// production return boundary rejects each ContentArg shape explicitly and chooses Home.
     #[test]
     fn an_identityless_content_origin_falls_back_to_home() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _session = crate::plex::session::TempSession::new("player-return-identityless");
         for origin in [
             AppArg::Content(ContentArg::Detail { sid: A, rk: String::new() }),

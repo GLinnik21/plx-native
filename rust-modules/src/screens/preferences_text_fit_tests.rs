@@ -6,7 +6,7 @@
 //! [`field_form`] builds the field list, [`field_options`] a picker level.
 
 use super::*;
-use crate::fontcov::advances::ShippedMeasure as M;
+use plx_base::fontcov::advances::ShippedMeasure as M;
 use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
@@ -54,7 +54,7 @@ fn check_field_section(tag: &str, inputs: &FieldListInputs<'_>, out: &mut Vec<St
 /// Every value readout and detail line each field can show, through [`field_form`] directly.
 #[test]
 fn every_field_readout_and_detail_fits_its_column_in_every_language() {
-    let _serial = crate::testlock::serial(); // Subtitle Size/Position read the route globals below
+    let _serial = plx_base::testlock::serial(); // Subtitle Size/Position read the route globals below
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -120,7 +120,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
 /// separate check from the field row's trailing value.
 #[test]
 fn every_picker_level_fits_its_column_in_every_language() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -214,7 +214,7 @@ fn copy_view<'a>(copy: &'a str) -> crate::ui::text_view::TextView<'a> {
 #[test]
 fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::screen();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::SkipInterval, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
@@ -255,7 +255,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
 /// text or copy a neighbour.
 #[test]
 fn each_local_picker_has_its_own_explanation_in_every_language() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::SkipInterval];
     for language in SHIPPED {

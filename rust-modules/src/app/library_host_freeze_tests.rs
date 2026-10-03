@@ -20,7 +20,7 @@ use super::test_support::{frame};
 /// for Compact all along.
 #[test]
 fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -115,7 +115,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
 /// the only witness there is.
 #[test]
 fn a_host_page_spring_under_an_open_panel_is_host_motion() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

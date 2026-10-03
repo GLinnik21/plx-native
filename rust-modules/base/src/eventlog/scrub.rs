@@ -23,7 +23,7 @@
 
 /// What [`scrub`] decided about one record.
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) enum Scrubbed {
+pub enum Scrubbed {
     /// keep it, in this (possibly rewritten) form
     Keep(String),
     /// drop it entirely and count it — used where a line cannot be made safe by rewriting
@@ -61,7 +61,7 @@ const CREDENTIAL_PARAMS: [&str; 6] = [
 /// header name after rewriting is refused outright rather than shipped — that can only happen if
 /// the rewrite failed to find the value it was sure was there.
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) fn scrub(line: &str) -> Scrubbed {
+pub fn scrub(line: &str) -> Scrubbed {
     scrub_with(line, &identities())
 }
 
@@ -76,12 +76,12 @@ pub(crate) fn scrub(line: &str) -> Scrubbed {
 ///
 /// Cost: this runs on `crate::eventlog::log`'s path, which its own doc records as "a few times a second at
 /// most, never per frame". Measure before assuming that stays true.
-pub(crate) fn scrub_local(line: &str) -> String {
+pub fn scrub_local(line: &str) -> String {
     scrub_local_with(line, &identities())
 }
 
 /// [`scrub_local`], against a caller-supplied identity list — the testable half.
-pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
+pub fn scrub_local_with(line: &str, ids: &[String]) -> String {
     let s = crate::eventlog::redact_tokens(line).into_owned();
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
@@ -96,7 +96,7 @@ pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
 /// [`scrub`], against a caller-supplied identity list — the testable half. The list is what the
 /// APP knows about this household (see [`identities`]); everything else here is a pure rewrite.
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
+pub fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
     let s = crate::eventlog::redact_tokens(line).into_owned();
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
@@ -399,7 +399,7 @@ fn replace_quoted_value(s: &str, key: &str, close: char, placeholder: &str) -> S
 ///
 /// # This function is on `crate::eventlog::log`'s hot path, and the obvious implementation deadlocks
 ///
-/// It used to be `crate::plex::session::peek()`, which is correct and was fine while the only
+/// It used to be `plex::session::peek()`, which is correct and was fine while the only
 /// caller was a once-per-upload snapshot on a worker thread. Putting it under `crate::eventlog::log` made it
 /// two separate disasters at once, both found by the host suite hanging rather than failing:
 ///
@@ -421,7 +421,7 @@ static IDENTITIES: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::
 
 /// Publish the household names the scrubber should redact. Called by the session layer on load,
 /// save, user switch and sign-out. **Must not log while holding anything** — see [`identities`].
-pub(crate) fn set_identities(mut v: Vec<String>) {
+pub fn set_identities(mut v: Vec<String>) {
     v.retain(|s| s.chars().count() >= MIN_IDENTITY);
     // Longest first: "Ada Family Media" must be replaced before a shorter substring of it is, or
     // the tail of the longer name survives as debris.
@@ -1070,22 +1070,27 @@ mod tests {
     /// are exempt.
     #[test]
     fn no_log_call_site_interpolates_viewing_content() {
-        // Walk the source of THIS crate. `file!()` is `src/eventlog/scrub.rs`, so the tree root is two
-        // levels up — resolved from the manifest dir so it is independent of the working directory
-        // the test runner happens to have.
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // Walk the source of EVERY crate that logs: this one and the application crate beside it
+        // (`rust-modules/src`, where nearly every log call lives). Resolved from the manifest dir
+        // so it is independent of the working directory the test runner happens to have. A layer
+        // crate split out of `rust-modules/src` later must be added here, or its log calls stop
+        // being read.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [manifest.join("src"), manifest.join("../src")];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
-        walk(&src, &mut |path: &std::path::Path, text: &str| {
-            // this file quotes every banned shape in its own documentation
-            if path.ends_with("eventlog/scrub.rs") {
-                return;
-            }
-            files += 1;
-            for (n, call) in log_calls(text) {
-                offences.extend(banned_hits_in_call(path, n, &call));
-            }
-        });
+        for src in &roots {
+            walk(src, &mut |path: &std::path::Path, text: &str| {
+                // this file quotes every banned shape in its own documentation
+                if path.ends_with("eventlog/scrub.rs") {
+                    return;
+                }
+                files += 1;
+                for (n, call) in log_calls(text) {
+                    offences.extend(banned_hits_in_call(path, n, &call));
+                }
+            });
+        }
         assert!(
             files > 50,
             "the walk found only {files} source files — it is not reading the tree"

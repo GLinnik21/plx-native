@@ -1,28 +1,17 @@
 {
   "members": [
-    "diag",
-    "gfx",
-    "gpu_timer",
-    "http",
-    "img",
-    "plex",
-    "telemetry",
-    "text",
-    "ui"
+    "browse",
+    "collection",
+    "metadata",
+    "person",
+    "pms",
+    "search",
+    "stores",
+    "viewstate"
   ],
-  "size": 9,
-  "outside_count": 56,
+  "size": 8,
+  "outside_count": 43,
   "other_cycles": [
-    [
-      "browse",
-      "collection",
-      "metadata",
-      "person",
-      "pms",
-      "search",
-      "stores",
-      "viewstate"
-    ],
     [
       "abr",
       "curlio",
@@ -32,9 +21,24 @@
       "route"
     ],
     [
+      "gfx",
+      "gpu_timer",
+      "img",
+      "text",
+      "ui"
+    ],
+    [
       "app",
       "dev",
       "textinput"
+    ],
+    [
+      "diag",
+      "telemetry"
+    ],
+    [
+      "http",
+      "plex"
     ]
   ]
 }

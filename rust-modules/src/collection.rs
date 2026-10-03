@@ -204,7 +204,7 @@ impl CollectionState {
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
             "sid":sid.raw(),"client":client.instance_gen(),"job":job});
-        let spawned = crate::stores::tape::admit(request, || crate::task::spawn_small("collection", move || {
+        let spawned = crate::stores::tape::admit(request, || plx_base::task::spawn_small("collection", move || {
             let what = catch_unwind(|| run_job(client, sid, job)).unwrap_or(Landing::Transport);
             worker_adapter.land(generation, what);
         }));

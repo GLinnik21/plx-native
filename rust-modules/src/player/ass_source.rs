@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn resetting_another_playback_owner_cannot_retire_the_live_subtitles() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         begin("fixture", vec![(0, b"header".to_vec())], vec![]);
         let id = selected(0).unwrap().id;
         let other = crate::player::Shared::new();

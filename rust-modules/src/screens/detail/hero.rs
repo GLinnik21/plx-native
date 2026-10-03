@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn the_pass_note_judges_the_items_own_server_not_the_browsed_one() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test("own", "127.0.0.1", 1, "t", "c1");
         let shared = crate::plex::register_for_test("shared", "127.0.0.2", 2, "t", "c2");
@@ -1344,7 +1344,7 @@ mod tests {
 
     #[test]
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
         crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
@@ -1734,7 +1734,7 @@ mod tests {
 
     #[test]
     fn the_trailer_unfurl_spring_reports_while_opening_and_is_quiet_at_rest() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::ui::idle::reset_for_test();
         let mut springs = [crate::ui::Spring::at(0.0); 3];
         for spring in springs.iter_mut() {

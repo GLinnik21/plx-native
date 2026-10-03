@@ -77,7 +77,7 @@ fn cfg() -> &'static Cfg {
         // `make sim-run`, rather than only in one that happened to export PLXNATIVE_SHOT.
         path: std::env::var_os("PLXNATIVE_SHOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| crate::paths::in_runtime_dir("shot.png")),
+            .unwrap_or_else(|| plx_base::paths::in_runtime_dir("shot.png")),
         frame: std::env::var("PLXNATIVE_SHOT_FRAME")
             .ok()
             .and_then(|s| s.parse().ok()),
@@ -127,7 +127,7 @@ pub(crate) fn tick(now: u32, busy: bool) {
     if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
         SETTLE_FIRED.store(true, Ordering::Relaxed);
         SETTLED.store(true, Ordering::Relaxed);
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
             now.wrapping_sub(first)
         ));
@@ -190,7 +190,7 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     }
     let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
-        crate::eventlog::log("shot: viewport is empty — nothing to capture");
+        plx_base::eventlog::log("shot: viewport is empty — nothing to capture");
         return ends_run;
     }
 
@@ -202,7 +202,7 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     {
         // The readback drains the pipeline: GL work, labelled so for the hang watchdog.
         #[cfg(feature = "threadcheck")]
-        let _readback = crate::task::watchdog::readback_scope();
+        let _readback = plx_base::task::watchdog::readback_scope();
         unsafe {
             glReadPixels(
                 vx,
@@ -261,8 +261,8 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
         cfg.path.clone()
     };
     match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
-        Ok(()) => crate::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
-        Err(e) => crate::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+        Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
+        Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
     }
 
     ends_run

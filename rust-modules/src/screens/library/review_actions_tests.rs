@@ -128,7 +128,7 @@ impl Fixture {
 
 #[test]
 fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_visible() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for scenario in 0..4 {
         let mut fixture = Fixture::new();
         let original = fixture.screen();
@@ -220,7 +220,7 @@ fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_vis
 
 #[test]
 fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
@@ -265,7 +265,7 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
 
 #[test]
 fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
         at: crate::stores::browse::CursorAt::SlotIndex(17),
@@ -315,7 +315,7 @@ fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() 
 
 #[test]
 fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for fetch in [SecFetch::Loading, SecFetch::Failed] {
         let mut fixture = Fixture::new();
         let saved = crate::stores::browse::Cursor {
@@ -382,7 +382,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
 
 #[test]
 fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let mut sections = fixture.directory.view().sections().to_vec();
     sections.push(crate::stores::browse::SectionView {
@@ -452,7 +452,7 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
 
 #[test]
 fn rail_keyboard_ok_and_back_return_the_exact_engine_remembered_item() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for key in [Key::Ok, Key::Back] {
         let fixture = Fixture::new();
         let mut page = fixture.screen();
@@ -523,7 +523,7 @@ fn rail_keyboard_ok_and_back_return_the_exact_engine_remembered_item() {
 
 #[test]
 fn rapid_filter_activations_invert_the_pending_desired_value() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut menu = LibraryMenu::new(
         EntryId(99),

@@ -7,7 +7,7 @@ use super::test_support::{frame};
 
 #[test]
 fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookmark() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -121,7 +121,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
 
 #[test]
 fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focus() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {

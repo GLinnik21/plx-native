@@ -1418,7 +1418,7 @@ impl LoginScreen {
         self.report.alert.dismiss();
         if self.report.sheet == Sheet::Details {
             if let Some(o) = self.report.offer.as_ref().filter(|o| send && o.sendable()) {
-                crate::eventlog::log("login: user sent a sign-in report from Details");
+                plx_base::eventlog::log("login: user sent a sign-in report from Details");
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::ReportIncident { id: o.id })));
             }
             if self.row().position(DETAILS).is_some() {
@@ -1464,7 +1464,7 @@ impl LoginScreen {
                 // between this screen's last `Tick` and this key), and the event log is the one
                 // place that failure is read from — a claim it did something is exactly the wrong
                 // thing to have written there.
-                crate::eventlog::log("login: user requested a restart of a stalled sign-in");
+                plx_base::eventlog::log("login: user requested a restart of a stalled sign-in");
                 if self.pending_restart.is_none() {
                     if let Some(reply) = self.allocate_reply(fx) {
                         self.pending_restart = Some(PendingRestart {
@@ -1874,8 +1874,8 @@ fn harness_driven() -> bool {
     if cfg!(test) { return false; }
     static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DRIVEN.get_or_init(|| {
-        crate::devtrig::read("token").is_some_and(|t| !t.is_empty())
-            || crate::devtrig::read("pickuser").is_some()
+        plx_base::devtrig::read("token").is_some_and(|t| !t.is_empty())
+            || plx_base::devtrig::read("pickuser").is_some()
             || recorder_armed()
     })
 }
@@ -1886,7 +1886,7 @@ fn harness_driven() -> bool {
 /// where `ci/check-package.py` grades them.
 #[cfg(feature = "devtriggers")]
 fn recorder_armed() -> bool {
-    matches!(crate::ui::rec::mode_value(&crate::devtrig::path("rec")), Ok(Some(_)))
+    matches!(crate::ui::rec::mode_value(&plx_base::devtrig::path("rec")), Ok(Some(_)))
 }
 #[cfg(not(feature = "devtriggers"))]
 fn recorder_armed() -> bool {
@@ -2580,7 +2580,7 @@ mod tests {
             fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let _no_live_font = crate::ui::text_view::ForbidLive::enter();
         let measure = UnicodeMeasure;
         let route = RouteLayout::screen();
@@ -2956,7 +2956,7 @@ mod tests {
         instance: InstanceId,
         m: &crate::ui::fixture::FixtureMeasure,
     ) -> (Handled, Vec<Stamped<SessionHost>>) {
-        let _frame_scope = crate::task::FrameScope::enter();
+        let _frame_scope = plx_base::task::FrameScope::enter();
         let cx = cx_with(m, snapshot);
         let mut present = Present::new();
         let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
@@ -3394,7 +3394,7 @@ mod tests {
     /// that shows it, against the permission and revision it reads now — once, not every frame.
     #[test]
     fn a_pending_incident_is_resolved_once_by_the_screen_that_shows_it() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut failed = snapshot(Phase::Error, 0, "");
         failed.error = Arc::from("Can’t reach Plex");
         failed.incident = Some(incident(auth::owner::IncidentState::Pending,
@@ -3412,7 +3412,7 @@ mod tests {
     /// (b) An offered incident puts the question on screen, with focus on its answers.
     #[test]
     fn an_offered_incident_opens_the_report_alert_with_focus_on_its_answers() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut failed = snapshot(Phase::Error, 0, "");
         failed.incident = Some(incident(
             auth::owner::IncidentState::Offered { revision: crate::telemetry::consent::revision() },
@@ -3459,7 +3459,7 @@ mod tests {
     /// answers — and the read-out itself gains nothing: the row stays *Try again* / *Details*.
     #[test]
     fn details_opens_the_details_card() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3476,7 +3476,7 @@ mod tests {
     fn open_details_card_reconciles_delivery_failure_without_reopening() {
         use auth::owner::IncidentState as S;
         use crate::ui::decision_alert::Answers;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::Queued { receipt: "old-receipt".into() });
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3495,7 +3495,7 @@ mod tests {
     #[test]
     fn open_details_card_reconciles_a_receipt_arriving_while_open() {
         use auth::owner::IncidentState as S;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::Sending);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3518,7 +3518,7 @@ mod tests {
     #[test]
     fn open_details_card_reconciles_focus_when_send_is_removed() {
         use auth::owner::IncidentState as S;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut failed = failed_with(S::NotNow);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3541,7 +3541,7 @@ mod tests {
     fn the_details_card_offers_send_report_iff_sendable() {
         use auth::owner::IncidentState as S;
         use crate::ui::decision_alert::Answers;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
         let pin = crate::telemetry::incident::IncidentKind::PinCreate;
@@ -3581,7 +3581,7 @@ mod tests {
     /// anything or leaves the screen; with the card closed, BACK is the root press it always was.
     #[test]
     fn back_or_close_returns_focus_to_details() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
         let m = crate::ui::fixture::FixtureMeasure;
         for via_back in [true, false] {
@@ -3609,7 +3609,7 @@ mod tests {
     /// Details, where the status line then reports it.
     #[test]
     fn send_report_on_the_card_sends_the_report() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = failed_with(auth::owner::IncidentState::NotNow);
         let m = crate::ui::fixture::FixtureMeasure;
         let mut s = LoginScreen::new(EntryId(0), failed.read());
@@ -3661,7 +3661,7 @@ mod tests {
     /// on its own; the report stays behind *Details*.
     #[test]
     fn an_eligible_plaintext_failure_offers_connect_and_does_not_raise_the_report_question() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3683,7 +3683,7 @@ mod tests {
     #[test]
     fn the_failed_readout_draws_the_label_its_press_acts_on() {
         use crate::plex::session::PlaintextChoice;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let mut failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
         for (choice, want) in [(PlaintextChoice::Undecided, connect()), (PlaintextChoice::Declined, crate::i18n::msg::browse_action_retry_c()),
@@ -3705,7 +3705,7 @@ mod tests {
     /// back to the read-out.
     #[test]
     fn connect_asks_the_question_and_only_its_answer_reaches_session() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
         let m = crate::ui::fixture::FixtureMeasure;
         for (how, allow) in [("connect", true), ("not now", false), ("back", false)] {
@@ -3737,7 +3737,7 @@ mod tests {
     /// the report question raised as for any failure.
     #[test]
     fn an_ineligible_plaintext_failure_keeps_try_again_and_the_report_question() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let failed = insecure_failure(crate::plex::probe::PlaintextEligibility::NotLocal);
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         let m = crate::ui::fixture::FixtureMeasure;
@@ -3898,7 +3898,7 @@ mod tests {
     /// and stop once the report has settled.
     #[test]
     fn a_report_on_its_way_turns_the_spinner_on_a_failed_readout() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let m = crate::ui::fixture::FixtureMeasure;
         let spin_after_ticks = |state: auth::owner::IncidentState| {
             let mut failed = snapshot(Phase::Error, 0, "");

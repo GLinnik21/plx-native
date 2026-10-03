@@ -101,7 +101,7 @@ pub(crate) fn submit(record: Record) -> bool {
             *slot = Some(tenure);
             drop(slot);
             let event_id = record.event_id.clone();
-            if crate::task::spawn_small("oneoff", move || fallback(record, tenure)) {
+            if plx_base::task::spawn_small("oneoff", move || fallback(record, tenure)) {
                 true
             } else {
                 retire(tenure);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn completion_before_append_returns_is_not_lost() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _reset = setup("append-race");
         for verdict in [Verdict::Done, Verdict::Keep, Verdict::Hopeless] {
             delivery::forget();
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn forget_before_append_returns_does_not_resurrect_the_watch() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _reset = setup("append-forget");
         let tenure = delivery::tenure();
         super::super::spool::on_append_for_test(|| {
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn spool_success_is_queued_without_direct_send() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let _reset = setup("queued");
         let sends = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sends2 = sends.clone();
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn spool_failure_uses_one_bounded_direct_fallback_and_preserves_record_id() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("fallback");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone())); // a directory: append fails
         let (tx, rx) = mpsc::channel();
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn only_one_direct_fallback_can_be_inflight() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("cap");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone()));
         let (started_tx, started_rx) = mpsc::channel();
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn forget_discards_state_and_stale_worker_cannot_publish() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("forget");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone()));
         let (started_tx, started_rx) = mpsc::channel();
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn direct_keep_is_recorded_as_failed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("keep");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone()));
         *TEST_SEND.lock().unwrap() = Some(Box::new(|_| Verdict::Keep));
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn direct_hopeless_is_recorded_as_failed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("hopeless");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone()));
         *TEST_SEND.lock().unwrap() = Some(Box::new(|_| Verdict::Hopeless));
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn non_oneoff_and_oversized_records_never_use_direct_fallback() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let reset = setup("reject");
         crate::telemetry::spool::set_test_path(Some(reset.0.clone()));
         let sends = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

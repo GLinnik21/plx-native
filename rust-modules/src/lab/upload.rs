@@ -66,7 +66,7 @@ pub(crate) fn showing() -> bool {
     match phase() {
         PHASE_IDLE => false,
         PHASE_SENDING => true,
-        _ => crate::eventlog::ring::t_ms() < UNTIL_MS.load(Relaxed),
+        _ => plx_base::eventlog::ring::t_ms() < UNTIL_MS.load(Relaxed),
     }
 }
 
@@ -83,7 +83,7 @@ fn set_phase(p: u8, detail: String) {
     *DETAIL.lock().unwrap_or_else(|e| e.into_inner()) = detail;
     UNTIL_MS.store(
         match p {
-            PHASE_OK | PHASE_FAIL => crate::eventlog::ring::t_ms().saturating_add(TOAST_MS),
+            PHASE_OK | PHASE_FAIL => plx_base::eventlog::ring::t_ms().saturating_add(TOAST_MS),
             _ => 0,
         },
         Relaxed,
@@ -98,13 +98,13 @@ fn set_phase(p: u8, detail: String) {
 pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
     let Some(cfg) = config::get() else { return };
     if INFLIGHT.swap(true, Relaxed) {
-        crate::eventlog::log("lab: upload already in flight — press ignored");
+        plx_base::eventlog::log("lab: upload already in flight — press ignored");
         return;
     }
     let seq = SEQ.fetch_add(1, Relaxed) + 1;
     let route = *ROUTE.lock().unwrap_or_else(|e| e.into_inner());
     // Before the snapshot, so the document contains the line that says why it exists.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "lab: snapshot seq={seq} reason={reason} route={route}"
     ));
     let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route, ps);
@@ -113,7 +113,7 @@ pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
     let secret = cfg.secret.clone();
     let session = cfg.session.clone();
     let pin = cfg.pin.clone();
-    let spawned = crate::task::spawn_small("labup", move || {
+    let spawned = plx_base::task::spawn_small("labup", move || {
         let (phase, detail) = send(&url, &secret, &session, &pin, seq, doc);
         set_phase(phase, detail);
         INFLIGHT.store(false, Relaxed);
@@ -128,7 +128,7 @@ pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
 fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String) -> (u8, String) {
     let raw = doc.into_bytes();
     let raw_len = raw.len();
-    let (body, encoding) = match crate::diag::zlib::gzip(&raw) {
+    let (body, encoding) = match plx_base::diag::zlib::gzip(&raw) {
         Some(gz) => (gz, "gzip"),
         None => (raw, "identity"),
     };
@@ -152,21 +152,21 @@ fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String
     };
     match crate::net::post_pinned(url, &headers, &body, pin, t) {
         Some(r) if r.ok() => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "lab: uploaded seq={seq} {raw_len}B -> {sent}B ({encoding}) status={}",
                 r.status
             ));
             (PHASE_OK, format!("{} KB sent", (sent + 512) / 1024))
         }
         Some(r) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "lab: upload seq={seq} REFUSED status={}",
                 r.status
             ));
             (PHASE_FAIL, format!("receiver said {}", r.status))
         }
         None => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "lab: upload seq={seq} did not complete (transport)"
             ));
             (PHASE_FAIL, "no answer from receiver".into())
@@ -182,7 +182,7 @@ mod tests {
     /// nothing, so the first upload still owns the flag.
     #[test]
     fn the_flight_flag_admits_exactly_one() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         INFLIGHT.store(false, Relaxed);
         assert!(!INFLIGHT.swap(true, Relaxed), "first press takes it");
         assert!(INFLIGHT.swap(true, Relaxed), "second press finds it taken");
@@ -193,7 +193,7 @@ mod tests {
     /// keeps asking for frames after it is gone.
     #[test]
     fn a_finished_toast_expires_back_to_idle() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         set_phase(PHASE_OK, "12 KB sent".into());
         assert!(showing());
         UNTIL_MS.store(0, Relaxed); // as if TOAST_MS had elapsed
@@ -207,7 +207,7 @@ mod tests {
     /// not have its "Uploading…" line time out from under it.
     #[test]
     fn the_sending_toast_does_not_expire() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         set_phase(PHASE_SENDING, String::new());
         UNTIL_MS.store(0, Relaxed);
         assert!(showing());

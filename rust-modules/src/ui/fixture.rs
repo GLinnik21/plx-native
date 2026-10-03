@@ -1215,7 +1215,7 @@ pub(crate) fn key(k: Key, at: Tick) -> InputEvent<u32> {
 
 #[test]
 fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
 
@@ -1927,7 +1927,7 @@ fn the_adapter_drain_order_is_the_documented_one() {
 /// pin without linking GL itself (`TexCache`/`StubUploader` here are pure Rust).
 #[test]
 fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
@@ -1964,7 +1964,7 @@ fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
 /// to look like it still has upload work pending.
 #[test]
 fn a_bare_cache_driven_past_capacity_does_not_latch_pending_forever() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
@@ -2038,7 +2038,7 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 /// `FrameCache::capture` fails the second at "must refuse".
 #[test]
 fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     // A transition that DRAWS BELOW while it is in flight (`RoutePush`, the Settings family's).
     // The default `Immediate` never draws the level under the top one, so on it this test's first
     // half would be vacuous — it would pass whether or not the rule exists.
@@ -2166,7 +2166,7 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
 /// second.
 #[test]
 fn an_app_switch_suspends_every_body_and_the_loop_is_what_delivers_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
 

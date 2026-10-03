@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn session_refresh_rebuilds_search_household_scope() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         let _session = crate::plex::session::TempSession::new("scope-session-refresh");
         crate::plex::reset_servers_for_test();
@@ -344,7 +344,7 @@ mod tests {
     fn a_published_scope_tells_a_household_server_from_a_share() {
         const ADMIN_ID: i64 = 111_111;
         const FRIEND_ID: i64 = 987_654;
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         let _session = crate::plex::session::TempSession::new("scope-household");
         crate::plex::session::save(&crate::plex::session::Session {
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn source_scope_uses_the_supplied_directory_instead_of_browse_globals() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn equal_generation_browse_owners_publish_their_own_search_scope() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
@@ -454,7 +454,7 @@ mod tests {
     /// `same_publication`'s Arc identity. Two per-owner caches must not do that.
     #[test]
     fn two_owners_do_not_share_the_scope_memo() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn retained_publication_survives_facts_and_browse_changes() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, own, share) = fixture();
         let cache = ScopeCache::default();
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn source_addition_publishes_a_new_roster_projection() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "scope");
@@ -602,7 +602,7 @@ mod tests {
     /// alone would hold a sentence naming a machine by a name it no longer has.
     #[test]
     fn the_memo_key_moves_when_a_source_goes_quiet_or_is_described() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, _, share) = fixture();
         stores.browse.borrow_mut().seed_sources_for_test(2, true);
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn equal_sized_roster_replacement_publishes_new_sources() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, _, old_share) = fixture();
         let cache = ScopeCache::default();

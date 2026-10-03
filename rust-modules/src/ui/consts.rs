@@ -80,7 +80,7 @@ pub const CONTENT_Y: f32 = 200.0;
 /// to cover the worst case, a large poster's `CARD_SHADOW_BLUR + CARD_SHADOW_DY` (44+18=62) plus a
 /// 1px AA margin, rounded up.
 pub const GLOW_PAD: f32 = 64.0;
-pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
+pub(crate) use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
 /// **The safe area itself** — the box every piece of REQUIRED content has to fit inside, as one
 /// value so no caller re-derives it from the two margins and gets a sign wrong.

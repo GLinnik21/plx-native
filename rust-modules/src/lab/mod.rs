@@ -22,7 +22,7 @@
 //!    no config read, no socket, no thread.
 //! 2. **Call sites carry no `#[cfg]`.** The event log's tap, `app.rs`'s key ladder,
 //!    `ui::consts::is_bound` and the two menus all call plain functions that fold away (`labcfg`'s
-//!    two answers, for `ui/`, `appkit/` and `screens/`). That is `crate::devtrig`'s shape and it is
+//!    two answers, for `ui/`, `appkit/` and `screens/`). That is `plx_base::devtrig`'s shape and it is
 //!    deliberate: hand-written `#[cfg]` PAIRS at call sites are the one hazard
 //!    `.claude/hooks/release-config-check.py` exists for, and the gating lives in two files
 //!    (`lab/mod.rs`, `labcfg/mod.rs`) instead of eight.
@@ -71,18 +71,18 @@ pub(crate) struct ControlCommand {
 pub(crate) fn boot() {
     #[cfg(feature = "lab-diagnostics")]
     {
-        crate::eventlog::ring::start_clock();
+        plx_base::eventlog::ring::start_clock();
         match config::get() {
-            Some(c) => crate::eventlog::log(&format!(
+            Some(c) => plx_base::eventlog::log(&format!(
                 "lab: armed session={} endpoint={} control={} triggers={:?} ring={}rec/{}KiB",
                 c.session,
                 c.endpoint,
                 if c.control { "on" } else { "off" },
                 c.trigger_wcodes,
-                crate::eventlog::ring::MAX_RECORDS,
-                crate::eventlog::ring::MAX_BYTES / 1024
+                plx_base::eventlog::ring::MAX_RECORDS,
+                plx_base::eventlog::ring::MAX_BYTES / 1024
             )),
-            None => crate::eventlog::log(&format!("lab: INERT — {}", config::why_not())),
+            None => plx_base::eventlog::log(&format!("lab: INERT — {}", config::why_not())),
         }
     }
 }

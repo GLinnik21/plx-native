@@ -442,7 +442,7 @@ pub(crate) fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
     loading && !thread_finished
 }
 
-crate::devtrig::latched_flag!(
+plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
     /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
     /// focus, and a `devtrig::flag` read is a `stat(2)` syscall per call.
@@ -1045,10 +1045,10 @@ mod tests {
     #[test]
     #[cfg(feature = "hostsim")]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
-            crate::task::MainThread::assume()
+            plx_base::task::MainThread::assume()
         });
         assert!(!pa.is_live(), "test requires an empty native-session slot");
         let before = crate::player::TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);

@@ -1721,7 +1721,7 @@ mod tests {
 
     #[test]
     fn play_trailer_is_cache_only_on_the_loaded_detail() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         crate::metadata::set_current_for_test(test_store().state_mut(), None);
         assert!(
             cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
@@ -1796,7 +1796,7 @@ mod tests {
         // The panel hugs its content, so it always fits itself; the widest it may ever grow to
         // ([`MENU_MAX_W`], the shared cap) is the width a verb can actually be held to.
         let widest = MENU_MAX_W;
-        let measure = crate::fontcov::advances::ShippedMeasure;
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
         let marks = [PosterMark::None, PosterMark::InProgress, PosterMark::Watched];
         let trailer = crate::metadata::Extra { rk: "9".into(), part: "/p".into(), ..Default::default() };
         // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.

@@ -368,7 +368,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         }
         // `render_scale` is the simulator's supersampling (1 on a television): the mask is
         // rasterised at physical size and still drawn into the same logical rect.
-        let target = raster_px * crate::surface::render_scale();
+        let target = raster_px * plx_base::surface::render_scale();
         let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {

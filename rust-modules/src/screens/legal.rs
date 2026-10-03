@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn contribution_manual_address_is_the_complete_qr_destination() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let page = DocumentPage::contribute(EntryId(0));
         assert_eq!(format!("https://{}", page.body.replace('\n', "")), crate::i18n::CONTRIBUTE_URL,
             "a viewer who cannot scan the QR needs the same complete address in text");
@@ -872,7 +872,7 @@ mod tests {
         // `DocumentReader::move_by` reports to `ui::idle`'s process-global gate, so — like that
         // module's own scroll tests — this one takes the crate-wide lock rather than racing
         // another test's read of the same `DIRTY`/`DAMAGE_GEN` statics.
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut doc = DocumentPage::legal(EntryId(8), 0);
         doc.reader.set_extent_for_test(500.0);
         let m = FixtureMeasure;
@@ -934,7 +934,7 @@ mod tests {
     /// test that was RED against the broken behaviour, not just green against the fixed one.
     #[test]
     fn a_down_inside_a_document_changes_the_hashed_state() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut doc = DocumentPage::legal(EntryId(9), 1);
         // Long enough that five DOWNs (5 * `document_reader::STEP` = 960px) never reach the end,
         // so every one of them is a genuine mid-document scroll rather than a clamp at `at_end()`.

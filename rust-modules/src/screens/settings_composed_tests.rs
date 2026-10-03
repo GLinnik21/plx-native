@@ -237,7 +237,7 @@ fn consent_opened_on(
 
 #[test]
 fn composed_owner_first_run_answers_survive_full_frames() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for stage in [0, 1, 17] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::ConsentStage(stage));
         assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: registry::BAND }), "stage {stage} mount");
@@ -263,7 +263,7 @@ fn composed_owner_first_run_answers_survive_full_frames() {
 
 #[test]
 fn composed_owner_settings_done_survives_then_disappears_with_reverted_draft() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (mut d, mut rig, id) = consent_opened(SettingsPage::Privacy);
     seat(&mut d, id, 0);
     frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]); // draft only
@@ -283,7 +283,7 @@ fn composed_owner_settings_done_survives_then_disappears_with_reverted_draft() {
 fn composed_owner_pointer_seats_and_validates_answer_press_identity_without_committing() {
     use crate::ui::machine::{InputEvent, InputKind, PressId, Source};
     use crate::ui::screen::{Activate, Hover, Stop};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     for stage in [0, 1] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::ConsentStage(stage));
         for (round, elem) in [registry::BAND, registry::BAND + 1].into_iter().enumerate() {
@@ -317,7 +317,7 @@ fn composed_owner_pointer_seats_and_validates_answer_press_identity_without_comm
 
 #[test]
 fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _session = scratch_session("composed-owner-favourites");
     struct ResetSources;
     impl Drop for ResetSources {
@@ -364,7 +364,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
 /// and lands back on the Settings root with the surface still up and still owning input.
 #[test]
 fn left_inside_the_family_pops_the_inner_stack_and_never_dismisses_the_surface() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-left-inner");
     let (mut d, mut rig, id) = opened();
     assert!(
@@ -413,7 +413,7 @@ fn left_inside_the_family_pops_the_inner_stack_and_never_dismisses_the_surface()
 /// container's answer to a root BACK can be more than a dismissal.
 #[test]
 fn left_at_the_surfaces_own_root_dismisses_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-left-root");
     let (mut d, mut rig, id) = opened();
     seat(&mut d, id, root_key(RootId::Playback));
@@ -460,7 +460,7 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
 /// and moves Legal down, which would still prove the same thing but is not what `opened()` boots.
 #[test]
 fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-push-seat-regression");
     let (mut d, mut rig, id) = opened();
     assert!(
@@ -519,7 +519,7 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
 /// cannot observe either leak.
 #[test]
 fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-playback-picker-seat");
     let previous_quality = crate::route::quality();
     let previous_mode = crate::route::direct_play_mode();
@@ -554,7 +554,7 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
 fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
     use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest};
     use registry::{AccountPreferenceReply, PreferenceCmd};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-preference-load-seat");
     let previous = crate::plex::session::current_snapshot();
     struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
@@ -624,7 +624,7 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
 #[test]
 fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
     use crate::ui::machine::{Edge, InputKind};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-force-warning");
     let previous = crate::route::direct_play_mode();
     crate::route::restore_direct_play_mode(crate::route::DirectPlayMode::Auto);
@@ -677,7 +677,7 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
 fn audio_subtitles_pushed_from_the_root_seats_its_first_row_when_rows_land() {
     use crate::plex::account::{AudioPreferences, PreferenceRequest};
     use registry::{AccountPreferenceReply, PreferenceCmd};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-audio-push-first-row");
     let previous = crate::plex::session::current_snapshot();
     struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
@@ -754,7 +754,7 @@ fn sign_out() {
 
 #[test]
 fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-reseat-signout");
     let (mut d, mut rig, id) = opened();
     let mut ms = settle_frames(&mut d, &mut rig, 16);
@@ -770,7 +770,7 @@ fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor()
 #[test]
 fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_key() {
     use crate::plex::session::PlaintextChoice;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-reseat-plaintext");
     crate::plex::reset_servers_for_test();
     crate::plex::grant::reset_for_test();
@@ -793,7 +793,7 @@ fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_
         "focus stays on m-b, which moved to the first switch; the stale key 1001 now names m-c");
     assert_eq!(sel_of(&d, id), PLAINTEXT_KEY_BASE);
     frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     let after = crate::plex::session::peek();
     assert_eq!(after.plaintext_choice(&account, "m-b"), PlaintextChoice::Revoked, "OK toggled the focused server");
     assert_eq!(after.plaintext_choice(&account, "m-c"), PlaintextChoice::Allowed, "and not the one that took its key");
@@ -803,7 +803,7 @@ fn a_dropped_plaintext_row_never_leaves_the_engine_on_a_neighbour_that_took_its_
 
 #[test]
 fn a_pop_after_the_list_changed_reseats_on_the_row_the_page_landed_on() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("composed-reseat-pop");
     let (mut d, mut rig, id) = opened();
     let mut ms = settle_frames(&mut d, &mut rig, 16);

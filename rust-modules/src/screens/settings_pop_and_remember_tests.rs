@@ -10,7 +10,7 @@ use crate::ui::screen::By;
 
 #[test]
 fn only_current_inner_instance_can_project_remembered_selection() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("inner-remember-owner");
     let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
         crate::pms::HubsSnapshot::empty_for_test().view());
@@ -46,7 +46,7 @@ fn only_current_inner_instance_can_project_remembered_selection() {
 /// `/tmp/plxnative-settings=home` are the same pair.
 #[test]
 fn a_pop_that_would_empty_the_stack_dismisses_the_surface_instead() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-pop-empty");
     let mut s = RouteSurface::new(
         EntryId(7),
@@ -86,7 +86,7 @@ fn a_pop_that_would_empty_the_stack_dismisses_the_surface_instead() {
 /// Done straight out of Settings instead of back to its root.
 #[test]
 fn a_pop_with_a_page_under_it_pops_the_inner_stack_and_stays_up() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-pop-inner");
     let mut s = RouteSurface::new(
         EntryId(7),
@@ -142,7 +142,7 @@ fn a_pop_with_a_page_under_it_pops_the_inner_stack_and_stays_up() {
 /// record able to say why.
 #[test]
 fn the_remembered_seats_are_part_of_the_hash() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _sess = scratch_session("surface-seat-hash");
     let legal_row = FocusKey {
         entry: EntryId(0),

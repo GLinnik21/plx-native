@@ -56,7 +56,7 @@ fn the_preview_shows_every_event_this_build_can_emit() {
 /// **The two identifier documents each name only their own channel's identifier.**
 #[test]
 fn each_identifier_document_shows_only_its_own_identifier() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     let errors_id = "e".repeat(32);
     let analytics_id = "a".repeat(32);

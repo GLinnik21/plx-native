@@ -42,15 +42,15 @@ const PLEX_TV: &str = "https://plex.tv";
 /// able to point the account API, and the token it carries, at another host. Read once.
 pub(crate) fn plex_tv() -> &'static str {
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BASE.get_or_init(|| match crate::devtrig::read("plextv") {
+    BASE.get_or_init(|| match plx_base::devtrig::read("plextv") {
         Some(v) if loopback_http(&v) => {
             #[cfg(feature = "devtriggers")]
-            crate::eventlog::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
+            plx_base::eventlog::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
             v.trim_end_matches('/').to_string()
         }
         Some(_) => {
             #[cfg(feature = "devtriggers")]
-            crate::eventlog::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            plx_base::eventlog::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
             PLEX_TV.to_string()
         }
         None => PLEX_TV.to_string(),
@@ -587,14 +587,14 @@ mod evidence_tests {
     }
 
     fn http2_reset_policy(status: u16) {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for rc in [16, 55, 92] {
             assert_refusal_evidence(status, crate::net::test_response_failure(rc, 0, status.into(), false));
         }
     }
 
     fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
-        crate::testlock::assert_held("auth response policy test");
+        plx_base::testlock::assert_held("auth response policy test");
         let failure = response.as_ref().err().copied().expect("incomplete HTTP response");
         set_unreachable_for_test(true);
         note_response_contact(SWITCH, &response);
@@ -623,7 +623,7 @@ mod evidence_tests {
     /// lives in `net`, which cannot name this layer).
     #[test]
     fn http2_wire_reset_failure_keeps_the_account_verdict() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for status in [401, 403, 404, 410] {
             crate::net::with_h2_reset_failure(status, |failure| assert_refusal_evidence(status, Err(failure)));
         }
@@ -631,7 +631,7 @@ mod evidence_tests {
 
     #[test]
     fn incomplete_refusal_survives_real_transport_and_preserves_contact() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(crate::net::global_init());
         for status in [401, 403, 404, 410] {
           for limit in [None, Some(4)] {
@@ -656,7 +656,7 @@ mod evidence_tests {
 
     #[test]
     fn limits_remain_non_offline_and_refusal_or_gone_takes_precedence() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         for status in [401, 403] {
             assert!(matches!(switch_response(SWITCH, failure(Some(status), Some(32))), Ok(SwitchOutcome::Refused(s)) if s == status));
         }
@@ -686,7 +686,7 @@ mod evidence_tests {
 
     #[test]
     fn complete_response_policy_and_provider_decoding_are_unchanged() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None });
         note_response_contact(SWITCH, &malformed);
         assert!(plex_tv_recently_reachable());
@@ -710,7 +710,7 @@ mod evidence_tests {
 
     #[test]
     fn an_overflowing_valid_prefix_is_never_a_token_or_grant_response() {
-        let _serial = crate::testlock::serial();
+        let _serial = plx_base::testlock::serial();
         assert!(crate::net::global_init());
         for prefix in [br#"{"authToken":"synthetic-secret"}"#.as_slice(), br#"[{"accessToken":"synthetic-secret"}]"#.as_slice()] {
             let mut body = prefix.to_vec(); body.extend([b' '; 128]);
@@ -783,7 +783,7 @@ pub fn plex_tv_recently_unreachable() -> bool {
     g.is_some_and(|t| t.elapsed() < UNREACHABLE_MEMO)
 }
 
-/// Seed the memo. Callers hold `crate::testlock::serial()`: this is a process global.
+/// Seed the memo. Callers hold `plx_base::testlock::serial()`: this is a process global.
 #[cfg(test)]
 pub(crate) fn set_unreachable_for_test(unreachable: bool) {
     let mut g = LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -817,7 +817,7 @@ mod reachability_tests {
     /// Process globals — serialized on the crate-wide lock.
     #[test]
     fn the_memos_say_unreachable_beats_reachable_and_nothing_is_known_at_boot() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         *LAST_UNREACHABLE.lock().unwrap() = None;
         *LAST_REACHABLE.lock().unwrap() = None;
         assert!(!plex_tv_recently_reachable(), "nothing proven yet");
@@ -978,7 +978,7 @@ fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) ->
         // all, `Eof` a truncated one — and the byte count separates "empty" from "a page of
         // something else". The test below pins the reason, so this is not simplified back to `{e}`.
         Err(e) => {
-            crate::eventlog::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "account: {verb} {} -> HTTP {} but the body did not parse: {:?} at line {} col {} ({} bytes)",
                 endpoint_shape(url),
                 resp.status,
@@ -1006,7 +1006,7 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
     // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
     // the shape and the two services share this door — `discover.provider.plex.tv` lines would
     // otherwise read as coming from plex.tv proper.
-    crate::eventlog::log(&format!(
+    plx_base::eventlog::log(&format!(
         "account: {verb} {} -> HTTP {}{hint}",
         endpoint_shape(url),
         status
@@ -1131,7 +1131,7 @@ pub(crate) fn warm_audio_preferences(client_id: String, credential: String,
     let key = AudioPreferencesKey::new(&user, generation);
     let current = key.clone();
     warm_audio_preferences_with(&AUDIO_PREFERENCES_CACHE, key,
-        |job| crate::task::spawn_small("account-audio", job),
+        |job| plx_base::task::spawn_small("account-audio", job),
         move || AccountClient::new(&client_id, Some(&credential))
             .fetch_audio_preferences(&user, crate::net::API),
         move || current.is_current());

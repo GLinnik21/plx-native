@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn tv_library_type_changes_query_and_preserves_each_sections_choice() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let mut state = BrowseState::default();
         seed_two_source_table_for_owner_test(&mut state);
         let adapter = Arc::new(BrowseAdapter::default());
@@ -94,7 +94,7 @@ mod tests {
     /// type's menu, so a type change drops it, as it always has between TV types.
     #[test]
     fn a_movie_library_lists_its_collections_without_filters() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         assert_eq!(LibraryType::offered(SecKind::Movie), [LibraryType::Primary, LibraryType::Collections]);
         assert_eq!(LibraryType::offered(SecKind::Show),
             [LibraryType::Primary, LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections]);
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn tv_library_type_discards_directories_fetched_for_another_type() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (_cleanup, mut browse, _, client) = test_support::registered_page_source();
         browse.state.sections[0].kind = SecKind::Show;
         let captured_type = browse.state.states[0].library_type;
@@ -152,7 +152,7 @@ mod tests {
     fn tv_library_type_scopes_wire_pages_and_letters_and_confirms_the_active_sort() {
         use std::io::{BufRead, BufReader, Write};
 
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         crate::plex::reset_servers_for_test();
         let _cleanup = test_support::RegisteredCleanup;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

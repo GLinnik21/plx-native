@@ -1265,7 +1265,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline && requests.len() < 2 {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut request = String::new();
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
@@ -1371,7 +1371,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
 /// against a value from before the film started.
 #[test]
 fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut player = crate::player::machine::Player::new();
 
     player.set_now(10_000);
@@ -1405,7 +1405,7 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
 /// genuinely new request (no retry) still starts at 0.
 #[test]
 fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(2_000);
     let retry = RetryContext {
@@ -1447,7 +1447,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
 #[test]
 fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     reset_session(&mut ps);
     let request = PlaybackRequest {
         sid: ServerId::UNSET,
@@ -1919,7 +1919,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
 
         listener.set_nonblocking(true).unwrap();
         for _ in 0..50 {
-            match crate::testnet::accept(&listener) {
+            match plx_base::testnet::accept(&listener) {
                 Ok((socket, _)) => {
                     let mut extra = String::new();
                     BufReader::new(socket)
@@ -2089,7 +2089,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     // (`quality()`) and the server registry (`crate::plex::client_for`), same as
     // `the_preview_tells_a_container_remux_apart_from_a_re_encode` above it. Without this guard
     // another thread's test can move either between the two assertions below and flip
-    // DirectPlay/Converts out from under this one — see `crate::testlock` for why the lock (not a
+    // DirectPlay/Converts out from under this one — see `plx_base::testlock` for why the lock (not a
     // retry) is the fix.
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2247,7 +2247,7 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
 
     crate::player::set_subtitle_offset(1_800);
     persist_subtitle_offset(&ps, 1_800);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
 
     // a resume of the SAME item restores the correction before the resolve even starts
     reset_track_selection(sid, "rk-resume-a", None);
@@ -2259,7 +2259,7 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
 
     // setting it back to Original forgets the record
     persist_subtitle_offset(&ps, 0);
-    crate::storage_worker::drain_for_test();
+    plx_base::storage_worker::drain_for_test();
     reset_track_selection(sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
 

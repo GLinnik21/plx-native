@@ -676,7 +676,7 @@ fn log_path() -> std::path::PathBuf {
     if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
         return root.join("plxnative-crash.log");
     }
-    crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH)
+    plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::CRASH)
 }
 
 fn mark_paths() -> Vec<std::path::PathBuf> {
@@ -684,7 +684,7 @@ fn mark_paths() -> Vec<std::path::PathBuf> {
     if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
         return vec![root.join("telemetry-crashmark.json")];
     }
-    crate::paths::telemetry_crashmark_candidates()
+    plx_base::paths::telemetry_crashmark_candidates()
 }
 
 #[cfg(test)]
@@ -905,7 +905,7 @@ fn recover_pending_at(path: &std::path::Path) {
     let (snapshot, readable) = match read_snapshot(path) {
         Ok(s) => (s, true),
         Err(e) => {
-            crate::eventlog::log(&format!("telemetry: crash log not imported: {:?}", e.kind()));
+            plx_base::eventlog::log(&format!("telemetry: crash log not imported: {:?}", e.kind()));
             (Snapshot::default(), false)
         }
     };
@@ -994,7 +994,7 @@ fn recover_pending_at(path: &std::path::Path) {
     let native_wins = plan.report_native.iter().filter(|n| n.is_some()).count();
     let panic_wins = plan.native_panic.iter().filter(|p| p.is_some()).count();
     if !reports.is_empty() || !natives.is_empty() {
-        crate::eventlog::log(&format!(
+        plx_base::eventlog::log(&format!(
             "telemetry: crash log had {} report(s), queued {}, native envelopes {}, native_wins={native_wins}, panic_wins={panic_wins}, symbols={}",
             reports.len(),
             io.queued,
@@ -1017,7 +1017,7 @@ pub(crate) fn discard_pending_before_opt_in() -> bool {
     match cutoff_mark(&log_path()) {
         Ok(mark) => write_mark(&mark),
         Err(e) => {
-            crate::eventlog::log(&format!("telemetry: crash log cutoff not taken: {:?}", e.kind()));
+            plx_base::eventlog::log(&format!("telemetry: crash log cutoff not taken: {:?}", e.kind()));
             false
         }
     }
@@ -1044,7 +1044,7 @@ fn resume_from(snapshot: &Snapshot, mark: Option<&Mark>) -> usize {
         || offset > snapshot.bytes.len()
         || Some(prefix_hash(&snapshot.bytes[..offset])) != mark.prefix_hash
     {
-        crate::eventlog::log("telemetry: crash log is not the one the watermark measured — reading it from the start");
+        plx_base::eventlog::log("telemetry: crash log is not the one the watermark measured — reading it from the start");
         return 0;
     }
     offset
@@ -1068,7 +1068,7 @@ fn write_mark(mark: &Mark) -> bool {
         // Loud, because the consequence is re-reporting the same crash on every boot until it
         // succeeds — bounded by the deterministic `event_id`, which Sentry dedupes, but still a
         // request per launch that says nothing new.
-        crate::eventlog::log("telemetry: could not persist the crash watermark to ANY candidate path");
+        plx_base::eventlog::log("telemetry: could not persist the crash watermark to ANY candidate path");
     }
     stored
 }
@@ -1464,7 +1464,7 @@ mod tests {
     /// to the file it measured, not to whatever file now has that name.
     #[test]
     fn a_recreated_longer_crash_log_does_not_inherit_the_old_offset() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!("plx-crash-generation-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -1513,7 +1513,7 @@ mod tests {
 
     #[test]
     fn an_oversized_local_log_cannot_disable_error_reporting_opt_in() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!("plx-crash-large-cutoff-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -1531,7 +1531,7 @@ mod tests {
 
     #[test]
     fn a_symlinked_crash_log_is_not_followed() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let root = std::env::temp_dir().join(format!("plx-crash-symlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -1754,7 +1754,7 @@ mod tests {
     #[test]
     fn a_build_without_a_sentry_dsn_reads_no_crash_data() {
         use super::super::{consent, spool};
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         if super::super::sender::has_sentry() {
             return; // a developer build with a DSN compiled in cannot exercise this branch
         }

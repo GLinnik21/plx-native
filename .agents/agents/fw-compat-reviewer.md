@@ -3,7 +3,7 @@ name: fw-compat-reviewer
 description: >
   Review a change that touches FFI, linkage, or the runtime library seam and answer one
   question — can this binary still START on every firmware this project claims to support?
-  Use before pushing anything that edits `rust-modules/src/dynlib.rs`, `ff.rs`, `net.rs`,
+  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`, `ff.rs`, `net.rs`,
   `src/starfish.c`, `ci/expected-dt-needed.txt`, the Makefile's `LIBS_REAL`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
@@ -45,7 +45,7 @@ In scope if the diff touches any of:
 
 | path / edit | why it can move the answer |
 |---|---|
-| `rust-modules/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
+| `rust-modules/base/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
 | `rust-modules/src/ff.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
 | `rust-modules/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
@@ -146,7 +146,7 @@ grade an ELF at all.
 
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
-git -C <repo> diff HEAD -- rust-modules/src/dynlib.rs rust-modules/src/ff.rs \
+git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/src/ff.rs \
     rust-modules/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
 grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src src   # against the diff, not the tree
 ```

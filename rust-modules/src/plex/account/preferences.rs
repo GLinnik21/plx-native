@@ -79,7 +79,7 @@ impl PreferenceRequest {
     pub(crate) fn fixture_for_test(user: crate::plex::session::UserRef, generation: u32,
         preferences: AudioPreferences) -> (Self, PreferenceSnapshot)
     {
-        crate::testlock::assert_held("account preference receipt fixture");
+        plx_base::testlock::assert_held("account preference receipt fixture");
         let key = AudioPreferencesKey::new(&user, generation);
         (Self { client_id: "preference-fixture-client".into(), credential: "synthetic-token".into(),
             user, key: key.clone() }, PreferenceSnapshot { preferences, key, revision: 0 })

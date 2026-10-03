@@ -65,7 +65,7 @@ fn the_ordering_holds_at_the_empty_and_single_page_ends() {
 /// would think one of ours had already opened the door.
 #[test]
 fn the_hero_pool_opens_on_our_own_item_and_never_dedups_across_servers() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![

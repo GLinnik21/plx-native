@@ -296,7 +296,7 @@ fn a_server_without_the_film_contributes_no_row() {
 /// that matters: our copies are not news about the share's film 4.
 #[test]
 fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     alt_clear(test_state());
     // two copies on two sources — enough for the gate, which counts distinct SOURCES
     let copies = || {
@@ -353,7 +353,7 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
 
 #[test]
 fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discarded() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     crate::plex::reset_servers_for_test();
     let a = crate::plex::register_for_test("alt-a", "127.0.0.1", 1, "a", "cid");
     let b = crate::plex::register_for_test("alt-b", "127.0.0.1", 2, "b", "cid");
@@ -400,7 +400,7 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
 /// into parallel #[test]s would have them racing each other rather than the code.
 #[test]
 fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     // Other serialized tests may leave a request pending; serialization is not a reset.
     // Reproduce that predecessor deterministically rather than depend on suite ordering.
     let previous = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "previous-test-request");
@@ -472,7 +472,7 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
 /// all, which is the gap the spec's evidence line names.
 #[test]
 fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     clear(test_state(), test_adapter());
     let a = crate::plex::ServerId::from_raw(0);
     let b = crate::plex::ServerId::from_raw(1);
@@ -517,7 +517,7 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
 /// off it — exactly one event for the request, nothing latched.
 #[test]
 fn a_refused_detail_spawn_settles_the_spinner_through_the_landing() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     clear(test_state(), test_adapter());
     let a = crate::plex::ServerId::from_raw(0);
     request_detail_with_spawn(test_adapter(), a, "9", |_| false);
@@ -532,7 +532,7 @@ fn a_refused_detail_spawn_settles_the_spinner_through_the_landing() {
 
 #[test]
 fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     clear(test_state(), test_adapter());
     let sid = crate::plex::ServerId::UNSET;
     let mut workers = Vec::new();
@@ -565,7 +565,7 @@ fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
 
 #[test]
 fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     clear(test_state(), test_adapter());
     let sid = crate::plex::ServerId::UNSET;
     request_detail_with_spawn(test_adapter(), sid, "panic", |gen| {
@@ -581,7 +581,7 @@ fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
 
 #[test]
 fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     // The controlled content boot's tape input (`app::bootstrap::Initial::person_credits` of the
     // validated filmography boot, whose `personcredits` is 9); this test needs no more of it.
     const CONTENT_CREDITS: Option<u32> = Some(9);

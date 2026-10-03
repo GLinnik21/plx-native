@@ -167,7 +167,7 @@ pub const TEX_RESIDENT_BYTES_MAX: usize = 44 << 20;
 /// Every byte ceiling derived from a 1080p frame scales by it, or an `n`x backdrop alone breaches.
 #[inline]
 pub(crate) fn render_area() -> usize {
-    let n = crate::surface::render_scale() as usize;
+    let n = plx_base::surface::render_scale() as usize;
     n * n
 }
 
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn pending_byte_snapshot_tracks_accept_upload_recycle_and_shutdown() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let old_cache = mutate_cache(|c| std::mem::replace(c, TexCache::with_budget(8, 32)));
         let image = |key, bytes| PosterReady {
             key: PosterKey(key),

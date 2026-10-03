@@ -60,7 +60,7 @@ fn unavailable_randomness_refuses_the_channel_it_failed_for() {
 /// choice leak an event before the real machine has seen it.
 #[test]
 fn settings_done_commits_through_the_consent_machine_and_pops_the_surface() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;
@@ -143,7 +143,7 @@ fn the_product_stage_combines_both_answers_into_one_record_and_dismisses_the_sur
 /// entirely ungraded by anything that looks like a real press.
 #[test]
 fn a_settings_toggle_commits_through_the_activate_event() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let saved = consent::current();
     consent::install(Consent::default());
     let m = FixtureMeasure;

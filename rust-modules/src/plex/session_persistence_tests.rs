@@ -8,7 +8,7 @@ use super::test_support::TempSession;
 
 #[test]
 fn recording_capture_fresh_identity_has_no_persistence_before_attachment() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let root = TempSession::new("capture-fresh");
     let (saved, entropy, deferred) = load_capturing_entropy();
     assert!(!saved.client_id.is_empty());
@@ -21,7 +21,7 @@ fn recording_capture_fresh_identity_has_no_persistence_before_attachment() {
 #[test]
 fn recording_capture_plaintext_does_not_migrate_before_attachment() {
     use std::os::unix::fs::MetadataExt;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let root = TempSession::new("capture-plaintext");
     let before = serde_json::to_vec(&signed_in()).unwrap();
     std::fs::write(root.file(), &before).unwrap();
@@ -37,7 +37,7 @@ fn recording_capture_plaintext_does_not_migrate_before_attachment() {
 
 #[test]
 fn deferred_capture_never_overwrites_a_newer_session() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let root = TempSession::new("capture-superseded");
     let (_, _, deferred) = load_capturing_entropy();
     save(&signed_in());
@@ -53,7 +53,7 @@ fn deferred_capture_never_overwrites_a_newer_session() {
 #[test]
 fn a_save_lands_whole_and_leaves_no_temporary_behind() {
     use std::os::unix::fs::PermissionsExt;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("whole");
 
     save(&signed_in());
@@ -137,7 +137,7 @@ impl Drop for TempCandidates {
 /// behaviour below.
 #[test]
 fn every_durable_candidate_unwritable_and_no_fallback_offered_fails_the_save() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_guard, candidates) = TempCandidates::new("watch-fail");
     let durable_only = candidates[..2].to_vec();
     redirect_candidates_for_test(Some(durable_only));
@@ -157,7 +157,7 @@ fn every_durable_candidate_unwritable_and_no_fallback_offered_fails_the_save() {
 #[test]
 fn runtime_dir_candidate_persists_and_reloads_when_every_durable_candidate_is_unwritable() {
     use std::os::unix::fs::PermissionsExt;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_guard, candidates) = TempCandidates::new("persist-reload");
     redirect_candidates_for_test(Some(candidates.clone()));
 
@@ -199,7 +199,7 @@ fn runtime_dir_candidate_persists_and_reloads_when_every_durable_candidate_is_un
 #[test]
 fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
     use std::os::unix::fs::{symlink, PermissionsExt};
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let dir = std::env::temp_dir().join(format!(
         "plxnative-runtime-symlink-{}",
         std::process::id()
@@ -240,7 +240,7 @@ fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
 #[test]
 fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
     use std::os::unix::fs::MetadataExt;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let base = std::env::temp_dir().join(format!("plxnative-write-atomic-diag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
@@ -284,7 +284,7 @@ fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
 /// the jail the 2026-09-20 field report came from, and the one case where "why did the durable
 /// ones refuse" is the whole question worth answering.
 ///
-/// This suite has no facility to capture `crate::eventlog::log`'s own output (it goes to a shared, on-disk
+/// This suite has no facility to capture `plx_base::eventlog::log`'s own output (it goes to a shared, on-disk
 /// event log via `scrub_local` and `eventlog::ring::record`; building a capture for that under time pressure
 /// is out of scope here). Instead this proves what has to be true for the fixed call to say
 /// anything real: replaying `write_atomic_diagnosed` against the same two candidates the real loop
@@ -296,7 +296,7 @@ fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
 /// by reading the call site this change added, not by this test.
 #[test]
 fn refused_candidates_produce_evidence_when_a_later_one_still_succeeds() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let (_guard, candidates) = TempCandidates::new("evidence-survives-success");
     redirect_candidates_for_test(Some(candidates.clone()));
 
@@ -348,14 +348,14 @@ impl TempCanonicalRoot {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
         TempCanonicalRoot { dir }
     }
 }
 
 impl Drop for TempCanonicalRoot {
     fn drop(&mut self) {
-        crate::paths::redirect_persistent_state_root_for_test(None);
+        plx_base::paths::redirect_persistent_state_root_for_test(None);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -365,7 +365,7 @@ impl Drop for TempCanonicalRoot {
 #[test]
 fn language_survives_ordinary_signout_fresh_login_and_relaunch() {
     use crate::i18n::Preference;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let root = TempCanonicalRoot::new("language-signout-relaunch");
     struct Restore {
         preference: Preference,
@@ -417,7 +417,7 @@ fn language_survives_ordinary_signout_fresh_login_and_relaunch() {
 /// `persistence::commit_cleared()`, and the account token is still there to read back.
 #[test]
 fn clear_commits_a_canonical_cleared_record_so_the_account_token_does_not_survive_signout() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("signout");
     redirect_for_test(None);
 
@@ -471,7 +471,7 @@ fn clear_commits_a_canonical_cleared_record_so_the_account_token_does_not_surviv
 /// `Cleared` with that policy is what fails this test today.
 #[test]
 fn a_cleared_canonical_tenure_boots_clean_and_still_shadows_a_reappearing_legacy_file() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("boot");
     redirect_for_test(None);
 
@@ -529,7 +529,7 @@ fn a_cleared_canonical_tenure_boots_clean_and_still_shadows_a_reappearing_legacy
 /// exactly as `read_live_locked` does once the fixture goes away.
 #[test]
 fn clear_under_a_redirected_legacy_fixture_never_touches_the_canonical_authority() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("test-file-guard");
     redirect_for_test(None);
 
@@ -604,7 +604,7 @@ fn clear_under_a_redirected_legacy_fixture_never_touches_the_canonical_authority
 /// fail (expected `legacy_swept == false`, observed `true`).
 #[test]
 fn clear_reports_an_incomplete_sweep_when_a_recognized_candidate_cannot_be_retired() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("migration-sweep");
     redirect_for_test(None);
 
@@ -689,7 +689,7 @@ fn clear_cleanup_outcome_maps_all_three_arms_and_never_conflates_unconfirmed_wit
 /// without touching any real path.
 #[test]
 fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let dir = std::env::temp_dir().join(format!(
         "plxnative-session-canonical-not-a-dir-{}",
         std::process::id()
@@ -702,7 +702,7 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
     struct RestoreCanonicalRoot(std::path::PathBuf);
     impl Drop for RestoreCanonicalRoot {
         fn drop(&mut self) {
-            crate::paths::redirect_persistent_state_root_for_test(None);
+            plx_base::paths::redirect_persistent_state_root_for_test(None);
             let _ = std::fs::remove_file(&self.0);
         }
     }
@@ -710,7 +710,7 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
     let _ = std::fs::remove_file(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::write(&dir, b"not a directory").unwrap();
-    crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+    plx_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
     redirect_for_test(None);
 
     let outcome = clear();
@@ -760,7 +760,7 @@ fn read_identity_gives_cleared_its_own_bucket_distinct_from_every_other_state() 
 /// recording the SAME envelope again is a no-op rather than a second disk write.
 #[test]
 fn last_hero_blur_round_trips_and_skips_a_redundant_write() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempSession::new("last-hero");
     save(&signed_in());
     assert_eq!(last_hero(), None, "a fresh device has shown no hero yet");
@@ -787,7 +787,7 @@ fn last_hero_blur_round_trips_and_skips_a_redundant_write() {
 /// which is the exact unavailable-key condition this policy has to survive.
 #[test]
 fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("secure-locked");
     let envelope = SecureEnvelope {
         format: SECURE_FORMAT.to_string(),
@@ -824,7 +824,7 @@ fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
 
 #[test]
 fn an_unknown_secure_envelope_version_is_locked_and_never_rewritten_as_plaintext() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("secure-future-version");
     let original = br#"{
   "format": "plxnative-secure-session",
@@ -860,7 +860,7 @@ fn an_unknown_secure_envelope_version_is_locked_and_never_rewritten_as_plaintext
 #[test]
 fn a_precreated_tmp_symlink_cannot_redirect_session_bytes() {
     use std::os::unix::fs::symlink;
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("tmp-symlink");
     let victim = t.dir.join("attacker-readable");
     std::fs::write(&victim, b"unchanged").unwrap();
@@ -874,7 +874,7 @@ fn a_precreated_tmp_symlink_cannot_redirect_session_bytes() {
 
 #[test]
 fn a_quality_choice_persists_without_replacing_other_session_state() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempSession::new("quality");
     let mut s = signed_in();
     s.sources.push(SourceRef {
@@ -898,7 +898,7 @@ fn a_quality_choice_persists_without_replacing_other_session_state() {
 
 #[test]
 fn auto_sign_in_persists_without_replacing_other_session_state() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempSession::new("auto-sign-in");
     let mut s = signed_in();
     s.user.uuid = "u-kid".into();
@@ -931,7 +931,7 @@ fn auto_sign_in_persists_without_replacing_other_session_state() {
 /// flow. That snapshot must carry the switch, or the next boot forgets it.
 #[test]
 fn a_full_save_of_a_switch_snapshot_keeps_auto_sign_in() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempSession::new("auto-sign-in-save");
     let mut s = signed_in();
     s.user.uuid = "u-admin".into();
@@ -953,7 +953,7 @@ fn a_full_save_of_a_switch_snapshot_keeps_auto_sign_in() {
 
 #[test]
 fn loading_legacy_json_without_an_id_repairs_only_the_id_not_the_quality() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("legacy-no-id");
     std::fs::write(t.file(), br#"{"account_token":"legacy-account"}"#).unwrap();
 
@@ -976,7 +976,7 @@ fn loading_legacy_json_without_an_id_repairs_only_the_id_not_the_quality() {
 
 #[test]
 fn loading_with_no_file_records_the_gated_fresh_default() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("fresh-quality");
     assert!(!t.file().exists());
 
@@ -1005,7 +1005,7 @@ fn loading_with_no_file_records_the_gated_fresh_default() {
 /// interleaving that loses an update cannot be constructed.
 #[test]
 fn concurrent_read_modify_writes_never_lose_an_update() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let _t = TempSession::new("lost-update");
     save(&signed_in());
 
@@ -1065,7 +1065,7 @@ fn concurrent_read_modify_writes_never_lose_an_update() {
 /// file is a QR code on the next boot, not a stale roster.
 #[test]
 fn a_reader_outside_the_lock_never_sees_half_a_session() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("torn");
     save(&signed_in());
 
@@ -1112,7 +1112,7 @@ fn a_reader_outside_the_lock_never_sees_half_a_session() {
 /// flight puts a roster back with no credentials under it.
 #[test]
 fn update_refuses_a_file_that_holds_no_session() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("refuse");
 
     // no file at all — the state straight after `clear()`
@@ -1148,7 +1148,7 @@ fn a_malformed_home_user_costs_that_tile_and_not_the_session() {
 
 #[test]
 fn a_language_update_reports_when_the_next_launch_cannot_be_persisted() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let t = TempSession::new("language-write-failure");
     save(&signed_in());
     let dir = t.file().parent().unwrap().to_path_buf();
@@ -1190,7 +1190,7 @@ impl Drop for CanonicalReadOverride {
 
 #[test]
 fn unavailable_helper_fallback_survives_cache_drop_and_restart() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("blocked-restart");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1220,7 +1220,7 @@ fn unavailable_helper_fallback_survives_cache_drop_and_restart() {
 fn fallback_never_outranks_present_or_untrusted_canonical_state() {
     use crate::storage::StoreError as E;
     use persistence::CanonicalRead as C;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("blocked-priority");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates));
@@ -1277,7 +1277,7 @@ fn fallback_never_outranks_present_or_untrusted_canonical_state() {
 
 #[test]
 fn legacy_unmarked_file_requires_missing_canonical_and_marked_sealed_stays_locked() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("blocked-legacy");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1295,7 +1295,7 @@ fn legacy_unmarked_file_requires_missing_canonical_and_marked_sealed_stays_locke
 
 #[test]
 fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("blocked-cache");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates));
@@ -1343,7 +1343,7 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
 
 #[test]
 fn signout_with_unavailable_helper_removes_all_fallback_candidates() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let root = TempCanonicalRoot::new("blocked-clear");
     // A non-directory canonical root ensures the host clear fails too, as the dead helper does.
     std::fs::remove_dir_all(&root.dir).unwrap();
@@ -1391,7 +1391,7 @@ impl Drop for RestorePermissions {
 
 #[test]
 fn signout_neutralizes_fallback_when_parent_refuses_unlink() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("unlink-refused");
     let (_paths, candidates) = TempCandidates::new("unlink-refused");
     redirect_for_test(None);
@@ -1416,7 +1416,7 @@ fn signout_neutralizes_fallback_when_parent_refuses_unlink() {
 
 #[test]
 fn signout_reports_candidate_that_cannot_be_unlinked_or_neutralized() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("unlink-and-overwrite-refused");
     assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
     let _permissions = RestorePermissions::set(&[
@@ -1436,7 +1436,7 @@ fn signout_reports_candidate_that_cannot_be_unlinked_or_neutralized() {
 
 #[test]
 fn confirmed_clear_neutralizes_an_undeletable_migration_candidate() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("confirmed-neutralization");
     let (_paths, candidates) = TempCandidates::new("confirmed-neutralization");
     redirect_for_test(None);
@@ -1453,7 +1453,7 @@ fn confirmed_clear_neutralizes_an_undeletable_migration_candidate() {
 
 #[test]
 fn neutralization_refuses_symlinks_and_shared_inodes_without_truncating_them() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("neutralization-owned-fd");
     let bytes = fallback_bytes(&signed_in()).unwrap();
     std::fs::write(file.file(), &bytes).unwrap();
@@ -1469,7 +1469,7 @@ fn neutralization_refuses_symlinks_and_shared_inodes_without_truncating_them() {
 
 #[test]
 fn p1_recovery_write_retires_the_previous_outage_snapshot() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("p1-recovery");
     let (_paths, candidates) = TempCandidates::new("p1-recovery");
     redirect_for_test(None);
@@ -1488,7 +1488,7 @@ fn p1_recovery_write_retires_the_previous_outage_snapshot() {
 
 #[test]
 fn p1_failed_signout_cannot_reopen_fallback_after_restart() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("p1-revocation");
     let (_paths, candidates) = TempCandidates::new("p1-revocation");
     redirect_for_test(None);
@@ -1525,7 +1525,7 @@ fn p1_failed_signout_cannot_reopen_fallback_after_restart() {
 #[test]
 fn p1_authoritative_reads_retire_only_marked_files() {
     use persistence::CanonicalRead as C;
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("p1-read-retirement");
     redirect_for_test(None);
     let marked = candidates[2].clone();
@@ -1551,7 +1551,7 @@ fn p1_authoritative_reads_retire_only_marked_files() {
 
 #[test]
 fn p1_retirement_failure_does_not_fail_or_replace_canonical_data() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("p1-retirement-failure");
     let (_paths, candidates) = TempCandidates::new("p1-retirement-failure");
     redirect_for_test(None);
@@ -1568,7 +1568,7 @@ fn p1_retirement_failure_does_not_fail_or_replace_canonical_data() {
 
 #[test]
 fn retirement_retries_parent_sync_even_after_the_file_is_gone() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("retirement-parent-sync-retry");
     std::fs::write(file.file(), fallback_bytes(&signed_in()).unwrap()).unwrap();
     std::thread_local! {
@@ -1597,7 +1597,7 @@ fn retirement_retries_parent_sync_even_after_the_file_is_gone() {
 
 #[test]
 fn retirement_accepts_a_missing_parent_directory_without_a_sync() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("retirement-missing-parent");
     struct ResetSync;
     impl Drop for ResetSync {
@@ -1618,7 +1618,7 @@ fn retirement_accepts_a_missing_parent_directory_without_a_sync() {
 /// re-ran the clear every second, forever.
 #[test]
 fn signout_counts_an_absent_candidate_behind_a_read_only_mount_as_retired() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("absent-behind-erofs");
     assert!(!file.file().exists(), "the legacy candidate does not exist");
     let _erofs = crate::storage::UnlinkFaultForTest::install(&file.dir, libc::EROFS);
@@ -1637,7 +1637,7 @@ fn signout_counts_an_absent_candidate_behind_a_read_only_mount_as_retired() {
 /// retries) on every attempt, and this process stays locally revoked.
 #[test]
 fn signout_keeps_reporting_a_present_candidate_behind_a_read_only_mount() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("present-behind-erofs");
     assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
     let credentials = std::fs::read(file.file()).unwrap();
@@ -1660,7 +1660,7 @@ fn signout_keeps_reporting_a_present_candidate_behind_a_read_only_mount() {
 /// refused unlink is retired, not a pending removal that never drains.
 #[test]
 fn revocation_marker_absent_behind_a_read_only_mount_is_retired() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("marker-behind-erofs");
     let marker = fallback_revocation_path(&file.file());
     let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
@@ -1678,7 +1678,7 @@ fn revocation_marker_absent_behind_a_read_only_mount_is_retired() {
 
 #[test]
 fn recovery_retirement_retries_pending_parent_sync_before_skipping_absent_files() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("recovery-parent-sync-retry");
     std::fs::write(file.file(), fallback_bytes(&signed_in()).unwrap()).unwrap();
     std::thread_local! {
@@ -1713,7 +1713,7 @@ fn recovery_retirement_retries_pending_parent_sync_before_skipping_absent_files(
 
 #[test]
 fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("signout-pending-recovery-sync");
     std::fs::write(file.file(), fallback_bytes(&signed_in()).unwrap()).unwrap();
     struct ResetHooks;
@@ -1751,11 +1751,11 @@ static STORE: crate::tv::secure::TestStore = crate::tv::secure::TestStore {
         backend: crate::tv::secure::Backend::Keymanager3,
         key: "plxnative.session.v1".into(),
         iv: "synthetic-iv".into(),
-        data: crate::b64::encode(plain),
+        data: plx_base::b64::encode(plain),
     }),
     open: |sealed| {
         if sealed.backend == crate::tv::secure::Backend::Keymanager3 && sealed.key == "plxnative.session.v1" {
-            crate::b64::decode(&sealed.data)
+            plx_base::b64::decode(&sealed.data)
         } else {
             None
         }
@@ -1776,7 +1776,7 @@ impl Drop for SyntheticKeymanager {
 
 #[test]
 fn p2_outage_reseals_the_latest_snapshot_over_a_marked_secure_fallback() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("p2-reseal");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1795,7 +1795,7 @@ fn p2_outage_reseals_the_latest_snapshot_over_a_marked_secure_fallback() {
 
 #[test]
 fn p2_plaintext_winner_retires_older_lower_priority_marked_candidates() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("p2-plaintext-stale");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1813,7 +1813,7 @@ fn p2_plaintext_winner_retires_older_lower_priority_marked_candidates() {
 
 #[test]
 fn p2_proven_signin_retries_failed_revocation_marker_removal() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("p2-marker-retry");
     let (_paths, candidates) = TempCandidates::new("p2-marker-retry");
     redirect_for_test(None);
@@ -1834,7 +1834,7 @@ fn p2_proven_signin_retries_failed_revocation_marker_removal() {
 
 #[test]
 fn marked_secure_fallback_never_downgrades_and_unmarked_secure_input_is_preserved() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let file = TempSession::new("marked-secure-guards");
     let keymanager = SyntheticKeymanager::new();
     assert_eq!(with_io_for_test(|| save_legacy_fallback_locked(&signed_in(), false, false)), Some(true));
@@ -1855,7 +1855,7 @@ fn marked_secure_fallback_never_downgrades_and_unmarked_secure_input_is_preserve
 
 #[test]
 fn sealed_fallback_retires_a_stale_candidate_even_when_it_cannot_be_unlinked() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("sealed-stale-neutralization");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1871,7 +1871,7 @@ fn sealed_fallback_retires_a_stale_candidate_even_when_it_cannot_be_unlinked() {
 
 #[test]
 fn plaintext_cleanup_preserves_unmarked_input_and_does_not_fail_a_successful_save() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let (_paths, candidates) = TempCandidates::new("plaintext-cleanup-policy");
     redirect_for_test(None);
     redirect_candidates_for_test(Some(candidates.clone()));
@@ -1894,7 +1894,7 @@ fn plaintext_cleanup_preserves_unmarked_input_and_does_not_fail_a_successful_sav
 
 #[test]
 fn new_signout_cancels_an_older_signins_pending_marker_removal() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("new-signout-marker-retry");
     let (_paths, candidates) = TempCandidates::new("new-signout-marker-retry");
     redirect_for_test(None);
@@ -1916,7 +1916,7 @@ fn new_signout_cancels_an_older_signins_pending_marker_removal() {
 
 #[test]
 fn pending_marker_removal_retries_its_parent_sync_after_unlink() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("marker-sync-retry");
     let (_paths, candidates) = TempCandidates::new("marker-sync-retry");
     redirect_for_test(None);
@@ -1943,7 +1943,7 @@ fn pending_marker_removal_retries_its_parent_sync_after_unlink() {
 
 #[test]
 fn fresh_outage_signin_after_signout_survives_restart() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("fresh-outage-after-signout");
     let (_paths, candidates) = TempCandidates::new("fresh-outage-after-signout");
     redirect_for_test(None);
@@ -1960,7 +1960,7 @@ fn fresh_outage_signin_after_signout_survives_restart() {
 
 #[test]
 fn sealed_marked_fallback_migrates_when_canonical_recovers_missing() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("sealed-fallback-recovered-missing");
     let (_paths, candidates) = TempCandidates::new("sealed-fallback-recovered-missing");
     redirect_for_test(None);
@@ -1981,7 +1981,7 @@ fn sealed_marked_fallback_migrates_when_canonical_recovers_missing() {
 
 #[test]
 fn marked_missing_migration_failure_stays_transient_and_retries() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     for sealed in [false, true] {
         let _root = TempCanonicalRoot::new("marked-migration-retry");
         let (_paths, candidates) = TempCandidates::new("marked-migration-retry");
@@ -2011,7 +2011,7 @@ fn marked_missing_migration_failure_stays_transient_and_retries() {
 
 #[test]
 fn unmarked_sealed_missing_record_keeps_its_established_legacy_behavior() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let _root = TempCanonicalRoot::new("unmarked-sealed-missing");
     let (_paths, candidates) = TempCandidates::new("unmarked-sealed-missing");
     redirect_for_test(None);

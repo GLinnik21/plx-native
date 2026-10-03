@@ -1,6 +1,6 @@
 //! Which codepoints a font file can actually draw — read straight out of its `cmap`.
 //!
-//! Two callers, for the same reason. [`text.rs`](crate::text) asks it per character to decide
+//! Two callers, for the same reason. `text.rs` asks it per character to decide
 //! which link of the fallback chain renders a run; the test module at the bottom of THIS file
 //! asks it of the shipped `pkg/appfont*.ttf` and asserts a **declared codepoint set**, inside
 //! `make check`, in milliseconds, with no television and no GL context.
@@ -50,14 +50,14 @@ use std::path::Path;
 /// The BMP half is the hot one — `text.rs` asks per character on every cache-missing string — and
 /// 8 KB of bitset makes that a shift and a mask instead of a binary search. Astral codepoints
 /// (emoji, CJK ext-B) are rare enough in a Plex library to be worth a `partition_point`.
-pub(crate) struct Coverage {
+pub struct Coverage {
     bmp: Box<[u64; 1024]>,
     sup: Vec<(u32, u32)>,
     count: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CovErr {
+pub enum CovErr {
     Io(String),
     /// The bytes are not an sfnt we recognise, or the table we need is missing/malformed. The
     /// string names WHICH, because "the font is bad" is not an actionable log line.
@@ -82,7 +82,7 @@ impl Coverage {
         }
     }
 
-    pub(crate) fn contains(&self, cp: u32) -> bool {
+    pub fn contains(&self, cp: u32) -> bool {
         if cp <= 0xFFFF {
             let i = cp as usize;
             return self.bmp[i >> 6] & (1u64 << (i & 63)) != 0;
@@ -95,7 +95,7 @@ impl Coverage {
 
     /// How many codepoints this font maps to a real glyph. The gate quotes it, and `text.rs` logs
     /// it once per face so an event log says what the chain actually loaded.
-    pub(crate) fn len(&self) -> u32 {
+    pub fn len(&self) -> u32 {
         self.count
     }
 
@@ -308,8 +308,8 @@ fn parse_format12_13(t: &[u8], many_to_one: bool, cov: &mut Coverage) -> Option<
 /// seam: it takes any `Read + Seek`, which is what lets the decoder be driven from a `Cursor` over
 /// a synthetic sfnt — shapes no shipped font has, like a cmap entry pointing at glyph 0.
 /// Production reads a path and goes through [`of_file`], which closes the file sooner.
-#[cfg(test)]
-pub(crate) fn of_reader<R: Read + Seek>(r: &mut R) -> Result<Coverage, CovErr> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn of_reader<R: Read + Seek>(r: &mut R) -> Result<Coverage, CovErr> {
     decode(&cmap_bytes(r)?)
 }
 
@@ -365,7 +365,7 @@ fn decode(t: &[u8]) -> Result<Coverage, CovErr> {
 
 /// The errors do NOT name `path` — every caller has it and prefixes its own message with it, and
 /// a doubled path reads as a bug in the error plumbing rather than as the missing file it is.
-pub(crate) fn of_file(path: &Path) -> Result<Coverage, CovErr> {
+pub fn of_file(path: &Path) -> Result<Coverage, CovErr> {
     let cmap = {
         let mut f = File::open(path).map_err(|e| CovErr::Io(e.to_string()))?;
         cmap_bytes(&mut f)? // `f` is dropped HERE, before `decode` — see `decode`'s doc
@@ -381,8 +381,8 @@ pub(crate) fn of_file(path: &Path) -> Result<Coverage, CovErr> {
 /// to trip `stream.rs`'s fd-leak assertion — whose slack is +8 over whatever the rest of the suite
 /// happens to be holding, and which then fails naming a leak that does not exist. Parsing once
 /// turns fourteen concurrent opens into three sequential ones.
-#[cfg(test)]
-pub(crate) fn shipped(name: &str) -> &'static Result<Coverage, String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn shipped(name: &str) -> &'static Result<Coverage, String> {
     use std::sync::OnceLock;
     static REG: OnceLock<Result<Coverage, String>> = OnceLock::new();
     static BOLD: OnceLock<Result<Coverage, String>> = OnceLock::new();
@@ -395,7 +395,7 @@ pub(crate) fn shipped(name: &str) -> &'static Result<Coverage, String> {
     };
     slot.get_or_init(|| {
         // The fonts are repository payload, not crate data — `pkg/` sits beside `rust-modules/`.
-        let p = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../pkg")).join(name);
+        let p = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg")).join(name);
         of_file(&p).map_err(|e| format!("{}: {e}", p.display()))
     })
 }
@@ -410,12 +410,12 @@ pub(crate) fn shipped(name: &str) -> &'static Result<Coverage, String> {
 /// simulator's newer SDL_ttf sums fractional advances instead, which is why a sub-line the
 /// simulator fits can still come out ellipsised on the television (2026-09-28, the Belarusian
 /// Settings root).
-#[cfg(test)]
-pub(crate) mod advances {
+#[cfg(any(test, feature = "test-support"))]
+pub mod advances {
     use super::{be16, be32};
     use std::collections::HashMap;
 
-    pub(crate) struct Face {
+    pub struct Face {
         upem: f32,
         glyph: HashMap<u32, u32>,
         advance: Vec<u32>,
@@ -489,7 +489,7 @@ pub(crate) mod advances {
         }
 
         /// `s` at pixel size `size`, one whole-pixel advance per character (see the item doc).
-        pub(crate) fn width(&self, s: &str, size: i32) -> f32 {
+        pub fn width(&self, s: &str, size: i32) -> f32 {
             s.chars()
                 .map(|ch| {
                     let g = self.glyph.get(&(ch as u32)).copied().unwrap_or(0) as usize;
@@ -502,13 +502,13 @@ pub(crate) mod advances {
     }
 
     /// One of the two shipped text faces, parsed once for the test binary.
-    pub(crate) fn shipped(bold: bool) -> &'static Face {
+    pub fn shipped(bold: bool) -> &'static Face {
         use std::sync::OnceLock;
         static REG: OnceLock<Face> = OnceLock::new();
         static BOLD: OnceLock<Face> = OnceLock::new();
         let (slot, name) = if bold { (&BOLD, "appfont-bold.ttf") } else { (&REG, "appfont.ttf") };
         slot.get_or_init(|| {
-            let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../pkg")).join(name);
+            let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg")).join(name);
             let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
             Face::parse(&bytes).unwrap_or_else(|| panic!("{}: unreadable metrics tables", p.display()))
         })
@@ -518,7 +518,7 @@ pub(crate) mod advances {
     /// implemented for it beside the trait, in `ui/machine.rs` (the lowest layer that names both
     /// the trait and this type), and the share of a column a line may fill under it is
     /// `ui::fit::HEADROOM`, which the callers name.
-    pub(crate) struct ShippedMeasure;
+    pub struct ShippedMeasure;
 }
 
 // ------------------------------------------------------------------------------------------------

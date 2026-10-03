@@ -36,7 +36,7 @@ fn drive(rig: &mut Bridge, fx: AppFx) {
 
 #[test]
 fn consent_decides_from_its_owned_state_and_not_the_published_snapshot() {
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let saved = PublishedSnapshot(consent::current());
     let published = decision("published-id");
     consent::install(published.clone());
@@ -142,7 +142,7 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
         }
     }
 
-    let _serial = crate::testlock::serial();
+    let _serial = plx_base::testlock::serial();
     let dir = std::env::temp_dir().join(format!(
         "plxnative-consent-owner-signout-{}",
         std::process::id()

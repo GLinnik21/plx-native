@@ -5,7 +5,7 @@ usage: check-build-budgets.py [--budgets ci/build-budgets.json]
            [--binary PATH]                  stripped ARM binary (cross-build job)
            [--graph]                        run `cargo metadata` for both shipping feature sets
            [--metadata-default FILE --metadata-no-default FILE]   canned metadata (tests)
-           [--src rust-modules/src]         count Rust source lines (informational budget)
+           [--src rust-modules/src ...]       count Rust source lines of each --src (informational budget)
 
 Every budget lives in ci/build-budgets.json with the value it was set from and the date, so a
 reader can see how much headroom it carries. Nothing here is a timing: wall-clock numbers are noisy
@@ -15,7 +15,7 @@ of the same tree, so a red result is always a real change to the tree.
 * binary_bytes                 the stripped binary `make ipk` stages (measured in the cross-build job)
 * packages_*                   third-party packages the app crate compiles for the ARM target
 * duplicate_versions_*         crate names in more than one version on the normal-edge graph
-* source_lines                 lines of Rust in rust-modules/src; mode "warn", never fails
+* source_lines                 lines of Rust in rust-modules/src and every split-out layer crate (rust-modules/base/src); mode "warn", never fails
 
 Exit status: 0 all within budget (warn-mode overruns print ::warning::), 1 a fail-mode budget is
 exceeded, 2 the budgets file or an input is unusable.
@@ -205,7 +205,7 @@ def collect(args, budgets: dict) -> dict[str, int]:
             measured[f"packages_{suffix}"] = m["packages"]
             measured[f"duplicate_versions_{suffix}"] = m["duplicates"]
     if args.src:
-        measured["source_lines"] = source_lines(Path(args.src))
+        measured["source_lines"] = sum(source_lines(Path(s)) for s in args.src)
     return measured
 
 
@@ -216,7 +216,7 @@ def main(argv=None) -> int:
     ap.add_argument("--graph", action="store_true")
     ap.add_argument("--metadata-default")
     ap.add_argument("--metadata-no-default")
-    ap.add_argument("--src")
+    ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src)")
     args = ap.parse_args(argv)
     try:
         budgets = load_budgets(Path(args.budgets))

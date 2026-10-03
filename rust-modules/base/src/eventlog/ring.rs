@@ -32,13 +32,13 @@ use std::time::Instant;
 
 /// Record ceiling. A few minutes of an ordinary session, and rather more of a settled screen —
 /// which writes one heartbeat line a second.
-pub(crate) const MAX_RECORDS: usize = 4000;
+pub const MAX_RECORDS: usize = 4000;
 /// Byte ceiling over the record TEXT. 768 KiB compresses to well under the receiver's 4 MiB body
 /// cap even in the pathological all-unique case.
-pub(crate) const MAX_BYTES: usize = 768 * 1024;
+pub const MAX_BYTES: usize = 768 * 1024;
 
 #[derive(Clone)]
-pub(crate) struct Rec {
+pub struct Rec {
     /// milliseconds since [`start_clock`] — the same monotonic base the heartbeat's own timestamps
     /// come from, so a record correlates with `loop=`/`fps=`/`pos=` lines by eye.
     pub t_ms: u32,
@@ -58,13 +58,13 @@ static START: OnceLock<Instant> = OnceLock::new();
 
 /// Start the uptime clock. Called from `lab::boot`; idempotent, and [`t_ms`] starts it anyway if a
 /// line is logged before boot reaches this module (several are).
-pub(crate) fn start_clock() {
+pub fn start_clock() {
     let _ = START.get_or_init(Instant::now);
 }
 
 /// Milliseconds since process start, saturating at `u32::MAX` (49 days — no session is that long,
 /// and a saturating cast is still an honest reading rather than a wrapped one).
-pub(crate) fn t_ms() -> u32 {
+pub fn t_ms() -> u32 {
     START
         .get_or_init(Instant::now)
         .elapsed()
@@ -77,7 +77,7 @@ pub(crate) fn t_ms() -> u32 {
 /// Poison is stepped over rather than propagated: a panic in some other thread while it held this
 /// lock must not turn every subsequent `crate::eventlog::log` call into a second panic — the log is how the
 /// first one gets diagnosed.
-pub(crate) fn record(line: &str) {
+pub fn record(line: &str) {
     let t = t_ms();
     let mut g = RING.lock().unwrap_or_else(|e| e.into_inner());
     let r = g.get_or_insert_with(Ring::default);
@@ -102,7 +102,7 @@ pub(crate) fn record(line: &str) {
 /// **The ring is NOT cleared.** Two snapshots taken a minute apart deliberately overlap: a tester
 /// pressing the button twice is asking "and what about now", not "show me only what is new", and
 /// an upload that failed in transit must not have taken the evidence with it.
-pub(crate) fn take() -> (Vec<Rec>, u64) {
+pub fn take() -> (Vec<Rec>, u64) {
     let mut g = RING.lock().unwrap_or_else(|e| e.into_inner());
     let Some(r) = g.as_mut() else {
         return (Vec::new(), 0);

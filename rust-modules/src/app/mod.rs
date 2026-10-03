@@ -86,8 +86,8 @@ use crate::ui::consts::{
     WCODE_PLAY, WCODE_POINTER_HIDDEN, WCODE_STOP,
 };
 // The window we ASK SDL for. `surface::probe` then reads back what we actually got.
-const SCR_W: c_int = crate::surface::LOGICAL_W as c_int;
-const SCR_H: c_int = crate::surface::LOGICAL_H as c_int;
+const SCR_W: c_int = plx_base::surface::LOGICAL_W as c_int;
+const SCR_H: c_int = plx_base::surface::LOGICAL_H as c_int;
 pub(crate) const COLS: c_int = 10;
 
 // `SDL_webOSCursorVisibility` is declared apart from the rest because it exists ONLY in LG's
@@ -199,7 +199,7 @@ extern "C" {
     fn glClear(mask: c_uint);
 }
 
-use crate::eventlog::log;
+use plx_base::eventlog::log;
 // **The screen ARGUMENT is `screens::registry`'s** since restructure phase 10 (§2.1): the
 // registry owns the concrete `ScreenArg` and the one `mount` match, so `app/` reads it here
 // rather than declaring it. Imported at the tree's root because every module under `app/`
@@ -312,7 +312,7 @@ pub(crate) struct App {
     pub(crate) t0: u32,
     /// The frame's instruments: the eight phase stamps, FRAMEDROP, the per-second peaks
     /// (`diag::heartbeat`), armed by `plxnative-framedrop`.
-    instr: crate::diag::heartbeat::Instruments,
+    instr: plx_base::diag::heartbeat::Instruments,
     /// Every dev-trigger arm's own state — oscillator phases, retry latches, boot-time flags
     /// (formerly `DevFlags`) — gathered on ONE struct (spec: `dev/scenarios.rs`'s module doc).
     pub(crate) scenarios: crate::dev::scenarios::Scenarios,
@@ -356,7 +356,7 @@ impl App {
         initial.session = self.bridge.snapshot_session_init();
         Some(initial)
     }
-    /// `instr`'s own narrow read — see [`crate::diag::heartbeat::Instruments::last_frame_ms`]. A
+    /// `instr`'s own narrow read — see [`plx_base::diag::heartbeat::Instruments::last_frame_ms`]. A
     /// method rather than `pub(crate) instr` because the field otherwise stays module-private on
     /// purpose (`app::run` is `instr`'s only other reader, and it reaches the field directly as a
     /// descendant module); `dev::scenarios`'s stress-bench oscillators (`bench_frame_tick`) are
@@ -365,13 +365,13 @@ impl App {
         self.instr.last_frame_ms()
     }
     /// `instr`'s present-to-present read — see
-    /// [`crate::diag::heartbeat::Instruments::present_interval_ms`].
+    /// [`plx_base::diag::heartbeat::Instruments::present_interval_ms`].
     pub(crate) fn frame_present_interval_ms(&self) -> Option<f64> {
         self.instr.present_interval_ms()
     }
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
-        pms_host: *const c_char, pms_port: c_int, mt: crate::task::MainThread,
+        pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
         deferred: Option<crate::plex::session::DeferredLoad>) -> Result<Self, c_int> {
         boot::construct(pms_host, pms_port, mt, mode, Some(initial), deferred)
     }
@@ -419,10 +419,10 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // device question into something every single run answers for free.
     log(&format!(
         "install: id={} flavour={} runtime={} features={} APPID_env={}",
-        crate::paths::app_id(),
-        crate::paths::flavour().unwrap_or("-"),
-        crate::paths::runtime_dir().display(),
-        if crate::devtrig::ENABLED {
+        plx_base::paths::app_id(),
+        plx_base::paths::flavour().unwrap_or("-"),
+        plx_base::paths::runtime_dir().display(),
+        if plx_base::devtrig::ENABLED {
             "dev"
         } else {
             "release"
@@ -438,7 +438,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // The pair stays two lines, `install:` first, rather than an `appdir=` field on `install:`:
     // every document that tells a human to read the first line to learn which install wrote a log
     // means the `install:` one.
-    log(&crate::paths::app_dir_line());
+    log(&plx_base::paths::app_dir_line());
     // Before the crash backend is armed, identify the firmware it would need to report. Sentry's
     // scope is snapshotted into the crash event file during `telemetry::boot`; probing afterwards
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
@@ -550,7 +550,7 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     // A live boot's `install:`/`appdir:` preamble above owns the first two event-log lines.
     // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
     crate::storage::diagnostics::start();
-    let main_thread = unsafe { crate::task::MainThread::assume() };
+    let main_thread = unsafe { plx_base::task::MainThread::assume() };
     let mut app = unsafe { boot(pms_host,pms_port,main_thread,preflight) }?;
     if telemetry_guard.is_some() { app.telemetry_guard = telemetry_guard; }
     Ok(app)

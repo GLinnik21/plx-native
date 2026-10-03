@@ -361,7 +361,7 @@ pub struct Dispatcher<H: Host> {
     /// The cold-open instrument (spec §8.4). It lives here rather than beside the loop's other
     /// instruments because both of its events are the dispatcher's — a mount at nav commit and a
     /// draw in the page/surface pass — and neither is visible from outside one `FrameReport`.
-    cold: crate::diag::heartbeat::ColdOpens,
+    cold: plx_base::diag::heartbeat::ColdOpens,
     render_breach_logged: bool,
     /// The input owner answered `Handled::No` to a BACK: resolve it over its stack at commit.
     pending_back: bool,
@@ -752,7 +752,7 @@ where
         tap: &mut dyn Tap<H>,
         draw: bool,
     ) -> FrameReport {
-        let _frame_scope = crate::task::FrameScope::enter();
+        let _frame_scope = plx_base::task::FrameScope::enter();
         self.frame += 1;
         self.last_tick = tick;
         self.prepared = false;
@@ -1008,20 +1008,20 @@ where
 
         // 6. the pre-commit drain
         let parts = self.parts(tick);
-        report.steps_pre = crate::diag::spans::span("dpre", || self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap));
+        report.steps_pre = plx_base::diag::spans::span("dpre", || self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap));
         report.queue_hwm = report.queue_hwm.max(queued_before);
 
         // 7. NAV COMMIT — one per frame — then the post-commit drain on its own budget
         let owner_before = self.owner();
-        crate::diag::spans::span("dcommit", || self.commit(rig, &parts, &mut report));
+        plx_base::diag::spans::span("dcommit", || self.commit(rig, &parts, &mut report));
         let parts = self.parts(tick); // the owner may have changed at commit
         if parts.owner != owner_before {
             // an owner change cancels the press (§7.4)
             self.input.cancel_press();
         }
-        report.steps_post = crate::diag::spans::span("dpost", || self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap));
+        report.steps_post = plx_base::diag::spans::span("dpost", || self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap));
         // §7.3 step 6: after every landing and before draw, the owner's reconcile
-        crate::diag::spans::span("drecon", || self.reconcile(rig, &parts, &mut report, tap));
+        plx_base::diag::spans::span("drecon", || self.reconcile(rig, &parts, &mut report, tap));
         let continuation = tap.focus_continuation(f, self.engine_page(), self.focus_record());
         // Engine continuations were applied per call and checked by the tap. Only Legacy
         // consumes an unchecked final target. Avoid a replay-only layout query here.
@@ -1052,7 +1052,7 @@ where
         tap.focus(f, self.focus_record());
         let timers_fired = report.steps_pre > 0 && event_frame;
         if event_frame || timers_fired {
-            let h = crate::diag::spans::span("dhash", || self.state_hash());
+            let h = plx_base::diag::spans::span("dhash", || self.state_hash());
             tap.state(f, h);
             report.state_hash = Some(h);
         }
@@ -1107,7 +1107,7 @@ where
         // 9. prepare (only if presenting), then opaque_route on EVERY frame. The activity table:
         //    the top page prepares unless its host fold is Cached or Replaced; every surface does.
         if will_present {
-            crate::diag::spans::span("dprep", || self.prepare_pass(rig, tick));
+            plx_base::diag::spans::span("dprep", || self.prepare_pass(rig, tick));
         }
         rig.opaque_route(self.present.video_plane());
         #[cfg(debug_assertions)]
@@ -1192,7 +1192,7 @@ where
     /// legacy loop draws its own pages and reserves this call for the dispatcher's surfaces
     /// and its OWNED pages).
     pub fn draw(&mut self, rig: &mut dyn Rig<H>, pages: bool) -> FrameReport {
-        let _frame_scope = crate::task::FrameScope::enter();
+        let _frame_scope = plx_base::task::FrameScope::enter();
         let tick = self.last_tick;
         if !self.prepared {
             self.prepare_pass(rig, tick);
@@ -1255,7 +1255,7 @@ where
     ) -> FrameReport {
         let tick = self.last_tick;
         if !self.prepared {
-            crate::diag::spans::span("prep", || self.prepare_pass(rig, tick));
+            plx_base::diag::spans::span("prep", || self.prepare_pass(rig, tick));
         }
         let mut report = FrameReport::default();
         self.draw_with(rig, tick, &mut report, pages, Some(glass), ceiling);
@@ -1363,7 +1363,7 @@ where
                     // the outgoing page while its destination only records text. The walk
                     // measures ahead of any frame that draws the page, so it is speculative to
                     // the recorder (`rec::speculative`).
-                    crate::diag::spans::span("warm", || crate::gfx::without_frame_clear(|| {
+                    plx_base::diag::spans::span("warm", || crate::gfx::without_frame_clear(|| {
                         super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
                     }));
                 }
@@ -1481,7 +1481,7 @@ where
         let mut warm_budget_us = super::containers::transition::TEXT_PREWARM_BUDGET_US;
         if warm.is_some() {
             let start = rig.now_us();
-            crate::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
+            plx_base::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
             warm_budget_us = warm_budget_us.saturating_sub(rig.now_us().saturating_sub(start));
         } else if !crate::gfx::blur_source_pass() {
             crate::text::clear_prewarm();
@@ -1549,7 +1549,7 @@ where
             }
         }
         if drain_surface_text && !capture_surface && !source_pass && warm_budget_us > 0 {
-            crate::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
+            plx_base::diag::spans::span("warmdrain", || crate::text::drain_prewarm(warm_budget_us, || rig.now_us()));
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
@@ -1864,7 +1864,7 @@ where
                 let Split { views, measure, .. } = rig.split();
                 let cx = addressed.cx::<H>(views, measure);
                 let mut fx = Effects::new(out, to, present);
-                let handled = crate::diag::spans::span("dstep", || inst.screen.step(&ev, &cx, &mut fx));
+                let handled = plx_base::diag::spans::span("dstep", || inst.screen.step(&ev, &cx, &mut fx));
                 drop(fx);
                 drop(cx);
                 present.set_scope(super::present::Scope::Page);
@@ -1879,7 +1879,7 @@ where
                     self.pending_back = true;
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
-                crate::diag::spans::span("dafter", || self.after_step(rig, &addressed, id, &ev, handled, out, tap));
+                plx_base::diag::spans::span("dafter", || self.after_step(rig, &addressed, id, &ev, handled, out, tap));
                 // WillLeave and Unmount are queued after structural commit. Keep the engine's
                 // read snapshot available until the retiring body's final step has consumed it.
                 if matches!(ev, ScreenEvent::Unmount) {
@@ -2565,7 +2565,7 @@ mod cold_open_tests {
 
     #[test]
     fn one_mount_produces_exactly_one_cold_open_line_naming_that_screen() {
-        let _g = crate::testlock::serial();
+        let _g = plx_base::testlock::serial();
         let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
         let mut rig = FixtureRig::new();
 
@@ -2864,7 +2864,7 @@ mod edge_back_tests {
 
     #[test]
     fn receiving_entries_keep_their_own_focus_read_through_cover_and_retirement() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut d, mut rig) = booted();
         d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
         let home = d.nav.top_page().unwrap().id;
@@ -2884,7 +2884,7 @@ mod edge_back_tests {
 
     #[test]
     fn deep_page_unwind_releases_retired_entries_and_focus() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         for dip in [false, true] {
             let (mut d, mut rig) = booted();
             d.nav.tabs.stack.transition = if dip {
@@ -2933,7 +2933,7 @@ mod edge_back_tests {
 
     #[test]
     fn carried_unmounts_finish_before_production_pruning_forgets_retired_bodies() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut d, mut rig) = booted();
         d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
         let mut entries = vec![d.nav.top_page().unwrap().id];
@@ -2968,7 +2968,7 @@ mod edge_back_tests {
 
     #[test]
     fn covered_top_page_can_refresh_its_own_group_memory_but_retired_page_cannot() {
-        let _guard = crate::testlock::serial();
+        let _guard = plx_base::testlock::serial();
         let (mut d, mut rig) = booted();
         d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
         let home = d.nav.top_page().unwrap().id;

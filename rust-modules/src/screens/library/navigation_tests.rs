@@ -186,7 +186,7 @@ impl Fixture {
 }
 #[test]
 fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_movie_listing() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(0, 12, 0);
     fixture.directory = Default::default();
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
@@ -257,7 +257,7 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
 
 #[test]
 fn an_external_sources_selection_reseats_the_library_row_once_not_on_metadata_refresh() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(12, 12, 0);
     let mut page = fixture.screen();
     page.initial = false;
@@ -348,7 +348,7 @@ fn an_external_sources_selection_reseats_the_library_row_once_not_on_metadata_re
 
 #[test]
 fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_content() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for (libraries, items, shelves, failed) in [
         (0, 0, 0, false),
         (2, 0, 2, false),
@@ -530,7 +530,7 @@ fn land_shelves(fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut Fo
 /// entry path, because none of them is involved in the fault.
 #[test]
 fn a_shelf_landing_after_the_head_seat_moves_that_seat_onto_the_first_shelf() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     for kind in [SecKind::Movie, SecKind::Show] {
         for opened in [Opened::Pointer, Opened::Keyboard, Opened::Unfocused] {
             let (mut fixture, mut page, mut engine) = opened_before_its_shelves(kind, opened);
@@ -559,7 +559,7 @@ fn a_shelf_landing_after_the_head_seat_moves_that_seat_onto_the_first_shelf() {
 /// focus away from where they put it.
 #[test]
 fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
     fixture.direction(&mut page, &mut engine, Dir::Right);
     assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
@@ -572,7 +572,7 @@ fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
 /// its menu is up must bring the reader back to Type, not to a shelf.
 #[test]
 fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
     assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
     fixture.step(&mut page, &mut engine, ScreenEvent::Activate(TYPE));
@@ -585,7 +585,7 @@ fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
 /// landing observed between the two would move focus and silently drop the press.
 #[test]
 fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let press = |key, edge| ScreenEvent::Input(crate::ui::machine::InputEvent {
         at: Tick::default(),
         source: crate::ui::machine::Source::Sdl,
@@ -602,7 +602,7 @@ fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
 /// hovering the already-focused control moves nothing, so no `FocusMoved` would release it.
 #[test]
 fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
     assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
     fixture.step(&mut page, &mut engine, ScreenEvent::Input(crate::ui::machine::InputEvent {
@@ -620,7 +620,7 @@ fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
 /// page's own choice, so a shelf landing that follows must leave it where the reader left it.
 #[test]
 fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(2, 24, 0);
     fixture.sections[1].kind = SecKind::Show;
     fixture.publish(0, 24);
@@ -659,7 +659,7 @@ fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
 /// section later.
 #[test]
 fn a_page_placed_seat_remembered_by_the_engine_is_not_a_restore() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(2, 24, 0);
     fixture.sections[1].kind = SecKind::Show;
     fixture.publish(0, 24);
@@ -708,7 +708,7 @@ fn a_page_placed_seat_remembered_by_the_engine_is_not_a_restore() {
 /// `Seat::Remembered`, so UP returned to the column the upper shelf was left on.
 #[test]
 fn down_right_up_on_the_shelves_lands_on_the_tile_above() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new(1, 24, 2);
     let mut page = fixture.screen();
     page.initial = false;
@@ -735,7 +735,7 @@ fn down_right_up_on_the_shelves_lands_on_the_tile_above() {
 /// into All from its heading).
 #[test]
 fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new(1, 24, 0);
     let mut page = fixture.screen();
     page.initial = false;
@@ -765,7 +765,7 @@ fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
 /// stayed on it, and the page stood in All.
 #[test]
 fn walking_through_one_sections_heading_is_not_a_restore_in_the_next() {
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(2, 24, 0);
     fixture.sections[1].kind = SecKind::Show;
     fixture.publish(0, 24);

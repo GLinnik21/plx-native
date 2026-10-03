@@ -20,7 +20,7 @@ fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_a
         fn line_h(&self, size: i32) -> f32 { size as f32 * 1.32 }
     }
     static METRICS: ExpandedMetrics = ExpandedMetrics;
-    let _guard = crate::testlock::serial();
+    let _guard = plx_base::testlock::serial();
     let _no_live_font = crate::ui::text_view::ForbidLive::enter();
     let run_without_drawing = |measure: &dyn Measure| {
         let fixture = FixtureMeasure;
@@ -60,7 +60,7 @@ fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_a
 /// pointed at the alert's group instead of the band.
 #[test]
 fn the_delete_row_opens_the_alert_and_asks_to_be_reseated_on_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -76,7 +76,7 @@ fn the_delete_row_opens_the_alert_and_asks_to_be_reseated_on_it() {
 /// The legacy screen's `take_delete_request` seam moved one level up, to `AppFx::Loop`.
 #[test]
 fn confirming_the_alert_asks_the_loop_to_delete_and_reseats_the_table() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -93,7 +93,7 @@ fn confirming_the_alert_asks_the_loop_to_delete_and_reseats_the_table() {
 /// Cancelling never asks the loop for anything destructive.
 #[test]
 fn cancelling_the_alert_never_asks_the_loop_to_delete_anything() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -115,7 +115,7 @@ fn cancelling_the_alert_never_asks_the_loop_to_delete_anything() {
 /// arms: before them, this test's two assertions on `draft`/`out` would have failed.
 #[test]
 fn the_open_alert_refuses_a_stray_activate_or_presscommit_on_the_table_or_band() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -157,7 +157,7 @@ fn the_open_alert_refuses_a_stray_activate_or_presscommit_on_the_table_or_band()
 /// green.
 #[test]
 fn the_alert_index_mapping_is_pinned_through_a_real_press_commit() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -220,7 +220,7 @@ fn the_alert_index_mapping_is_pinned_through_a_real_press_commit() {
 /// loop to erase the television's local data, after the person had already cancelled.
 #[test]
 fn a_stale_presscommit_after_the_alert_was_already_dismissed_deletes_nothing() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -263,7 +263,7 @@ fn a_stale_presscommit_after_the_alert_was_already_dismissed_deletes_nothing() {
 /// would silently RE-OPEN the very alert that is still dissolving on screen.
 #[test]
 fn the_dismissal_fade_traps_activate_presscommit_and_keys_the_same_as_the_open_alert() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
@@ -330,7 +330,7 @@ fn the_dismissal_fade_traps_activate_presscommit_and_keys_the_same_as_the_open_a
 /// visible on screen.
 #[test]
 fn reconcile_keeps_the_alerts_own_choice_when_a_stray_key_names_something_outside_it() {
-    let _g = crate::testlock::serial();
+    let _g = plx_base::testlock::serial();
     let m = FixtureMeasure;
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
