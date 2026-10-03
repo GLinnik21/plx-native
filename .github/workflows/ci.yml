@@ -39,6 +39,8 @@ on:
       - 'site/credits.html'
       - '!.agents/**/*.md'
       - '!rust-modules/**/*.md'
+      # GitHub's Sponsor-button metadata; no gate reads it
+      - '!.github/FUNDING.yml'
   pull_request:
     paths: *ci_paths
   workflow_dispatch:
