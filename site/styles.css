@@ -445,10 +445,15 @@ video::-webkit-media-controls-start-playback-button {
     background-color 200ms ease;
 }
 /* Ko-fi's cup carries half again the GitHub mark's ink at the same height,
-   so it is drawn a little smaller to weigh the same. */
+   so it is drawn a little smaller to weigh the same. 21px is as small as it
+   goes before the gap between the outline and the cup closes up on a 1x
+   screen. The height follows the symbol's own proportions and the edge may
+   spill, so rounding can never crop the outline. */
 .kofi-icon {
-  width: 22px;
-  height: 17.6px;
+  width: 21px;
+  height: auto;
+  aspect-ratio: 242 / 194;
+  overflow: visible;
 }
 .header-github:hover,
 .header-kofi:hover {
