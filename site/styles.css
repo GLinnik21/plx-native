@@ -428,7 +428,12 @@ video::-webkit-media-controls-start-playback-button {
   gap: 4px;
   margin-left: 4px;
 }
-.header-github {
+/* GitHub and the Ko-fi cup are a matched pair of quiet glyphs: the same
+   grey, the same target, lifting to white on hover. The cup is Ko-fi's own
+   outline with the heart and handle cut out, so it reads as Ko-fi without
+   the brand colours; Install stays the one filled shape in the bar. */
+.header-github,
+.header-kofi {
   display: grid;
   place-items: center;
   width: var(--header-item-h);
@@ -439,7 +444,19 @@ video::-webkit-media-controls-start-playback-button {
     color 200ms ease,
     background-color 200ms ease;
 }
-.header-github:hover {
+/* Ko-fi's cup carries half again the GitHub mark's ink at the same height,
+   so it is drawn a little smaller to weigh the same. 21px is as small as it
+   goes before the gap between the outline and the cup closes up on a 1x
+   screen. The height follows the symbol's own proportions and the edge may
+   spill, so rounding can never crop the outline. */
+.kofi-icon {
+  width: 21px;
+  height: auto;
+  aspect-ratio: 242 / 194;
+  overflow: visible;
+}
+.header-github:hover,
+.header-kofi:hover {
   color: var(--text-primary);
   background: var(--color-white-a07);
 }
@@ -458,7 +475,11 @@ video::-webkit-media-controls-start-playback-button {
   inherits: false;
   initial-value: #e2e2e2;
 }
+/* The icons' ink sits inside round 40-44px targets, so the space between
+   two glyphs reads about twice the gap to the pill. The margin evens the
+   visible gaps so GitHub and Ko-fi read as a pair, apart from Install. */
 .header-cta {
+  margin-left: 10px;
   --cta-face: var(--accent-face);
   --cta-body: var(--accent-face-body);
   display: inline-flex;
@@ -1708,6 +1729,57 @@ video::-webkit-media-controls-start-playback-button {
 .footer-links a:hover {
   color: var(--text-primary);
 }
+/* The ask: one line in the small-print voice under the links, with Ko-fi's
+   stock dark button (unmodified) beside it; on phones the button wraps
+   under the line. No box of its own, so it stays as quiet as the cup in
+   the header. */
+.footer-support {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 24px;
+  margin: clamp(28px, 3.5vh, 40px) 0 0;
+}
+.footer-support p {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+  text-wrap: pretty;
+}
+.footer-kofi {
+  position: relative;
+  flex: none;
+  display: block;
+  width: 180px;
+  max-width: 100%;
+  line-height: 0;
+  border-radius: 999px;
+  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* The hairline sits over the image: an inset shadow on the link itself
+   would be painted underneath it. */
+.footer-kofi::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--color-white-a10);
+  pointer-events: none;
+}
+.footer-kofi img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: inherit;
+}
+.footer-kofi:hover {
+  transform: translateY(-2px);
+}
+.footer-kofi:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
 /* The demo-artwork attribution: small print under the disclaimer, in the
    footer-meta voice, with a link big enough to tap. */
 .footer-credit {
@@ -2037,8 +2109,8 @@ video::-webkit-media-controls-start-playback-button {
    Narrow layout (<760px)
    ========================================================= */
 @media (max-width: 759px) {
-  /* On phones the capsule spans the column: brand at the left, GitHub and
-     Install at the right, every target 44px. The section links would not
+  /* On phones the capsule spans the column: brand at the left, GitHub, Ko-fi
+     and Install at the right, every target 44px. The section links would not
      fit beside them, and a sideways-scrolling strip of links is exactly the
      kind of scroller that steals vertical swipes. */
   :root {
@@ -2064,6 +2136,10 @@ video::-webkit-media-controls-start-playback-button {
   .footer-credit a {
     padding: 11px 0;
     margin: -11px 0;
+  }
+  .footer-support {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .doc-body table {
@@ -2268,6 +2344,15 @@ video::-webkit-media-controls-start-playback-button {
    thumbnail at the wide layout's width and too tall at a phone's: it only has
    to fit under the header, alone on the screen. After the phone rule above,
    which a phone on its side can match as well. */
+/* Under 390px (iPhone SE and mini) the brand, GitHub, Ko-fi and Install do
+   not fit on one capsule, the sub-pages' "<- PlxNative" being the widest:
+   the PLX mark stands for the name, and the link keeps its aria-label. */
+@media (max-width: 389px) {
+  .brand-name {
+    display: none;
+  }
+}
+
 @media (max-height: 559px) and (orientation: landscape) {
   .feel-stage,
   .fx .feel-stage {
