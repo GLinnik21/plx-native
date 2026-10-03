@@ -615,7 +615,7 @@ files except the `glsl!` re-export, which names a non-exported `macro_rules!` an
 `pub(crate)`); the application's `lib.rs` and `ui/mod.rs` lost the six `mod` lines and the
 `pub mod overdraw;`. Features: `devtriggers` and `hostsim` are forwarded to the lower layers, `devtools`
 is a feature of this crate alone (the seven-segment counter in `gfx`, enabled by the application's
-own `devtools`), and `test-support` is new and enables the two lower layers'. The 90 tests of the
+own `devtools`), and `test-support` is new and enables the two lower layers'. The 94 tests of the
 layer run in their own binary. What it taught beyond the recipe:
 
 - **A layer that holds `extern "C"` blocks has a test binary that has to link them.** Splits 1 to 3
@@ -696,9 +696,9 @@ it, so the crate does not depend on it. It has no build script and links nothing
 Makefile's `LIBS_REAL`; `ci/expected-dt-needed.txt` did not change). The references were rewritten
 by script (`crate::net` and `crate::stream` to `plx_net::net` and `plx_net::stream`, 44 files) and
 `pub(crate)` became `pub` across the moved files. Features: `devtriggers` and `lab-diagnostics` are
-forwarded, `test-support` is new and enables `plx_base`'s. The 127 tests of the layer run in their
+forwarded, `test-support` is new and enables `plx_base`'s. The 128 tests of the layer run in their
 own binary: the suite is 5603 before and after (with Split 4 landed in the same change: 157 + 66 +
-218 + 90 + 127 + 4945). What it taught beyond
+218 + 94 + 128 + 4940). What it taught beyond
 the recipe and Splits 1 to 3:
 
 - **A `dynlib!` table is `pub(crate)` in the crate that expands it, and a layer's callers are in
