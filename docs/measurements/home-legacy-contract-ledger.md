@@ -23,7 +23,7 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 
 | Legacy test | Reconciliation |
 |---|---|
-| `n_hubs_clamps_the_server_count_to_the_shelf_array` | Ported; owned test of the same name, same `n_hubs_of` helper. Its dropped `n_hubs_of(MAX_HUBS) == MAX_HUBS` leg is asserted by the owned `vert_cannot_walk_past_the_shelf_array`. |
+| `n_hubs_clamps_the_server_count_to_the_shelf_array` | Retired; Home's grid is a `Vec` sized to the published rows, so there is no array to clamp to and `n_hubs_of` is deleted. The count is bounded only by the data layer's `pms::MAX_SHELVES`; `the_grid_holds_one_motion_row_per_published_row` pins `grid.shelves.len() == rows.len()`. |
 | `every_tab_pill_round_trips_through_the_focus_packing` | Retired; the packed negative-`c_int` focus space (`hero_focus_for_pill`/`hero_pill_index`) went with the `static mut` focus mirror. The successor no-aliasing contract — every strip element decodes to exactly one destination request and no page element (`HERO_PLAY_ELEM`, `HERO_INFO_ELEM`, `FIRST_ITEM_ELEM`) decodes as one — is the owned test of the same name. |
 | `top_band_focus_walks_to_the_last_section_whatever_the_count` | Already covered; the walk belongs to the `FocusEngine` over the strip group now. `app::chrome::tests::four_libraries_on_two_servers_publish_two_type_destinations` pins the member order and that the last stop is Search; `ui::focus::tests::every_stop_times_every_direction_on_the_fixture_trees` pins that a move never lands on a stop that is not drawn. The owned test of this name keeps the element ordering the walk is over. |
 | `set_hero_focus_clamps_onto_the_last_drawable_pill` | Retired; `set_hero_focus` was the mirror's setter and its clamp went with it. The engine holds focus and clamps at a group's ends (`every_stop_times_every_direction_on_the_fixture_trees`); the hero row's own extent — two stops, and no strip group published by the screen — is the owned test of this name. |
@@ -31,7 +31,7 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 | `the_top_band_reports_the_chip_and_the_pills_as_one_answer` | Already covered; the `TopFocus::Chip`/`Pill`/`Away` read-out moved to `app::chrome::ChromeSnapshot::focus` and is pinned by `app::chrome::tests::published_bar_focus_uses_destination_identity_not_position` (chip, both pills, and page elements 0/1 as `Away`). The owned test of this name keeps the STRIP↔hero link pair the walk between them needs. |
 | `the_top_band_walks_permanent_pills_not_the_section_table` | Already covered; `app::chrome::tests::four_libraries_on_two_servers_publish_two_type_destinations` seeds the same two-source table and asserts four libraries publish Home + two TYPE pills + Search, with Search last. |
 | `step_row_stays_inside_the_addressable_rows` | Retired; `step_row` was the mirror's row stepper and is deleted. The vertical bounds it stood for are the engine's links: owned `down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero` and `down_from_the_last_shelf_never_reenters_the_offscreen_hero`. The owned test of this name pins the row's horizontal ends as `Step::Edge`. |
-| `vert_cannot_walk_past_the_shelf_array` | Retired; `Grid::vert` walked `static mut fr` and is deleted. The array bound it pinned survives as the owned test of this name (`n_hubs_of` clamped at `MAX_HUBS`), and the walk itself as `down_from_the_last_shelf_never_reenters_the_offscreen_hero`. |
+| `vert_cannot_walk_past_the_shelf_array` | Retired; `Grid::vert` walked `static mut fr` and is deleted, and the array bound it pinned is gone with the array (`Grid::shelf` answers a resting row for a stale index). The walk itself survives as `down_from_the_last_shelf_never_reenters_the_offscreen_hero`. |
 | `the_status_readout_tells_loading_empty_and_failed_apart` | Ported; owned test of the same name, same `status_read` helper, now taking a `HubsView` instead of reading the statics. All five legs kept (Working/Failed/Empty, the Retry action's presence, and both shelved states silencing the read-out). |
 | `no_shelves_means_no_grid_snap` | Ported; owned test of the same name, same `pinned_snap`. |
 | `the_status_screen_takes_ok_but_never_the_top_band` | Ported; owned test of the same name drives the real `ScreenEvent::Activate` step instead of `status_takes`, asserting the Retry `StoreCmd` on the status action, no Retry from any strip element, and that a populated Home's OK is a Play again. |
@@ -46,7 +46,7 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 | `the_hero_logo_key_is_the_shows_for_an_episode` | Ported; byte-identical. |
 | `the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn` | Ported; byte-identical. |
 | `the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip` | Ported; same `heading_top(0, 0, settled_scroll(5, 0, from_below(5))) >= top_band_bottom()`. |
-| `no_shelf_heading_settles_inside_the_shared_top_band` | Ported; the same `MAX_HUBS` × focus-row × row sweep, with `settle_range`'s two ends spelled out as the two `settled_scroll` calls it returned. |
+| `no_shelf_heading_settles_inside_the_shared_top_band` | Ported; the same rows × focus-row × row sweep (`SWEEP_ROWS`, 40, past the data cap), with `settle_range`'s two ends spelled out as the two `settled_scroll` calls it returned. |
 | `every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom` | Ported; same sweep, same `GRID_TOP_Y`/`shelf_top_settled`/`CARD_DY`/`CARD_H`/`UNDER_LABEL_H`/`MARGIN_Y` arithmetic. |
 | `the_grids_resting_top_is_the_highest_a_shelf_may_settle` | Ported; same `row_reveal_band` and top-band air assertions. |
 | `a_shelf_with_no_source_draws_exactly_the_title_and_nothing_else` | Ported; the local `flow` helper is now `heading_flow` over `card_row::heading_flow`, the production helper the owned screen draws through. |
@@ -68,7 +68,7 @@ already defined by its proper owner, and the legacy copy was the duplicate:
 | `Backdrop`, `HERO_WASH_W`, `HERO_CTRL_D`, `HERO_PREFETCH`, `prefetch_order`, `meta_source_flow` | `screens/home/mod.rs` (its own definitions, since phase 8) |
 | `HERO_BASE_SCRIM_Y0`, `HERO_CTRL_GAP` (`CTRL_GAP`), `redraw_profile_chip` | `ui/widgets.rs` |
 | `base_scrim_a` and the hero scrim curve | `ui/landing_hero.rs` |
-| `MAX_HUBS` / `MAX_ITEMS` | `pms::MAX_SHELVES` / `pms::MAX_SHELF_ITEMS`; `screens/home` reads them from there, as `ui/home.rs` did |
+| `MAX_HUBS` / `MAX_ITEMS` | `MAX_HUBS` is deleted (the grid follows the published rows); `MAX_ITEMS` is `pms::MAX_SHELF_ITEMS`, which `screens/home` reads from there, as `ui/home.rs` did |
 | the heading flow (`flow`) | `ui/card_row.rs::heading_flow` |
 
 ## The API the deletion orphaned
