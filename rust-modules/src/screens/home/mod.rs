@@ -76,7 +76,6 @@ pub(crate) const STRIP_SHOWS_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 2;
 pub(crate) const STRIP_SEARCH_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 3;
 pub(crate) const STRIP_ACCOUNT_ELEM: u32 = crate::ui::dispatch::STRIP_BASE + 4;
 
-const MAX_HUBS: usize = crate::pms::MAX_SHELVES;
 const MAX_ITEMS: usize = crate::pms::MAX_SHELF_ITEMS;
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
@@ -147,8 +146,12 @@ fn heading_elem(shelf: GroupId) -> u32 {
     HEADING_BASE | shelf.0
 }
 
+/// What a row index past the grid reads: a shelf at rest, so a stale index never panics.
+static RESTING: CardRow = CardRow::new();
+
 struct Grid {
-    shelves: [CardRow; MAX_HUBS],
+    /// One motion row per published row: `shelves.len() == rows.len()` once `sync_catalog` returns.
+    shelves: Vec<CardRow>,
     scroll_y: Spring,
     scroll_target: f32,
 }
@@ -156,14 +159,18 @@ struct Grid {
 impl Grid {
     fn new() -> Self {
         Self {
-            shelves: [CardRow::new(); MAX_HUBS],
+            shelves: Vec::new(),
             scroll_y: Spring::at(0.0),
             scroll_target: 0.0,
         }
     }
 
+    fn shelf(&self, row: usize) -> &CardRow {
+        self.shelves.get(row).unwrap_or(&RESTING)
+    }
+
     fn eff_scroll(&self, row: usize, snap: f32) -> f32 {
-        self.shelves[row].scroll_x() * snap
+        self.shelf(row).scroll_x() * snap
     }
 }
 
@@ -525,8 +532,8 @@ impl HomeScreen {
         if self.projected_generation == Some(view.generation) {
             return;
         }
-        let mut rows = Vec::with_capacity(n_hubs_of(view.hub_count()));
-        for row in 0..n_hubs_of(view.hub_count()) {
+        let mut rows = Vec::with_capacity(view.hub_count());
+        for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
             let identity = Self::hub_identity(view, row, hub);
             let group = self.group_for(&identity);
@@ -565,8 +572,8 @@ impl HomeScreen {
                 link,
             });
         }
-        let old_shelves = self.grid.shelves;
-        self.grid.shelves = [CardRow::new(); MAX_HUBS];
+        let old_shelves = std::mem::take(&mut self.grid.shelves);
+        self.grid.shelves = vec![CardRow::new(); rows.len()];
         for (index, row) in rows.iter().enumerate() {
             if let Some(old) = self.rows.iter().position(|old| old.identity == row.identity) {
                 self.grid.shelves[index] = old_shelves[old];
@@ -575,6 +582,7 @@ impl HomeScreen {
                 self.grid.shelves[index].restore_scroll(scroll, row.elems.len(), &RowStyle::HOME);
             }
         }
+        debug_assert_eq!(self.grid.shelves.len(), rows.len());
         self.elem_at.clear();
         for (row, hub) in rows.iter().enumerate() {
             for (col, &elem) in hub.elems.iter().enumerate() {
@@ -752,7 +760,7 @@ impl HomeScreen {
         let m = heading.measure(measure);
         let focused = self.focused_heading(focus) == Some(row);
         let y = match at {
-            At::Drawn => heading_y(self.grid.shelves[row].base_y, self.grid.shelves[row].lift()),
+            At::Drawn => heading_y(self.grid.shelf(row).base_y, self.grid.shelf(row).lift()),
             At::SpringTarget => GRID_TOP_Y + shelf_top_banded(row, self.band_row(focus, row))
                 - self.grid.scroll_target - TITLE_DY,
         };
@@ -785,23 +793,23 @@ impl HomeScreen {
     fn layout_grid(&mut self) {
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
-        for row in 0..MAX_HUBS {
-            self.grid.shelves[row].base_y = top + flow - self.grid.scroll_y.pos * self.snap.pos;
-            flow += card_row::ROW_PITCH_FIXED + self.grid.shelves[row].under_band();
+        for shelf in &mut self.grid.shelves {
+            shelf.base_y = top + flow - self.grid.scroll_y.pos * self.snap.pos;
+            flow += card_row::ROW_PITCH_FIXED + shelf.under_band();
         }
     }
 
     fn update_grid<H: HomeLike>(&mut self, view: HubsView<'_>, cx: &Cx<'_, H>, dt: f32) {
         let focused = self.focused_grid(cx.focus.current);
         let grid_live = self.snap.pos > 0.5;
-        for row in 0..MAX_HUBS {
+        for row in 0..self.grid.shelves.len() {
             let count = self
                 .hub(view, row)
                 .map_or(0, |h| h.items.len().min(MAX_ITEMS));
             let col = focused
                 .filter(|&(r, _)| grid_live && r == row)
                 .map(|(_, c)| c);
-            let shelf = &mut self.grid.shelves[row];
+            let Some(shelf) = self.grid.shelves.get_mut(row) else { continue };
             // A row at exact rest is a fixed point of `update`: skipping it changes no bit.
             if col.is_none() && shelf.at_exact_rest() {
                 continue;
@@ -1370,7 +1378,7 @@ impl HomeScreen {
     /// left a heading already on screen undrawn until the first card pixel crossed the bottom
     /// edge, so it popped in mid-scroll.
     fn shelf_on_screen(&self, row: usize) -> bool {
-        let shelf = &self.grid.shelves[row];
+        let shelf = self.grid.shelf(row);
         let top = heading_y(shelf.base_y, shelf.lift());
         let bottom = shelf.base_y + CARD_H + shelf.under_band();
         on_axis(top, bottom - top, SCR_H, 0.0)
@@ -1393,14 +1401,14 @@ impl HomeScreen {
             if !self.shelf_on_screen(row) {
                 continue;
             }
-            let row_y = self.grid.shelves[row].base_y;
+            let row_y = self.grid.shelf(row).base_y;
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
                 let m = linked.measure(measure);
                 let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
                 linked.draw(
                     p.alpha(env.sp),
                     MARGIN_X,
-                    heading_y(row_y, self.grid.shelves[row].lift()),
+                    heading_y(row_y, self.grid.shelf(row).lift()),
                     focus_t,
                     &m,
                     measure,
@@ -1411,7 +1419,7 @@ impl HomeScreen {
                     hub.title,
                     hub.source,
                     MARGIN_X,
-                    heading_y(row_y, self.grid.shelves[row].lift()),
+                    heading_y(row_y, self.grid.shelf(row).lift()),
                     f32::INFINITY,
                     measure,
                 );
@@ -1466,8 +1474,8 @@ impl HomeScreen {
         label.caption = card_row::focused_caption(&tile_facts::of(item), cw);
         let count = hub.items.len().min(MAX_ITEMS);
         // The grid draws at `scroll_x * snap` ([`Grid::eff_scroll`]), so the lag it still owes does too.
-        let lag = self.grid.shelves[row].settle_lag(count, col, &RowStyle::HOME) * self.snap.pos;
-        let label = label.revealed(self.grid.shelves[row].band_reveal()).settling(lag);
+        let lag = self.grid.shelf(row).settle_lag(count, col, &RowStyle::HOME) * self.snap.pos;
+        let label = label.revealed(self.grid.shelf(row).band_reveal()).settling(lag);
         card_row::draw_focused(
             p,
             Art::Poster(Some(tile_facts::of(item))),
@@ -1482,11 +1490,11 @@ impl HomeScreen {
 
     /// One drawn rectangle for the tile painter and the input map, including the press bounce.
     fn drawn_card_geometry(&self, row: usize, col: usize, press_scale: f32) -> (Rect, f32) {
-        let scale = self.grid.shelves[row].scale(col)
+        let scale = self.grid.shelf(row).scale(col)
             * if press_scale > 0.0 { press_scale } else { 1.0 };
         let rect = Rect::new(
             card_x(col, self.grid.eff_scroll(row, self.snap.pos)),
-            self.grid.shelves[row].base_y + CARD_DY,
+            self.grid.shelf(row).base_y + CARD_DY,
             CARD_W,
             CARD_H,
         )
@@ -1626,7 +1634,7 @@ impl HomeScreen {
     #[cfg(feature = "devtriggers")]
     pub(crate) fn motion_witness(&self, row: usize) -> Option<[f32; 3]> {
         self.rows.get(row)?;
-        Some([self.snap.pos, self.grid.shelves[row].scroll_x(), self.grid.shelves[row].scroll_velocity()])
+        Some([self.snap.pos, self.grid.shelf(row).scroll_x(), self.grid.shelf(row).scroll_velocity()])
     }
 
     pub(crate) fn snap_target(&self) -> f32 {
@@ -1735,7 +1743,7 @@ impl LogicalState for HomeScreen {
             write_hub_identity(&row.identity, c);
             c.u32(row.group.0).seq(row.elems.len());
             for elem in &row.elems { c.u32(*elem); }
-            self.grid.shelves[index].write_motion(c);
+            self.grid.shelf(index).write_motion(c);
         }
         c.seq(self.restored_scroll.len());
         for &(group, scroll) in &self.restored_scroll { c.u32(group).f32(scroll); }
@@ -2039,7 +2047,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             MARGIN_X,
             CARD_W + GAP,
             CARD_W,
-            self.grid.shelves[row_index].scroll_x(),
+            self.grid.shelf(row_index).scroll_x(),
             row.elems.len(),
             from.index.unwrap_or(0) as usize,
         );
@@ -2173,11 +2181,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     if let Some(Located::Item(row, col)) = to_loc {
                         // The saved viewport is a preference, not an assertion about today's
                         // catalog order. Minimally reveal the reconciled item before first draw.
-                        let shelf = &mut self.grid.shelves[row];
-                        let count = self.rows[row].elems.len();
-                        let scroll = card_row::scroll_into_view(shelf.scroll_x(), col, count,
-                            CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
-                        shelf.restore_scroll(scroll, count, &RowStyle::HOME);
+                        if let (Some(shelf), Some(hub)) =
+                            (self.grid.shelves.get_mut(row), self.rows.get(row))
+                        {
+                            let count = hub.elems.len();
+                            let scroll = card_row::scroll_into_view(shelf.scroll_x(), col, count,
+                                CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
+                            shelf.restore_scroll(scroll, count, &RowStyle::HOME);
+                        }
                         let (lo, hi) = row_reveal_band(shelf_top_settled(row, row));
                         self.grid.scroll_target = card_row::reveal(self.grid.scroll_y.pos,
                             lo, hi, grid_max_scroll(self.rows.len()));
@@ -2339,7 +2350,7 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
             strip_chosen: self.strip_chosen,
             scroll_y: self.grid.scroll_y.pos,
             row_scroll: self.rows.iter().enumerate()
-                .map(|(index, row)| (row.group.0, self.grid.shelves[index].scroll_x()))
+                .map(|(index, row)| (row.group.0, self.grid.shelf(index).scroll_x()))
                 .chain(self.restored_scroll.iter().copied()).collect(),
         })
     }
@@ -2393,9 +2404,6 @@ fn write_item_identity(identity: &HomeItemIdentity, c: &mut Canon) {
     }
 }
 
-fn n_hubs_of(server_hubs: usize) -> usize {
-    server_hubs.min(MAX_HUBS)
-}
 fn pinned_snap(target: f32, rows: usize) -> f32 {
     if rows == 0 {
         0.0
