@@ -102,6 +102,7 @@ jobs:
           cp site/icons/favicon-48.png _site/icons/favicon-48.png
           cp site/icons/apple-touch-icon.png _site/icons/apple-touch-icon.png
           cp site/icons/brand-mark.png _site/icons/brand-mark.png
+          cp site/icons/support_me_on_kofi_dark.png _site/icons/support_me_on_kofi_dark.png
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
 
