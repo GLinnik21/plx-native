@@ -1003,7 +1003,7 @@ pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 /// A leftover is a file that is still THERE. The candidate lists name `/media/internal`, which
 /// some jails mount read-only, and Linux answers EROFS from the parent's mount before it looks the
 /// child up — so an unlink refusal alone does not say a file remains. The shared rule
-/// ([`crate::storage::remove_file_or_prove_absent`]) counts a refusal whose no-follow lookup finds
+/// ([`plx_platform::storage::remove_file_or_prove_absent`]) counts a refusal whose no-follow lookup finds
 /// no entry as removed; a file that exists, or cannot be looked at, stays a leftover.
 fn remove_local_file(path: &std::path::Path) -> Result<(), String> {
     remove_or_prove_absent(path).map_err(|e| format!("{}: {e}", path.display()))
@@ -1012,13 +1012,13 @@ fn remove_local_file(path: &std::path::Path) -> Result<(), String> {
 /// The erase sweeps' removal rule as a plain `fn`, for the sweeps `ui/` owns
 /// ([`crate::ui::rec::erase_owned_artifacts`]), which may not name the storage layer themselves.
 pub(crate) fn remove_or_prove_absent(path: &std::path::Path) -> std::io::Result<()> {
-    crate::storage::remove_file_or_prove_absent(path).map(|_| ())
+    plx_platform::storage::remove_file_or_prove_absent(path).map(|_| ())
 }
 
 fn erase_runtime_logs(root: &std::path::Path) -> Vec<String> {
     let mut failures = Vec::new();
     for name in plx_base::paths::runtime_file::LOGS {
-        if name == crate::storage::diagnostics::NAME {
+        if name == plx_platform::storage::diagnostics::NAME {
             continue;
         }
         if let Err(error) = remove_local_file(&root.join(name)) {
@@ -1109,7 +1109,7 @@ mod delete_all_tests {
     fn absent_files_behind_a_read_only_mount_are_not_leftovers() {
         let _serial = plx_base::testlock::serial();
         let tv = Tv::new("absent-erofs");
-        let _erofs = crate::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
+        let _erofs = plx_platform::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
         let leftovers = sweep_local_files(tv.persistent(), &tv.runtime());
         assert!(leftovers.is_empty(), "absent files reported as leftovers: {leftovers:?}");
     }
@@ -1128,7 +1128,7 @@ mod delete_all_tests {
         let rec = tv.runtime().join("plxnative-rec");
         std::fs::write(&log, b"x").unwrap();
         std::fs::write(&rec, b"x").unwrap();
-        let _erofs = crate::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
+        let _erofs = plx_platform::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
         let leftovers = sweep_local_files(persistent.clone(), &tv.runtime());
         assert_eq!(leftovers.len(), persistent.len() + 2, "{leftovers:?}");
         assert!(persistent.iter().chain([&log, &rec]).all(|p| p.exists()));
@@ -1140,7 +1140,7 @@ mod delete_all_tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::storage::diagnostics::reset_for_test();
+                plx_platform::storage::diagnostics::reset_for_test();
             }
         }
         let _restore = Restore;
@@ -1154,10 +1154,10 @@ mod delete_all_tests {
             std::fs::write(root.join(name), name.as_bytes()).unwrap();
         }
         let event = root.join(plx_base::paths::runtime_file::EVENTS);
-        let diagnostics = root.join(crate::storage::diagnostics::NAME);
+        let diagnostics = root.join(plx_platform::storage::diagnostics::NAME);
 
-        crate::storage::diagnostics::disable();
-        crate::storage::diagnostics::finish_disable(&root).unwrap();
+        plx_platform::storage::diagnostics::disable();
+        plx_platform::storage::diagnostics::finish_disable(&root).unwrap();
         assert!(erase_runtime_logs(&root).is_empty());
         assert!(plx_base::paths::runtime_file::LOGS
             .iter()
@@ -1377,8 +1377,8 @@ pub(crate) fn key_back(
 /// That is why the old `/tmp/plxnative-noexitconfirm` bypass went with the alert: it existed to let
 /// a headless caller quit by pressing BACK, and BACK is no longer a quit for anybody.
 pub(crate) fn back_at_root() {
-    if crate::tv::home::take_root_press() {
-        crate::tv::home::go_home();
+    if plx_platform::tv::home::take_root_press() {
+        plx_platform::tv::home::go_home();
     }
 }
 

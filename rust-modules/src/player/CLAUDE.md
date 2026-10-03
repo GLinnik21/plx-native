@@ -45,7 +45,7 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
   it belongs to; never smuggle it through a raw static.
 
-**The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `tv/sink.rs`
+**The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
 television; `ffi_host.rs`'s `HostSink` is the simulator's. Every method but three takes a

@@ -117,7 +117,7 @@ mod seam_order_tests {
     /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
     /// before anything can play. It was installed by `player::report::requested`, which a
     /// detail-page preview never passes, so a failed preview's trace outlived a withdrawal. This
-    /// reads the source, like `storage::diagnostics`'s boot-order test, because no host test can
+    /// reads the source, like the diagnostics boot-order test below, because no host test can
     /// run `enter_application`; what the eraser reaches is graded by `player::report`'s
     /// `a_failed_preview_trace_is_erased_through_telemetrys_hook`.
     #[test]
@@ -141,6 +141,49 @@ mod seam_order_tests {
             eraser < telemetry && eraser < boot,
             "the eraser must be installed before telemetry loads and before anything can play"
         );
+    }
+
+    /// The storage diagnostics worker probes `app_dir()` on its own thread, so it starts only after the
+    /// live identity preamble has written the first two event-log lines. Reads the source like the
+    /// test above, for the same reason: no host test can run `enter_application`. It lived in
+    /// `plx_platform::storage::diagnostics` until that crate stopped being able to see this file.
+    #[test]
+    fn worker_start_follows_the_live_boot_identity_preamble() {
+        let source = include_str!("mod.rs");
+        assert_eq!(
+            source
+                .matches("plx_platform::storage::diagnostics::start(")
+                .count(),
+            1,
+            "every start site must stay behind the identity preamble"
+        );
+        let pre_boot = source
+            .split_once("fn pre_boot_diagnostics")
+            .expect("pre_boot_diagnostics")
+            .1
+            .split_once("unsafe fn run_and_shutdown")
+            .expect("end of pre_boot_diagnostics")
+            .0;
+        let install = pre_boot.find("\"install: id=").expect("install line");
+        let app_dir = pre_boot
+            .find("plx_base::paths::app_dir_line()")
+            .expect("appdir line");
+        assert!(install < app_dir);
+        let body = source
+            .split_once("fn enter_application")
+            .expect("enter_application")
+            .1
+            .split_once("/// The ten-line public skeleton")
+            .expect("end of enter_application")
+            .0;
+        let identity = body
+            .find(".then(pre_boot_diagnostics)")
+            .expect("identity preamble");
+        let diagnostics = body
+            .find("plx_platform::storage::diagnostics::start(")
+            .expect("diagnostics start");
+        let boot = body.find("boot(pms_host").expect("application boot");
+        assert!(identity < diagnostics && diagnostics < boot);
     }
 
     /// `construct` hands the transport its `User-Agent` before `net::global_init` makes HTTPS
@@ -566,7 +609,7 @@ pub(crate) unsafe fn construct(
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    crate::tv::window::bind_window(win);
+    plx_platform::tv::window::bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -575,11 +618,11 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    crate::tv::window::grab(win);
+    plx_platform::tv::window::grab(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    crate::tv::window::arm_opaque_region();
+    plx_platform::tv::window::arm_opaque_region();
     crate::gfx::init_gl();
     crate::text::init_text();
     crate::gfx::init_image();
@@ -733,7 +776,7 @@ pub(crate) unsafe fn construct(
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::clock_fact::arm_at_boot();
     #[cfg(not(test))]
-    crate::i18n::initialize(session.language, controlled);
+    plx_platform::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
     let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| {
         let origin = crate::dev::scenarios::pms_origin()

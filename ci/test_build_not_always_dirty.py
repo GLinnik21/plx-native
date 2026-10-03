@@ -12,8 +12,9 @@ Two halves, both reading cargo's own `--message-format=json` records (only lines
 objects with a `reason` are looked at; `cargo test` also prints harness text on stdout):
 
 * `SecondBuildIsFreshTests` builds the real crate twice from `rust-modules/` and demands that the
-  second run recompiled nothing of the crate: every `plxnative_modules` compiler-artifact is
-  `fresh`, and the crate's build script did not write its output again (cargo replays a
+  second run recompiled nothing of the crate: every `plxnative_modules` (and `plx_platform`, the
+  layer crate whose own build script generates the catalog) compiler-artifact is `fresh`, and the
+  crate's build script did not write its output again (cargo replays a
   `build-script-executed` record even for a fresh script, so the mtime of the script's output file
   is read, wherever this cargo keeps it).
   It runs `cargo check --lib --tests --features lab-diagnostics` with `CARGO_INCREMENTAL=0`: the
@@ -36,10 +37,11 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
 * `MarkerStillTriggersTests` keeps the behaviour the always-stale watch was (wrongly) credited with:
   the `RELEASE_LINE` marker appearing, changing and disappearing still re-runs the script, so the
   reported `X.Y.Z-dev` follows the line. It builds a scratch workspace that uses the REAL
-  `build.rs`, `build_support/` and `src/release_line.rs` against a stub library, in a throwaway
-  repository (the appearance is detected through the worktree's `HEAD`, which is what checking out
-  the line moves), so the real tree is never touched and nothing app-sized is recompiled. It needs
-  the registry copies of `serde`/`serde_json` the real build already has and runs `--offline`.
+  `build.rs` and `src/release_line.rs` against a stub library, in a throwaway repository (the
+  appearance is detected through the worktree's `HEAD`, which is what checking out the line moves),
+  so the real tree is never touched and nothing app-sized is recompiled. It has no dependencies of
+  its own (the catalog and install-identity generators belong to the platform crate's build script
+  now) and runs `--offline`.
   It also pins that a missing `.git/logs/HEAD` (reflog off or deleted) does not make the build
   always-dirty, the same hazard through `emit_build_sha`.
 """
@@ -56,12 +58,15 @@ ROOT = Path(__file__).resolve().parent.parent
 RUST = ROOT / "rust-modules"
 CRATE = "plxnative_modules"  # the lib target's name (underscored)
 PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_id
+# The layer crate that owns a build script of its own (catalog + install identities): it must not be
+# always-dirty either, or every crate above it would rebuild with it.
+PLATFORM_CRATE = "plx_platform"
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 
 
-# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine --features
+# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform --features
 # lab-diagnostics"); identical arguments and CARGO_INCREMENTAL make the first run here a reuse.
-LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "--features", "lab-diagnostics"]
+LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "--features", "lab-diagnostics"]
 
 
 def cargo_env():
@@ -101,11 +106,12 @@ def package_of(record):
 
 
 def rebuilt(records):
-    """Describe what a build recompiled of the app crate, or [] when it recompiled none of it."""
-    return [f"{CRATE} ({'/'.join((rec.get('target') or {}).get('kind') or [])}) was recompiled"
+    """Describe what a build recompiled of the app crate (or of the platform crate, whose build
+    script generates the catalog), or [] when it recompiled none of it."""
+    return [f"{(rec.get('target') or {}).get('name')} ({'/'.join((rec.get('target') or {}).get('kind') or [])}) was recompiled"
             for rec in records
             if rec.get("reason") == "compiler-artifact"
-            and (rec.get("target") or {}).get("name") == CRATE and not rec.get("fresh")]
+            and (rec.get("target") or {}).get("name") in (CRATE, PLATFORM_CRATE) and not rec.get("fresh")]
 
 
 def freeze_stamps(records):
@@ -263,10 +269,6 @@ build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
-
-[build-dependencies]
-serde_json = "1"
-serde = "1"
 """
 
 
@@ -287,13 +289,12 @@ class MarkerStillTriggersTests(unittest.TestCase):
         (crate / "src").mkdir(parents=True)
         # The REAL script and the sources it includes, byte for byte.
         shutil.copy(RUST / "build.rs", crate / "build.rs")
-        shutil.copytree(RUST / "build_support", crate / "build_support")
         shutil.copy(RUST / "src/release_line.rs", crate / "src/release_line.rs")
         (crate / "src/lib.rs").write_text("// stub library for the build-script freshness test\n")
         (crate / "Cargo.toml").write_text(STUB_MANIFEST)
         shutil.copy(RUST / "Cargo.lock", crate / "Cargo.lock")
         # Inputs the script reads but this test never edits.
-        for name in ("locales", "ci", "src", "vendor"):
+        for name in ("src", "vendor"):
             (repo / name).symlink_to(ROOT / name)
         self.repo, self.crate = repo, crate
         vcs(repo, "init", "-q", "-b", "trunk")

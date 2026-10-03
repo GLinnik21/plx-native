@@ -7,8 +7,8 @@
 //!
 //! # What may appear, and what may not
 //!
-//! The envelope is assembled from [`crate::player::Diag`], [`crate::tv::device`] and
-//! [`crate::devcaps`], whose fields are numbers, bools, enums and short platform strings.
+//! The envelope is assembled from [`crate::player::Diag`], [`plx_platform::tv::device`] and
+//! [`plx_platform::devcaps`], whose fields are numbers, bools, enums and short platform strings.
 //! `app::diagnostics`'s module doc states the rule those types already live under and the reasoning
 //! behind each clause; it applies here unchanged and for a stronger reason, since an upload
 //! crosses the public internet rather than a room:
@@ -80,7 +80,7 @@ pub(crate) struct Device {
     pub hw_revision: String,
 }
 
-/// What the SoC's own table says it decodes ([`crate::devcaps`]) — the field that separates "this
+/// What the SoC's own table says it decodes ([`plx_platform::devcaps`]) — the field that separates "this
 /// firmware refuses the stream" from "this set was never going to decode it".
 #[derive(Serialize)]
 pub(crate) struct Caps {
@@ -269,8 +269,8 @@ pub(crate) fn body(
 }
 
 fn device() -> Device {
-    let i = crate::tv::device::info();
-    let d = crate::tv::device::device();
+    let i = plx_platform::tv::device::info();
+    let d = plx_platform::tv::device::device();
     Device {
         webos_release: i.release.clone(),
         webos_codename: i.codename.clone(),
@@ -283,7 +283,7 @@ fn device() -> Device {
 }
 
 fn caps() -> Caps {
-    let c = crate::devcaps::caps();
+    let c = plx_platform::devcaps::caps();
     Caps {
         hevc: c.hevc,
         hevc_max_w: c.hevc_max.0,

@@ -104,7 +104,7 @@ impl MorePage {
     /// The title band's text.
     fn title(self) -> String {
         match self {
-            Self::Quality => crate::i18n::msg::widgets_menu_quality().to_string(),
+            Self::Quality => plx_platform::i18n::msg::widgets_menu_quality().to_string(),
         }
     }
 
@@ -214,7 +214,7 @@ fn root_form(
     forced: bool,
     current: crate::route::Quality,
 ) -> MoreForm {
-    let mut options = FormSection::new(crate::i18n::msg::widgets_menu_options());
+    let mut options = FormSection::new(plx_platform::i18n::msg::widgets_menu_options());
     for a in rows.iter().copied().filter(|a| !matches!(a, Action::SetQuality(_))) {
         options = options.item(MoreRow::Act(a), RowKind::Button, a, row_for(ps, a));
     }
@@ -223,7 +223,7 @@ fn root_form(
         MoreRow::OpenQuality,
         RowKind::Nav(MorePage::Quality),
         Action::None,
-        Row::new(crate::i18n::msg::widgets_menu_quality()).value(current.label()),
+        Row::new(plx_platform::i18n::msg::widgets_menu_quality()).value(current.label()),
     );
     Form::new().section(quality).section(options)
 }
@@ -627,7 +627,7 @@ fn rows_for(forced: bool) -> Vec<Action> {
             .collect()
     };
     v.push(Action::ToggleStats);
-    if crate::labcfg::menu_row_enabled() {
+    if plx_platform::labcfg::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
     }
     v
@@ -635,11 +635,11 @@ fn rows_for(forced: bool) -> Vec<Action> {
 
 fn label(a: Action) -> std::borrow::Cow<'static, str> {
     match a {
-        Action::ToggleStats => crate::i18n::msg::widgets_menu_stats().into(),
+        Action::ToggleStats => plx_platform::i18n::msg::widgets_menu_stats().into(),
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label().into(),
-        Action::SendDiagnostics => crate::i18n::msg::widgets_menu_diagnostics().into(),
+        Action::SendDiagnostics => plx_platform::i18n::msg::widgets_menu_diagnostics().into(),
         Action::None => "".into(),
     }
 }
@@ -1360,7 +1360,7 @@ mod focus_tests {
     /// Measured with the device's whole-pixel advances.
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let ps = crate::route::PlaybackSession::default();
         let mut out = Vec::new();
         let rows = rows_for(false);

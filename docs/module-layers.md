@@ -8,9 +8,10 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base` and `machine` are their own crates, `plx_base` and
-`plx_machine`** (`rust-modules/base/` and `rust-modules/machine/`, "Split 1: base" and "Split 2:
-machine" below); the other twelve layers are still modules of `plxnative-modules`.
+up the split. **The split has started: `base`, `machine` and `platform` are their own crates,
+`plx_base`, `plx_machine` and `plx_platform`** (`rust-modules/base/`, `rust-modules/machine/` and
+`rust-modules/platform/`, "Split 1: base", "Split 2: machine" and "Split 3: platform" below); the
+other eleven layers are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -347,8 +348,9 @@ listed 134 such items after L14 (8 in `base`, 11 `machine`, 13 `platform`, 8 `gf
 `plex`, 8 `telemetry`, 12 `ui`, 25 `data`, 4 `session`, 6 `media`, 4 `appkit`, 4 `screens`). L15
 replaced `webos::FORCE_JAIL_BLOCKED`, `webos::home_requests` and `keymanager::RPC_FOR_TEST` with
 `cfg(test)` seams of `tv` (`sandbox::FORCE_BLOCKED`, `home::home_requests`,
-`secure::{STORE_FOR_TEST, TestStore}`) that other layers' tests still name, so `--report` now lists
-136 (15 in `platform`, the rest as above); run it for the current count. The
+`secure::{STORE_FOR_TEST, TestStore}`) that other layers' tests still name, so `--report` listed
+136 (15 in `platform`, the rest as above) before Split 3 took the 15 with it; run it for the current
+count. The
 gate cannot see either remaining hazard on its own, because it checks names, not `cfg(test)`-ness
 of the item named or impl coherence. Extract bottom-up: `base`, then `machine`, `platform`, and so
 on. Each extraction:
@@ -506,12 +508,106 @@ couple of seconds that crate cost per edit to everything above it. The gain is i
 application edit is 5.7 s faster), not in the noisy medians; the crates that carry the line count
 (`gfx`, `plex`, `ui`, `screens`) are still inside the application crate.
 
+### Split 3: platform
+
+`platform` was extracted third: `rust-modules/platform/` is the workspace member `plx_platform` (an
+`rlib`, `uses = base machine`), holding `webos storage keymanager devcaps imgcache i18n labcfg tv`
+and the `storage_service/` files that `storage` and the storage helper both include by `#[path]`
+(they are not a module of their own). `webos` and `keymanager` are still `[port webos]` members, and
+the port fence reads `plx_platform::webos::` exactly as it read `crate::webos::`: a probe naming
+either from `coldstart.rs` still fails the gate for both. The 1828 `crate::<member>::` references in
+150 application files were rewritten by a script to `plx_platform::<member>::`; `pub(crate)` became
+`pub` across the moved files and in what the two generators emit (`Flavor`, the `i18n::msg`
+accessors). Features: `devtriggers`, `hostsim` and `lab-diagnostics` are forwarded, `test-support`
+is new and enables the two lower layers'. The 218 tests of the layer run in their own binary: the
+suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught beyond the recipe:
+
+- **The generated code is the layer's, and so is the build script that generates it.**
+  `platform/build.rs` runs the catalog generator (`platform/build_support/catalog.rs`, reading
+  `locales/`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
+  which stays where it is because the storage helper's build script calls it too). It reads no
+  `PLX_*` variable and emits no `rustc-link-*`, so it is never dirty on a second run:
+  `ci/test_build_not_always_dirty.py` now fails on `plx_platform` as well as on the application
+  crate. The application's `build.rs` kept the version, the build SHA, the host link configuration
+  and the nanosvg object, lost its `serde`/`serde_json` build-dependencies, and the application
+  manifest lost the `icu_*` crates, which only `i18n` used.
+- **A `cargo:rustc-env` reaches one crate.** `storage::diagnostics` read `env!("PLX_VERSION")`,
+  which the application's build script publishes; the platform crate cannot see it, and
+  re-deriving the version rule in a second build script would have been a third copy of it (it is
+  already in `build.rs` and `ci/version_rule.py`). The application hands it in instead:
+  `storage::diagnostics::start(env!("PLX_VERSION"))`. The platform layer does not know what
+  version the application is.
+- **A test that reads another layer's source moves up.** `storage::diagnostics`'s boot-order test
+  `include_str!`ed `app/mod.rs`; it now sits beside its sibling in `app/boot.rs`'s
+  `seam_order_tests`, which already read the same file.
+- **`cfg(not(test))` arms switch, and `test-support` must switch them the same way.** Beyond the 15
+  items `--report` listed, a dependent's tests would have built `webos`, `keymanager` and `tv` with
+  their real LS2 arms (`extern "C"` blocks a host test binary cannot link), `i18n::current()` with
+  its "initialized before any screen" panic instead of the English default, and `storage` without
+  the commit-failure hook. Each is `cfg(any(test, feature = "test-support"))` now, and
+  `cfg(not(any(...)))` for the shipping arm. Items that only the layer's own tests use
+  (`webos::storage_activation_reply`, `webos::caps::{ProbeFailure, parse_dv_reply}`) stay
+  `cfg(test)`: under `test-support` alone they would be dead code.
+- **`test-support` may add or switch behaviour; it may not remove an item the application names.**
+  `cargo check --lib --tests` (the lab line of `make check`) builds the application's non-test
+  library with the dev-dependency features unified in, so `i18n::initialize` and
+  `tv::system_locale`, which were `cfg(not(test))` and which the application's own
+  `cfg(not(test))` boot code calls, stopped existing there. They are unconditional now (a `pub`
+  function is never dead code). Run `cargo check --lib --tests` after gating anything that way.
+- **A latent race the split made deterministic.** `storage::diagnostics`'s umask test sets the
+  process umask to 0o777 while it holds the global test lock; `imgcache`'s fixture wrote and read
+  back real files without it. In one binary of 5000 tests the overlap was rare; in the layer's own
+  binary of 218 it failed every run. `imgcache`'s `TestDir` takes the lock now. A layer that is
+  split off may expose a race that the big suite averaged away: run the new crate's tests a few
+  times alone before trusting them.
+- **No orphan-rule hazard, and nothing was dead because of a trait.** `platform` defines traits
+  (`tv::sink::VideoSink`) and the application implements them for its own types, which is legal; the
+  compiler is the checker, as in Split 2. `tv::sandbox::Failure::Timeout` had a
+  `cfg_attr(..., expect(dead_code))` that became an unfulfilled expectation once the enum was `pub`;
+  it is gone.
+- **FFI moved byte for byte.** `webos.rs`'s `extern "C"` blocks and `storage_service/{auxv,bus}.rs`
+  (the only files with C declarations in the layer; there is no `#[link]` and no `dynlib!` in it)
+  differ from their old text in `pub(crate)` alone, and the new build script links nothing, so
+  `LIBS_REAL` and `ci/expected-dt-needed.txt` are untouched. The host never compiles the ARM arms:
+  `cargo check --target arm-unknown-linux-gnueabi --lib -p plxnative-modules` (`.cargo/config.toml`'s
+  `build-std`, no NDK, no link step) does, and passes with and without default features; use it for
+  any split that moves FFI when no NDK is at hand.
+- **Gates scoped by the path of a moved file stopped seeing it, and some by its spelling.**
+  `ci/check-deps.sh` reads `SRC_PLATFORM` where it read `SRC_MACHINE`; the `frame` and `uistorage`
+  rules name a moved module as `crate::tv::window::` and `crate::storage::`, which would have kept
+  passing while matching nothing, so they accept `plx_platform::` too; the `sink` gate exempts
+  `$SRC_PLATFORM/tv*`; the `fpflags` rule and the harness's private tree copy include the new
+  `Cargo.toml` and `build.rs`. `ci/check-localization.py` named `webos.rs`, `tv/device.rs` and
+  `devcaps/dv.rs` under `rust-modules/src` and skips a missing path without a word: it reads
+  `platform/src` for them and for the constants table now. Grep the gate scripts for
+  `crate::<member>` as well as for directory names.
+- **Tooling that knows the tree's shape**: the `-p` lists (`-p plxnative-modules -p plx_base -p
+  plx_machine -p plx_platform`) in the Makefile, the workflow, `tools/build-bench.py` and the tests
+  that pin them; `--src rust-modules/platform/src` for the line budget; `RUST_INPUTS` and
+  `STORAGE_INPUTS` (the helper's `#[path]` files are under `platform/`); `tools/cargo-seed.py` keys
+  on the new manifest; the eventlog scrub test's root list gained `../platform/src`;
+  `ci/test_no_host_staticlib.py` holds the crate to `rlib`; the release-configuration hook treats an
+  edit in `platform/src` as a shipping-feature risk; and `make build-bench` has a `platform`
+  scenario ("Edit leaf (plx_platform devcaps.rs)").
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs; the host was quiet for
+both sets, and the figures are non-incremental). Before, on `b131c181`: an edit in `plx_base` 31.3 s
+(min 31.2), in `plx_machine` 31.4 s (min 31.3), of the application crate 32.0 s (min 31.0), the hub
+edit 32.3 s (min 31.4), the unit suite 60.5 s. After: an edit in `plx_base` 30.6 s (min 30.5), in
+`plx_machine` 30.9 s (min 30.5), in `plx_platform` 31.2 s (min 30.1, it rebuilds the platform crate
+and the application behind it), of the application crate 30.8 s (min 28.4, the three layer crates
+fresh), the hub edit 30.8 s (min 28.2), and the unit suite 61.1 s with the same 5603 tests. The gain
+is the 1 to 3 s that `platform` (11k of 450k lines) cost every application edit, and no more: the
+application crate is still about 30 s of every row. The leverage is in `gfx`, `net` and `plex`
+and above, which carry the line count.
+
 ## Limits of the analysis
 
 - `cfg` predicates other than `test` count as possibly on, so the graph is the union of every
   feature configuration.
 - Files included from `OUT_DIR` are not read: the generated `i18n::msg` catalog and
-  `storage::state`'s install identities. Today they name nothing outside their own parent module.
+  `storage::state`'s install identities (both generated by `plx_platform`'s build script since
+  Split 3). Today they name nothing outside their own parent module.
 - A `macro_rules!` that is neither `#[macro_export]` nor inside a `#[macro_use]` module is
   visible only to its own module and to children declared after it. The analyzer does not follow
   it; that only matters if `lib.rs` defines one, and it does not.

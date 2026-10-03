@@ -134,8 +134,8 @@ pub(crate) unsafe fn run(app: &mut App) {
                 replay_inject(app, fr, &v);
             }
         }
-        crate::tv::window::pump_bus();
-        crate::tv::home::poll();
+        plx_platform::tv::window::pump_bus();
+        plx_platform::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
         ingest(app, fr);
@@ -459,7 +459,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // there is nothing else in the loop that would carry it: a `return` above, or a term that
     // only ran on player frames, would leave the compositor believing our surface is still
     // opaque with an ordinary UI on it.
-    crate::tv::window::opaque_route(app.player.video_plane_bound);
+    plx_platform::tv::window::opaque_route(app.player.video_plane_bound);
     app.instr.mark(plx_base::diag::heartbeat::Phase::Prepare); // prepare
     // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
     // settled screen must never run untimed work at the loop rate (spec §8.3).
@@ -474,21 +474,21 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 /// syntactic unit, and that `impl Rig<AppHost> for Bridge` block carries two dozen other methods
 /// beside these three — so this is the "or just its three privileged methods" half of the D4
 /// move. `Bridge::opaque_route`/`Bridge::clear_opaque_region` call these instead of
-/// `crate::tv::window::` directly, which is what keeps the OS-facing text — the thing the `frame`
+/// `plx_platform::tv::window::` directly, which is what keeps the OS-facing text — the thing the `frame`
 /// gate greps for — in this ONE file rather than split across the loop and the bridge. Each is a
-/// pure pass-through: the loop's own per-frame call above (`crate::tv::window::opaque_route`, from
+/// pure pass-through: the loop's own per-frame call above (`plx_platform::tv::window::opaque_route`, from
 /// `fr`) and the dispatcher's `Rig` hook (from `Bridge`'s own copy of the same bit) are two
 /// independent callers of one primitive, not two implementations of it. `ls2_pump` needs no
 /// twin here — `Bridge::ls2_pump` is or stays a no-op, since the dispatcher does not yet run a
 /// phase this early in the frame.
 pub(crate) fn rig_opaque_route(video_plane_bound: bool) {
-    crate::tv::window::opaque_route(video_plane_bound);
+    plx_platform::tv::window::opaque_route(video_plane_bound);
 }
 
 /// See [`rig_opaque_route`]. The `if self.video_plane` guard stays on `Bridge`'s side — this is
-/// the OS call alone, exactly what `crate::tv::window::clear_opaque_region` was before the move.
+/// the OS call alone, exactly what `plx_platform::tv::window::clear_opaque_region` was before the move.
 pub(crate) fn rig_clear_opaque_region() {
-    crate::tv::window::clear_opaque_region();
+    plx_platform::tv::window::clear_opaque_region();
 }
 
 /// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
@@ -542,7 +542,7 @@ unsafe fn present_and_swap(
             plx_base::surface::present_supersampled();
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
-            crate::tv::window::frame_probe_request();
+            plx_platform::tv::window::frame_probe_request();
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
@@ -679,7 +679,7 @@ fn ingest_text(app: &mut App, text: &str, panel: bool, source: plx_machine::mach
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
-    ingest_sdl_event_with_window(app, fr, crate::tv::window::grab);
+    ingest_sdl_event_with_window(app, fr, plx_platform::tv::window::grab);
 }
 
 /// The window reacquisition is a platform operation, supplied separately so the
@@ -795,7 +795,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         super::bridge::background(&mut app.pages);
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
-        crate::tv::window::release();
+        plx_platform::tv::window::release();
         // A trailer preview is not parked: the OS taking the screen ends it, like any other way
         // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
         // left Abandoning, and a preview session is never parked for the foreground reload —
@@ -2276,7 +2276,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             crate::ui::profile::phase("frame.ui", || {
                 crate::ui::guard(|| {
                     if fr.player {
-                        // `crate::tv::window::clear_opaque_region()` used to be called here. It is
+                        // `plx_platform::tv::window::clear_opaque_region()` used to be called here. It is
                         // §3.3 step 10's privileged call and belongs at the container library's
                         // OWN draw entry, which `app.pages.draw` below reaches in this same frame:
                         // `Bridge::clear_opaque_region` performs it, keyed on the plane's bit
@@ -2287,9 +2287,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // wait for a free back buffer: spanned like every other route's `clear`.
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
                         // and, from the acquired buffer to the swap, over the commit phase.
-                        crate::tv::window::frame_probe_waiting();
+                        plx_platform::tv::window::frame_probe_waiting();
                         plx_base::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
-                        crate::tv::window::frame_probe_acquired();
+                        plx_platform::tv::window::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -2657,7 +2657,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages),
                     app.bridge.home_snap_pos(&app.pages),
-                    crate::tv::window::frame_probe_fields()
+                    plx_platform::tv::window::frame_probe_fields()
                 )
             }) {
                 log(&line);
@@ -4338,7 +4338,7 @@ mod video_plane_gate_tests {
             .next()
             .expect("the loop's source");
         assert!(
-            !src.contains("crate::tv::window::opaque_route(fr.player)"),
+            !src.contains("plx_platform::tv::window::opaque_route(fr.player)"),
             "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
         );
         // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
@@ -4353,7 +4353,7 @@ mod video_plane_gate_tests {
         // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
         // `prepare_window`'s own body depth (four spaces, never inside that function's one
         // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
-        const CALL: &str = "    crate::tv::window::opaque_route(app.player.video_plane_bound);";
+        const CALL: &str = "    plx_platform::tv::window::opaque_route(app.player.video_plane_bound);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,

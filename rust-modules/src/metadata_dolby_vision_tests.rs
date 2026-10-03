@@ -29,11 +29,11 @@ fn a_dolby_vision_record_is_not_erased_by_a_later_video_stream() {
     // …and, undeclared, must still refuse direct play — the record surviving is what both of
     // those turn on, so the cover-art stream must not be able to blank it
     assert_eq!(
-        dovi.presentation(false, crate::devcaps::dv::DvCapability::Supported, true),
+        dovi.presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
         crate::metadata::DvPresentation::Refuse("no cross-compatible base layer")
     );
     assert_eq!(
-        dovi.presentation(true, crate::devcaps::dv::DvCapability::Supported, true)
+        dovi.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true)
             .declared()
             .map(|n| n.profile_id),
         Some(5)
@@ -61,7 +61,7 @@ fn a_part_with_no_dolby_vision_reports_no_record() {
 fn dv_presentation_reads_are_frame_safe() {
     prewarm_dv_latches();
     let frame = plx_base::task::FrameScope::enter();
-    let _ = crate::devcaps::dv::capability();
+    let _ = plx_platform::devcaps::dv::capability();
     let dovi = Dovi {
         present: true,
         profile: 8,
@@ -70,7 +70,7 @@ fn dv_presentation_reads_are_frame_safe() {
         ..Dovi::NONE
     };
     assert_eq!(
-        dovi.presentation(true, crate::devcaps::dv::DvCapability::Unknown, true),
+        dovi.presentation(true, plx_platform::devcaps::dv::DvCapability::Unknown, true),
         DvPresentation::NotDv,
     );
     drop(frame);

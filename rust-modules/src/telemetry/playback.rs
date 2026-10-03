@@ -346,7 +346,7 @@ pub(crate) fn preview_domains() -> String {
     };
     use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
     use FailureClass as F;
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
     let domains: [(&str, String); 17] = [
         (msg::core_preview_domain_failure_kind(), codes(

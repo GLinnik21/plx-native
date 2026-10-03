@@ -5,7 +5,7 @@
 
 use super::*;
 use super::test_support::*;
-use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::ui::route_screen::RouteLayout;
 
 /// Every privacy row, built by the real `ConsentPage::settings`, through `TableView::fit_report`.

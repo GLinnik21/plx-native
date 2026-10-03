@@ -75,14 +75,14 @@ const FACTS_R: f32 = crate::ui::consts::SCR_W
 const HERO_ICON_RATIO: f32 = 1.15;
 const HERO_ICON_GAP: f32 = 12.0;
 
-pub(crate) fn alt_label() -> &'static CStr { crate::i18n::msg::browse_detail_also_available_c() }
+pub(crate) fn alt_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_also_available_c() }
 
-fn mark_watched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_watched_c() }
-fn mark_unwatched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_unwatched_c() }
-fn mark_show_watched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_show_watched_c() }
-fn mark_show_unwatched_label() -> &'static CStr { crate::i18n::msg::browse_detail_mark_show_unwatched_c() }
-fn play_from_start_label() -> &'static CStr { crate::i18n::msg::browse_detail_play_start_c() }
-fn trailer_label() -> &'static CStr { crate::i18n::msg::browse_detail_trailer_c() }
+fn mark_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_watched_c() }
+fn mark_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_unwatched_c() }
+fn mark_show_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_show_watched_c() }
+fn mark_show_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_show_unwatched_c() }
+fn play_from_start_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_play_start_c() }
+fn trailer_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_trailer_c() }
 
 /// A control in the hero action row, named rather than numbered — ported verbatim from
 /// `ui/detail.rs::HeroCtl`.
@@ -324,9 +324,9 @@ pub(crate) fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
 /// The Play pill's label — the word the press will actually perform.
 pub(crate) fn hero_pill_label(has_restart: bool) -> &'static CStr {
     if has_restart {
-        crate::i18n::msg::browse_detail_resume_c()
+        plx_platform::i18n::msg::browse_detail_resume_c()
     } else {
-        crate::i18n::msg::browse_detail_play_c()
+        plx_platform::i18n::msg::browse_detail_play_c()
     }
 }
 
@@ -488,10 +488,10 @@ pub(crate) fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
             .filter(|credit| credit.role.contains("Writer"))
             .map(|credit| credit.tag.as_str())
             .collect();
-        return (!names.is_empty()).then_some((crate::i18n::msg::browse_detail_created_by(), names));
+        return (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_created_by(), names));
     }
     let names: Vec<&str> = d.directors.iter().map(String::as_str).collect();
-    (!names.is_empty()).then_some((crate::i18n::msg::browse_detail_directed_by(), names))
+    (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_directed_by(), names))
 }
 
 pub(crate) fn has_people(d: &Detail) -> bool {
@@ -509,7 +509,7 @@ pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn M
             .take(PEOPLE_CAST)
             .map(|credit| credit.tag.as_str())
             .collect();
-        bottom -= people_line(p, crate::i18n::msg::browse_detail_starring(), &names, x, bottom, measure);
+        bottom -= people_line(p, plx_platform::i18n::msg::browse_detail_starring(), &names, x, bottom, measure);
     }
     if let Some((label, names)) = hero_credit(d) {
         people_line(p, label, &names, x, bottom, measure);
@@ -545,9 +545,9 @@ fn hero_facts(d: &Detail) -> (String, Option<String>) {
             return (date, None);
         }
         let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let seasons = crate::i18n::msg::browse_detail_seasons(seasons as i64);
+        let seasons = plx_platform::i18n::msg::browse_detail_seasons(seasons as i64);
         let extent = if episodes > 0 {
-            crate::i18n::msg::browse_detail_extent(&crate::i18n::msg::browse_detail_episodes(episodes), &seasons)
+            plx_platform::i18n::msg::browse_detail_extent(&plx_platform::i18n::msg::browse_detail_episodes(episodes), &seasons)
         } else { seasons };
         return (date, Some(extent));
     }
@@ -585,7 +585,7 @@ fn item_subscription(d: &Detail) -> crate::plex::serverinfo::Subscription {
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
-fn converts_on_server_c() -> &'static CStr { crate::i18n::msg::browse_detail_converts_c() }
+fn converts_on_server_c() -> &'static CStr { plx_platform::i18n::msg::browse_detail_converts_c() }
 
 #[derive(Clone, Copy)]
 enum Bit {
@@ -614,8 +614,8 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     match play_note(preview, d.hdr, item_subscription(d)) {
         PlayNote::Quiet => push(Bit::Word(
             match preview {
-                crate::route::Preview::DirectPlay => crate::i18n::msg::browse_detail_direct_play_c(),
-                crate::route::Preview::Remux => crate::i18n::msg::browse_detail_direct_stream_c(),
+                crate::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
+                crate::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
                 crate::route::Preview::Converts => converts_on_server_c(),
             },
             crate::ui::detail_layout::FACTS_INK,
@@ -625,7 +625,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             push(Bit::Word(converts_on_server_c(), crate::ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
-                crate::i18n::msg::browse_detail_hardware_needs_c(),
+                plx_platform::i18n::msg::browse_detail_hardware_needs_c(),
                 theme::TEXT_SECONDARY,
                 0,
             ));
@@ -637,7 +637,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
             push(Bit::Sep(theme::space::SM));
-            push(Bit::Word(crate::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
+            push(Bit::Word(plx_platform::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);
         }

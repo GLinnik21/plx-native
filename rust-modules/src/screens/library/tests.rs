@@ -473,7 +473,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         let mut page = fixture.screen();
         tick(&mut page, &fixture);
         let (shown, glyph, plain_row, caption) = read(&page, &fixture);
-        let shared = crate::i18n::msg::browse_library_shared_unreachable("friend");
+        let shared = plx_platform::i18n::msg::browse_library_shared_unreachable("friend");
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "no fact: today's read-out");
         assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
@@ -483,7 +483,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert_eq!(stale, shown, "the held fact does not change between ticks");
         assert!(tick(&mut page, &fixture), "a fact appearing under a static read-out damages the frame");
         let (shown, glyph, row, clock_caption) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(crate::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
+        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
         assert_eq!(clock_caption, caption, "the verdict is unchanged");
         assert!(row.y >= plain_row.y);
@@ -496,7 +496,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert!(tick(&mut page, &fixture));
         assert_eq!(page.clock.blocked(), Some(Blocked::KeyChanged));
         let (shown, ..) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(crate::i18n::msg::browse_clock_key_changed_c()));
+        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
 
         keypin::strict_established(&key);
         assert!(tick(&mut page, &fixture), "…and one clearing does too");
@@ -560,7 +560,7 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
 
     keypin::strict_failure(&here, 60, Some(10));
     tick(&mut page);
-    assert_eq!(shown(&page), (Some(crate::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
+    assert_eq!(shown(&page), (Some(plx_platform::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
 }
 
 /// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the

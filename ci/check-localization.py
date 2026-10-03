@@ -314,25 +314,33 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
     return sorted(found, key=lambda f: (f.line, f.boundary, f.text))
 
 
+# The layer crates split out of rust-modules/src whose files this gate reads (docs/module-layers.md).
+# `platform` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs).
+LAYER_SRCS = ('rust-modules/platform/src',)
+
+
 def source_paths(root: Path):
     src = root / 'rust-modules/src'
+    platform = root / LAYER_SRCS[0]
     for folder in ('screens', 'ui', 'appkit'):
         for path in sorted((src / folder).rglob('*.rs')):
             if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(src).parts): yield path
     for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
                 'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
-                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'webos.rs', 'lab/toast.rs',
-                'tv/device.rs', 'devcaps/dv.rs'):
+                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'lab/toast.rs'):
         yield src / rel
+    for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
+        yield platform / rel
 
 
 def const_table(root: Path) -> dict[str, str]:
     """Every product module's prose constants, so a boundary in one file sees another's."""
     table = {}
-    for path in sorted((root / 'rust-modules/src').rglob('*.rs')):
-        rel = path.relative_to(root / 'rust-modules/src')
-        if path.name in FIXTURES or any('test' in part for part in rel.parts): continue
-        table.update(prose_consts(path.read_text()))
+    for base in ('rust-modules/src', *LAYER_SRCS):
+        for path in sorted((root / base).rglob('*.rs')):
+            rel = path.relative_to(root / base)
+            if path.name in FIXTURES or any('test' in part for part in rel.parts): continue
+            table.update(prose_consts(path.read_text()))
     return table
 
 

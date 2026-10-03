@@ -1,4 +1,4 @@
-//! **crate::i18n::msg::settings_plaintext_question() — the one question, and every surface that asks it**
+//! **plx_platform::i18n::msg::settings_plaintext_question() — the one question, and every surface that asks it**
 //! (PLX-NATIVE-10).
 //!
 //! Four surfaces ask it: the sign-in read-out, Home's and a Library source's failure read-out
@@ -37,7 +37,7 @@ use crate::ui::screen::{
 use crate::ui::{Painter, Rect};
 
 /// The shared question and verbs, resolved from this launch's locale.
-pub(crate) use crate::i18n::msg::{
+pub(crate) use plx_platform::i18n::msg::{
     settings_plaintext_connect_c as connect,
     browse_action_retry_c as try_again,
     settings_plaintext_not_now_c as not_now,
@@ -451,9 +451,9 @@ impl OfferWatch {
 /// carries the server — that it is connected without encryption now.
 pub(crate) fn settings_detail(on: bool, connected: bool) -> &'static str {
     match (on, connected) {
-        (false, _) => crate::i18n::msg::settings_plaintext_denied(),
-        (true, true) => crate::i18n::msg::settings_plaintext_connected(),
-        (true, false) => crate::i18n::msg::settings_plaintext_allowed(),
+        (false, _) => plx_platform::i18n::msg::settings_plaintext_denied(),
+        (true, true) => plx_platform::i18n::msg::settings_plaintext_connected(),
+        (true, false) => plx_platform::i18n::msg::settings_plaintext_allowed(),
     }
 }
 
@@ -475,7 +475,7 @@ mod tests {
     fn every_answer_fits_its_pill_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
-        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
         for language in [Preference::En, Preference::Es, Preference::Be] {
             let _guard = language_on_this_thread_for_test(language);

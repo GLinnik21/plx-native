@@ -1,0 +1,52 @@
+[package]
+name = "plx_platform"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative platform layer: what this television is and keeps (webOS identity, the storage helper client, the key stores, the codec table, the artwork cache, the localization catalog, the Cloud Lab session file)."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "plx_platform"
+# An rlib the application crate links, never an archive of its own: the one staticlib is the
+# application crate's (ci/test_no_host_staticlib.py holds that line for this crate too).
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Forwarded from the application crate, which is the only one that sets them. Each is named here
+# only because some code in this crate has a `cfg` on it.
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim"]
+lab-diagnostics = ["plx_base/lab-diagnostics"]
+# The `cfg(test)` seams other crates' tests use (see lib.rs) plus the test-mode behaviour that
+# `cfg(test)` alone cannot give a dependent. Enabled from the dependents' `[dev-dependencies]`;
+# never in a shipped build. It enables the lower layers' own `test-support` because the seams here
+# call into them (`testlock`, the idle gate's per-thread damage counter).
+test-support = ["plx_base/test-support", "plx_machine/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_machine = { path = "../machine" }
+libc = "0.2"
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+icu_locale = "=2.1.1"
+icu_plurals = "=2.1.1"
+icu_decimal = "=2.1.1"
+icu_datetime = { version = "=2.1.1", default-features = false, features = ["compiled_data"] }
+icu_calendar = "=2.1.1"
+icu_provider = { version = "2.1", features = ["sync"] }
+
+[build-dependencies]
+serde_json = "1"
+serde = "1"
+
+[dev-dependencies]
+plx_base = { path = "../base", features = ["test-support"] }
+plx_machine = { path = "../machine", features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -109,7 +109,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(!audio_track_direct_plays(&ps, "", 0));
     assert!(!video_feed_supported("vp9", crate::metadata::DvPresentation::NotDv));
     let blocked_dv = crate::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..crate::metadata::Dovi::NONE }
-        .presentation(false, crate::devcaps::dv::DvCapability::Unsupported, true);
+        .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
     assert!(!video_feed_supported("hevc", blocked_dv));
     assert!(hls_abr_control(&ps).is_none());
     assert!(auto_original_watch(&ps).is_none());

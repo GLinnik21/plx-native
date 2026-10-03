@@ -111,7 +111,7 @@ pub enum Phase {
     Deleted,
 }
 
-pub(crate) fn discovery_trouble() -> &'static str { crate::i18n::msg::browse_auth_discovery_trouble() }
+pub(crate) fn discovery_trouble() -> &'static str { plx_platform::i18n::msg::browse_auth_discovery_trouble() }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DiscoveryRetryRun { Resources, HomeUsers }
@@ -985,7 +985,7 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         };
         if matches!(status, Some(401 | 403)) {
             return Some((
-                crate::i18n::msg::browse_auth_signin_refused().into(),
+                plx_platform::i18n::msg::browse_auth_signin_refused().into(),
                 IncidentContext::new(IncidentKind::Authorization, Some(*last)),
             ));
         }
@@ -994,18 +994,18 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::Ok { .. } | Discovery::Cancelled => return None,
         Discovery::NoServers(evidence) => {
             return Some((
-                crate::i18n::msg::browse_auth_no_servers().into(),
+                plx_platform::i18n::msg::browse_auth_no_servers().into(),
                 IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
                     .with_no_servers(*evidence),
             ));
         }
         Discovery::Refused => (
-            crate::i18n::msg::browse_auth_refused(),
+            plx_platform::i18n::msg::browse_auth_refused(),
             DiscoveryClass::Refused,
             None,
         ),
         Discovery::ServersUnreachable { trigger } => return Some((
-            crate::i18n::msg::browse_auth_servers_unreachable().into(),
+            plx_platform::i18n::msg::browse_auth_servers_unreachable().into(),
             IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), None)
                 .with_discovery(DiscoveryEvidence { trigger: *trigger,
                     target: Some(DiscoveryTarget::Servers) }),
@@ -1013,15 +1013,15 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::PlexTvFailed(run) => {
             let (link, _, _) = crate::telemetry::incident::classify(Some(run.last));
             let message = match link {
-                crate::telemetry::incident::LinkClass::Dns => crate::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
+                crate::telemetry::incident::LinkClass::Dns => plx_platform::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
                 crate::telemetry::incident::LinkClass::Tls =>
-                    crate::i18n::msg::browse_auth_plex_tls().into(),
+                    plx_platform::i18n::msg::browse_auth_plex_tls().into(),
                 crate::telemetry::incident::LinkClass::Answered2xx
                 | crate::telemetry::incident::LinkClass::Answered4xx
                 | crate::telemetry::incident::LinkClass::Answered5xx
                 | crate::telemetry::incident::LinkClass::AnsweredOther =>
-                    crate::i18n::msg::browse_auth_plex_unavailable().into(),
-                _ => crate::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
+                    plx_platform::i18n::msg::browse_auth_plex_unavailable().into(),
+                _ => plx_platform::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
             };
             let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), Some(run.last))
                 .with_retry_run(run.attempts, run.elapsed)
@@ -1098,7 +1098,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
             PollEnd::Expired(tail) => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
                 let incident = expired_incident(&tail, generation);
-                return output_failed(output, epoch, crate::i18n::msg::browse_auth_timeout(), incident, None);
+                return output_failed(output, epoch, plx_platform::i18n::msg::browse_auth_timeout(), incident, None);
             }
         }
     };
@@ -1192,7 +1192,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
             // signed in. Drawn as the reason under "Couldn't sign in" (`screens/login.rs`).
             output_failed(output,
                 epoch,
-                crate::i18n::msg::browse_auth_plex_unreachable(),
+                plx_platform::i18n::msg::browse_auth_plex_unreachable(),
                 IncidentContext::new(IncidentKind::PinCreate, Some(last))
                     .with_link_state(0, None, generation),
                 None,
@@ -1779,7 +1779,7 @@ struct PlexTvFailure {
 /// cannot say two different things about the same verdict (plan §4).
 ///
 /// The English catalog preserves the approved wording; translations retain its remedy.
-pub(crate) fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
+pub(crate) fn discovery_insecure_only_message() -> &'static str { plx_platform::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
@@ -1811,14 +1811,14 @@ pub(crate) enum ReadoutSurface {
 /// A SHARED server is named by its owner ([`PlaintextVerdict::shared_by`]) — on screen only; the
 /// report never carries it.
 pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
-    plaintext_copy_in(verdict, surface, crate::i18n::current())
+    plaintext_copy_in(verdict, surface, plx_platform::i18n::current())
 }
 
 // Explicit locale keeps the entire verdict testable without changing the process locale.
 // Each catalog sentence owns the server/owner grammar and the named action.
 pub(crate) fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
-    locale: &crate::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
-    use crate::i18n::msg;
+    locale: &plx_platform::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
+    use plx_platform::i18n::msg;
     use std::borrow::Cow;
     let fallback = || Cow::Borrowed(msg::browse_auth_insecure_in(locale));
     let Some(v) = verdict else { return fallback() };
@@ -3890,7 +3890,7 @@ fn switch_failure(pin_submitted: bool) -> (String, bool) {
         (String::new(), true)
     } else {
         (
-            crate::i18n::msg::browse_auth_switch_failed().into(),
+            plx_platform::i18n::msg::browse_auth_switch_failed().into(),
             false,
         )
     }
@@ -3999,7 +3999,7 @@ fn offline_switch_outcome(
             // pick is needed first).
             ProfileSwitchOutcomeProgress::Failed {
                 error: String::from(
-                    crate::i18n::msg::browse_auth_offline_profile(),
+                    plx_platform::i18n::msg::browse_auth_offline_profile(),
                 ),
                 pin_denied: false,
             }
@@ -4167,9 +4167,9 @@ pub(crate) fn profile_switch_worker_with_io(
             // person to a router that is fine. The PIN was already accepted by this point, so
             // this is never the PIN flash either.
             let error = if crate::plex::account::refused_identity(&evidence).is_some() {
-                crate::i18n::msg::browse_auth_profile_signin_refused(&tile.title)
+                plx_platform::i18n::msg::browse_auth_profile_signin_refused(&tile.title)
             } else {
-                crate::i18n::msg::browse_auth_switch_failed().into()
+                plx_platform::i18n::msg::browse_auth_switch_failed().into()
             };
             output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
@@ -4188,7 +4188,7 @@ pub(crate) fn profile_switch_worker_with_io(
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: crate::i18n::msg::browse_auth_no_access(&tile.title),
+                error: plx_platform::i18n::msg::browse_auth_no_access(&tile.title),
                 pin_denied: false,
             },
         }));
@@ -4288,13 +4288,13 @@ pub(crate) fn profile_switch_worker_with_io(
                 error: if insecure_only {
                     discovery_insecure_only_message().to_owned()
                 } else if let Some((name, _)) = refusal {
-                    crate::i18n::msg::browse_auth_server_profile_refused(&tile.title, &name)
+                    plx_platform::i18n::msg::browse_auth_server_profile_refused(&tile.title, &name)
                 } else if malformed {
-                    crate::i18n::msg::browse_auth_switch_invalid().into()
+                    plx_platform::i18n::msg::browse_auth_switch_invalid().into()
                 } else if !admission_failures.is_empty() {
-                    crate::i18n::msg::browse_auth_switch_failed().into()
+                    plx_platform::i18n::msg::browse_auth_switch_failed().into()
                 } else {
-                    crate::i18n::msg::browse_auth_no_source_access(&tile.title)
+                    plx_platform::i18n::msg::browse_auth_no_source_access(&tile.title)
                 },
                 pin_denied: false,
             },

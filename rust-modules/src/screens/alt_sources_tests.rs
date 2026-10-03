@@ -1056,7 +1056,7 @@ mod focus_and_hit {
 /// judged is the "This account" sub-line and the runtime read-out, at the shared [`MENU_MAX_W`] cap.
 #[test]
 fn every_app_owned_run_fits_the_panel_in_every_language() {
-    use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
     let mut list = Vec::new();
     for (i, dur_ms) in [0_i64, 60_000, 7_020_000, 360_000_000].into_iter().enumerate() {
         let mut own = copy(i as u16, "Movies", "", &format!("{i}"), "4k");

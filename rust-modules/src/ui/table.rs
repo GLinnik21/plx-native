@@ -24,10 +24,10 @@ pub enum Badge {
 impl Badge {
     pub(crate) fn text(&self) -> &str {
         match self {
-            Badge::Ad => crate::i18n::msg::widgets_badge_ad(),
-            Badge::Forced => crate::i18n::msg::widgets_badge_forced(),
-            Badge::Sdh => crate::i18n::msg::widgets_badge_sdh(),
-            Badge::Cc => crate::i18n::msg::widgets_badge_cc(),
+            Badge::Ad => plx_platform::i18n::msg::widgets_badge_ad(),
+            Badge::Forced => plx_platform::i18n::msg::widgets_badge_forced(),
+            Badge::Sdh => plx_platform::i18n::msg::widgets_badge_sdh(),
+            Badge::Cc => plx_platform::i18n::msg::widgets_badge_cc(),
             Badge::Text(s) => s.as_str(),
         }
     }
@@ -177,7 +177,7 @@ impl Row {
     fn readout(&self) -> Option<&str> {
         match (&self.value, self.toggle) {
             (Some(v), _) => Some(v.as_str()),
-            (None, Some(on)) => Some(if on { crate::i18n::msg::widgets_toggle_on() } else { crate::i18n::msg::widgets_toggle_off() }),
+            (None, Some(on)) => Some(if on { plx_platform::i18n::msg::widgets_toggle_on() } else { plx_platform::i18n::msg::widgets_toggle_off() }),
             (None, None) => None,
         }
     }
@@ -1339,7 +1339,7 @@ impl TableView {
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
-                crate::i18n::msg::widgets_tracks_empty_c().as_ptr(),
+                plx_platform::i18n::msg::widgets_tracks_empty_c().as_ptr(),
                 theme::size::BODY,
                 theme::TEXT_TERTIARY,
             )

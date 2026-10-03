@@ -1,24 +1,24 @@
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
-#[path = "../../src/storage_service/auxv.rs"]
+#[path = "../../platform/src/storage_service/auxv.rs"]
 mod auxv;
-#[path = "../../src/storage_service/backend.rs"]
+#[path = "../../platform/src/storage_service/backend.rs"]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
 mod backend;
-#[path = "../../src/storage_service/keymanager.rs"]
+#[path = "../../platform/src/storage_service/keymanager.rs"]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
 mod keymanager;
-#[path = "../../src/storage_service/runtime.rs"]
+#[path = "../../platform/src/storage_service/runtime.rs"]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
 mod runtime;
-#[path = "../../src/storage/state.rs"]
+#[path = "../../platform/src/storage/state.rs"]
 #[allow(dead_code)] // Shared engine also exposes adapter APIs unused by this executable.
 mod state;
-#[path = "../../src/storage_service/wire.rs"]
+#[path = "../../platform/src/storage_service/wire.rs"]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
 mod wire;
 
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
-#[path = "../../src/storage_service/service.rs"]
+#[path = "../../platform/src/storage_service/service.rs"]
 mod service;
 
 fn main() {

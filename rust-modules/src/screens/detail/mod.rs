@@ -2356,7 +2356,7 @@ impl DetailScreen {
         let title = d
             .map(|d| d.title.as_str())
             .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or(crate::i18n::msg::browse_library_loading());
+            .unwrap_or(plx_platform::i18n::msg::browse_library_loading());
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
@@ -2451,7 +2451,7 @@ impl DetailScreen {
                 parts.push(&ordinal);
             }
         } else {
-            parts.push(if d.is_show { crate::i18n::msg::browse_kind_tv_show() } else { crate::i18n::msg::browse_kind_movie() });
+            parts.push(if d.is_show { plx_platform::i18n::msg::browse_kind_tv_show() } else { plx_platform::i18n::msg::browse_kind_movie() });
             parts.extend(d.genres.iter().take(2).map(String::as_str));
         }
         if !d.rating.is_empty() {
@@ -2484,9 +2484,9 @@ impl DetailScreen {
             ) + theme::space::XS;
         }
         for (present, label) in [
-            (!d.subs.is_empty(), crate::i18n::msg::widgets_badge_cc()),
-            (d.subs.iter().any(|s| s.sdh), crate::i18n::msg::widgets_badge_sdh()),
-            (d.audio.iter().any(|s| s.ad), crate::i18n::msg::widgets_badge_ad()),
+            (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
+            (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
+            (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ] {
             if present {
                 x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)

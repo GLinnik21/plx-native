@@ -119,7 +119,7 @@ fn the_credit_index_space_runs_every_actor_then_every_crew_member() {
 
 #[test]
 fn crew_display_translates_owned_roles_without_changing_identity_or_character_names() {
-    use crate::i18n::{LocaleContext, Preference};
+    use plx_platform::i18n::{LocaleContext, Preference};
     let person = |name: &str, role: &str| Cast {
         tag: name.into(), role: role.into(), thumb: String::new(), id: 1, tag_key: String::new(),
     };

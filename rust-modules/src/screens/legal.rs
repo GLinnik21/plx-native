@@ -47,22 +47,22 @@ impl Page {
     ];
     fn title(self) -> &'static str {
         match self {
-            Self::Privacy => crate::i18n::msg::settings_legal_privacy_title(),
-            Self::OpenSource => crate::i18n::msg::settings_legal_opensource_title(),
-            Self::Ffmpeg => crate::i18n::msg::settings_legal_ffmpeg_title(),
-            Self::Source => crate::i18n::msg::settings_legal_source_title(),
-            Self::Trademarks => crate::i18n::msg::settings_legal_trademarks_title(),
-            Self::Contact => crate::i18n::msg::settings_legal_contact_title(),
+            Self::Privacy => plx_platform::i18n::msg::settings_legal_privacy_title(),
+            Self::OpenSource => plx_platform::i18n::msg::settings_legal_opensource_title(),
+            Self::Ffmpeg => plx_platform::i18n::msg::settings_legal_ffmpeg_title(),
+            Self::Source => plx_platform::i18n::msg::settings_legal_source_title(),
+            Self::Trademarks => plx_platform::i18n::msg::settings_legal_trademarks_title(),
+            Self::Contact => plx_platform::i18n::msg::settings_legal_contact_title(),
         }
     }
     fn subtitle(self) -> &'static str {
         match self {
-            Self::Privacy => crate::i18n::msg::settings_legal_privacy_subtitle(),
-            Self::OpenSource => crate::i18n::msg::settings_legal_opensource_subtitle(),
-            Self::Ffmpeg => crate::i18n::msg::settings_legal_ffmpeg_subtitle(),
-            Self::Source => crate::i18n::msg::settings_legal_source_subtitle(),
-            Self::Trademarks => crate::i18n::msg::settings_legal_trademarks_subtitle(),
-            Self::Contact => crate::i18n::msg::settings_legal_contact_subtitle(),
+            Self::Privacy => plx_platform::i18n::msg::settings_legal_privacy_subtitle(),
+            Self::OpenSource => plx_platform::i18n::msg::settings_legal_opensource_subtitle(),
+            Self::Ffmpeg => plx_platform::i18n::msg::settings_legal_ffmpeg_subtitle(),
+            Self::Source => plx_platform::i18n::msg::settings_legal_source_subtitle(),
+            Self::Trademarks => plx_platform::i18n::msg::settings_legal_trademarks_subtitle(),
+            Self::Contact => plx_platform::i18n::msg::settings_legal_contact_subtitle(),
         }
     }
     pub(crate) fn body(self) -> &'static str {
@@ -84,40 +84,40 @@ pub(crate) fn privacy_policy() -> &'static str {
 }
 
 static PRIVACY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| [
-    crate::i18n::msg::settings_legal_privacy_responsible(),
-    crate::i18n::msg::settings_legal_privacy_responsible_body(),
-    crate::i18n::msg::settings_legal_privacy_plex(),
-    crate::i18n::msg::settings_legal_privacy_plex_body(),
-    crate::i18n::msg::settings_legal_privacy_plex_link(),
-    crate::i18n::msg::settings_legal_privacy_servers(),
-    crate::i18n::msg::settings_legal_privacy_servers_body(),
-    crate::i18n::msg::settings_legal_privacy_local(),
-    crate::i18n::msg::settings_legal_privacy_local_body(),
-    crate::i18n::msg::settings_legal_privacy_plaintext_body(),
-    crate::i18n::msg::settings_legal_privacy_crashes(),
-    crate::i18n::msg::settings_legal_privacy_crashes_body(),
-    crate::i18n::msg::settings_legal_privacy_signin_body(),
-    crate::i18n::msg::settings_legal_privacy_analytics(),
-    crate::i18n::msg::settings_legal_privacy_analytics_body(),
-    crate::i18n::msg::settings_legal_privacy_excluded(),
-    crate::i18n::msg::settings_legal_privacy_excluded_body(),
-    crate::i18n::msg::settings_legal_privacy_retention(),
-    crate::i18n::msg::settings_legal_privacy_retention_body(),
-    crate::i18n::msg::settings_legal_privacy_choices(),
-    crate::i18n::msg::settings_legal_privacy_choices_body(),
-    crate::i18n::msg::settings_legal_privacy_processing(),
-    crate::i18n::msg::settings_legal_privacy_processing_body(),
-    crate::i18n::msg::settings_legal_privacy_uninstall(),
-    crate::i18n::msg::settings_legal_privacy_uninstall_body(),
-    crate::i18n::msg::settings_legal_privacy_contact(),
-    crate::i18n::msg::settings_legal_privacy_contact_body()
+    plx_platform::i18n::msg::settings_legal_privacy_responsible(),
+    plx_platform::i18n::msg::settings_legal_privacy_responsible_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_plex(),
+    plx_platform::i18n::msg::settings_legal_privacy_plex_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_plex_link(),
+    plx_platform::i18n::msg::settings_legal_privacy_servers(),
+    plx_platform::i18n::msg::settings_legal_privacy_servers_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_local(),
+    plx_platform::i18n::msg::settings_legal_privacy_local_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_plaintext_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_crashes(),
+    plx_platform::i18n::msg::settings_legal_privacy_crashes_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_signin_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_analytics(),
+    plx_platform::i18n::msg::settings_legal_privacy_analytics_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_excluded(),
+    plx_platform::i18n::msg::settings_legal_privacy_excluded_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_retention(),
+    plx_platform::i18n::msg::settings_legal_privacy_retention_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_choices(),
+    plx_platform::i18n::msg::settings_legal_privacy_choices_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_processing(),
+    plx_platform::i18n::msg::settings_legal_privacy_processing_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_uninstall(),
+    plx_platform::i18n::msg::settings_legal_privacy_uninstall_body(),
+    plx_platform::i18n::msg::settings_legal_privacy_contact(),
+    plx_platform::i18n::msg::settings_legal_privacy_contact_body()
 ].join("\n\n"));
-static OPEN_SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!("{}\n\n{}", crate::i18n::msg::settings_legal_opensource_body(), include_str!("../../../LICENSE")));
-static FFMPEG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_ffmpeg_body);
-static SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| crate::i18n::msg::settings_legal_source_body(env!("PLX_BUILD_SHA")));
-static TRADEMARKS: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_trademarks_body);
-static CONTACT: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(crate::i18n::msg::settings_legal_contact_body);
-static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| crate::i18n::msg::settings_about_body(env!("PLX_BUILD_SHA"), env!("PLX_VERSION")));
+static OPEN_SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!("{}\n\n{}", plx_platform::i18n::msg::settings_legal_opensource_body(), include_str!("../../../LICENSE")));
+static FFMPEG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_platform::i18n::msg::settings_legal_ffmpeg_body);
+static SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| plx_platform::i18n::msg::settings_legal_source_body(env!("PLX_BUILD_SHA")));
+static TRADEMARKS: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_platform::i18n::msg::settings_legal_trademarks_body);
+static CONTACT: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_platform::i18n::msg::settings_legal_contact_body);
+static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| plx_platform::i18n::msg::settings_about_body(env!("PLX_BUILD_SHA"), env!("PLX_VERSION")));
 
 // ---------------------------------------------------------------------------------------------
 // the index
@@ -149,7 +149,7 @@ impl Page {
 
 /// The Legal index as a [`Form`]: every document is a `Nav` row pushing its `Document` page.
 fn legal_form() -> Form<Page, (), SettingsPage> {
-    let mut docs = FormSection::new(crate::i18n::msg::settings_legal_section());
+    let mut docs = FormSection::new(plx_platform::i18n::msg::settings_legal_section());
     for page in Page::ALL {
         docs = docs.item(
             page,
@@ -200,9 +200,9 @@ impl LegalIndex {
         TableScreen::new(
             Header::new(
                 RouteLayout::screen(),
-                Some(crate::i18n::msg::settings_title()),
-                crate::i18n::msg::settings_legal_title(),
-                crate::i18n::msg::settings_legal_copy(),
+                Some(plx_platform::i18n::msg::settings_title()),
+                plx_platform::i18n::msg::settings_legal_title(),
+                plx_platform::i18n::msg::settings_legal_copy(),
             ),
             &self.form.table,
             GroupId(0),
@@ -255,7 +255,7 @@ impl Screen<InnerHost> for LegalIndex {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(crate::i18n::msg::settings_title()))
+        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
@@ -337,7 +337,7 @@ impl DocumentPage {
         Self {
             entry,
             reader: DocumentReader::new(),
-            crumb: crate::i18n::msg::settings_legal_title(),
+            crumb: plx_platform::i18n::msg::settings_legal_title(),
             title: page.title(),
             subtitle: page.subtitle(),
             body: Cow::Borrowed(page.body()),
@@ -352,9 +352,9 @@ impl DocumentPage {
         Self {
             entry,
             reader: DocumentReader::new(),
-            crumb: crate::i18n::msg::settings_title(),
-            title: crate::i18n::msg::settings_about_title(),
-            subtitle: crate::i18n::msg::settings_about_subtitle(),
+            crumb: plx_platform::i18n::msg::settings_title(),
+            title: plx_platform::i18n::msg::settings_about_title(),
+            subtitle: plx_platform::i18n::msg::settings_about_subtitle(),
             body: Cow::Borrowed(&ABOUT),
             qr: None,
             guide_caption: None,
@@ -367,12 +367,12 @@ impl DocumentPage {
         Self {
             entry,
             reader: DocumentReader::new(),
-            crumb: crate::i18n::msg::settings_language_title(),
-            title: crate::i18n::msg::settings_language_contribute(),
-            subtitle: crate::i18n::msg::settings_language_contribute_copy(),
+            crumb: plx_platform::i18n::msg::settings_language_title(),
+            title: plx_platform::i18n::msg::settings_language_contribute(),
+            subtitle: plx_platform::i18n::msg::settings_language_contribute_copy(),
             body: Cow::Owned(contribution_address()),
-            qr: crate::ui::qr::QrCode::new(crate::i18n::CONTRIBUTE_URL).ok(),
-            guide_caption: Some(crate::i18n::msg::settings_language_contribute_body()),
+            qr: crate::ui::qr::QrCode::new(plx_platform::i18n::CONTRIBUTE_URL).ok(),
+            guide_caption: Some(plx_platform::i18n::msg::settings_language_contribute_body()),
             word: "contribute",
             state: DocState { which: 0xfe, pos: 0 },
         }
@@ -491,7 +491,7 @@ impl Screen<InnerHost> for DocumentPage {
 /// A visual line break, not a different address. The path keeps its leading slash and all
 /// GitHub route segments so typing the two lines reaches the QR's exact destination.
 fn contribution_address() -> String {
-    crate::i18n::CONTRIBUTE_URL.trim_start_matches("https://").replace("/blob/", "\n/blob/")
+    plx_platform::i18n::CONTRIBUTE_URL.trim_start_matches("https://").replace("/blob/", "\n/blob/")
 }
 
 /// The `(focus key, destination)` of every `Nav` row the index lists — the structural navigation
@@ -525,20 +525,20 @@ mod tests {
     fn contribution_manual_address_is_the_complete_qr_destination() {
         let _guard = plx_base::testlock::serial();
         let page = DocumentPage::contribute(EntryId(0));
-        assert_eq!(format!("https://{}", page.body.replace('\n', "")), crate::i18n::CONTRIBUTE_URL,
+        assert_eq!(format!("https://{}", page.body.replace('\n', "")), plx_platform::i18n::CONTRIBUTE_URL,
             "a viewer who cannot scan the QR needs the same complete address in text");
         assert!(page.body.lines().nth(1).unwrap().starts_with('/'));
     }
 
     #[test]
     fn every_contribution_locale_preserves_the_canonical_address() {
-        use crate::i18n::{LocaleContext, SHIPPED};
+        use plx_platform::i18n::{LocaleContext, SHIPPED};
         for preference in SHIPPED {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
-            let caption = crate::i18n::msg::settings_language_contribute_body_in(&locale);
+            let caption = plx_platform::i18n::msg::settings_language_contribute_body_in(&locale);
             assert!(!caption.contains("github.com"), "only the caption is translated");
             assert_eq!(format!("https://{}", contribution_address().replace('\n', "")),
-                crate::i18n::CONTRIBUTE_URL);
+                plx_platform::i18n::CONTRIBUTE_URL);
         }
     }
 
@@ -1155,7 +1155,7 @@ mod tests {
     /// device's whole-pixel advances (see `settings_text_fit_tests.rs` for the Settings root).
     #[test]
     fn every_legal_row_fits_its_column_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let frame_w = crate::ui::route_screen::RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();
         for language in SHIPPED {

@@ -459,7 +459,7 @@ impl Transport {
         if let Ok(title) = CString::new(transport_title(film_title, extra_title)) {
             crate::appkit::player_hud::draw_title(
                 p,
-                crate::appkit::player_hud::Kicker::Context(crate::i18n::msg::browse_detail_trailer_c().as_ptr()),
+                crate::appkit::player_hud::Kicker::Context(plx_platform::i18n::msg::browse_detail_trailer_c().as_ptr()),
                 title.as_ptr(),
             );
         }
@@ -491,7 +491,7 @@ impl Transport {
         if self.hint <= 0.01 {
             return;
         }
-        let hint = KeyHint::translated_glyph(crate::i18n::msg::browse_detail_full_screen_hint("\u{fffc}"), Icon::ChevronUp);
+        let hint = KeyHint::translated_glyph(plx_platform::i18n::msg::browse_detail_full_screen_hint("\u{fffc}"), Icon::ChevronUp);
         let x = hint_cx(hint.width(measure));
         hint.draw(p.alpha(self.hint), x, cy, measure);
     }

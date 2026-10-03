@@ -260,14 +260,14 @@ struct PendingErase {
     incomplete: u32,
     /// The install language the first attempt read before clearing. A retry carries it, because
     /// once the credential file is gone a re-read can no longer see what to retain.
-    language: Option<crate::i18n::Preference>,
+    language: Option<plx_platform::i18n::Preference>,
 }
 
 struct EraseWorkerOutcome {
     complete: bool,
     failures: Vec<String>,
     /// The next-launch language after this erase: retained by sign-out, System after delete-all.
-    language: crate::i18n::Preference,
+    language: plx_platform::i18n::Preference,
 }
 
 pub(crate) struct SessionAdapter {
@@ -742,7 +742,7 @@ impl SessionAdapter {
             let diagnostics = all_local;
             #[cfg(test)]
             let diagnostics = diagnostics && self.resource_test_io.is_none();
-            if diagnostics { crate::storage::diagnostics::disable(); }
+            if diagnostics { plx_platform::storage::diagnostics::disable(); }
             self.erasures.push_back(PendingErase {
                 epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(), incomplete: 0,
                 language: None,
@@ -770,7 +770,7 @@ impl SessionAdapter {
             }
             crate::plex::session::revoke_cached_session();
             let mut failures: Vec<String> = if diagnostics {
-                crate::storage::diagnostics::finish_disable(plx_base::paths::runtime_dir())
+                plx_platform::storage::diagnostics::finish_disable(plx_base::paths::runtime_dir())
                     .err()
                     .into_iter()
                     .collect()
@@ -805,7 +805,7 @@ impl SessionAdapter {
                 return None;
             }
             Ok(outcome) => {
-                crate::i18n::set_saved_preference(outcome.language);
+                plx_platform::i18n::set_saved_preference(outcome.language);
                 outcome.failures
             }
         };
@@ -827,7 +827,7 @@ impl SessionAdapter {
                         super::super::input::remove_or_prove_absent).len())
                     } else { 0 }; // Other host cache/runtime sweeps remain disabled in resource tests.
                 }
-                crate::imgcache::clear();
+                plx_platform::imgcache::clear();
                 if all_local {
                     let leftovers = super::super::input::delete_all_local_data(meta, worker_failures);
                     if super::super::input::delete_outcome(leftovers.len()).report_leftovers {
@@ -937,7 +937,7 @@ impl SessionAdapter {
     pub(crate) fn claim_root_press(&mut self) -> bool {
         if self.controlled_home { return false; }
         match &mut self.resources {
-            Resources::Live { .. } => crate::tv::home::take_root_press(),
+            Resources::Live { .. } => plx_platform::tv::home::take_root_press(),
             #[cfg(test)]
             Resources::Fixture(resources) => std::mem::replace(&mut resources.root_press_available, false),
         }
@@ -948,8 +948,8 @@ impl SessionAdapter {
         match &mut self.resources {
             Resources::Live { .. } => {
                 match super::super::input::after_cancel(resumed) {
-                    super::super::input::AfterCancel::BackedOut => crate::tv::home::release_root_press(),
-                    super::super::input::AfterCancel::Home => crate::tv::home::go_home(),
+                    super::super::input::AfterCancel::BackedOut => plx_platform::tv::home::release_root_press(),
+                    super::super::input::AfterCancel::Home => plx_platform::tv::home::go_home(),
                 }
             }
             #[cfg(test)]
@@ -1280,11 +1280,11 @@ mod tests {
     /// The webOS 4.10.2 mount: the session candidate does not exist and every unlink in its
     /// directory answers EROFS. Returns the fault guard and the adapter.
     fn erase_behind_a_read_only_mount(session: &crate::plex::session::TempSession,
-        mt: &plx_base::task::MainThread) -> (crate::storage::UnlinkFaultForTest, SessionAdapter) {
+        mt: &plx_base::task::MainThread) -> (plx_platform::storage::UnlinkFaultForTest, SessionAdapter) {
         crate::plex::session::save(&crate::plex::session::Session {
             client_id: "install".into(), account_token: "old".into(), ..Default::default() });
         std::fs::remove_file(session.path()).unwrap();
-        let erofs = crate::storage::UnlinkFaultForTest::install(session.path().parent().unwrap(), libc::EROFS);
+        let erofs = plx_platform::storage::UnlinkFaultForTest::install(session.path().parent().unwrap(), libc::EROFS);
         (erofs, SessionAdapter::live_resources_for_test(mt, false))
     }
 
@@ -1335,20 +1335,20 @@ mod tests {
     /// next-launch preference the Language screen shows.
     #[test]
     fn signout_keeps_the_install_language_and_only_delete_all_resets_it() {
-        use crate::i18n::Preference;
+        use plx_platform::i18n::Preference;
         let _serial = plx_base::testlock::serial();
         let session = crate::plex::session::TempSession::new("erase-language");
         struct Restore(Preference);
         impl Drop for Restore {
-            fn drop(&mut self) { crate::i18n::set_saved_preference(self.0); }
+            fn drop(&mut self) { plx_platform::i18n::set_saved_preference(self.0); }
         }
-        let _restore = Restore(crate::i18n::saved_preference());
+        let _restore = Restore(plx_platform::i18n::saved_preference());
         crate::plex::session::save(&crate::plex::session::Session {
             client_id: "install".into(), account_token: "old".into(), ..Default::default() });
         assert!(crate::plex::session::set_language(Preference::Be), "setup: a durable language");
         let relaunch = || {
             crate::plex::session::redirect_for_test(Some(session.path()));
-            crate::i18n::set_saved_preference(Preference::System);
+            plx_platform::i18n::set_saved_preference(Preference::System);
             crate::plex::session::load()
         };
         let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -1359,19 +1359,19 @@ mod tests {
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta),
             Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })));
-        assert_eq!(crate::i18n::saved_preference(), Preference::Be,
+        assert_eq!(plx_platform::i18n::saved_preference(), Preference::Be,
             "sign-out must not change the confirmed next-launch language");
         let signed_out = relaunch();
         assert!(signed_out.account_token.is_empty(), "sign-out still revokes the credential");
         assert_eq!(signed_out.language, Preference::Be,
             "an ordinary sign-out must keep the install-wide language across relaunch");
 
-        crate::i18n::set_saved_preference(Preference::Be);
+        plx_platform::i18n::set_saved_preference(Preference::Be);
         assert!(adapter.begin_erase(2, true, &mut meta).is_none());
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta),
             Some(crate::auth::owner::SessionEvent::Erased { epoch: 2, .. })));
-        assert_eq!(crate::i18n::saved_preference(), Preference::System,
+        assert_eq!(plx_platform::i18n::saved_preference(), Preference::System,
             "Delete all local data resets the confirmed next-launch language");
         assert_eq!(relaunch().language, Preference::System,
             "Delete all local data must not leave the language behind on disk");
@@ -1811,7 +1811,7 @@ mod tests {
         struct ClearInjectedFailure;
         impl Drop for ClearInjectedFailure {
             fn drop(&mut self) {
-                crate::storage::clear_injected_commit_failure_for_test();
+                plx_platform::storage::clear_injected_commit_failure_for_test();
             }
         }
         let _clear_injected_failure = ClearInjectedFailure;
@@ -1859,7 +1859,7 @@ mod tests {
         // the record has actually been renamed into place (the real production seam; see
         // `storage::JsonStore::commit`), so `save_locked_with_authority` takes the `!durable`
         // branch and falls through to the legacy write, which succeeds.
-        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+        plx_platform::storage::inject_next_commit_failure_for_test(plx_platform::storage::CommitStage::ParentSync);
 
         let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
         // The registry/admission bookkeeping is unrelated to this finding; only the completion's
@@ -1871,7 +1871,7 @@ mod tests {
         assert!(
             matches!(completion.outcome,
                 crate::plex::session::async_persistence::CompletionOutcome::Uncertain {
-                    stage: crate::storage::CommitStage::ParentSync, ..
+                    stage: plx_platform::storage::CommitStage::ParentSync, ..
                 }),
             "an Uncertain canonical commit must surface as Uncertain even though the legacy \
              fall-through write succeeded — it must NEVER be reported as Durable: {:?}",

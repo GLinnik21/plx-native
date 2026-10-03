@@ -224,7 +224,7 @@ pub(crate) struct AltRow {
 /// What the sub-line calls a source with no owner: the signed-in account's own server. A PERSON in
 /// every case, which is the design's rule for every browsing surface — the machine name never
 /// appears outside the Sources list.
-fn own_account() -> &'static str { crate::i18n::msg::browse_account_own() }
+fn own_account() -> &'static str { plx_platform::i18n::msg::browse_account_own() }
 
 /// Build the panel's rows from `list`, given the copy the page is standing on (`here_sid` +
 /// `here_rk`). PURE — every ordering and marking decision in this module is here, and the host

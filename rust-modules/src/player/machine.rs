@@ -129,21 +129,21 @@ impl Default for Player {
 
 /// Logical repair authority; resource handles live in PlayerAdapter. No reset-on-playback API.
 pub(crate) struct RepairAttempt {
-    state: crate::tv::sandbox::State,
+    state: plx_platform::tv::sandbox::State,
 }
 impl RepairAttempt {
-    pub(crate) const fn new() -> Self { Self { state: crate::tv::sandbox::State::Idle } }
-    pub(crate) fn state(&self) -> crate::tv::sandbox::State { self.state }
+    pub(crate) const fn new() -> Self { Self { state: plx_platform::tv::sandbox::State::Idle } }
+    pub(crate) fn state(&self) -> plx_platform::tv::sandbox::State { self.state }
     pub(crate) fn begin(&mut self, supported: bool) -> Option<u64> {
-        use crate::tv::sandbox::{State, Failure};
+        use plx_platform::tv::sandbox::{State, Failure};
         if self.state != State::Idle { return None; }
         if !supported { self.state = State::Failed(Failure::Unsupported); return None; }
         self.state = State::Running;
         Some(1)
     }
     /// The single issued token can land only once. Wrong/duplicate completions cannot rewrite it.
-    pub(crate) fn complete(&mut self, token: u64, result: Result<(), crate::tv::sandbox::Failure>) -> bool {
-        use crate::tv::sandbox::State;
+    pub(crate) fn complete(&mut self, token: u64, result: Result<(), plx_platform::tv::sandbox::Failure>) -> bool {
+        use plx_platform::tv::sandbox::State;
         if token != 1 || self.state != State::Running { return false; }
         self.state = match result { Ok(()) => State::Repaired, Err(e) => State::Failed(e) };
         true
@@ -153,7 +153,7 @@ impl RepairAttempt {
 #[cfg(test)]
 mod repair_tests {
     use super::*;
-    use crate::tv::sandbox::Failure;
+    use plx_platform::tv::sandbox::Failure;
     // `repair_survives_screen_and_session_recreation_and_rejects_stale_completions` builds a
     // `PlayerScreen`, which `player` may not name: it lives in `screens::player`'s
     // `repair_confirmation_tests`, beside the screen it recreates.

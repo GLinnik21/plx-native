@@ -102,7 +102,7 @@ pub(crate) fn draw(
     measure: &dyn plx_machine::machine::Measure,
 ) {
     p.text(
-        crate::i18n::msg::browse_detail_cast_c().as_ptr(),
+        plx_platform::i18n::msg::browse_detail_cast_c().as_ptr(),
         crate::ui::consts::MARGIN_X,
         top - row.lift(),
         theme::size::HEADLINE,
@@ -260,9 +260,9 @@ mod tests {
     fn combined_crew_captions_fit_two_caption_lines_at_both_safe_edges() {
         let measure = LabelMeasure;
         let safe = crate::ui::consts::SAFE;
-        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
-            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            let caption = crate::i18n::msg::browse_crew_director_writer_in(&locale);
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let caption = plx_platform::i18n::msg::browse_crew_director_writer_in(&locale);
             for center in [safe.x + RowStyle::CAST.w * 0.5,
                 safe.x + safe.w - RowStyle::CAST.w * 0.5] {
                 let (_, frame) = label_frames(center, 100.0, 0.0, &measure);

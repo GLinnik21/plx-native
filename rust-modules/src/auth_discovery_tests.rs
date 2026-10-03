@@ -2473,13 +2473,13 @@ fn no_servers_failure(user_call: impl FnOnce() -> Option<String>)
 #[test]
 fn a_no_servers_sign_in_hands_the_screen_the_account_name() {
     let (message, account, calls, _) = no_servers_failure(|| Some("alexandra".to_owned()));
-    assert_eq!(message, crate::i18n::msg::browse_auth_no_servers(), "the caption stays the fallback");
+    assert_eq!(message, plx_platform::i18n::msg::browse_auth_no_servers(), "the caption stays the fallback");
     assert_eq!(account.as_deref(), Some("alexandra"), "the account is named on the failure");
     assert_eq!(calls, 1, "ONE user call");
 
     let (message, account, calls, _) = no_servers_failure(|| None);
     assert_eq!((message.as_str(), account, calls),
-        (crate::i18n::msg::browse_auth_no_servers(), None, 1),
+        (plx_platform::i18n::msg::browse_auth_no_servers(), None, 1),
         "a failed, timed-out or nameless user call is today's failure, unchanged");
 }
 
@@ -2746,12 +2746,12 @@ fn a_dead_sink_never_asks_for_the_account_name() {
 
 #[test]
 fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
-    use crate::i18n::{LocaleContext, Preference};
+    use plx_platform::i18n::{LocaleContext, Preference};
     let be = LocaleContext::resolve(Preference::Be, None, None, None, None);
     for (count, phrase) in [(1, "1 раз."), (2, "2 разы."), (5, "5 разоў."),
         (11, "11 разоў."), (21, "21 раз.")] {
-        for text in [crate::i18n::msg::browse_auth_plex_dns_retry_in(&be, count),
-            crate::i18n::msg::browse_auth_plex_connect_retry_in(&be, count)] {
+        for text in [plx_platform::i18n::msg::browse_auth_plex_dns_retry_in(&be, count),
+            plx_platform::i18n::msg::browse_auth_plex_connect_retry_in(&be, count)] {
             assert!(text.contains(phrase), "{text}");
             assert!(text.contains("plex.tv") && text.contains("Праверце злучэнне"), "{text}");
             assert!(!text.contains("We tried"), "an English sentence fragment must never survive");

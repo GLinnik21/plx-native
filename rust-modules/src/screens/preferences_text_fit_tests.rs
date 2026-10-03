@@ -7,7 +7,7 @@
 
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure as M;
-use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
 use crate::ui::table::{Section, TableView};
@@ -155,15 +155,15 @@ fn direct_play_readout_fits_beside_its_label_in_every_language() {
             let value = direct_play_readout(mode);
             let table = table_of(
                 Section::new("")
-                    .row(Row::new(crate::i18n::msg::settings_playback_quality())
-                        .value(crate::i18n::msg::settings_audio_not_set()).chevron(true))
-                    .row(Row::new(crate::i18n::msg::settings_playback_direct_play()).value(value).chevron(true)),
+                    .row(Row::new(plx_platform::i18n::msg::settings_playback_quality())
+                        .value(plx_platform::i18n::msg::settings_audio_not_set()).chevron(true))
+                    .row(Row::new(plx_platform::i18n::msg::settings_playback_direct_play()).value(value).chevron(true)),
             );
             out.extend(table.app_fit_failures(frame_w(), &format!("{} playback ({value})", language.tag())));
             let direct_play_row = &table.sections[0].rows[1];
             let cols = table.row_columns(direct_play_row, frame_w(), &M);
             let value_natural = M.width_str(value, theme::size::LABEL, true);
-            let label_natural = M.width_str(crate::i18n::msg::settings_playback_direct_play(), theme::size::HEADLINE, true);
+            let label_natural = M.width_str(plx_platform::i18n::msg::settings_playback_direct_play(), theme::size::HEADLINE, true);
             assert!(cols.value_w + 1.0 >= value_natural,
                 "{} {value:?}: an app-owned Direct Play value must never be elided ({} px column vs {value_natural} px natural)",
                 language.tag(), cols.value_w);
@@ -187,9 +187,9 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
             prefs.subtitle_mode = mode;
             field_readout(PickerKind::SubtitleMode, Quality::Original, DirectPlayMode::Auto, Some(&prefs))
         }).collect();
-        assert_eq!(readouts[0], crate::i18n::msg::settings_audio_manual(), "{}", language.tag());
-        assert_eq!(readouts[1], crate::i18n::msg::settings_audio_foreign_short(), "{}", language.tag());
-        assert_eq!(readouts[2], crate::i18n::msg::settings_audio_always(), "{}", language.tag());
+        assert_eq!(readouts[0], plx_platform::i18n::msg::settings_audio_manual(), "{}", language.tag());
+        assert_eq!(readouts[1], plx_platform::i18n::msg::settings_audio_foreign_short(), "{}", language.tag());
+        assert_eq!(readouts[2], plx_platform::i18n::msg::settings_audio_always(), "{}", language.tag());
         let want = match language.tag() {
             "en" => "When audio isn't in the subtitle language",
             "es" => "Audio fuera del idioma de subtítulos",
@@ -231,7 +231,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
                 Subject::Picker(field) => field.title(),
             };
             for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
-                for status in ["", crate::i18n::msg::settings_playback_save_failed()] {
+                for status in ["", plx_platform::i18n::msg::settings_playback_save_failed()] {
                     let copy = copy_text(subject, status, direct_play);
                     let view = copy_view(&copy);
                     let top = layout.narrative_copy_frame(true, title, layout.action.y, &M).y;
@@ -268,24 +268,24 @@ fn each_local_picker_has_its_own_explanation_in_every_language() {
             assert_ne!(*copy, page, "{tag} {:?} must not repeat the page blurb", fields[i]);
             assert!(copies.iter().enumerate().all(|(j, other)| i == j || other != copy), "{tag} {:?} reads like a sibling", fields[i]);
         }
-        assert_eq!(copies[0], crate::i18n::msg::settings_playback_quality_copy(), "{tag}");
+        assert_eq!(copies[0], plx_platform::i18n::msg::settings_playback_quality_copy(), "{tag}");
         // Force Direct Play overrides only what it changes: the page list, Quality and Direct Play.
         let forced = |subject| copy_text(subject, "", DirectPlayMode::Forced).into_owned();
         for subject in [Subject::Page(Kind::Playback), Subject::Picker(PickerKind::Quality), Subject::Picker(PickerKind::DirectPlay)] {
-            assert_eq!(forced(subject), crate::i18n::msg::settings_playback_force_note(), "{tag} {subject:?}");
+            assert_eq!(forced(subject), plx_platform::i18n::msg::settings_playback_force_note(), "{tag} {subject:?}");
         }
         for (i, &field) in fields.iter().enumerate().skip(2) {
             assert_eq!(forced(Subject::Picker(field)), copies[i], "{tag} {field:?} is untouched by Force");
         }
         // The account pickers keep the account note under every mode.
         for field in [PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles] {
-            assert_eq!(copy_text(Subject::Picker(field), "", DirectPlayMode::Forced), crate::i18n::msg::settings_audio_account_note(), "{tag} {field:?}");
+            assert_eq!(copy_text(Subject::Picker(field), "", DirectPlayMode::Forced), plx_platform::i18n::msg::settings_audio_account_note(), "{tag} {field:?}");
         }
         // A status wins, with the Force note appended only where Force matters.
-        let status = crate::i18n::msg::settings_playback_save_failed();
+        let status = plx_platform::i18n::msg::settings_playback_save_failed();
         assert_eq!(copy_text(Subject::Picker(PickerKind::SkipInterval), status, DirectPlayMode::Forced), status, "{tag}");
         assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Forced),
-            format!("{status}\n\n{}", crate::i18n::msg::settings_playback_force_note()), "{tag}");
+            format!("{status}\n\n{}", plx_platform::i18n::msg::settings_playback_force_note()), "{tag}");
         assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Auto), status, "{tag}");
     }
 }

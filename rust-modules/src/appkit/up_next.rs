@@ -251,8 +251,8 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// equivalent.
 pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
-        crate::appkit::player_hud::ctrl_slot(row, crate::i18n::msg::widgets_next_episode(), measure).w,
-        crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        crate::appkit::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
+        crate::ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 
@@ -262,8 +262,8 @@ pub(crate) fn layout(row: &mut crate::appkit::player_hud::TransportRow, measure:
 /// one is how a stray click starts an episode the user did not ask for.
 pub(crate) fn layout_peek(row: &crate::appkit::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
-        crate::appkit::player_hud::ctrl_slot_w(row, crate::i18n::msg::widgets_next_episode(), measure),
-        crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        crate::appkit::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
+        crate::ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 
@@ -277,7 +277,7 @@ fn caption(u: &UpNext) -> String {
     } else {
         u.ep_title.clone()
     };
-    crate::i18n::msg::widgets_next_caption(&episode)
+    plx_platform::i18n::msg::widgets_next_caption(&episode)
 }
 
 pub(crate) fn draw(
@@ -323,7 +323,7 @@ pub(crate) fn draw(
     let e = Env::inert();
     // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
     // slot and share its cursor, so they share its springs (`TransportRow::scale`).
-    Button::new(crate::i18n::msg::widgets_next_credits_c().as_ptr(), theme::size::BODY, l.credits)
+    Button::new(plx_platform::i18n::msg::widgets_next_credits_c().as_ptr(), theme::size::BODY, l.credits)
         .focused(focused && btn == BTN_CREDITS)
         // Both buttons on this card stand on LIVE CREDITS — the video plane, under this card's own
         // scrim — so both take the unkeyed ground (`ControlGround`). It is what the app's
@@ -337,7 +337,7 @@ pub(crate) fn draw(
     // starts. Driven straight off the remaining MILLISECONDS and redrawn every frame, so the sweep
     // is continuous; the label carries no seconds, because the pill's width is derived from its
     // label and a ticking numeral would resize the button and slide its centred text every second.
-    let Ok(label) = CString::new(crate::i18n::msg::widgets_next_episode()) else {
+    let Ok(label) = CString::new(plx_platform::i18n::msg::widgets_next_episode()) else {
         return;
     };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)

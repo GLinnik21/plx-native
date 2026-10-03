@@ -554,7 +554,7 @@ fn sink_envelope(
     is_h265: bool,
     max_raster: (u16, u16),
     stream_fps: f64,
-    caps: &crate::devcaps::Caps,
+    caps: &plx_platform::devcaps::Caps,
     measured: bool,
 ) -> SinkEnvelope {
     let fits_fhd = |w: u32, h: u32| w > 0 && h > 0 && w <= 1920 && h <= 1088;
@@ -635,8 +635,8 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkE
         is_h265,
         crate::route::sink_max_raster(ps),
         crate::route::stream_fps(ps),
-        crate::devcaps::caps(),
-        crate::devcaps::measured() && !crate::route::forced_direct_play(ps),
+        plx_platform::devcaps::caps(),
+        plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
     )
 }
 
@@ -934,7 +934,7 @@ pub(crate) fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut 
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
-    if crate::tv::sandbox::blocks_native_video() {
+    if plx_platform::tv::sandbox::blocks_native_video() {
         ps.jail_load_blocked = true;
         log("start_bufferfeed: refusing native video; affected chassis cannot read /dev/rtkmem");
         if let Some(ticket) = crate::route::begin_route_start() {
@@ -2897,7 +2897,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::devcaps::dv::DvCapability::Supported,
+            plx_platform::devcaps::dv::DvCapability::Supported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -2915,7 +2915,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::devcaps::dv::DvCapability::Unsupported,
+            plx_platform::devcaps::dv::DvCapability::Unsupported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -2936,11 +2936,11 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::devcaps::dv::DvCapability::Unknown,
+            plx_platform::devcaps::dv::DvCapability::Unknown,
         ));
         let fresh = p8().presentation(
             true,
-            crate::devcaps::dv::DvCapability::Supported,
+            plx_platform::devcaps::dv::DvCapability::Supported,
             true,
         );
         assert!(fresh.declared().is_some(), "a subsequent decision sees Supported");
@@ -3072,7 +3072,7 @@ mod payload_tests {
         // what `build_av_payload` hands it: the AV template with the codec already set to H265,
         // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
-        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true));
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true));
         assert!(
             out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
             "{out}"
@@ -3109,9 +3109,9 @@ mod payload_tests {
             ..Dovi::NONE
         };
         for dv in [
-            Dovi::NONE.presentation(true, crate::devcaps::dv::DvCapability::Supported, true),
-            p7.presentation(true, crate::devcaps::dv::DvCapability::Supported, true),
-            p5().presentation(false, crate::devcaps::dv::DvCapability::Supported, true),
+            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
         ] {
             assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
         }
@@ -3169,7 +3169,7 @@ mod payload_tests {
     fn dolby_vision_and_atmos_are_siblings_inside_contents() {
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
         let out = with_immersive(
-            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true)),
+            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true)),
             "AC3 PLUS",
             true,
         );
@@ -3194,7 +3194,7 @@ mod payload_tests {
     #[test]
     fn a_declaration_never_rides_a_non_hevc_payload() {
         assert_eq!(
-            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true)),
+            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true)),
             PAYLOAD_AV
         );
     }
@@ -4821,8 +4821,8 @@ mod load_in_flight_tests {
 mod sink_envelope_tests {
     use super::*;
 
-    fn caps(h264: (u32, u32, u32), hevc: (u32, u32, u32)) -> crate::devcaps::Caps {
-        let mut c = crate::devcaps::Caps::assumed();
+    fn caps(h264: (u32, u32, u32), hevc: (u32, u32, u32)) -> plx_platform::devcaps::Caps {
+        let mut c = plx_platform::devcaps::Caps::assumed();
         c.h264_row = h264;
         c.hevc_row = hevc;
         c
@@ -4882,7 +4882,7 @@ mod sink_envelope_tests {
         assert_eq!(sink_envelope(true, (0, 0), 0.0, &c, true), ENVELOPE_FHD60);
         // the same rows, not measured: never a clamp
         assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &c, false), ENVELOPE_UHD60);
-        assert_eq!(sink_envelope(true, (0, 0), 0.0, &crate::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
+        assert_eq!(sink_envelope(true, (0, 0), 0.0, &plx_platform::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
         // a table stating a lower frame rate clamps it; a higher one never raises it
         let slow = caps((3840, 2160, 30), (3840, 2160, 120));
         assert_eq!(sink_envelope(false, (3840, 2160), 0.0, &slow, true).fps, 30);

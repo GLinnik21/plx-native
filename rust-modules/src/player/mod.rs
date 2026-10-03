@@ -54,11 +54,11 @@ use shared::{
 /// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
 /// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
 #[cfg(not(all(test, feature = "hostsim")))]
-fn sink() -> &'static dyn crate::tv::sink::VideoSink {
-    crate::tv::sink::installed()
+fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
+    plx_platform::tv::sink::installed()
 }
 #[cfg(all(test, feature = "hostsim"))]
-fn sink() -> &'static dyn crate::tv::sink::VideoSink {
+fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     &ffi_host::HostSink
 }
 
@@ -591,19 +591,19 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
 /// name a file.
 pub(crate) fn support_line(kind: FailureKind) -> String {
     support_line_of(
-        crate::tv::device::info(),
-        crate::tv::device::device(),
+        plx_platform::tv::device::info(),
+        plx_platform::tv::device::device(),
         kind,
     )
 }
-fn support_line_of(i: &crate::tv::device::Info, hw: &crate::tv::device::Hardware, kind: FailureKind) -> String {
+fn support_line_of(i: &plx_platform::tv::device::Info, hw: &plx_platform::tv::device::Hardware, kind: FailureKind) -> String {
     let set = hw.set_line();
-    let set: &str = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device() } else { &set };
+    let set: &str = if set.is_empty() { plx_platform::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
-        crate::i18n::webos_release_line(i),
+        plx_platform::i18n::webos_release_line(i),
         set,
         kind.code()
     )
@@ -668,7 +668,7 @@ pub(crate) enum FailureKind {
     TvPipeline,
     /// This device's jail is missing `/dev/rtkmem` on a SoC where that is a known cause of
     /// native A/V crashes — the Load was never attempted. Community-tier finding: see
-    /// [`crate::tv::sandbox::blocks_native_video`]'s doc.
+    /// [`plx_platform::tv::sandbox::blocks_native_video`]'s doc.
     JailMissingRtkmem,
     /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — either the native `Load` call never
     /// returned, or it returned but `loadCompleted` never arrived. Distinct from
@@ -801,7 +801,7 @@ pub(crate) fn failure_context(ps: &crate::route::PlaybackSession) -> FailureCont
     FailureContext {
         forced: crate::route::forced_direct_play(ps) || failtest_forced(),
         can_retry: crate::route::can_retry_current_play(ps),
-        repair_idle: ps.repair_status == crate::tv::sandbox::State::Idle,
+        repair_idle: ps.repair_status == plx_platform::tv::sandbox::State::Idle,
     }
 }
 
@@ -888,7 +888,7 @@ fn runtime_failure(
 /// [`error_shape`], because it precedes route resolution entirely: it names a device finding, not
 /// a decision the server or the runtime made. Phrased as a FINDING throughout — "found... known
 /// to..." — never as a certain diagnosis, matching the community-tier evidence it is built on
-/// (see [`crate::tv::sandbox::blocks_native_video`]'s doc). Caption and readout are kept short for
+/// (see [`plx_platform::tv::sandbox::blocks_native_video`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
 /// in `detail`. `Player.repair` (see `tv::sandbox`) can actually attempt the Homebrew
 /// Channel service call that patches the jail profile, so the remedy text points at that confirmed
@@ -896,11 +896,11 @@ fn runtime_failure(
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
-        caption: crate::i18n::msg::widgets_failure_jail_c(),
-        panel: crate::i18n::msg::widgets_panel_jail(),
-        readout: crate::i18n::msg::widgets_reason_jail(),
+        caption: plx_platform::i18n::msg::widgets_failure_jail_c(),
+        panel: plx_platform::i18n::msg::widgets_panel_jail(),
+        readout: plx_platform::i18n::msg::widgets_reason_jail(),
         detail: std::borrow::Cow::Borrowed(
-            crate::i18n::msg::widgets_reason_jail_help(),
+            plx_platform::i18n::msg::widgets_reason_jail_help(),
         ),
         no_pass: false,
     }
@@ -928,11 +928,11 @@ fn error_shape(
     if let Some(v) = verdict {
         return ErrorShape {
             kind: FailureKind::DecisionRefused,
-            caption: crate::i18n::msg::widgets_failure_refused_c(),
+            caption: plx_platform::i18n::msg::widgets_failure_refused_c(),
             // The panel's line is ours and static; the server's sentence rides on `detail`, whose
             // surface (the full-screen read-out) is the one that can hold a whole sentence.
-            panel: crate::i18n::msg::widgets_panel_refused(),
-            readout: crate::i18n::msg::widgets_reason_refused(),
+            panel: plx_platform::i18n::msg::widgets_panel_refused(),
+            readout: plx_platform::i18n::msg::widgets_reason_refused(),
             // OWNED since phase 9: the verdict is borrowed from the caller's session publication
             // rather than from a `static mut`, so it cannot be lent for `'static`. One allocation,
             // on the path where a playback has already failed.
@@ -943,13 +943,13 @@ fn error_shape(
     if no_video && transcoding {
         return ErrorShape {
             kind: FailureKind::NoVideoTranscodeTarget,
-            caption: crate::i18n::msg::widgets_failure_audio_only_c(),
+            caption: plx_platform::i18n::msg::widgets_failure_audio_only_c(),
             panel: if no_pass {
-                crate::i18n::msg::widgets_panel_audio_only_no_pass()
+                plx_platform::i18n::msg::widgets_panel_audio_only_no_pass()
             } else {
-                crate::i18n::msg::widgets_panel_audio_only()
+                plx_platform::i18n::msg::widgets_panel_audio_only()
             },
-            readout: crate::i18n::msg::widgets_reason_audio_only(),
+            readout: plx_platform::i18n::msg::widgets_reason_audio_only(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass,
         };
@@ -957,9 +957,9 @@ fn error_shape(
     if no_video {
         return ErrorShape {
             kind: FailureKind::NoVideoTrack,
-            caption: crate::i18n::msg::widgets_failure_no_video_c(),
-            panel: crate::i18n::msg::widgets_panel_no_video(),
-            readout: crate::i18n::msg::widgets_reason_no_video(),
+            caption: plx_platform::i18n::msg::widgets_failure_no_video_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_no_video(),
+            readout: plx_platform::i18n::msg::widgets_reason_no_video(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         };
@@ -967,25 +967,25 @@ fn error_shape(
     match runtime {
         RuntimeFailure::MediaSource => ErrorShape {
             kind: FailureKind::MediaSource,
-            caption: crate::i18n::msg::widgets_failure_open_c(),
-            panel: crate::i18n::msg::widgets_panel_open(),
-            readout: crate::i18n::msg::widgets_reason_open(),
+            caption: plx_platform::i18n::msg::widgets_failure_open_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_open(),
+            readout: plx_platform::i18n::msg::widgets_reason_open(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::PlaybackInterrupted => ErrorShape {
             kind: FailureKind::PlaybackInterrupted,
-            caption: crate::i18n::msg::widgets_failure_stopped_c(),
-            panel: crate::i18n::msg::widgets_panel_stopped(),
-            readout: crate::i18n::msg::widgets_reason_stopped(),
+            caption: plx_platform::i18n::msg::widgets_failure_stopped_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_stopped(),
+            readout: plx_platform::i18n::msg::widgets_reason_stopped(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::TvPipeline => ErrorShape {
             kind: FailureKind::TvPipeline,
-            caption: crate::i18n::msg::widgets_failure_tv_rejected_c(),
-            panel: crate::i18n::msg::widgets_panel_tv_rejected(),
-            readout: crate::i18n::msg::widgets_reason_tv_rejected(),
+            caption: plx_platform::i18n::msg::widgets_failure_tv_rejected_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_tv_rejected(),
+            readout: plx_platform::i18n::msg::widgets_reason_tv_rejected(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -995,17 +995,17 @@ fn error_shape(
         // that was never given.
         RuntimeFailure::LoadTimeout => ErrorShape {
             kind: FailureKind::LoadTimeout,
-            caption: crate::i18n::msg::widgets_failure_load_timeout_c(),
-            panel: crate::i18n::msg::widgets_panel_load_timeout(),
-            readout: crate::i18n::msg::widgets_reason_load_timeout(),
+            caption: plx_platform::i18n::msg::widgets_failure_load_timeout_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_load_timeout(),
+            readout: plx_platform::i18n::msg::widgets_reason_load_timeout(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
-            caption: crate::i18n::msg::widgets_status_failed_c(),
-            panel: crate::i18n::msg::widgets_panel_unknown(),
-            readout: crate::i18n::msg::widgets_reason_unknown(),
+            caption: plx_platform::i18n::msg::widgets_status_failed_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_unknown(),
+            readout: plx_platform::i18n::msg::widgets_reason_unknown(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -1038,13 +1038,13 @@ fn with_forced_playback_context(mut shape: ErrorShape, forced: bool) -> ErrorSha
     if !forced { return shape; }
     if shape.kind == FailureKind::DecisionRefused {
         shape.kind = FailureKind::PlaybackPolicy;
-        shape.caption = crate::i18n::msg::widgets_failure_forced_playback_c();
-        shape.panel = crate::i18n::msg::widgets_panel_forced_playback();
-        shape.readout = crate::i18n::msg::widgets_reason_forced_playback();
+        shape.caption = plx_platform::i18n::msg::widgets_failure_forced_playback_c();
+        shape.panel = plx_platform::i18n::msg::widgets_panel_forced_playback();
+        shape.readout = plx_platform::i18n::msg::widgets_reason_forced_playback();
         // The policy verdict already names the specific limitation and the return-to-Auto step.
     } else {
         shape.detail = std::borrow::Cow::Borrowed(
-            crate::i18n::msg::widgets_reason_forced_playback_help(),
+            plx_platform::i18n::msg::widgets_reason_forced_playback_help(),
         );
     }
     shape.no_pass = false;
@@ -1195,7 +1195,7 @@ pub(crate) use engine::aq_caps;
 /// value, deliberately, so the plant grading the controller is not the controller agreeing with
 /// itself.
 pub(crate) use engine::feed_leads_ms;
-pub(crate) use crate::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
+pub(crate) use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 #[cfg(feature = "hostsim")]
 /// The simulator's clock-sink stop; the television's pipeline has no such control.
 pub(crate) use ffi_host::stop_clock_at as stop_sim_clock_at;
@@ -2197,7 +2197,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
-        match sink_counter_kind(ty, crate::tv::device::info().major) {
+        match sink_counter_kind(ty, plx_platform::tv::device::info().major) {
             Some(SinkCounter::Displayed) => log(&format!("sink: displayed={num} (type={ty})")),
             Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
             None => {}
@@ -2610,12 +2610,12 @@ mod tests {
 
     #[test]
     fn the_support_line_names_version_firmware_set_and_code_and_nothing_free_text() {
-        let i = crate::tv::device::Info {
+        let i = plx_platform::tv::device::Info {
             release: "4.10.2".into(),
             major: 4,
             ..Default::default()
         };
-        let hw = crate::tv::device::Hardware {
+        let hw = plx_platform::tv::device::Hardware {
             model: "43LM6300PVB".into(),
             board: "m3r".into(),
             hw_revision: String::new(),
@@ -2629,14 +2629,14 @@ mod tests {
             )
         );
         let bare = support_line_of(
-            &crate::tv::device::Info::default(),
-            &crate::tv::device::Hardware::default(),
+            &plx_platform::tv::device::Info::default(),
+            &plx_platform::tv::device::Hardware::default(),
             FailureKind::Unspecified,
         );
         assert!(bare.contains(&format!(
             "{} · {} · unspecified",
-            crate::i18n::msg::browse_diagnostics_unknown_os(),
-            crate::i18n::msg::settings_login_unknown_device(),
+            plx_platform::i18n::msg::browse_diagnostics_unknown_os(),
+            plx_platform::i18n::msg::settings_login_unknown_device(),
         )), "{bare}");
     }
 
@@ -3656,7 +3656,7 @@ mod native_failure_regressions {
     use super::*;
     struct JailGuard;
     impl Drop for JailGuard {
-        fn drop(&mut self) { crate::tv::sandbox::FORCE_BLOCKED.store(false, Relaxed); }
+        fn drop(&mut self) { plx_platform::tv::sandbox::FORCE_BLOCKED.store(false, Relaxed); }
     }
     #[test]
     fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
@@ -3666,7 +3666,7 @@ mod native_failure_regressions {
         crate::route::reset_player_control_for_test(&ps);
         SHARED.reset_session();
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-        crate::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
+        plx_platform::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
         assert_eq!(state(&ps), PlaybackState::Error);

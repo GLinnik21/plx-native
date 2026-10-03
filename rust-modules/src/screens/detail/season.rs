@@ -114,7 +114,7 @@ impl Metrics {
         self.lays = widgets::strip_layout_measured(
             d.seasons.iter().map(|season| {
                 if season.title.is_empty() {
-                    crate::i18n::msg::browse_detail_season_number(season.index as i64)
+                    plx_platform::i18n::msg::browse_detail_season_number(season.index as i64)
                 } else {
                     season.title.clone()
                 }

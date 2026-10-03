@@ -21,7 +21,7 @@
 //! without writable durable state on the rented set.
 
 use super::ControlCommand;
-use crate::labcfg::config;
+use plx_platform::labcfg::config;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};

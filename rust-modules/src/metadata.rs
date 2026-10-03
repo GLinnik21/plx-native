@@ -322,11 +322,11 @@ impl CrewRole {
         }
     }
 
-    fn display(self, locale: &crate::i18n::LocaleContext) -> &'static str {
+    fn display(self, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
         match self {
-            Self::Director => crate::i18n::msg::browse_crew_director_in(locale),
-            Self::Writer => crate::i18n::msg::browse_crew_writer_in(locale),
-            Self::DirectorWriter => crate::i18n::msg::browse_crew_director_writer_in(locale),
+            Self::Director => plx_platform::i18n::msg::browse_crew_director_in(locale),
+            Self::Writer => plx_platform::i18n::msg::browse_crew_writer_in(locale),
+            Self::DirectorWriter => plx_platform::i18n::msg::browse_crew_director_writer_in(locale),
         }
     }
 }
@@ -496,7 +496,7 @@ impl Dovi {
     ///
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
-    /// definite [`Supported`](crate::devcaps::dv::DvCapability::Supported), and
+    /// definite [`Supported`](plx_platform::devcaps::dv::DvCapability::Supported), and
     /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
     /// payload's H265 guard silently discarded the node.
     ///
@@ -529,7 +529,7 @@ impl Dovi {
     pub(crate) fn presentation(
         &self,
         signal: bool,
-        capability: crate::devcaps::dv::DvCapability,
+        capability: plx_platform::devcaps::dv::DvCapability,
         video_is_hevc: bool,
     ) -> DvPresentation {
         if !self.present {
@@ -541,7 +541,7 @@ impl Dovi {
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
-        let declare = capability == crate::devcaps::dv::DvCapability::Supported
+        let declare = capability == plx_platform::devcaps::dv::DvCapability::Supported
             && video_is_hevc
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
@@ -568,13 +568,13 @@ impl Dovi {
     pub(crate) fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
-            crate::devcaps::dv::capability(),
+            plx_platform::devcaps::dv::capability(),
             video_is_hevc,
         )
     }
 
     pub(crate) fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
-        let capability = crate::devcaps::dv::capability();
+        let capability = plx_platform::devcaps::dv::capability();
         DvDecision {
             capability,
             presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
@@ -623,13 +623,13 @@ pub(crate) enum DvPresentation {
 /// copyable so reload, recovery and rollback preserve the installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct DvDecision {
-    pub(crate) capability: crate::devcaps::dv::DvCapability,
+    pub(crate) capability: plx_platform::devcaps::dv::DvCapability,
     pub(crate) presentation: DvPresentation,
 }
 
 impl DvDecision {
     pub(crate) const NONE: Self = Self {
-        capability: crate::devcaps::dv::DvCapability::Unknown,
+        capability: plx_platform::devcaps::dv::DvCapability::Unknown,
         presentation: DvPresentation::NotDv,
     };
 }
@@ -652,9 +652,9 @@ impl DvPresentation {
     /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
     pub(crate) fn display(&self) -> &'static str {
         match self {
-            Self::NotDv => crate::i18n::msg::browse_diagnostics_dv_base_layer(),
-            Self::Declare(_) => crate::i18n::msg::browse_diagnostics_dv_declare(),
-            Self::Refuse(_) => crate::i18n::msg::browse_diagnostics_dv_refuse(),
+            Self::NotDv => plx_platform::i18n::msg::browse_diagnostics_dv_base_layer(),
+            Self::Declare(_) => plx_platform::i18n::msg::browse_diagnostics_dv_declare(),
+            Self::Refuse(_) => plx_platform::i18n::msg::browse_diagnostics_dv_refuse(),
         }
     }
 
@@ -902,7 +902,7 @@ impl Extra {
     /// Human subtype for the extras shelf caption, in the UI language. Unknown subtypes read as
     /// the generic extra. The match is on PMS's own subtype names, which are never drawn.
     pub(crate) fn caption(&self) -> &'static str {
-        use crate::i18n::msg;
+        use plx_platform::i18n::msg;
         match self.subtype.as_str() {
             "trailer" => msg::browse_detail_trailer(),
             "behindTheScenes" => msg::browse_extra_behind_the_scenes(),
@@ -957,8 +957,8 @@ impl ExtraContext {
     /// The HUD's word for this kind, in the UI language.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Trailer => crate::i18n::msg::browse_detail_trailer(),
-            Self::Extra => crate::i18n::msg::browse_extra_extra(),
+            Self::Trailer => plx_platform::i18n::msg::browse_detail_trailer(),
+            Self::Extra => plx_platform::i18n::msg::browse_extra_extra(),
         }
     }
 }
@@ -1643,10 +1643,10 @@ impl Detail {
     /// Only the crew array owns job identities. An actor whose server-provided character is
     /// named "Director" must retain that exact character name in every locale.
     pub(crate) fn credit_role(&self, i: usize) -> Option<&str> {
-        self.credit_role_in(i, crate::i18n::current())
+        self.credit_role_in(i, plx_platform::i18n::current())
     }
 
-    fn credit_role_in(&self, i: usize, locale: &crate::i18n::LocaleContext) -> Option<&str> {
+    fn credit_role_in(&self, i: usize, locale: &plx_platform::i18n::LocaleContext) -> Option<&str> {
         let credit = self.credit(i)?;
         if i < self.cast.len() {
             return Some(&credit.role);

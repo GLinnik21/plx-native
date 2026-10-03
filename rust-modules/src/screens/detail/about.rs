@@ -106,7 +106,7 @@ impl Rows {
         self.info.clear();
         let released = crate::ui::fmt::pretty_date(&d.aired, d.year);
         if !released.is_empty() {
-            self.info.push((crate::i18n::msg::browse_detail_released(), released));
+            self.info.push((plx_platform::i18n::msg::browse_detail_released(), released));
         }
         let dur = if d.dur_ms > 0 {
             d.dur_ms
@@ -114,23 +114,23 @@ impl Rows {
             d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
         };
         if dur > 0 {
-            self.info.push((crate::i18n::msg::browse_detail_runtime(), crate::ui::fmt::dur_long(dur)));
+            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), crate::ui::fmt::dur_long(dur)));
         }
         self.info.push((
-            crate::i18n::msg::browse_detail_rated(),
+            plx_platform::i18n::msg::browse_detail_rated(),
             if d.rating.is_empty() {
-                crate::i18n::msg::browse_detail_unrated().into()
+                plx_platform::i18n::msg::browse_detail_unrated().into()
             } else {
                 d.rating.clone()
             },
         ));
         if !d.countries.is_empty() {
             self.info
-                .push((crate::i18n::msg::browse_detail_origins(), d.countries.join(", ")));
+                .push((plx_platform::i18n::msg::browse_detail_origins(), d.countries.join(", ")));
         }
         self.orig_audio = d.audio.first().map(|a| {
             if a.lang.is_empty() {
-                crate::i18n::msg::browse_detail_unknown().into()
+                plx_platform::i18n::msg::browse_detail_unknown().into()
             } else {
                 a.lang.clone()
             }
@@ -141,7 +141,7 @@ impl Rows {
             .take(8)
             .map(|a| {
                 let lang = if a.lang.is_empty() {
-                    crate::i18n::msg::browse_detail_unknown()
+                    plx_platform::i18n::msg::browse_detail_unknown()
                 } else {
                     &a.lang
                 };
@@ -152,17 +152,17 @@ impl Rows {
         self.access.clear();
         if !d.subs.is_empty() {
             self.access.push((
-                crate::i18n::msg::widgets_badge_cc(),
-                crate::i18n::msg::browse_detail_closed_captions(),
+                plx_platform::i18n::msg::widgets_badge_cc(),
+                plx_platform::i18n::msg::browse_detail_closed_captions(),
             ));
         }
         if d.subs.iter().any(|s| s.sdh) {
-            self.access.push((crate::i18n::msg::widgets_badge_sdh(), crate::i18n::msg::browse_detail_sdh()));
+            self.access.push((plx_platform::i18n::msg::widgets_badge_sdh(), plx_platform::i18n::msg::browse_detail_sdh()));
         }
         if d.audio.iter().any(|a| a.ad) {
             self.access.push((
-                crate::i18n::msg::widgets_badge_ad(),
-                crate::i18n::msg::browse_detail_audio_description(),
+                plx_platform::i18n::msg::widgets_badge_ad(),
+                plx_platform::i18n::msg::browse_detail_audio_description(),
             ));
         }
     }
@@ -220,7 +220,7 @@ impl Rows {
     ) {
         let x = crate::ui::consts::MARGIN_X;
         p.text(
-            crate::i18n::msg::browse_detail_about_c().as_ptr(),
+            plx_platform::i18n::msg::browse_detail_about_c().as_ptr(),
             x,
             top,
             theme::size::HEADLINE,
@@ -283,7 +283,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            crate::i18n::msg::browse_detail_information(),
+            plx_platform::i18n::msg::browse_detail_information(),
         );
         let mut yy = y + 68.0;
         for (label, value) in &self.info {
@@ -308,11 +308,11 @@ impl Rows {
                 theme::size::HEADLINE,
                 theme::TEXT_PRIMARY,
                 1,
-                crate::i18n::msg::browse_detail_languages(),
+                plx_platform::i18n::msg::browse_detail_languages(),
             );
             let mut yy = y + 68.0;
             if let Some(orig) = &self.orig_audio {
-                yy += draw_pair(p, LANG_X, yy, crate::i18n::msg::browse_detail_original_audio(), orig, measure);
+                yy += draw_pair(p, LANG_X, yy, plx_platform::i18n::msg::browse_detail_original_audio(), orig, measure);
             }
             if !self.audio_list.is_empty() {
                 text_at(
@@ -322,7 +322,7 @@ impl Rows {
                     theme::size::CAPTION,
                     theme::TEXT_TERTIARY,
                     0,
-                    crate::i18n::msg::browse_detail_audio(),
+                    plx_platform::i18n::msg::browse_detail_audio(),
                 );
                 audio_view(&self.audio_list, measure)
                     .draw(p, Rect::new(LANG_X, yy + 34.0, LANG_W, 0.0));
@@ -355,7 +355,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            crate::i18n::msg::browse_detail_accessibility(),
+            plx_platform::i18n::msg::browse_detail_accessibility(),
         );
         if self.access.is_empty() {
             text_at(

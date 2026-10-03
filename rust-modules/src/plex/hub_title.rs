@@ -14,7 +14,7 @@
 //! They differ only in **scope** — see [`Scope`] — which is why this is a parameter rather than
 //! two copies of the same match.
 
-use crate::i18n::msg;
+use plx_platform::i18n::msg;
 
 /// Which endpoint the hub came from. The id catalog below is the same either way; only the
 /// "Recently Added" family's wording differs, because PMS itself titles that family differently

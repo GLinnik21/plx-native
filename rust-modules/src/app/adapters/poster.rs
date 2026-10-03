@@ -539,7 +539,7 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
         g.slots = [Pslot::ZERO; PT_CAP];
         let slot = &mut g.slots[0];
         slot.srv = sid;
-        slot.cache_gen = crate::imgcache::generation();
+        slot.cache_gen = plx_platform::imgcache::generation();
         slot.token_gen = c.token_gen();
         slot.grant_epoch = c.grant_epoch();
         set_key(slot, &before);
@@ -874,7 +874,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // tile that had its picture.
     let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
     let mut g = store();
-    let cache_gen = crate::imgcache::generation();
+    let cache_gen = plx_platform::imgcache::generation();
     let (token_gen, grant_epoch) = crate::plex::client_for(srv)
         .map_or((0, 0), |c| (c.token_gen(), c.grant_epoch()));
     // hit? Matched on the picture and the identity, not the token string: discovery re-registering
@@ -1293,7 +1293,7 @@ pub(crate) fn drain_decoded() {
             let (px, w, h) = (s.px, s.pw, s.ph);
             s.px = 0;
             trace::handoff(i, s.gen);
-            let current = s.cache_gen == crate::imgcache::generation();
+            let current = s.cache_gen == plx_platform::imgcache::generation();
             // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
             // A brief double charge is safe; a gap would let both workers over-admit decodes.
             if !current { s.state = P_FAILED; }
@@ -1494,7 +1494,7 @@ fn disk_namespace(client: &crate::plex::Client) -> String {
 /// Diagnostic snapshot only: reading counters must never initialize or scan the disk cache
 /// on the frame thread. The two demand workers are the only callers that open it.
 pub(crate) fn log_cache_stats() {
-    let s = crate::imgcache::stats();
+    let s = plx_platform::imgcache::stats();
     let queued = note_backlog(&store().slots);
     plx_base::eventlog::log(&format!(
         "imgcache: hits={} misses={} writes={} evictions={} entries={} bytes={} fetches={} queued_bytes={} peak_queued_bytes={} gpu_bytes={}",
@@ -1509,7 +1509,7 @@ struct Loaded<T> {
     art: Option<T>,
     /// The art came from the disk tier (a hit that decoded), not the network.
     from_disk: bool,
-    stale: Option<crate::imgcache::DiskKey>,
+    stale: Option<plx_platform::imgcache::DiskKey>,
     transient: bool,
 }
 
@@ -1527,10 +1527,10 @@ fn load_art<T>(
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
-        crate::imgcache::classify(&disk_namespace(client), key_s)
+        plx_platform::imgcache::classify(&disk_namespace(client), key_s)
     };
     if let Some(k) = &disk {
-        if let Some(cached) = crate::imgcache::read_at(cache_gen, k) {
+        if let Some(cached) = plx_platform::imgcache::read_at(cache_gen, k) {
             match decode(&cached.bytes) {
                 Some(art) => {
                     out.art = Some(art);
@@ -1540,11 +1540,11 @@ fn load_art<T>(
                     }
                     return out;
                 }
-                None => crate::imgcache::remove_at(cache_gen, k),
+                None => plx_platform::imgcache::remove_at(cache_gen, k),
             }
         }
     }
-    if cache_gen != crate::imgcache::generation() {
+    if cache_gen != plx_platform::imgcache::generation() {
         return out;
     }
     FETCHES.fetch_add(1, Ordering::Relaxed);
@@ -1553,7 +1553,7 @@ fn load_art<T>(
             out.art = decode(&b);
             if out.art.is_some() {
                 if let Some(k) = &disk {
-                    crate::imgcache::write_at(cache_gen, k, &b);
+                    plx_platform::imgcache::write_at(cache_gen, k, &b);
                 }
             }
         }
@@ -1576,7 +1576,7 @@ struct WorkerFanIo<'a> {
     srv: ServerId,
     rk: &'a str,
     cache_gen: u64,
-    disk: Option<crate::imgcache::DiskKey>,
+    disk: Option<plx_platform::imgcache::DiskKey>,
     /// The grant the slot was built under, and the profile whose namespace `disk` is filed in.
     token_gen: u32,
     profile: String,
@@ -1589,7 +1589,7 @@ impl WorkerFanIo<'_> {
     /// have listed one profile's members while `disk` names the other's namespace. Such a bake
     /// is still delivered to its (now unreachable) old-grant slot, but never filed on disk.
     fn still_current(&self) -> bool {
-        self.cache_gen == crate::imgcache::generation()
+        self.cache_gen == plx_platform::imgcache::generation()
             && self.client.token_gen() == self.token_gen
             && crate::plex::session::current_profile_key() == self.profile
     }
@@ -1598,11 +1598,11 @@ impl WorkerFanIo<'_> {
 impl fan::FanIo for WorkerFanIo<'_> {
     fn cached(&mut self) -> Option<Vec<u8>> {
         let k = self.disk.as_ref()?;
-        crate::imgcache::read_at(self.cache_gen, k).map(|c| c.bytes)
+        plx_platform::imgcache::read_at(self.cache_gen, k).map(|c| c.bytes)
     }
     fn discard(&mut self) {
         if let Some(k) = &self.disk {
-            crate::imgcache::remove_at(self.cache_gen, k);
+            plx_platform::imgcache::remove_at(self.cache_gen, k);
         }
     }
     fn members(&mut self) -> fan::Got<fan::Members> {
@@ -1619,7 +1619,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
         }
     }
     fn poster(&mut self, thumb: &str) -> fan::Got<fan::Rgba> {
-        if self.cache_gen != crate::imgcache::generation() {
+        if self.cache_gen != plx_platform::imgcache::generation() {
             return fan::Got::Final;
         }
         // The box and builder a portrait card asks for the same poster with, so a member already
@@ -1640,7 +1640,7 @@ impl fan::FanIo for WorkerFanIo<'_> {
             return;
         }
         if let Some(k) = &self.disk {
-            crate::imgcache::write_at(self.cache_gen, k, png);
+            plx_platform::imgcache::write_at(self.cache_gen, k, png);
         }
     }
 }
@@ -1660,7 +1660,7 @@ fn bake_fan(
         None
     } else {
         let namespace = format!("{}|profile:{profile}", disk_namespace(client));
-        crate::imgcache::classify_baked(&namespace, fan::FAN_KIND, rk, stamp, fan::FAN_W, fan::FAN_H)
+        plx_platform::imgcache::classify_baked(&namespace, fan::FAN_KIND, rk, stamp, fan::FAN_W, fan::FAN_H)
     };
     fan::bake(&mut WorkerFanIo { client, srv, rk, cache_gen, disk, token_gen, profile })
 }
@@ -1692,7 +1692,7 @@ fn poster_worker() {
         // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
         // for both identity and transport; a later registry repoint must not mix the two.
         if let Some(client) = crate::plex::client_for(srv)
-            .filter(|c| cache_gen == crate::imgcache::generation() && c.token_gen() == token_gen)
+            .filter(|c| cache_gen == plx_platform::imgcache::generation() && c.token_gen() == token_gen)
         {
             if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
                 match bake_fan(client, srv, rk, stamp, cache_gen, token_gen) {
@@ -1719,7 +1719,7 @@ fn poster_worker() {
                 transient = loaded.transient;
             }
         } else {
-            transient = cache_gen == crate::imgcache::generation();
+            transient = cache_gen == plx_platform::imgcache::generation();
             warn_fetch_failed(srv, ArtFail::NoServer);
         }
         // End this scope BEFORE any further disk/network work. The former avatar refresh held
@@ -1728,7 +1728,7 @@ fn poster_worker() {
             let mut g = store();
             let s = &mut g.slots[idx];
             if s.gen == gen && s.state == P_LOADING {
-                if cache_gen == crate::imgcache::generation() && !px.is_null() {
+                if cache_gen == plx_platform::imgcache::generation() && !px.is_null() {
                     s.px = px as usize;
                     s.pw = w;
                     s.ph = h;
@@ -1736,7 +1736,7 @@ fn poster_worker() {
                     trace::decoded(idx, gen);
                     true
                 } else {
-                    if transient && cache_gen == crate::imgcache::generation() { park_retry(s); }
+                    if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s); }
                     else { s.state = P_FAILED; }
                     trace::lost(idx, gen, "failed");
                     false
@@ -2042,7 +2042,7 @@ mod tests {
             client: c,
             srv: sid,
             rk: "901",
-            cache_gen: crate::imgcache::generation(),
+            cache_gen: plx_platform::imgcache::generation(),
             disk: None,
             token_gen: c.token_gen(),
             profile: crate::plex::session::current_profile_key(),
@@ -2150,7 +2150,7 @@ mod tests {
             g.frame = 1;
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = old_generation;
             set_key(slot, &path);
             slot.state = P_EVICTED;
@@ -2201,7 +2201,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = c.token_gen();
             slot.grant_epoch = c.grant_epoch();
             set_key(slot, &stale);
@@ -2253,7 +2253,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2309,7 +2309,7 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.state = P_READY;
             slot.srv = srv;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2450,7 +2450,7 @@ mod tests {
             g.quit = false;
             let gen = crate::plex::client_for(srv).unwrap().token_gen();
             let epoch = crate::plex::client_for(srv).unwrap().grant_epoch();
-            let cache_gen = crate::imgcache::generation();
+            let cache_gen = plx_platform::imgcache::generation();
             for (i, path) in [&path0, &path1].into_iter().enumerate() {
                 let slot = &mut g.slots[i];
                 slot.state = P_READY;
@@ -2594,7 +2594,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2636,7 +2636,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2681,7 +2681,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2732,7 +2732,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2781,7 +2781,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2872,7 +2872,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2924,7 +2924,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -2967,7 +2967,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -3018,7 +3018,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -3089,7 +3089,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);
@@ -3234,7 +3234,7 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
-            slot.cache_gen = crate::imgcache::generation();
+            slot.cache_gen = plx_platform::imgcache::generation();
             slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             slot.grant_epoch = crate::plex::client_for(sid).unwrap().grant_epoch();
             set_key(slot, &path);

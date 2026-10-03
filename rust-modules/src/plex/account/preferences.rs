@@ -48,12 +48,12 @@ pub(crate) enum PreferenceError {
 impl PreferenceError {
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::Stale => crate::i18n::msg::browse_preferences_stale(),
-            Self::Refused => crate::i18n::msg::browse_preferences_refused(),
-            Self::TimedOut => crate::i18n::msg::browse_preferences_timed_out(),
-            Self::Unavailable => crate::i18n::msg::browse_preferences_unavailable(),
-            Self::InvalidResponse => crate::i18n::msg::browse_preferences_invalid_response(),
-            Self::InvalidPreference => crate::i18n::msg::browse_preferences_invalid_preference(),
+            Self::Stale => plx_platform::i18n::msg::browse_preferences_stale(),
+            Self::Refused => plx_platform::i18n::msg::browse_preferences_refused(),
+            Self::TimedOut => plx_platform::i18n::msg::browse_preferences_timed_out(),
+            Self::Unavailable => plx_platform::i18n::msg::browse_preferences_unavailable(),
+            Self::InvalidResponse => plx_platform::i18n::msg::browse_preferences_invalid_response(),
+            Self::InvalidPreference => plx_platform::i18n::msg::browse_preferences_invalid_preference(),
         }
     }
 }

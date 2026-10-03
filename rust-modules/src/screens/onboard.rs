@@ -42,9 +42,9 @@ enum ActionKind {
 impl ActionKind {
     fn label(self) -> &'static CStr {
         match self {
-            ActionKind::Retry => crate::i18n::msg::settings_retry_c(),
-            ActionKind::Done => crate::i18n::msg::settings_done_c(),
-            ActionKind::Start => crate::i18n::msg::settings_onboard_start_c(),
+            ActionKind::Retry => plx_platform::i18n::msg::settings_retry_c(),
+            ActionKind::Done => plx_platform::i18n::msg::settings_done_c(),
+            ActionKind::Start => plx_platform::i18n::msg::settings_onboard_start_c(),
         }
     }
 }
@@ -421,8 +421,8 @@ impl OnboardScreen {
 
 fn body_copy_for(who: &[String]) -> String {
     match join_names(who) {
-        None => crate::i18n::msg::settings_onboard_copy().to_string(),
-        Some(names) => crate::i18n::msg::settings_onboard_shared(who.len() as i64, &names),
+        None => plx_platform::i18n::msg::settings_onboard_copy().to_string(),
+        Some(names) => plx_platform::i18n::msg::settings_onboard_shared(who.len() as i64, &names),
     }
 }
 
@@ -430,7 +430,7 @@ fn join_names(who: &[String]) -> Option<String> {
     match who {
         [] => None,
         [a] => Some(a.clone()),
-        [rest @ .., last] => Some(crate::i18n::msg::settings_onboard_names(last, &rest.join(", "))),
+        [rest @ .., last] => Some(plx_platform::i18n::msg::settings_onboard_names(last, &rest.join(", "))),
     }
 }
 
@@ -706,7 +706,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(if self.settings { crate::i18n::msg::settings_title() } else { crate::i18n::msg::settings_profiles_title() }))
+        Some(Cow::Borrowed(if self.settings { plx_platform::i18n::msg::settings_title() } else { plx_platform::i18n::msg::settings_profiles_title() }))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -720,8 +720,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         let body = self.body_copy(directory);
         Header::new(
             layout,
-            Some(if self.settings { crate::i18n::msg::settings_title() } else { crate::i18n::msg::settings_profiles_title() }),
-            if self.settings { crate::i18n::msg::settings_libraries_title() } else { crate::i18n::msg::settings_onboard_title() },
+            Some(if self.settings { plx_platform::i18n::msg::settings_title() } else { plx_platform::i18n::msg::settings_profiles_title() }),
+            if self.settings { plx_platform::i18n::msg::settings_libraries_title() } else { plx_platform::i18n::msg::settings_onboard_title() },
             &body,
         )
         .paint(p, f.measure);
@@ -742,8 +742,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         if self.form.table.n_rows() == 0 {
             let env = Env::inert();
             if directory.discovery() == SecFetch::Failed {
-                StatusOverlay::new(lf, crate::i18n::msg::settings_onboard_failed_c(), StatusKind::Failed)
-                    .reason(crate::i18n::msg::settings_onboard_failed_reason_c())
+                StatusOverlay::new(lf, plx_platform::i18n::msg::settings_onboard_failed_c(), StatusKind::Failed)
+                    .reason(plx_platform::i18n::msg::settings_onboard_failed_reason_c())
                     .draw(&env, p);
             } else {
                 Spinner::new(lf.x + lf.w * 0.5, lf.y + StatusOverlay::CTRL_H, 22.0)
@@ -1582,7 +1582,7 @@ mod tests {
         // The Settings-hosted twin asks the same question of `commit` alone: its BACK/Cancel is
         // already proven to touch neither the live pin nor the record
         // (`back_through_the_real_step_path_touches_neither_the_live_pin_nor_the_record`), which is
-        // a claim about LEAVING; this is the claim about the one crate::i18n::msg::settings_onboard_start_c() a pristine, empty editor
+        // a claim about LEAVING; this is the claim about the one plx_platform::i18n::msg::settings_onboard_start_c() a pristine, empty editor
         // still offers — Done must refuse to treat "nothing was ever discovered" as "the answer is
         // to keep nothing pinned".
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
@@ -1841,7 +1841,7 @@ mod tests {
     /// width). Server and library names are marked `server_*` by that builder and exempt.
     #[test]
     fn every_favourites_row_fits_its_column_in_every_language() {
-        use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let _g = plx_base::testlock::serial();
         let frame_w = RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();

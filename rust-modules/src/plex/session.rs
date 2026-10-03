@@ -418,8 +418,8 @@ pub struct Session {
     /// Install-wide UI language, applied on the next process launch. Absent means System, and
     /// System is not written, so a session that never chose a language serializes exactly as it
     /// did before localization — committed replay initials and the owner digest included.
-    #[serde(default, skip_serializing_if = "crate::i18n::Preference::is_system")]
-    pub(crate) language: crate::i18n::Preference,
+    #[serde(default, skip_serializing_if = "plx_platform::i18n::Preference::is_system")]
+    pub(crate) language: plx_platform::i18n::Preference,
     /// Stable `X-Plex-Client-Identifier` — generated once, reused forever (plex.tv binds the pin
     /// and the authorized-device entry to it).
     #[serde(default)]
@@ -709,7 +709,7 @@ struct CanonicalSessionAuth {
 #[derive(Serialize, Deserialize)]
 struct CanonicalSessionPreferences {
     #[serde(default)]
-    language: crate::i18n::Preference,
+    language: plx_platform::i18n::Preference,
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     playback_quality: Option<PlaybackQuality>,
     #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
@@ -759,7 +759,7 @@ struct CanonicalSessionPreferences {
 impl Default for CanonicalSessionPreferences {
     fn default() -> Self {
         Self {
-            language: crate::i18n::Preference::System,
+            language: plx_platform::i18n::Preference::System,
             playback_quality: None,
             direct_play_mode: DirectPlayMode::Auto,
             auto_sign_in: false,
@@ -789,7 +789,7 @@ impl Default for CanonicalSessionPreferences {
 #[allow(dead_code)] // Connected by the Stage B Session adapter.
 pub(crate) fn split_canonical(
     session: &Session,
-) -> Result<(crate::storage::state::PublicPayload, String), ()> {
+) -> Result<(plx_platform::storage::state::PublicPayload, String), ()> {
     // `profiles` in a v1 extension is opaque, never an active credential cache. Refuse an
     // ambiguous v2 write; only the typed field is permitted to carry active credentials.
     if session.extensions.0.contains_key("profiles") { return Err(()); }
@@ -808,7 +808,7 @@ pub(crate) fn split_canonical(
     Ok((split_public(session)?, auth))
 }
 
-fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayload, ()> {
+fn split_public(session: &Session) -> Result<plx_platform::storage::state::PublicPayload, ()> {
     let preferences = serde_json::to_value(CanonicalSessionPreferences {
         language: session.language,
         playback_quality: session.playback_quality,
@@ -832,7 +832,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
     .map_err(|_| ())?;
     let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
     let recents = serde_json::to_value(&session.recent_searches).map_err(|_| ())?;
-    Ok(crate::storage::state::PublicPayload {
+    Ok(plx_platform::storage::state::PublicPayload {
             preferences,
             client_id: (!session.client_id.is_empty()).then(|| session.client_id.clone()),
             // Profile/server bootstrap metadata is personal and only useful together with its
@@ -854,7 +854,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
 /// session would turn corruption into an authenticated state.
 #[allow(dead_code)] // Connected by the Stage B Session adapter.
 pub(crate) fn join_canonical(
-    public: &crate::storage::state::PublicPayload,
+    public: &plx_platform::storage::state::PublicPayload,
     protected: &str,
 ) -> Result<Session, ()> {
     let auth: CanonicalSessionAuth = serde_json::from_str(protected).map_err(|_| ())?;
@@ -906,7 +906,7 @@ pub(crate) fn join_canonical(
 }
 
 /// Public snapshot for a locked protected bundle. It deliberately contains no offline credentials.
-fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
+fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Session {
     let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
         public.preferences.clone(),
     )
@@ -969,7 +969,7 @@ fn protected_fields_equal(left: &Session, right: &Session) -> bool {
     matches!((protected_fields(left), protected_fields(right)), (Ok(left), Ok(right)) if left == right)
 }
 fn protected_matches(session: &Session, protected: &str) -> bool {
-    join_canonical(&crate::storage::state::PublicPayload::default(), protected)
+    join_canonical(&plx_platform::storage::state::PublicPayload::default(), protected)
         .is_ok_and(|previous| protected_fields_equal(&previous, session))
 }
 
@@ -3047,7 +3047,7 @@ static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub(crate) fn install_transient_for_test(locked: bool) {
     plx_base::testlock::assert_held("session read fixture");
     let _io = io();
-    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: crate::i18n::saved_preference() } } else { ReadState::Blocked }));
+    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: plx_platform::i18n::saved_preference() } } else { ReadState::Blocked }));
 }
 
 pub(crate) fn visible_generation() -> u64 {
@@ -3472,7 +3472,7 @@ mod cache_timing_tests {
         frame_step.lands();
         for (read, landed) in [
             ((|| ReadState::Blocked) as fn() -> ReadState, false),
-            ((|| ReadState::Locked { language: crate::i18n::Preference::System }) as fn() -> ReadState, false),
+            ((|| ReadState::Locked { language: plx_platform::i18n::Preference::System }) as fn() -> ReadState, false),
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
             }) as fn() -> ReadState, true),
@@ -3599,7 +3599,7 @@ const SECURE_FORMAT: &str = "plxnative-secure-session";
 struct SecureEnvelope {
     format: String,
     version: u8,
-    sealed: crate::tv::secure::Sealed,
+    sealed: plx_platform::tv::secure::Sealed,
 }
 
 enum ReadState {
@@ -3613,7 +3613,7 @@ enum ReadState {
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
-    Locked { language: crate::i18n::Preference },
+    Locked { language: plx_platform::i18n::Preference },
     /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
     /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
     Blocked,
@@ -3624,7 +3624,7 @@ enum ReadState {
     /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
     /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
     /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
-    Cleared { language: crate::i18n::Preference },
+    Cleared { language: plx_platform::i18n::Preference },
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
@@ -3675,7 +3675,7 @@ fn read_live_locked() -> ReadState {
     }
     match read_canonical_locked() {
         persistence::CanonicalRead::Missing => migrate_missing_fallback_locked(read_legacy_locked()),
-        persistence::CanonicalRead::Blocked(crate::storage::StoreError::HelperUnavailable) => {
+        persistence::CanonicalRead::Blocked(plx_platform::storage::StoreError::HelperUnavailable) => {
             match read_legacy_filtered_locked(true) {
                 ReadState::Ready {
                     session, plaintext, ..
@@ -3764,7 +3764,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
         }
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                let Some(plain) = crate::tv::secure::open(&envelope.sealed) else {
+                let Some(plain) = plx_platform::tv::secure::open(&envelope.sealed) else {
                     plx_base::eventlog::log("session: secure file is present but its device key is unavailable");
                     return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
                 };
@@ -4078,14 +4078,14 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
 
 /// Blocking persistence seam; Language settings dispatches it on the storage worker.
 /// A next-launch promise requires the same confirmed durability as playback preferences.
-pub(crate) fn set_language(language: crate::i18n::Preference) -> bool {
+pub(crate) fn set_language(language: plx_platform::i18n::Preference) -> bool {
     let saved = update_with_outcome(|current| {
         let mut next = current.clone();
         next.language = language;
         Some(next)
     }).is_some_and(|write| matches!(write.classify(),
         async_persistence::CompletionOutcome::Durable(_)));
-    if saved { crate::i18n::set_saved_preference(language); }
+    if saved { plx_platform::i18n::set_saved_preference(language); }
     saved
 }
 
@@ -4248,17 +4248,17 @@ fn save_locked_with_authority(
         install_or_drop_after_write(s, legacy, authority, cache_generation);
         return async_persistence::LiveWrite::legacy(legacy);
     }
-    crate::storage::wire::failure::clear();
+    plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
     let commit = persistence::write_session(s, authority);
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {
-        persistence::CanonicalCommit::Failed(crate::storage::StoreError::HelperUnavailable
-            | crate::storage::StoreError::HelperAuthentication | crate::storage::StoreError::HelperProtocol) =>
-            Some(crate::storage::wire::failure::last().unwrap_or_else(||
-                crate::storage::wire::failure::HelperFailure::new(crate::storage::wire::failure::Stage::Unknown, None))),
+        persistence::CanonicalCommit::Failed(plx_platform::storage::StoreError::HelperUnavailable
+            | plx_platform::storage::StoreError::HelperAuthentication | plx_platform::storage::StoreError::HelperProtocol) =>
+            Some(plx_platform::storage::wire::failure::last().unwrap_or_else(||
+                plx_platform::storage::wire::failure::HelperFailure::new(plx_platform::storage::wire::failure::Stage::Unknown, None))),
         _ => None,
     };
     let durable = matches!(commit, persistence::CanonicalCommit::Durable { .. });
@@ -4359,7 +4359,7 @@ fn save_legacy_fallback_locked(
         plx_base::eventlog::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;
     }
-    if let Some(sealed) = crate::tv::secure::seal(&serde_json::to_vec_pretty(s).ok()?) {
+    if let Some(sealed) = plx_platform::tv::secure::seal(&serde_json::to_vec_pretty(s).ok()?) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
@@ -4443,7 +4443,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
     let Ok(json) = serde_json::to_vec_pretty(s) else {
         return None;
     };
-    if let Some(sealed) = crate::tv::secure::seal(&json) {
+    if let Some(sealed) = plx_platform::tv::secure::seal(&json) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
@@ -4477,7 +4477,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
 fn has_protected_authority() -> bool {
     match read_canonical_locked() {
         persistence::CanonicalRead::Locked { protection, .. } => protection.is_some_and(|outcome| {
-            !matches!(outcome.class, crate::storage::wire::ProtectionClass::Db8AclOnly)
+            !matches!(outcome.class, plx_platform::storage::wire::ProtectionClass::Db8AclOnly)
         }),
         _ => false,
     }
@@ -4848,7 +4848,7 @@ pub fn clear() -> ClearOutcome {
 /// Worker receipt: retaining/resetting a public preference never republishes credentials.
 pub(crate) struct Erasure {
     pub(crate) outcome: ClearOutcome,
-    pub(crate) retained_language: crate::i18n::Preference,
+    pub(crate) retained_language: plx_platform::i18n::Preference,
     pub(crate) preference_failures: Vec<String>,
 }
 
@@ -4857,7 +4857,7 @@ pub(crate) struct Erasure {
 ///
 /// A retry carries the first worker's confirmed language, so a failed auxiliary write cannot
 /// replace it with System after the credentials themselves have already been cleared.
-pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18n::Preference>) -> Erasure {
+pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18n::Preference>) -> Erasure {
     let _io = io();
     let language = retry_language.unwrap_or_else(|| session_from_read(&read_live_locked()).language);
     let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)));
@@ -4973,7 +4973,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
         if let Some(bytes) = read_owned_regular(&path) {
             if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
                 if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                    crate::tv::secure::remove(&envelope.sealed.backend, &envelope.sealed.key);
+                    plx_platform::tv::secure::remove(&envelope.sealed.backend, &envelope.sealed.key);
                 }
             }
         }
@@ -4993,7 +4993,7 @@ pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18
             persistence::CanonicalCommit::Durable { .. });
         if !reset { preference_failures.push("stored language preference could not be reset".into()); }
         preference_failures.extend(install_preferences::erase());
-        if reset && preference_failures.is_empty() { retained_language = crate::i18n::Preference::System; }
+        if reset && preference_failures.is_empty() { retained_language = plx_platform::i18n::Preference::System; }
     } else if native && !matches!(outcome, ClearOutcome::Durable { .. })
         && !install_preferences::save(language) {
         // A failed helper clear can still leave only an explicitly supported file fallback.
@@ -5094,11 +5094,11 @@ fn retry_pending_revocation_removals_locked() -> bool {
             // Discard obsolete permission without touching the marker for a newer sign-out.
             true
         } else {
-            match crate::storage::unlink(&marker) {
+            match plx_platform::storage::unlink(&marker) {
                 Ok(()) => sync_retired_candidate_parent(&marker),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => sync_retired_candidate_parent(&marker),
                 // The same rule as `retire_session_candidate`: absence proven behind a refusal.
-                Err(error) => match crate::storage::prove_absent_after_refused_unlink(&marker, error) {
+                Err(error) => match plx_platform::storage::prove_absent_after_refused_unlink(&marker, error) {
                     Ok(()) => true,
                     Err(error) => {
                         plx_base::eventlog::log(&format!("session: revocation retirement failed errno={}",
@@ -5226,14 +5226,14 @@ fn sync_retired_candidate_parent(path: &std::path::Path) -> bool {
 /// lookup, and a neutralize open (no O_CREAT) answering ENOENT is the same proof. Only a name
 /// that exists, or cannot be looked at, stays a failure for the caller to retry.
 fn retire_session_candidate(path: &std::path::Path) -> bool {
-    let unlink = match crate::storage::unlink(path) {
+    let unlink = match plx_platform::storage::unlink(path) {
         Ok(()) => return sync_retired_candidate_parent(path),
         // May be the retry of our own unlink whose parent sync failed, so it syncs too.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return sync_retired_candidate_parent(path),
         Err(error) => error,
     };
     // A refusal changed nothing on disk, so absence proven behind it has nothing to flush.
-    let Err(unlink) = crate::storage::prove_absent_after_refused_unlink(path, unlink) else { return true };
+    let Err(unlink) = plx_platform::storage::prove_absent_after_refused_unlink(path, unlink) else { return true };
     match neutralize_session_candidate(path) {
         Ok(()) => true,
         // Opened without O_CREAT: the name vanished after the lookup above.
@@ -5689,7 +5689,7 @@ mod server_key_pin_tests {
         let _serial = plx_base::testlock::serial();
         let key = keypin::key_of("session-signed-in.invalid", 32400);
         let _scoped = keypin::Scoped::watch_machine("m-session-live", &key);
-        let language = crate::i18n::Preference::En;
+        let language = plx_platform::i18n::Preference::En;
         let live = || Cached::Settled(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(Session::default()), plaintext: false, retry_canonical: false,
         }));

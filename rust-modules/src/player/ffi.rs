@@ -74,7 +74,7 @@ mod sys {
 /// private `sys` declarations above.
 pub(crate) struct StarfishSink;
 
-impl crate::tv::sink::VideoSink for StarfishSink {
+impl plx_platform::tv::sink::VideoSink for StarfishSink {
     /// **The one verb of this seam that is NOT main-thread, and the missing token is how you can
     /// tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext
     /// behind it, so it runs on the media worker (`threads::load_thread`) by design — putting it on

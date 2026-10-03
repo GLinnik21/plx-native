@@ -2,16 +2,16 @@
 //! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
 //! drift this replaces).
 
-pub(crate) fn converts_on_server() -> &'static str { crate::i18n::msg::core_converts_on_server() }
+pub(crate) fn converts_on_server() -> &'static str { plx_platform::i18n::msg::core_converts_on_server() }
 
 /// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
 pub(crate) fn dur_short(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        crate::i18n::msg::core_duration_short_hours(h, m)
+        plx_platform::i18n::msg::core_duration_short_hours(h, m)
     } else {
-        crate::i18n::msg::core_duration_short_minutes(m)
+        plx_platform::i18n::msg::core_duration_short_minutes(m)
     }
 }
 
@@ -25,9 +25,9 @@ pub(crate) fn dur_short(ms: i64) -> String {
 pub(crate) fn secs_short(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
-        crate::i18n::msg::core_seconds(&crate::i18n::current().decimal(ms / 100, 1))
+        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().decimal(ms / 100, 1))
     } else {
-        crate::i18n::msg::core_seconds(&crate::i18n::current().number(ms / 1_000))
+        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().number(ms / 1_000))
     }
 }
 
@@ -47,9 +47,9 @@ pub(crate) fn dur_long(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        crate::i18n::msg::core_duration_long_hours(h, m)
+        plx_platform::i18n::msg::core_duration_long_hours(h, m)
     } else {
-        crate::i18n::msg::core_duration_long_minutes(m)
+        plx_platform::i18n::msg::core_duration_long_minutes(m)
     }
 }
 
@@ -59,9 +59,9 @@ pub(crate) fn time_left(remaining_ms: i64) -> String {
     let mins = ((remaining_ms + 59_999) / 60_000).max(1);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        crate::i18n::msg::core_time_left_hours(h, m)
+        plx_platform::i18n::msg::core_time_left_hours(h, m)
     } else {
-        crate::i18n::msg::core_time_left_minutes(m)
+        plx_platform::i18n::msg::core_time_left_minutes(m)
     }
 }
 
@@ -99,10 +99,10 @@ pub(crate) fn clock(ms: i64) -> String {
 pub(crate) fn episode_address(season: i64, index: i64) -> String {
     let mut parts: Vec<String> = Vec::new();
     if season > 0 {
-        parts.push(crate::i18n::msg::core_season(season));
+        parts.push(plx_platform::i18n::msg::core_season(season));
     }
     if index > 0 {
-        parts.push(crate::i18n::msg::core_episode(index));
+        parts.push(plx_platform::i18n::msg::core_episode(index));
     }
     parts.join(" \u{b7} ")
 }
@@ -110,11 +110,11 @@ pub(crate) fn episode_address(season: i64, index: i64) -> String {
 /// A collection's size — `"1 item"`, `"12 items"`. ONE formatter for the collection page's meta
 /// line and every collection tile's caption, so the two cannot count one collection two ways.
 pub(crate) fn item_count(n: i64) -> String {
-    crate::i18n::msg::browse_search_items(n)
+    plx_platform::i18n::msg::browse_search_items(n)
 }
 
 pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
-    crate::i18n::msg::core_episode_ordinal(index, season)
+    plx_platform::i18n::msg::core_episode_ordinal(index, season)
 }
 
 /// The source attribution — `"Shared by friend"` — or `None` when there is nobody to credit.
@@ -136,7 +136,7 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
 /// read-out. It was written twice with two different empty-handle behaviours and interpolated a
 /// third time inline — exactly the drift this module exists to prevent.
 pub(crate) fn shared_by(handle: &str) -> Option<String> {
-    (!handle.is_empty()).then(|| crate::i18n::msg::core_shared_by(handle))
+    (!handle.is_empty()).then(|| plx_platform::i18n::msg::core_shared_by(handle))
 }
 
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
@@ -241,7 +241,7 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                if let Some(date) = crate::i18n::current().date(y, m, d) { return date; }
+                if let Some(date) = plx_platform::i18n::current().date(y, m, d) { return date; }
             }
         }
     }
@@ -269,7 +269,7 @@ pub(crate) enum RatingScale {
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
 pub(crate) fn rating_score(scale: RatingScale, value: f64) -> String {
     match scale {
-        RatingScale::OutOfTen => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        RatingScale::OutOfTen => plx_platform::i18n::current().decimal((value * 10.0).round() as i64, 1),
         RatingScale::Percent => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
     }
 }
@@ -277,20 +277,20 @@ pub(crate) fn rating_score(scale: RatingScale, value: f64) -> String {
 /// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (Spanish and
 /// Belarusian set it off with a no-break space; English does not).
 pub(crate) fn percent(value: i64) -> String {
-    crate::i18n::msg::core_percent(&crate::i18n::current().number(value))
+    plx_platform::i18n::msg::core_percent(&plx_platform::i18n::current().number(value))
 }
 
 /// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
 pub(crate) fn decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
-    crate::i18n::current().decimal((value * factor).round() as i64, scale)
+    plx_platform::i18n::current().decimal((value * factor).round() as i64, scale)
 }
 
 /// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
 pub(crate) fn signed_decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
     let scaled = (value * factor).round() as i64;
-    let digits = crate::i18n::current().decimal(scaled, scale);
+    let digits = plx_platform::i18n::current().decimal(scaled, scale);
     if scaled >= 0 {
         format!("+{digits}")
     } else {
@@ -302,9 +302,9 @@ pub(crate) fn signed_decimal(value: f64, scale: i16) -> String {
 /// locale's numerals and unit spelling.
 pub(crate) fn bitrate(kbps: i64) -> String {
     if kbps >= 1000 {
-        crate::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
+        plx_platform::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
     } else {
-        crate::i18n::msg::widgets_tracks_kbps(&crate::i18n::current().number(kbps))
+        plx_platform::i18n::msg::widgets_tracks_kbps(&plx_platform::i18n::current().number(kbps))
     }
 }
 
@@ -312,7 +312,7 @@ pub(crate) fn bitrate(kbps: i64) -> String {
 /// `scales` is the number of fractional digits for GB, MB and kB respectively; a count below a
 /// kilobyte is whole bytes (`B`).
 pub(crate) fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     const K: f64 = 1024.0;
     let b = bytes as f64;
     if b >= K * K * K {
@@ -322,7 +322,7 @@ pub(crate) fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
     } else if b >= K {
         msg::core_unit_kb(&decimal(b / K, scales.2))
     } else {
-        msg::core_unit_b(&crate::i18n::current().number(bytes))
+        msg::core_unit_b(&plx_platform::i18n::current().number(bytes))
     }
 }
 

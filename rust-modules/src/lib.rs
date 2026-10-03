@@ -19,7 +19,6 @@ mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or 
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
-mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
 #[macro_use]
 mod diag; // typed usage schema plus log/lab scrub, ring and zlib; native crashes have a separate allowlist
 mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
@@ -33,11 +32,7 @@ mod http; // the ONE door out of the control plane: dispatch a Plex REST request
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 mod img;
-mod i18n;
-mod imgcache; // bounded persistent artwork cache shared by every image source
-mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
-mod labcfg; // `lab.json` (the Cloud Lab session config) and the two answers `ui/` and `screens/` ask of it: is this key the trigger, is the menu row on
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
@@ -64,13 +59,11 @@ mod stream;
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
-mod tv; // the television as everything outside the port sees it: the interfaces the webOS port fills at boot (step L15)
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 mod text;
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
 mod ui;
-mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
 
 /// The instance root, for the simulator binary.
 ///
@@ -108,6 +101,3 @@ mod port;
 #[cfg(feature = "hostsim")]
 pub use app::synthetic_home_initial;
 
-// Stage A foundation: owner adapters connect these APIs in the next integration stage.
-#[allow(dead_code)]
-mod storage;

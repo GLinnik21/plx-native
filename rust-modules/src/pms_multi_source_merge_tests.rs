@@ -102,7 +102,7 @@ fn one_movie_and_one_tv_library_get_the_natural_per_type_recently_added_titles()
 /// recognize keeps drawing PMS's own text verbatim (checked below).
 #[test]
 fn a_recently_added_library_hub_renders_the_be_catalog_string_under_a_be_ui() {
-    let _thread_locale = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::Be);
+    let _thread_locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::Be);
     let body = r#"{"MediaContainer":{"Hub":[
         {"type":"movie","hubIdentifier":"movie.recentlyadded.1",
          "title":"Recently Added in Movies","key":"/library/sections/1/all?sort=addedAt:desc",
@@ -127,7 +127,7 @@ fn a_recently_added_library_hub_renders_the_be_catalog_string_under_a_be_ui() {
 /// the per-library `{library}`-interpolated form, under a `be` UI.
 #[test]
 fn a_lone_movie_library_renders_the_be_per_type_catalog_string_under_a_be_ui() {
-    let _thread_locale = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::Be);
+    let _thread_locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::Be);
     let body = r#"{"MediaContainer":{"Hub":[
         {"type":"movie","hubIdentifier":"home.movies.recent",
          "title":"Recently Added Movies","key":"/hubs/home/recentlyAdded?type=1",
@@ -151,7 +151,7 @@ fn a_lone_movie_library_renders_the_be_per_type_catalog_string_under_a_be_ui() {
 /// drawing PMS's own `title` verbatim, in any language, exactly as it did before this change.
 #[test]
 fn an_unrecognized_hub_identifier_keeps_the_pms_title_verbatim() {
-    let _thread_locale = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::Be);
+    let _thread_locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::Be);
     let body = r#"{"MediaContainer":{"Hub":[
         {"type":"movie","hubIdentifier":"custom.collection.987",
          "title":"Прайдзiсветы i Незнаёмцы","key":"/library/collections/987/children",

@@ -269,7 +269,7 @@ const HIST_N: usize = 32;
 /// The three plot keys, in the UI language. A function rather than a table because the catalog is
 /// the only place the words live; [`Diagnostics::chart_key_width`] measures exactly these runs.
 fn chart_labels() -> [&'static str; 3] {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     [msg::browse_diagnostics_chart_budget(), msg::browse_diagnostics_chart_network(), msg::browse_diagnostics_chart_buffer()]
 }
 /// Conservative paint width before SDL_ttf is ready. The live path measures the same three runs
@@ -458,9 +458,9 @@ impl Diagnostics {
 /// firmware where the failure reason should have been. Both facts are now wrapped independently
 /// and drawn in full, so the array's length remains the semantic contract.
 fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
-    let w = crate::tv::device::info();
+    let w = plx_platform::tv::device::info();
     let os = if w.major == 0 {
-        crate::i18n::msg::browse_diagnostics_unknown_os().to_string()
+        plx_platform::i18n::msg::browse_diagnostics_unknown_os().to_string()
     } else {
         format!("webOS {} · api {}", w.release, w.api)
     };
@@ -470,13 +470,13 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
         // product name and version cannot disagree between surfaces, and this one is photographed.
         // The firmware CODENAME is dropped — it identifies the release no better than the release
         // number does, and this line has to fit beside it.
-        crate::i18n::msg::browse_diagnostics_header(
+        plx_platform::i18n::msg::browse_diagnostics_header(
             if cfg!(feature = "devtriggers") {
-                crate::i18n::msg::browse_diagnostics_build_dev()
+                plx_platform::i18n::msg::browse_diagnostics_build_dev()
             } else {
-                crate::i18n::msg::browse_diagnostics_build_release()
+                plx_platform::i18n::msg::browse_diagnostics_build_release()
             },
-            crate::devcaps::dv::capability().compact_display(),
+            plx_platform::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
             crate::plex::identity::PRODUCT,
@@ -491,13 +491,13 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
 fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> String {
     use crate::player::PlaybackState as S;
     let s = match crate::player::state(ps) {
-        S::Idle => crate::i18n::msg::browse_diagnostics_idle(),
-        S::Resolving => crate::i18n::msg::browse_diagnostics_resolving(),
-        S::Connecting => crate::i18n::msg::browse_diagnostics_connecting(),
-        S::Buffering => crate::i18n::msg::browse_diagnostics_buffering(),
-        S::Seeking => crate::i18n::msg::browse_diagnostics_seeking(),
-        S::Playing => crate::i18n::msg::browse_diagnostics_playing(),
-        S::Error => crate::i18n::msg::browse_diagnostics_error(),
+        S::Idle => plx_platform::i18n::msg::browse_diagnostics_idle(),
+        S::Resolving => plx_platform::i18n::msg::browse_diagnostics_resolving(),
+        S::Connecting => plx_platform::i18n::msg::browse_diagnostics_connecting(),
+        S::Buffering => plx_platform::i18n::msg::browse_diagnostics_buffering(),
+        S::Seeking => plx_platform::i18n::msg::browse_diagnostics_seeking(),
+        S::Playing => plx_platform::i18n::msg::browse_diagnostics_playing(),
+        S::Error => plx_platform::i18n::msg::browse_diagnostics_error(),
     };
     // The reason is part of every Error verdict — bare "Playback error" made the reviewer derive
     // "the server dropped the video track" from the server's own transcoder logs (issue #22);
@@ -510,13 +510,13 @@ fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, no
     }
     if crate::player::TX.paused.load(Ordering::Relaxed) {
         // the frozen clock must DISARM while paused — a paused picture is not a stalled one
-        return crate::i18n::msg::browse_diagnostics_paused(s);
+        return plx_platform::i18n::msg::browse_diagnostics_paused(s);
     }
     // A stream that says "Playing" while nothing has moved for seconds is the failure with no
     // error at all: the app freezes on its last frame and every other row still reads healthy.
     let stuck = since(d.frame_at, now) / 1000;
     if matches!(crate::player::state(ps), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
-        return crate::i18n::msg::browse_diagnostics_stalled(stuck as i64, s);
+        return plx_platform::i18n::msg::browse_diagnostics_stalled(stuck as i64, s);
     }
     s.to_string()
 }
@@ -551,9 +551,9 @@ fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bo
 /// say nothing about a household. `lab::snapshot`'s envelope has carried the same three fields
 /// since it was written; this is the same rule reaching the surface a stranger can actually use.
 fn device_rows() -> Vec<Field> {
-    let hw = crate::tv::device::device();
-    let i = crate::tv::device::info();
-    let c = crate::devcaps::caps();
+    let hw = plx_platform::tv::device::device();
+    let i = plx_platform::tv::device::info();
+    let c = plx_platform::devcaps::caps();
     let mut v = Vec::with_capacity(6);
 
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
@@ -563,9 +563,9 @@ fn device_rows() -> Vec<Field> {
     let set_unknown = set.is_empty();
     v.push(
         Field::new(
-            crate::i18n::msg::browse_diagnostics_field_set(),
+            plx_platform::i18n::msg::browse_diagnostics_field_set(),
             if set_unknown {
-                crate::i18n::msg::browse_diagnostics_unknown_device().to_string()
+                plx_platform::i18n::msg::browse_diagnostics_unknown_device().to_string()
             } else {
                 set
             },
@@ -577,12 +577,12 @@ fn device_rows() -> Vec<Field> {
     // webosbrew buckets its firmware by — so it is the field that turns "webOS 4.10.2" into an
     // image somebody else can go and look at.
     v.push(Field::new(
-        crate::i18n::msg::browse_diagnostics_field_firmware(),
+        plx_platform::i18n::msg::browse_diagnostics_field_firmware(),
         match (i.name.as_str(), i.codename.as_str()) {
             // Bare "unknown": the head line above already carries the REASON in this state
             // ("webOS unknown — os_info.json unreadable"), and a photograph should not spend two
             // of its compact rows on one fact.
-            ("", "") => crate::i18n::msg::browse_diagnostics_unknown().to_string(),
+            ("", "") => plx_platform::i18n::msg::browse_diagnostics_unknown().to_string(),
             ("", cn) => cn.to_string(),
             (n, "") => n.to_string(),
             (n, cn) => format!("{n} · {cn}"),
@@ -593,35 +593,35 @@ fn device_rows() -> Vec<Field> {
     // READ. `devcaps` falls back to the 49SM9000PLA profile when the table is missing or
     // unparseable, so the values alone cannot tell a measurement from this project's dev set. A
     // panel whose output is a photograph must not print the second as if it were the first.
-    let measured = crate::devcaps::measured();
+    let measured = plx_platform::devcaps::measured();
     v.push(
         Field::new(
-            crate::i18n::msg::browse_diagnostics_field_decoder(),
+            plx_platform::i18n::msg::browse_diagnostics_field_decoder(),
             format!(
                 "{} · {} · {}",
                 if c.hevc {
                     format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1)
                 } else {
-                    crate::i18n::msg::browse_diagnostics_no_hevc().to_string()
+                    plx_platform::i18n::msg::browse_diagnostics_no_hevc().to_string()
                 },
-                if c.vp9 { "VP9" } else { crate::i18n::msg::browse_diagnostics_no_vp9() },
-                if measured { crate::i18n::msg::browse_diagnostics_device_table() } else { crate::i18n::msg::browse_diagnostics_assumed() },
+                if c.vp9 { "VP9" } else { plx_platform::i18n::msg::browse_diagnostics_no_vp9() },
+                if measured { plx_platform::i18n::msg::browse_diagnostics_device_table() } else { plx_platform::i18n::msg::browse_diagnostics_assumed() },
             ),
         )
         .fault(!measured),
     );
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
 
-    let dv = crate::devcaps::dv::probe();
+    let dv = plx_platform::devcaps::dv::probe();
     v.push(
-        Field::new(crate::i18n::msg::browse_diagnostics_field_dolby_vision(), dv.full_state())
-            .fault(dv.capability == crate::devcaps::dv::DvCapability::Unknown),
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_dolby_vision(), dv.full_state())
+            .fault(dv.capability == plx_platform::devcaps::dv::DvCapability::Unknown),
     );
 
     // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
     // meaning yet: it answers "did the server ever reply", which IS the failure when nothing plays.
     v.push(Field::new(
-        crate::i18n::msg::browse_diagnostics_field_server(),
+        plx_platform::i18n::msg::browse_diagnostics_field_server(),
         server_line(
             &crate::plex::serverinfo::version(),
             crate::plex::serverinfo::subscription(),
@@ -648,8 +648,8 @@ fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64,
 
 fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_connection(), connection_line(ps)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_route(), route_line(ps, d)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_connection(), connection_line(ps)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_route(), route_line(ps, d)));
 
     let mut video = chain(
         crate::route::source_vcodec(ps),
@@ -667,13 +667,13 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
             decision.capability.display(),
         ));
     }
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_video(), video));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_video(), video));
 
     let mut audio = chain(
         crate::route::source_acodec(ps),
         crate::route::stream_acodec(ps),
         if d.load_a == 0 {
-            crate::i18n::msg::browse_diagnostics_no_audio_payload()
+            plx_platform::i18n::msg::browse_diagnostics_no_audio_payload()
         } else {
             d.load_a_str()
         },
@@ -690,7 +690,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     if applied.normalize_loudness {
         audio.push_str(" · loudness");
     }
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
 
     // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
     // pipeline announced in its own `sourceInfo` callback, and on this set that is not a
@@ -702,27 +702,27 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     // the silent-instrument trap on a photographed surface.
     let route_fps = crate::route::stream_fps(ps);
     let (fps_milli, fps_src) = if d.video_fps_milli > 0 {
-        (d.video_fps_milli, crate::i18n::msg::browse_diagnostics_pipeline_fps())
+        (d.video_fps_milli, plx_platform::i18n::msg::browse_diagnostics_pipeline_fps())
     } else if route_fps > 0.0 {
-        ((route_fps * 1_000.0).round() as i64, crate::i18n::msg::browse_diagnostics_declared_fps())
+        ((route_fps * 1_000.0).round() as i64, plx_platform::i18n::msg::browse_diagnostics_declared_fps())
     } else {
         (0, "")
     };
     v.push(
         Field::new(
-            crate::i18n::msg::browse_diagnostics_field_picture(),
+            plx_platform::i18n::msg::browse_diagnostics_field_picture(),
             match (d.video_w, d.video_h) {
-                (0, _) | (_, 0) => crate::i18n::msg::browse_diagnostics_unopened().to_string(),
+                (0, _) | (_, 0) => plx_platform::i18n::msg::browse_diagnostics_unopened().to_string(),
                 (w, h) if fps_milli > 0 => {
-                    crate::i18n::msg::browse_diagnostics_fps(&h.to_string(), &fps_milli_str(fps_milli), fps_src, &w.to_string())
+                    plx_platform::i18n::msg::browse_diagnostics_fps(&h.to_string(), &fps_milli_str(fps_milli), fps_src, &w.to_string())
                 }
-                (w, h) => crate::i18n::msg::browse_diagnostics_fps_unknown(&h.to_string(), &w.to_string()),
+                (w, h) => plx_platform::i18n::msg::browse_diagnostics_fps_unknown(&h.to_string(), &w.to_string()),
             },
         )
         .fault(d.video_w == 0 || d.video_h == 0),
     );
     v.push(Field::new(
-        crate::i18n::msg::browse_diagnostics_field_timeline(),
+        plx_platform::i18n::msg::browse_diagnostics_field_timeline(),
         format!(
             "{} / {}",
             crate::ui::fmt::clock(d.pos_ns / 1_000_000),
@@ -733,35 +733,35 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
             },
         ),
     ));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_av_sync(), skew(d)).fault(skew_bad(d)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_av_sync(), skew(d)).fault(skew_bad(d)));
 
     let (plane, plane_bad) = plane_line(d);
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_video_plane(), plane).fault(plane_bad));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_video_plane(), plane).fault(plane_bad));
 
     let transfer = match (d.http_status, d.net_rx) {
-        (0, _) => crate::i18n::msg::browse_diagnostics_no_connection().to_string(),
-        (st, rx) => crate::i18n::msg::browse_diagnostics_received(&mb(rx), &st.to_string()),
+        (0, _) => plx_platform::i18n::msg::browse_diagnostics_no_connection().to_string(),
+        (st, rx) => plx_platform::i18n::msg::browse_diagnostics_received(&mb(rx), &st.to_string()),
     };
     v.push(
-        Field::new(crate::i18n::msg::browse_diagnostics_field_transfer(), transfer)
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_transfer(), transfer)
             .fault(d.http_status != 0 && !(200..300).contains(&d.http_status)),
     );
     v.push(
         Field::new(
-            crate::i18n::msg::browse_diagnostics_field_load(),
+            plx_platform::i18n::msg::browse_diagnostics_field_load(),
             format!(
                 "{} · {}",
                 if d.load_failed {
-                    crate::i18n::msg::browse_diagnostics_refused()
+                    plx_platform::i18n::msg::browse_diagnostics_refused()
                 } else if d.load_completed {
-                    crate::i18n::msg::browse_diagnostics_completed()
+                    plx_platform::i18n::msg::browse_diagnostics_completed()
                 } else {
-                    crate::i18n::msg::browse_diagnostics_waiting()
+                    plx_platform::i18n::msg::browse_diagnostics_waiting()
                 },
                 match (d.cb_count, d.cb_err) {
-                    (0, _) => crate::i18n::msg::browse_diagnostics_no_callbacks().to_string(),
-                    (n, 0) => crate::i18n::msg::browse_diagnostics_callbacks(n as i64),
-                    (n, e) => crate::i18n::msg::browse_diagnostics_callback_error(n as i64, &e.to_string(), &d.cb_err_at.to_string()),
+                    (0, _) => plx_platform::i18n::msg::browse_diagnostics_no_callbacks().to_string(),
+                    (n, 0) => plx_platform::i18n::msg::browse_diagnostics_callbacks(n as i64),
+                    (n, e) => plx_platform::i18n::msg::browse_diagnostics_callback_error(n as i64, &e.to_string(), &d.cb_err_at.to_string()),
                 },
             ),
         )
@@ -769,13 +769,13 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     );
     v.push(
         Field::new(
-            crate::i18n::msg::browse_diagnostics_field_feed(),
+            plx_platform::i18n::msg::browse_diagnostics_field_feed(),
             format!(
                 "{} · {}",
                 if d.pushed_any {
                     fed_rate(d, prev, now)
                 } else {
-                    crate::i18n::msg::browse_diagnostics_nothing_demuxed().to_string()
+                    plx_platform::i18n::msg::browse_diagnostics_nothing_demuxed().to_string()
                 },
                 feed_state_label(d),
             ),
@@ -784,11 +784,11 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     );
     let (cv, ca) = crate::player::aq_caps();
     v.push(Field::new(
-        crate::i18n::msg::browse_diagnostics_field_queues(),
-        crate::i18n::msg::browse_diagnostics_queues(&decimal(mb_f(d.aq_audio), 2), &decimal(mb_f(ca), 1), &decimal(mb_f(d.aq_video), 1), &decimal(mb_f(cv), 1)),
+        plx_platform::i18n::msg::browse_diagnostics_field_queues(),
+        plx_platform::i18n::msg::browse_diagnostics_queues(&decimal(mb_f(d.aq_audio), 2), &decimal(mb_f(ca), 1), &decimal(mb_f(d.aq_video), 1), &decimal(mb_f(cv), 1)),
     ));
     v.push(
-        Field::new(crate::i18n::msg::browse_diagnostics_field_frames(), frames_str(d, now))
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_frames(), frames_str(d, now))
             .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
     );
     debug_assert_eq!(v.len(), LEFT_ROWS);
@@ -800,7 +800,7 @@ use crate::ui::fmt::decimal;
 /// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
 /// spelling of the same states and stays English.
 fn feed_state_label(d: &crate::player::Diag) -> &'static str {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     match d.feed_state {
         1 => msg::browse_diagnostics_feed_accepting(),
         2 => msg::browse_diagnostics_feed_full(),
@@ -817,7 +817,7 @@ fn fps_milli_str(fps_milli: i64) -> String {
     } else {
         // Three places, then the trailing zeros dropped (23.976, 29.97): a non-integral rate always
         // keeps at least one fractional digit, so the separator is never left dangling.
-        crate::i18n::current()
+        plx_platform::i18n::current()
             .decimal(fps_milli, 3)
             .trim_end_matches('0')
             .to_string()
@@ -827,13 +827,13 @@ fn fps_milli_str(fps_milli: i64) -> String {
 fn connection_line(ps: &crate::route::PlaybackSession) -> String {
     let sid = crate::route::cur_sid(ps);
     let Some(client) = crate::plex::client_for(sid) else {
-        return crate::i18n::msg::browse_diagnostics_standalone().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_standalone().to_string();
     };
     let tier = match client.link() {
         Some(crate::plex::probe::Location::Local) => "LAN",
-        Some(crate::plex::probe::Location::Remote) => crate::i18n::msg::browse_diagnostics_remote(),
-        Some(crate::plex::probe::Location::Relay) => crate::i18n::msg::browse_diagnostics_relay(),
-        None => crate::i18n::msg::browse_diagnostics_unknown_link(),
+        Some(crate::plex::probe::Location::Remote) => plx_platform::i18n::msg::browse_diagnostics_remote(),
+        Some(crate::plex::probe::Location::Relay) => plx_platform::i18n::msg::browse_diagnostics_relay(),
+        None => plx_platform::i18n::msg::browse_diagnostics_unknown_link(),
     };
     format!(
         "{tier} · PMS {}",
@@ -849,12 +849,12 @@ fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> St
     {
         "HLS"
     } else {
-        crate::i18n::msg::browse_diagnostics_progressive()
+        plx_platform::i18n::msg::browse_diagnostics_progressive()
     };
     let transform = match (crate::route::is_transcoding(ps), crate::route::is_remux(ps)) {
-        (false, _) => crate::i18n::msg::browse_diagnostics_direct_play(),
-        (true, true) => crate::i18n::msg::browse_diagnostics_remux(),
-        (true, false) => crate::i18n::msg::browse_diagnostics_transcode(),
+        (false, _) => plx_platform::i18n::msg::browse_diagnostics_direct_play(),
+        (true, true) => plx_platform::i18n::msg::browse_diagnostics_remux(),
+        (true, false) => plx_platform::i18n::msg::browse_diagnostics_transcode(),
     };
     // Issue #266: the server's own verdict on the Plex Pass DSP ask, distinct from `transform`
     // (which only says remux vs re-encode) — absent entirely while the enhancement is Off, so an
@@ -872,25 +872,25 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
     // "(webOS 4)" / "(webOS 5+)" restates what the header's own `webOS 4.10.2` already says, and
     // it is 11 characters this row does not have. The FAULT arm keeps its full sentence.
     let mode = match d.vp_mode {
-        crate::player::VP_EXPORTED => crate::i18n::msg::browse_diagnostics_exported_window(),
+        crate::player::VP_EXPORTED => plx_platform::i18n::msg::browse_diagnostics_exported_window(),
         crate::player::VP_ACB => "ACB",
-        _ => crate::i18n::msg::browse_diagnostics_no_video_path(),
+        _ => plx_platform::i18n::msg::browse_diagnostics_no_video_path(),
     };
     match d.vp_mode {
         crate::player::VP_EXPORTED => {
             // The identifier itself is not useful evidence and is the only unbounded string in a
             // field row.  The state we need is whether the compositor gave us one at all.
             let win = if d.window_id.is_empty() {
-                crate::i18n::msg::browse_diagnostics_no_window()
+                plx_platform::i18n::msg::browse_diagnostics_no_window()
             } else {
-                crate::i18n::msg::browse_diagnostics_window_ready()
+                plx_platform::i18n::msg::browse_diagnostics_window_ready()
             };
             // `rv == 0` is "the seam had no window or no symbol", NOT "SDL refused" — worded so a
             // reader is not sent looking for a rejection that never happened.
             let placed = match d.place_rv {
-                i32::MIN => crate::i18n::msg::browse_diagnostics_not_placed().to_string(),
-                0 => crate::i18n::msg::browse_diagnostics_placement_failed().to_string(),
-                rv => crate::i18n::msg::browse_diagnostics_placed(&d.placed_h.to_string(), &rv.to_string(), &d.placed_w.to_string()),
+                i32::MIN => plx_platform::i18n::msg::browse_diagnostics_not_placed().to_string(),
+                0 => plx_platform::i18n::msg::browse_diagnostics_placement_failed().to_string(),
+                rv => plx_platform::i18n::msg::browse_diagnostics_placed(&d.placed_h.to_string(), &rv.to_string(), &d.placed_w.to_string()),
             };
             (
                 format!("{mode} · {win} · {placed}"),
@@ -901,10 +901,10 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
             format!(
                 "{mode} · {}",
                 match (d.acb_ok, d.stage) {
-                    (false, _) => crate::i18n::msg::browse_diagnostics_unavailable(),
-                    (true, 0) => crate::i18n::msg::browse_diagnostics_unbound(),
-                    (true, 1) => crate::i18n::msg::browse_diagnostics_binding(),
-                    _ => crate::i18n::msg::browse_diagnostics_streaming(),
+                    (false, _) => plx_platform::i18n::msg::browse_diagnostics_unavailable(),
+                    (true, 0) => plx_platform::i18n::msg::browse_diagnostics_unbound(),
+                    (true, 1) => plx_platform::i18n::msg::browse_diagnostics_binding(),
+                    _ => plx_platform::i18n::msg::browse_diagnostics_streaming(),
                 }
             ),
             !d.acb_ok,
@@ -935,16 +935,16 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
     // for exactly this reason, and this row has to agree with it or the panel contradicts itself.
     if crate::player::TX.paused.load(Ordering::Relaxed) {
         return match d.frames {
-            0 if !d.seen_frame => crate::i18n::msg::browse_diagnostics_none_yet().to_string(),
+            0 if !d.seen_frame => plx_platform::i18n::msg::browse_diagnostics_none_yet().to_string(),
             n => n.to_string(),
         };
     }
     let stuck = since(d.frame_at.max(d.load_at), now) / 1000;
     match (d.frames, d.seen_frame) {
-        (0, false) if d.load_completed => crate::i18n::msg::browse_diagnostics_frames_none(&stuck.to_string()),
-        (0, false) => crate::i18n::msg::browse_diagnostics_none_yet().to_string(),
-        (0, true) => crate::i18n::msg::browse_diagnostics_since_seek().to_string(),
-        (n, _) if stuck >= STALL_MS / 1000 => crate::i18n::msg::browse_diagnostics_frames_frozen(&n.to_string(), &stuck.to_string()),
+        (0, false) if d.load_completed => plx_platform::i18n::msg::browse_diagnostics_frames_none(&stuck.to_string()),
+        (0, false) => plx_platform::i18n::msg::browse_diagnostics_none_yet().to_string(),
+        (0, true) => plx_platform::i18n::msg::browse_diagnostics_since_seek().to_string(),
+        (n, _) if stuck >= STALL_MS / 1000 => plx_platform::i18n::msg::browse_diagnostics_frames_frozen(&n.to_string(), &stuck.to_string()),
         (n, _) => n.to_string(),
     }
 }
@@ -962,26 +962,26 @@ fn model_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> Ve
 }
 
 fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_mode(), abr_mode(d, selected)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_quality(), abr_quality(d, selected)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_sample(), abr_link(d, selected)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_conservative(), abr_budget(d, selected)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_buffer(), abr_buffer(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_mode(), abr_mode(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_quality(), abr_quality(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_sample(), abr_link(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_conservative(), abr_budget(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_buffer(), abr_buffer(d, selected)));
     v.push(
-        Field::new(crate::i18n::msg::browse_diagnostics_field_risk(), abr_risk(d, selected))
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_risk(), abr_risk(d, selected))
             .fault(d.abr_why == crate::player::ABR_WHY_STARVATION),
     );
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_acquisition(), abr_acquisition_cadence(ps, d)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_action(), abr_action(d, selected)));
-    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_reason(), abr_reason(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_acquisition(), abr_acquisition_cadence(ps, d)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_action(), abr_action(d, selected)));
+    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_reason(), abr_reason(d, selected)));
 }
 
 fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     match d.abr_mode {
-        crate::player::ABR_MODE_ORIGINAL => crate::i18n::msg::browse_diagnostics_auto_original().to_string(),
-        crate::player::ABR_MODE_HLS => crate::i18n::msg::browse_diagnostics_auto_hls().to_string(),
-        _ if selected == crate::route::Quality::Auto => crate::i18n::msg::browse_diagnostics_auto_idle().to_string(),
-        _ => crate::i18n::msg::browse_diagnostics_manual_quality(&selected.label()),
+        crate::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_auto_original().to_string(),
+        crate::player::ABR_MODE_HLS => plx_platform::i18n::msg::browse_diagnostics_auto_hls().to_string(),
+        _ if selected == crate::route::Quality::Auto => plx_platform::i18n::msg::browse_diagnostics_auto_idle().to_string(),
+        _ => plx_platform::i18n::msg::browse_diagnostics_manual_quality(&selected.label()),
     }
 }
 
@@ -990,9 +990,9 @@ fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 /// latter "fixed by user" is exactly the contradiction the simulator screenshot exposed.
 fn inactive_model(selected: crate::route::Quality, absent: &'static str) -> String {
     if selected == crate::route::Quality::Auto {
-        crate::i18n::msg::browse_diagnostics_model_idle(absent)
+        plx_platform::i18n::msg::browse_diagnostics_model_idle(absent)
     } else {
-        crate::i18n::msg::browse_diagnostics_manual_inactive().to_string()
+        plx_platform::i18n::msg::browse_diagnostics_manual_inactive().to_string()
     }
 }
 
@@ -1001,14 +1001,14 @@ fn inactive_model(selected: crate::route::Quality, absent: &'static str) -> Stri
 /// demand rather than being an independent speed test to the server.
 fn abr_link(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     if d.abr_mode == 0 {
-        return inactive_model(selected, crate::i18n::msg::browse_diagnostics_not_sampled());
+        return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_sampled());
     }
     if d.abr_net_kbps < 0 {
-        return crate::i18n::msg::browse_diagnostics_first_measurement().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_first_measurement().to_string();
     }
-    let mut s = crate::i18n::msg::browse_diagnostics_stream_limited(&abr_rate(d.abr_net_kbps));
+    let mut s = plx_platform::i18n::msg::browse_diagnostics_stream_limited(&abr_rate(d.abr_net_kbps));
     if d.abr_unc_pm >= 0 {
-        s.push_str(&crate::i18n::msg::browse_diagnostics_uncertainty(&crate::i18n::current().number(d.abr_unc_pm / 10)));
+        s.push_str(&plx_platform::i18n::msg::browse_diagnostics_uncertainty(&plx_platform::i18n::current().number(d.abr_unc_pm / 10)));
     }
     if d.abr_samples >= 0 {
         s.push_str(&format!(" · n={}", d.abr_samples));
@@ -1020,10 +1020,10 @@ fn abr_link(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 /// from [`abr_link`] prevents a capped object sample from masquerading as physical link capacity.
 fn abr_budget(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     if d.abr_mode == 0 {
-        return inactive_model(selected, crate::i18n::msg::browse_diagnostics_not_computed());
+        return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_computed());
     }
     if d.abr_safe_kbps < 0 {
-        return crate::i18n::msg::browse_diagnostics_budget_pending().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_budget_pending().to_string();
     }
     let demand = if d.abr_mode == crate::player::ABR_MODE_HLS {
         d.abr_media_kbps
@@ -1031,10 +1031,10 @@ fn abr_budget(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         d.abr_kbps
     };
     if demand <= 0 {
-        return crate::i18n::msg::browse_diagnostics_demand_unknown(&abr_rate(d.abr_safe_kbps));
+        return plx_platform::i18n::msg::browse_diagnostics_demand_unknown(&abr_rate(d.abr_safe_kbps));
     }
     let delta = d.abr_safe_kbps - demand;
-    if delta >= 0 { crate::i18n::msg::browse_diagnostics_budget_surplus(&abr_rate(d.abr_safe_kbps), &abr_rate(demand), &abr_rate(delta.abs())) } else { crate::i18n::msg::browse_diagnostics_budget_deficit(&abr_rate(d.abr_safe_kbps), &abr_rate(demand), &abr_rate(delta.abs())) }
+    if delta >= 0 { plx_platform::i18n::msg::browse_diagnostics_budget_surplus(&abr_rate(d.abr_safe_kbps), &abr_rate(demand), &abr_rate(delta.abs())) } else { plx_platform::i18n::msg::browse_diagnostics_budget_deficit(&abr_rate(d.abr_safe_kbps), &abr_rate(demand), &abr_rate(delta.abs())) }
 }
 
 /// The OBSERVED buffer dynamics only.  The controller's conservative counterfactual horizon is a
@@ -1048,24 +1048,24 @@ fn observed_buffer_ms(d: &crate::player::Diag) -> Option<i64> {
 fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     let Some(buffer_ms) = observed_buffer_ms(d) else {
         return if d.abr_mode == 0 && selected == crate::route::Quality::Auto {
-            crate::i18n::msg::browse_diagnostics_timestamps_idle().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_timestamps_idle().to_string()
         } else {
-            crate::i18n::msg::browse_diagnostics_timestamps().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_timestamps().to_string()
         };
     };
     if d.abr_mode == 0 {
         return if selected == crate::route::Quality::Auto {
-            crate::i18n::msg::browse_diagnostics_reserve_idle(&decimal(buffer_ms as f64 / 1_000.0, 1))
+            plx_platform::i18n::msg::browse_diagnostics_reserve_idle(&decimal(buffer_ms as f64 / 1_000.0, 1))
         } else {
-            crate::i18n::msg::browse_diagnostics_reserve(&decimal(buffer_ms as f64 / 1_000.0, 1))
+            plx_platform::i18n::msg::browse_diagnostics_reserve(&decimal(buffer_ms as f64 / 1_000.0, 1))
         };
     }
     let trend = match d.abr_slope_ms_per_s.cmp(&0) {
-        std::cmp::Ordering::Greater => crate::i18n::msg::browse_diagnostics_filling(),
-        std::cmp::Ordering::Less => crate::i18n::msg::browse_diagnostics_draining(),
-        std::cmp::Ordering::Equal => crate::i18n::msg::browse_diagnostics_steady(),
+        std::cmp::Ordering::Greater => plx_platform::i18n::msg::browse_diagnostics_filling(),
+        std::cmp::Ordering::Less => plx_platform::i18n::msg::browse_diagnostics_draining(),
+        std::cmp::Ordering::Equal => plx_platform::i18n::msg::browse_diagnostics_steady(),
     };
-    crate::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &crate::ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
+    plx_platform::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &crate::ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
 }
 
 fn risk_percent(d: &crate::player::Diag) -> Option<i64> {
@@ -1078,14 +1078,14 @@ fn risk_percent(d: &crate::player::Diag) -> Option<i64> {
 /// that playback is currently draining.
 fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     if d.abr_mode == 0 {
-        return inactive_model(selected, crate::i18n::msg::browse_diagnostics_not_computed());
+        return inactive_model(selected, plx_platform::i18n::msg::browse_diagnostics_not_computed());
     }
     let mut s = match d.abr_starve_secs {
-        n if n >= 0 => crate::i18n::msg::browse_diagnostics_horizon(&n.to_string()),
-        _ => crate::i18n::msg::browse_diagnostics_no_deficit().to_string(),
+        n if n >= 0 => plx_platform::i18n::msg::browse_diagnostics_horizon(&n.to_string()),
+        _ => plx_platform::i18n::msg::browse_diagnostics_no_deficit().to_string(),
     };
     if let Some(pct) = risk_percent(d) {
-        s.push_str(&crate::i18n::msg::browse_diagnostics_risk_percent(&crate::i18n::current().number(pct)));
+        s.push_str(&plx_platform::i18n::msg::browse_diagnostics_risk_percent(&plx_platform::i18n::current().number(pct)));
     }
     s
 }
@@ -1099,17 +1099,17 @@ fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 /// work class for diagnostics only. Neither number is charged as a second admission gate.
 fn abr_acquisition_cadence(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> String {
     if !crate::route::is_transcoding(ps) {
-        return crate::i18n::msg::browse_diagnostics_direct_unsampled().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_direct_unsampled().to_string();
     }
     if crate::route::is_remux(ps) {
-        return crate::i18n::msg::browse_diagnostics_copy_unsampled().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_copy_unsampled().to_string();
     }
     if d.abr_ratio_pm < 0 {
-        return crate::i18n::msg::browse_diagnostics_timing_unsampled().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_timing_unsampled().to_string();
     }
-    let mut s = crate::i18n::msg::browse_diagnostics_measured_ratio(&decimal(d.abr_ratio_pm as f64 / 1_000.0, 2));
+    let mut s = plx_platform::i18n::msg::browse_diagnostics_measured_ratio(&decimal(d.abr_ratio_pm as f64 / 1_000.0, 2));
     if d.abr_pred_pm >= 0 {
-        s.push_str(&crate::i18n::msg::browse_diagnostics_predicted_ratio(&decimal(d.abr_pred_pm as f64 / 1_000.0, 2)));
+        s.push_str(&plx_platform::i18n::msg::browse_diagnostics_predicted_ratio(&decimal(d.abr_pred_pm as f64 / 1_000.0, 2)));
     }
     s
 }
@@ -1123,10 +1123,10 @@ fn abr_acquisition_cadence(ps: &crate::route::PlaybackSession, d: &crate::player
 /// diagnosing a television nobody here owns.
 fn abr_raster(kbps: i64) -> &'static str {
     let Ok(kbps) = u32::try_from(kbps) else {
-        return crate::i18n::msg::browse_diagnostics_unknown_raster();
+        return plx_platform::i18n::msg::browse_diagnostics_unknown_raster();
     };
     let Some(rung) = crate::abr::LADDER.iter().find(|r| r.kbps() == kbps) else {
-        return crate::i18n::msg::browse_diagnostics_unknown_raster();
+        return plx_platform::i18n::msg::browse_diagnostics_unknown_raster();
     };
     match rung.raster() {
         (426, 240) => "240p",
@@ -1134,13 +1134,13 @@ fn abr_raster(kbps: i64) -> &'static str {
         (1280, 720) => "720p",
         (1920, 1080) => "1080p",
         (3840, 2160) => "4K",
-        _ => crate::i18n::msg::browse_diagnostics_unknown_raster(),
+        _ => plx_platform::i18n::msg::browse_diagnostics_unknown_raster(),
     }
 }
 
 fn abr_rate(kbps: i64) -> String {
     if kbps <= 0 {
-        crate::i18n::msg::browse_diagnostics_unknown().to_string()
+        plx_platform::i18n::msg::browse_diagnostics_unknown().to_string()
     } else {
         crate::ui::fmt::bitrate(kbps)
     }
@@ -1195,16 +1195,16 @@ fn chart_budget_demand(budget_kbps: i64, demand_kbps: i64) -> String {
                 decimal(v as f64 / 1_000.0, 1)
             }
         };
-        crate::i18n::msg::browse_diagnostics_chart_budget_mbps(&n(budget_kbps), &n(demand_kbps))
+        plx_platform::i18n::msg::browse_diagnostics_chart_budget_mbps(&n(budget_kbps), &n(demand_kbps))
     } else {
         let n = |v: i64| {
             if v < 0 {
                 "—".to_string()
             } else {
-                crate::i18n::current().number(v)
+                plx_platform::i18n::current().number(v)
             }
         };
-        crate::i18n::msg::browse_diagnostics_chart_budget_kbps(&n(budget_kbps), &n(demand_kbps))
+        plx_platform::i18n::msg::browse_diagnostics_chart_budget_kbps(&n(budget_kbps), &n(demand_kbps))
     }
 }
 
@@ -1214,9 +1214,9 @@ fn chart_values(history: &SweepHistory) -> [String; 3] {
     };
     [
         chart_budget_demand(s.budget_kbps, s.demand_kbps),
-        crate::i18n::msg::browse_diagnostics_network_mean(&history.mean_activity_kbps().map(chart_rate).unwrap_or_else(|| "—".to_string()), &chart_rate(s.activity_kbps)),
+        plx_platform::i18n::msg::browse_diagnostics_network_mean(&history.mean_activity_kbps().map(chart_rate).unwrap_or_else(|| "—".to_string()), &chart_rate(s.activity_kbps)),
         if s.buffer_ms >= 0 {
-            crate::i18n::msg::core_seconds(&decimal(s.buffer_ms as f64 / 1_000.0, 1))
+            plx_platform::i18n::msg::core_seconds(&decimal(s.buffer_ms as f64 / 1_000.0, 1))
         } else {
             "—".to_string()
         },
@@ -1260,7 +1260,7 @@ fn chart_key_width(&self) -> f32 {
 fn decoded_raster(d: &crate::player::Diag) -> String {
     match (d.video_w, d.video_h) {
         (w, h) if w > 0 && h > 0 => format!("{w}×{h}"),
-        _ => crate::i18n::msg::browse_diagnostics_awaiting_frames().to_string(),
+        _ => plx_platform::i18n::msg::browse_diagnostics_awaiting_frames().to_string(),
     }
 }
 
@@ -1270,25 +1270,25 @@ fn decoded_raster(d: &crate::player::Diag) -> String {
 /// widest real row wrap and therefore made every row below it move between photographs.
 fn abr_quality(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     match d.abr_mode {
-        crate::player::ABR_MODE_ORIGINAL => crate::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
+        crate::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
         crate::player::ABR_MODE_HLS => {
-            let mut now = crate::i18n::msg::browse_diagnostics_quality_request(abr_raster(d.abr_kbps), &abr_rate(d.abr_kbps));
+            let mut now = plx_platform::i18n::msg::browse_diagnostics_quality_request(abr_raster(d.abr_kbps), &abr_rate(d.abr_kbps));
             if d.abr_declared_kbps > 0 {
                 now.push_str(&format!(" · PMS {}", abr_rate(d.abr_declared_kbps)));
             }
-            now.push_str(&crate::i18n::msg::browse_diagnostics_decoded(&decoded_raster(d)));
+            now.push_str(&plx_platform::i18n::msg::browse_diagnostics_decoded(&decoded_raster(d)));
             now
         }
-        _ => crate::i18n::msg::browse_diagnostics_quality_decoded(&selected.label(), &decoded_raster(d)),
+        _ => plx_platform::i18n::msg::browse_diagnostics_quality_decoded(&selected.label(), &decoded_raster(d)),
     }
 }
 
 fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
     if d.abr_mode == 0 {
         return if selected == crate::route::Quality::Auto {
-            crate::i18n::msg::browse_diagnostics_none_idle().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_none_idle().to_string()
         } else {
-            crate::i18n::msg::browse_diagnostics_fixed_user().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_fixed_user().to_string()
         };
     }
     if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
@@ -1302,8 +1302,8 @@ fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         // would imply a countdown that is a lie in both directions — an imminent starvation acts on
         // the FIRST window, and a shortfall with a deep reserve never acts at all.
         return match d.abr_unsafe_deficit_ms {
-            ms if ms <= 0 => crate::i18n::msg::browse_diagnostics_watching_original().to_string(),
-            ms => crate::i18n::msg::browse_diagnostics_fallback_evidence(&crate::ui::fmt::secs_short(ms)),
+            ms if ms <= 0 => plx_platform::i18n::msg::browse_diagnostics_watching_original().to_string(),
+            ms => plx_platform::i18n::msg::browse_diagnostics_fallback_evidence(&crate::ui::fmt::secs_short(ms)),
         };
     }
     let target = abr_rate(d.abr_target_kbps);
@@ -1311,24 +1311,24 @@ fn abr_action(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         crate::player::ABR_ACTION_STEADY
             if d.abr_optimal_kbps > 0 && d.abr_optimal_kbps != d.abr_kbps =>
         {
-            crate::i18n::msg::browse_diagnostics_hold_requested(&abr_rate(d.abr_optimal_kbps))
+            plx_platform::i18n::msg::browse_diagnostics_hold_requested(&abr_rate(d.abr_optimal_kbps))
         }
-        crate::player::ABR_ACTION_STEADY => crate::i18n::msg::browse_diagnostics_hold_current().to_string(),
-        crate::player::ABR_ACTION_PRIME_DOWN => crate::i18n::msg::browse_diagnostics_prime_down(&target),
-        crate::player::ABR_ACTION_PRIME_UP => crate::i18n::msg::browse_diagnostics_prime_up(&target),
-        crate::player::ABR_ACTION_COMMIT_DOWN => crate::i18n::msg::browse_diagnostics_changed_down(&target),
-        crate::player::ABR_ACTION_COMMIT_UP => crate::i18n::msg::browse_diagnostics_changed_up(&target),
-        crate::player::ABR_ACTION_REJECT_DOWN => crate::i18n::msg::browse_diagnostics_target_rejected(&target),
-        crate::player::ABR_ACTION_REJECT_UP => crate::i18n::msg::browse_diagnostics_target_rejected(&target),
-        crate::player::ABR_ACTION_PROBE_ORIGINAL => crate::i18n::msg::browse_diagnostics_checking_original().to_string(),
-        crate::player::ABR_ACTION_RECOVER_ORIGINAL => crate::i18n::msg::browse_diagnostics_recover_original().to_string(),
-        crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED => crate::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
-        crate::player::ABR_ACTION_PRIME_REFRESH => crate::i18n::msg::browse_diagnostics_refreshing(&target),
-        crate::player::ABR_ACTION_COMMIT_REFRESH => crate::i18n::msg::browse_diagnostics_refreshed(&target),
+        crate::player::ABR_ACTION_STEADY => plx_platform::i18n::msg::browse_diagnostics_hold_current().to_string(),
+        crate::player::ABR_ACTION_PRIME_DOWN => plx_platform::i18n::msg::browse_diagnostics_prime_down(&target),
+        crate::player::ABR_ACTION_PRIME_UP => plx_platform::i18n::msg::browse_diagnostics_prime_up(&target),
+        crate::player::ABR_ACTION_COMMIT_DOWN => plx_platform::i18n::msg::browse_diagnostics_changed_down(&target),
+        crate::player::ABR_ACTION_COMMIT_UP => plx_platform::i18n::msg::browse_diagnostics_changed_up(&target),
+        crate::player::ABR_ACTION_REJECT_DOWN => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        crate::player::ABR_ACTION_REJECT_UP => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        crate::player::ABR_ACTION_PROBE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_checking_original().to_string(),
+        crate::player::ABR_ACTION_RECOVER_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_recover_original().to_string(),
+        crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED => plx_platform::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
+        crate::player::ABR_ACTION_PRIME_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshing(&target),
+        crate::player::ABR_ACTION_COMMIT_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshed(&target),
         crate::player::ABR_ACTION_REJECT_REFRESH => {
-            crate::i18n::msg::browse_diagnostics_response_unchanged().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_response_unchanged().to_string()
         }
-        _ => crate::i18n::msg::browse_diagnostics_starting().to_string(),
+        _ => plx_platform::i18n::msg::browse_diagnostics_starting().to_string(),
     };
     action
 }
@@ -1342,20 +1342,20 @@ fn abr_reason(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
     }
     if d.abr_mode == 0 {
         return if selected == crate::route::Quality::Auto {
-            crate::i18n::msg::browse_diagnostics_no_adaptive().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_no_adaptive().to_string()
         } else {
-            crate::i18n::msg::browse_diagnostics_controller_inactive().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_controller_inactive().to_string()
         };
     }
     if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
         return if d.abr_unsafe_deficit_ms <= 0 {
-            crate::i18n::msg::browse_diagnostics_sample_sustains().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_sample_sustains().to_string()
         } else {
-            crate::i18n::msg::browse_diagnostics_sample_below().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_sample_below().to_string()
         };
     }
     abr_why_text(d.abr_why)
-        .unwrap_or(crate::i18n::msg::browse_diagnostics_decision_pending())
+        .unwrap_or(plx_platform::i18n::msg::browse_diagnostics_decision_pending())
         .to_string()
 }
 
@@ -1363,24 +1363,24 @@ fn original_failure_reason(d: &crate::player::Diag) -> Option<String> {
     let status = d.abr_failure_status;
     match d.abr_failure_kind {
         crate::player::ABR_FAILURE_ORIGINAL_HTTP => Some(match status {
-            503 | 509 => crate::i18n::msg::browse_diagnostics_http_refused(&status.to_string()),
-            500..=599 => crate::i18n::msg::browse_diagnostics_http_failed(&status.to_string()),
-            n if n > 0 => crate::i18n::msg::browse_diagnostics_http_rejected(&n.to_string()),
-            _ => crate::i18n::msg::browse_diagnostics_original_rejected().to_string(),
+            503 | 509 => plx_platform::i18n::msg::browse_diagnostics_http_refused(&status.to_string()),
+            500..=599 => plx_platform::i18n::msg::browse_diagnostics_http_failed(&status.to_string()),
+            n if n > 0 => plx_platform::i18n::msg::browse_diagnostics_http_rejected(&n.to_string()),
+            _ => plx_platform::i18n::msg::browse_diagnostics_original_rejected().to_string(),
         }),
         crate::player::ABR_FAILURE_ORIGINAL_DEADLINE => {
-            Some(crate::i18n::msg::browse_diagnostics_original_timeout().to_string())
+            Some(plx_platform::i18n::msg::browse_diagnostics_original_timeout().to_string())
         }
         crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT => {
-            Some(crate::i18n::msg::browse_diagnostics_original_connect_failed().to_string())
+            Some(plx_platform::i18n::msg::browse_diagnostics_original_connect_failed().to_string())
         }
         crate::player::ABR_FAILURE_ORIGINAL_NO_BODY => {
-            Some(crate::i18n::msg::browse_diagnostics_original_empty().to_string())
+            Some(plx_platform::i18n::msg::browse_diagnostics_original_empty().to_string())
         }
         crate::player::ABR_FAILURE_ORIGINAL_OPEN => Some(if status > 0 {
-            crate::i18n::msg::browse_diagnostics_open_http_failed(&status.to_string())
+            plx_platform::i18n::msg::browse_diagnostics_open_http_failed(&status.to_string())
         } else {
-            crate::i18n::msg::browse_diagnostics_original_open_failed().to_string()
+            plx_platform::i18n::msg::browse_diagnostics_original_open_failed().to_string()
         }),
         _ => None,
     }
@@ -1390,31 +1390,31 @@ fn original_failure_reason(d: &crate::player::Diag) -> Option<String> {
 /// "nothing has decided yet", which is a real state at the top of a playback rather than a fault.
 fn abr_why_text(why: u8) -> Option<&'static str> {
     match why {
-        crate::player::ABR_WHY_SAFE_BUDGET => Some(crate::i18n::msg::browse_diagnostics_link_room()),
-        crate::player::ABR_WHY_UNSAFE_STATE => Some(crate::i18n::msg::browse_diagnostics_losing_reserve()),
-        crate::player::ABR_WHY_PRODUCTION => Some(crate::i18n::msg::browse_diagnostics_acquisition_behind()),
-        crate::player::ABR_WHY_BUFFER => Some(crate::i18n::msg::browse_diagnostics_reserve_low()),
+        crate::player::ABR_WHY_SAFE_BUDGET => Some(plx_platform::i18n::msg::browse_diagnostics_link_room()),
+        crate::player::ABR_WHY_UNSAFE_STATE => Some(plx_platform::i18n::msg::browse_diagnostics_losing_reserve()),
+        crate::player::ABR_WHY_PRODUCTION => Some(plx_platform::i18n::msg::browse_diagnostics_acquisition_behind()),
+        crate::player::ABR_WHY_BUFFER => Some(plx_platform::i18n::msg::browse_diagnostics_reserve_low()),
         // Deliberately not phrased as a constraint like the codes above: this is the state where
         // the controller has nothing left to try, and a reader watching the picture stop is owed
         // that rather than a fifth thing that sounds like a knob.
-        crate::player::ABR_WHY_LADDER_FLOOR => Some(crate::i18n::msg::browse_diagnostics_lowest_quality()),
+        crate::player::ABR_WHY_LADDER_FLOOR => Some(plx_platform::i18n::msg::browse_diagnostics_lowest_quality()),
         // The one code that names a DEADLINE rather than a conservation deficit. "current stream
         // losing reserve" says the completed delivery bag costs more wall time than media it
         // supplies; this says the reserve is now too short to reach the next credit at all.
-        crate::player::ABR_WHY_STARVATION => Some(crate::i18n::msg::browse_diagnostics_buffer_exhausted()),
-        crate::player::ABR_WHY_REJECT_BACKOFF => Some(crate::i18n::msg::browse_diagnostics_candidate_failed()),
+        crate::player::ABR_WHY_STARVATION => Some(plx_platform::i18n::msg::browse_diagnostics_buffer_exhausted()),
+        crate::player::ABR_WHY_REJECT_BACKOFF => Some(plx_platform::i18n::msg::browse_diagnostics_candidate_failed()),
         // Phrased for the person holding the phone, not for the controller: what they can see is
         // that the picture is not improving, and these three are the three different reasons.
-        crate::player::ABR_WHY_NO_TARGET => Some(crate::i18n::msg::browse_diagnostics_no_better()),
-        crate::player::ABR_WHY_EVIDENCE => Some(crate::i18n::msg::browse_diagnostics_measuring()),
-        crate::player::ABR_WHY_AT_BEST => Some(crate::i18n::msg::browse_diagnostics_at_best()),
-        crate::player::ABR_WHY_RESERVE_UNKNOWN => Some(crate::i18n::msg::browse_diagnostics_waiting_audio()),
-        crate::player::ABR_WHY_DEADLINE_ROLLBACK => Some(crate::i18n::msg::browse_diagnostics_deadline_rollback()),
-        crate::player::ABR_WHY_RESPONSE_LIMITED => Some(crate::i18n::msg::browse_diagnostics_response_limited()),
+        crate::player::ABR_WHY_NO_TARGET => Some(plx_platform::i18n::msg::browse_diagnostics_no_better()),
+        crate::player::ABR_WHY_EVIDENCE => Some(plx_platform::i18n::msg::browse_diagnostics_measuring()),
+        crate::player::ABR_WHY_AT_BEST => Some(plx_platform::i18n::msg::browse_diagnostics_at_best()),
+        crate::player::ABR_WHY_RESERVE_UNKNOWN => Some(plx_platform::i18n::msg::browse_diagnostics_waiting_audio()),
+        crate::player::ABR_WHY_DEADLINE_ROLLBACK => Some(plx_platform::i18n::msg::browse_diagnostics_deadline_rollback()),
+        crate::player::ABR_WHY_RESPONSE_LIMITED => Some(plx_platform::i18n::msg::browse_diagnostics_response_limited()),
         // The one code here whose constraint is the VIEWER rather than the link or the server, so
         // it says so: the picture could improve and the improvement is not worth another visible
         // change this soon after the last one.
-        crate::player::ABR_WHY_SWITCH_COST => Some(crate::i18n::msg::browse_diagnostics_switch_hold()),
+        crate::player::ABR_WHY_SWITCH_COST => Some(plx_platform::i18n::msg::browse_diagnostics_switch_hold()),
         _ => None,
     }
 }
@@ -1429,7 +1429,7 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
 /// the project asked what an AU was.
 fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
     match fed_rates(d, prev, now) {
-        Some((rv, ra)) => crate::i18n::msg::browse_diagnostics_fed_rate(&crate::i18n::current().number(ra), &crate::i18n::current().number(rv)),
+        Some((rv, ra)) => plx_platform::i18n::msg::browse_diagnostics_fed_rate(&plx_platform::i18n::current().number(ra), &plx_platform::i18n::current().number(rv)),
         None => "—".to_string(),
     }
 }
@@ -1456,7 +1456,7 @@ fn skew(d: &crate::player::Diag) -> String {
         return "—".to_string();
     }
     let ms = (d.fed_v_pts - d.fed_a_pts) / 1_000_000;
-    crate::i18n::msg::core_seconds(&crate::ui::fmt::signed_decimal(ms as f64 / 1000.0, 1))
+    plx_platform::i18n::msg::core_seconds(&crate::ui::fmt::signed_decimal(ms as f64 / 1000.0, 1))
 }
 
 /// A lane trailing by more than this is starving rather than merely interleaved. Real containers
@@ -1505,12 +1505,12 @@ fn chain(src: String, sent: String, payload: &str) -> String {
 fn server_line(version: &str, sub: crate::plex::serverinfo::Subscription) -> String {
     use crate::plex::serverinfo::Subscription as S;
     if version.is_empty() {
-        return crate::i18n::msg::browse_diagnostics_not_queried().to_string();
+        return plx_platform::i18n::msg::browse_diagnostics_not_queried().to_string();
     }
     let v = short_version(version);
     match sub {
-        S::Yes => crate::i18n::msg::browse_diagnostics_plex_pass(v),
-        S::No => crate::i18n::msg::browse_diagnostics_no_plex_pass(&v),
+        S::Yes => plx_platform::i18n::msg::browse_diagnostics_plex_pass(v),
+        S::No => plx_platform::i18n::msg::browse_diagnostics_no_plex_pass(&v),
         S::Unknown => v.to_string(),
     }
 }
@@ -1638,13 +1638,13 @@ pub(crate) fn draw(&self) {
     let layout = self.header_layout();
     let inner = frame.x + PAD;
     let iw = frame.w - 2.0 * PAD;
-    if let Ok(cs) = CString::new(crate::i18n::msg::browse_diagnostics_title()) {
+    if let Ok(cs) = CString::new(plx_platform::i18n::msg::browse_diagnostics_title()) {
         Label::new(cs.as_ptr(), theme::size::BODY, theme::TEXT_PRIMARY)
             .bold()
             .draw(p, Rect::new(inner, frame.y + 10.0, iw, 30.0));
     }
     // Paint the cached lines whose height sizes the opaque panel and flows the fields below it.
-    let verdict_ink = if self.head[1].starts_with(crate::i18n::msg::browse_diagnostics_error()) {
+    let verdict_ink = if self.head[1].starts_with(plx_platform::i18n::msg::browse_diagnostics_error()) {
         theme::DANGER
     } else {
         theme::TEXT_PRIMARY
@@ -1923,7 +1923,7 @@ mod tests {
             let d = crate::player::Diag::default();
             let audio_row = pipeline_rows(&ps, &d, (0, 0, 0), 0)
                 .into_iter()
-                .find(|f| f.key == crate::i18n::msg::browse_diagnostics_field_audio())
+                .find(|f| f.key == plx_platform::i18n::msg::browse_diagnostics_field_audio())
                 .expect("an Audio row is always drawn");
             let val = audio_row.val.unwrap_or_default();
             assert_eq!(
@@ -3137,7 +3137,7 @@ mod tests {
             23.976,
             dovi,
             false,
-            crate::devcaps::dv::DvCapability::Supported,
+            plx_platform::devcaps::dv::DvCapability::Supported,
         ));
         let video = rows(&ps, &crate::player::Diag::default(), (0, 0, 0), 1_000)
             .into_iter()
@@ -3196,7 +3196,7 @@ mod tests {
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.
         let line = &head[0];
-        if crate::tv::device::info().major == 0 {
+        if plx_platform::tv::device::info().major == 0 {
             assert!(line.contains("unknown"), "{line}");
         } else {
             assert!(line.contains("webOS "), "{line}");

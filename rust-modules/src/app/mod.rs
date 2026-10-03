@@ -444,7 +444,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
     // flat platform file and cannot fail the boot. The crash channel receives only the reviewed
     // compatibility fields (webOS/API/model/SoC/hardware revision), never device identifiers.
-    crate::tv::probe_device();
+    plx_platform::tv::probe_device();
     // libwayland reads `WAYLAND_DEBUG` when SDL connects the display: same "before anything can
     // read it" rule. It writes the environment, so it runs BEFORE `telemetry::boot`: sentry-native's
     // `sentry_init` starts its own "sentry-tele" worker threads (logs/metrics are on by default in
@@ -472,7 +472,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // direct-play gate derive from this instead of asserting the dev TV's abilities as universal
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
     // above: one file read, cannot fail the boot, falls back to the profile that always shipped.
-    crate::devcaps::probe();
+    plx_platform::devcaps::probe();
     // …and, in a LAB build only, the diagnostics bridge: read `lab.json` out of the app directory
     // and start the ring's clock. After the two probes above so its first log line can be read
     // beside the firmware and codec lines it will be uploaded with; a no-op at compile time in
@@ -489,7 +489,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     crate::dev::scenarios::pre_boot();
     // Last: the worker must observe every boot-time environment/trigger mutation above, while a
     // controlled replay which deliberately skips this preflight keeps the conservative Unknown.
-    crate::tv::start_capability_probe();
+    plx_platform::tv::start_capability_probe();
     telemetry_guard
 }
 
@@ -549,7 +549,7 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     crate::metadata::prewarm_dv_latches();
     // A live boot's `install:`/`appdir:` preamble above owns the first two event-log lines.
     // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
-    crate::storage::diagnostics::start();
+    plx_platform::storage::diagnostics::start(env!("PLX_VERSION"));
     let main_thread = unsafe { plx_base::task::MainThread::assume() };
     let mut app = unsafe { boot(pms_host,pms_port,main_thread,preflight) }?;
     if telemetry_guard.is_some() { app.telemetry_guard = telemetry_guard; }

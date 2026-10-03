@@ -42,23 +42,23 @@ pub(crate) const SHAPE: &str = "PreferencesV3{kind:u8,selection:u32,busy:bool,st
 pub(crate) enum Kind { Playback, AudioSubtitles }
 impl PickerKind {
     fn title(self) -> &'static str { match self {
-        Self::Quality => crate::i18n::msg::settings_playback_quality(), Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play(),
-        Self::SubtitleSize => crate::i18n::msg::settings_playback_subtitle_size(), Self::SubtitlePosition => crate::i18n::msg::settings_playback_subtitle_position(),
-        Self::NextEpisode => crate::i18n::msg::settings_playback_next_episode(),
-        Self::SkipInterval => crate::i18n::msg::settings_playback_skip_interval(),
-        Self::AudioLanguage => crate::i18n::msg::settings_audio_language(), Self::SubtitleMode => crate::i18n::msg::settings_audio_subtitles(),
-        Self::SubtitleLanguage => crate::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => crate::i18n::msg::settings_audio_forced_subtitles(),
+        Self::Quality => plx_platform::i18n::msg::settings_playback_quality(), Self::DirectPlay => plx_platform::i18n::msg::settings_playback_direct_play(),
+        Self::SubtitleSize => plx_platform::i18n::msg::settings_playback_subtitle_size(), Self::SubtitlePosition => plx_platform::i18n::msg::settings_playback_subtitle_position(),
+        Self::NextEpisode => plx_platform::i18n::msg::settings_playback_next_episode(),
+        Self::SkipInterval => plx_platform::i18n::msg::settings_playback_skip_interval(),
+        Self::AudioLanguage => plx_platform::i18n::msg::settings_audio_language(), Self::SubtitleMode => plx_platform::i18n::msg::settings_audio_subtitles(),
+        Self::SubtitleLanguage => plx_platform::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_forced_subtitles(),
     }}
     /// What this field's picker says about it under its title. The four account fields share the
     /// account note (it is about where those values are saved); each local one has its own.
     fn copy(self) -> &'static str { match self {
-        Self::Quality => crate::i18n::msg::settings_playback_quality_copy(),
-        Self::DirectPlay => crate::i18n::msg::settings_playback_direct_play_copy(),
-        Self::SubtitleSize => crate::i18n::msg::settings_playback_subtitle_size_copy(),
-        Self::SubtitlePosition => crate::i18n::msg::settings_playback_subtitle_position_copy(),
-        Self::NextEpisode => crate::i18n::msg::settings_playback_next_episode_copy(),
-        Self::SkipInterval => crate::i18n::msg::settings_playback_skip_interval_copy(),
-        Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => crate::i18n::msg::settings_audio_account_note(),
+        Self::Quality => plx_platform::i18n::msg::settings_playback_quality_copy(),
+        Self::DirectPlay => plx_platform::i18n::msg::settings_playback_direct_play_copy(),
+        Self::SubtitleSize => plx_platform::i18n::msg::settings_playback_subtitle_size_copy(),
+        Self::SubtitlePosition => plx_platform::i18n::msg::settings_playback_subtitle_position_copy(),
+        Self::NextEpisode => plx_platform::i18n::msg::settings_playback_next_episode_copy(),
+        Self::SkipInterval => plx_platform::i18n::msg::settings_playback_skip_interval_copy(),
+        Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_account_note(),
     }}
     /// The field-list page this field belongs to.
     fn kind(self) -> Kind {
@@ -71,7 +71,7 @@ impl PickerKind {
 impl Kind {
     fn title(self) -> &'static str {
         match self {
-            Kind::Playback => crate::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => crate::i18n::msg::settings_audio_title(),
+            Kind::Playback => plx_platform::i18n::msg::settings_playback_title(), Kind::AudioSubtitles => plx_platform::i18n::msg::settings_audio_title(),
         }
     }
     fn word(self) -> &'static str {
@@ -103,13 +103,13 @@ fn copy_text<'a>(subject: Subject, status: &'a str, direct_play: DirectPlayMode)
     let forced = direct_play == DirectPlayMode::Forced && subject.overridden_by_force();
     if !status.is_empty() {
         return if forced {
-            Cow::Owned(format!("{}\n\n{}", status, crate::i18n::msg::settings_playback_force_note()))
+            Cow::Owned(format!("{}\n\n{}", status, plx_platform::i18n::msg::settings_playback_force_note()))
         } else { Cow::Borrowed(status) };
     }
-    if forced { return Cow::Borrowed(crate::i18n::msg::settings_playback_force_note()); }
+    if forced { return Cow::Borrowed(plx_platform::i18n::msg::settings_playback_force_note()); }
     Cow::Borrowed(match subject {
-        Subject::Page(Kind::AudioSubtitles) => crate::i18n::msg::settings_audio_account_note(),
-        Subject::Page(Kind::Playback) => crate::i18n::msg::settings_playback_copy(),
+        Subject::Page(Kind::AudioSubtitles) => plx_platform::i18n::msg::settings_audio_account_note(),
+        Subject::Page(Kind::Playback) => plx_platform::i18n::msg::settings_playback_copy(),
         Subject::Picker(field) => field.copy(),
     })
 }
@@ -193,8 +193,8 @@ impl Txn {
         };
         self.saving = matches!(&command, PreferenceCmd::Save { .. });
         io.status = if self.saving {
-            crate::i18n::msg::settings_audio_saving()
-        } else { crate::i18n::msg::settings_audio_loading() }.into();
+            plx_platform::i18n::msg::settings_audio_saving()
+        } else { plx_platform::i18n::msg::settings_audio_loading() }.into();
         self.pending = Some(Pending::Account(rx)); io.busy = true;
         fx.push(Fx::App(AppFx::Preferences(command)));
     }
@@ -210,7 +210,7 @@ impl Txn {
             _ => return,
         };
         self.pending = Some(Pending::Local(rx)); io.busy = true; self.saving = true;
-        io.status = crate::i18n::msg::settings_playback_saving().into();
+        io.status = plx_platform::i18n::msg::settings_playback_saving().into();
         fx.push(Fx::App(AppFx::Preferences(command)));
     }
     /// The request no longer names the active profile: drop the snapshot and any in-flight
@@ -250,16 +250,16 @@ impl Txn {
                         }
                         Err(error) => {
                             if error == PreferenceError::Stale { self.retry = None; }
-                            io.status = crate::i18n::msg::settings_audio_error_retry(error.message());
+                            io.status = plx_platform::i18n::msg::settings_audio_error_retry(error.message());
                         }
                     }
                 } else {
                     self.request = None; self.snapshot = None; self.retry = None;
-                    io.status = crate::i18n::msg::settings_audio_sign_in_again().into();
+                    io.status = plx_platform::i18n::msg::settings_audio_sign_in_again().into();
                 }
             }
             Receipt::Local(true) => { io.status.clear(); if was_write { landed = Landed::Saved; } }
-            Receipt::Local(false) | Receipt::Failed => io.status = crate::i18n::msg::settings_playback_save_failed().into(),
+            Receipt::Local(false) | Receipt::Failed => io.status = plx_platform::i18n::msg::settings_playback_save_failed().into(),
         }
         landed
     }
@@ -328,7 +328,7 @@ impl PreferencesPage {
         s
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(crate::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
             self.state.kind.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>) {
@@ -419,12 +419,12 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .map(|m| (next_episode_label(m).into(), Value::NextEpisode(m))).collect(),
         PickerKind::SkipInterval => SkipInterval::LADDER.into_iter()
             .map(|i| (skip_interval_label(i), Value::SkipInterval(i))).collect(),
-        PickerKind::SubtitleMode => [(crate::i18n::msg::settings_audio_manual(), 0), (crate::i18n::msg::settings_audio_foreign(), 1), (crate::i18n::msg::settings_audio_always(), 2)]
+        PickerKind::SubtitleMode => [(plx_platform::i18n::msg::settings_audio_manual(), 0), (plx_platform::i18n::msg::settings_audio_foreign(), 1), (plx_platform::i18n::msg::settings_audio_always(), 2)]
             .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
-        PickerKind::ForcedSubtitles => [crate::i18n::msg::settings_audio_prefer_regular(), crate::i18n::msg::settings_audio_prefer_forced(), crate::i18n::msg::settings_audio_only_forced(), crate::i18n::msg::settings_audio_only_regular()]
+        PickerKind::ForcedSubtitles => [plx_platform::i18n::msg::settings_audio_prefer_regular(), plx_platform::i18n::msg::settings_audio_prefer_forced(), plx_platform::i18n::msg::settings_audio_only_forced(), plx_platform::i18n::msg::settings_audio_only_regular()]
             .into_iter().enumerate().map(|(i, s)| (s.into(), Value::Forced(i as i64))).collect(),
         PickerKind::AudioLanguage | PickerKind::SubtitleLanguage => {
-            let mut result = vec![(if field == PickerKind::AudioLanguage { crate::i18n::msg::settings_audio_original() } else { crate::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
+            let mut result = vec![(if field == PickerKind::AudioLanguage { plx_platform::i18n::msg::settings_audio_original() } else { plx_platform::i18n::msg::settings_audio_no_preference() }.into(), Value::Language(String::new()))];
             result.extend(crate::plex::languages::picker()
                 .map(|l| (l.name.to_string(), Value::Language(l.code.to_string()))));
             let current = resolve_value(field, quality, direct_play, prefs);
@@ -445,13 +445,13 @@ fn field_readout(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::ForcedSubtitles => forced_readout(prefs.map_or(0, |p| p.subtitle_forced)).into(),
         // Only the foreign-audio mode has a short form (es does not fit beside the label); the
         // other two modes show the picker's own label.
-        PickerKind::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => crate::i18n::msg::settings_audio_foreign_short().into(),
+        PickerKind::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => plx_platform::i18n::msg::settings_audio_foreign_short().into(),
         PickerKind::SubtitleSize => subtitle_size_label(crate::route::subtitle_size()).into(),
         PickerKind::SubtitlePosition => subtitle_position_label(crate::route::subtitle_position()).into(),
         _ => {
             let current = resolve_value(field, quality, direct_play, prefs);
             field_options(field, quality, direct_play, prefs).into_iter().find(|(_, v)| *v == current)
-                .map_or_else(|| crate::i18n::msg::settings_audio_not_set().into(), |(s, _)| s)
+                .map_or_else(|| plx_platform::i18n::msg::settings_audio_not_set().into(), |(s, _)| s)
         }
     }
 }
@@ -475,37 +475,37 @@ fn field_form(inputs: &FieldListInputs<'_>) -> Form<RowId, Action, SettingsPage>
         let value = field_readout(field, inputs.quality, inputs.direct_play, inputs.prefs);
         let mut row = Row::new(field.title()).value(&value).chevron(true).dim(inputs.busy);
         if field == PickerKind::Quality && inputs.direct_play == DirectPlayMode::Forced {
-            row = row.detail(crate::i18n::msg::settings_playback_overridden());
+            row = row.detail(plx_platform::i18n::msg::settings_playback_overridden());
         }
         if field == PickerKind::AudioLanguage && inputs.prefs.is_some_and(|p| p.auto_select_audio == Some(false)) {
-            row = row.detail(crate::i18n::msg::settings_audio_selection_off());
+            row = row.detail(plx_platform::i18n::msg::settings_audio_selection_off());
         }
         section = section.item(RowId::Field(field), RowKind::Nav(SettingsPage::Picker(field)), Action::Open, row);
     }
     section = section.item_if(inputs.kind == Kind::AudioSubtitles && !inputs.busy && inputs.show_retry,
         RowId::Retry, RowKind::Button, Action::Retry,
-        Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail()));
+        Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
     Form::new().section(section)
 }
 fn mode_label(mode: DirectPlayMode) -> &'static str {
-    match mode { DirectPlayMode::Auto => crate::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => crate::i18n::msg::settings_playback_disabled() }
+    match mode { DirectPlayMode::Auto => plx_platform::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => plx_platform::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => plx_platform::i18n::msg::settings_playback_disabled() }
 }
 use crate::appkit::track_menu::{subtitle_position_label, subtitle_size_label};
 fn next_episode_label(mode: NextEpisodeMode) -> &'static str {
     match mode {
-        NextEpisodeMode::Countdown => crate::i18n::msg::settings_playback_next_episode_countdown(),
-        NextEpisodeMode::AfterCredits => crate::i18n::msg::settings_playback_next_episode_after_credits(),
-        NextEpisodeMode::Off => crate::i18n::msg::settings_playback_next_episode_off(),
+        NextEpisodeMode::Countdown => plx_platform::i18n::msg::settings_playback_next_episode_countdown(),
+        NextEpisodeMode::AfterCredits => plx_platform::i18n::msg::settings_playback_next_episode_after_credits(),
+        NextEpisodeMode::Off => plx_platform::i18n::msg::settings_playback_next_episode_off(),
     }
 }
 fn skip_interval_label(interval: SkipInterval) -> String {
-    crate::i18n::msg::settings_playback_skip_interval_seconds(interval.seconds())
+    plx_platform::i18n::msg::settings_playback_skip_interval_seconds(interval.seconds())
 }
 /// The Direct Play row's trailing read-out. `mode_label`'s Forced string is long enough to squeeze
 /// the row's label, so Forced alone takes the short form; the picker lists the full strings.
 fn direct_play_readout(mode: DirectPlayMode) -> &'static str {
     match mode {
-        DirectPlayMode::Forced => crate::i18n::msg::settings_playback_forced_short(),
+        DirectPlayMode::Forced => plx_platform::i18n::msg::settings_playback_forced_short(),
         _ => mode_label(mode),
     }
 }
@@ -513,11 +513,11 @@ fn direct_play_readout(mode: DirectPlayMode) -> &'static str {
 /// of the picker's sentence. An unknown value reads as "Not set".
 fn forced_readout(value: i64) -> &'static str {
     match value {
-        0 => crate::i18n::msg::settings_audio_prefer_regular_short(),
-        1 => crate::i18n::msg::settings_audio_prefer_forced_short(),
-        2 => crate::i18n::msg::settings_audio_only_forced_short(),
-        3 => crate::i18n::msg::settings_audio_only_regular_short(),
-        _ => crate::i18n::msg::settings_audio_not_set(),
+        0 => plx_platform::i18n::msg::settings_audio_prefer_regular_short(),
+        1 => plx_platform::i18n::msg::settings_audio_prefer_forced_short(),
+        2 => plx_platform::i18n::msg::settings_audio_only_forced_short(),
+        3 => plx_platform::i18n::msg::settings_audio_only_regular_short(),
+        _ => plx_platform::i18n::msg::settings_audio_not_set(),
     }
 }
 impl Machine<InnerHost> for PreferencesPage {
@@ -581,7 +581,7 @@ impl Screen<InnerHost> for PreferencesPage {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(crate::i18n::msg::settings_title()))
+        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {

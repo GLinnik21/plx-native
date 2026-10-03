@@ -243,7 +243,7 @@ picker says so: "No internet connection. Pick this profile once while online, an
 offline." One online sign-in and one online pick per profile are the whole precondition. `rust-modules/src/plex/CLAUDE.md` has the mechanism.
 
 **Offline artwork.** Every reusable image transcode—posters, backdrops, logos, episode stills,
-profile avatars and cast headshots—uses the shared disk tier in `rust-modules/src/imgcache.rs`.
+profile avatars and cast headshots—uses the shared disk tier in `rust-modules/platform/src/imgcache.rs`.
 A hit is decoded locally before any network request. Entries are keyed by stable server identity,
 source and transformation, with the outer request’s `X-Plex-Token` excluded; the volatile avatar roster stamp is ignored.
 On a stale disk hit (after a day), cached art remains visible while a bounded background lane

@@ -396,7 +396,7 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
 /// drawn page itself.
 fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
     use crate::ui::screen::DrawFrame;
-    let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
+    let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
     let (mut d, _rig) = boot_with(detail);
     let runs = crate::text::capture_text_runs_for_test(|| {
         let entry = d.nav.tabs.stack.top_mut().expect("detail page");

@@ -13,8 +13,9 @@ publish = false
 # `[[bin]]` of the app package it made cargo build the whole application library first (a package's
 # bins depend on its lib), for a binary that uses none of it: two extra host library builds in
 # `make check` and a third, ARM one, in the `pkg/plxnative-storage` rule. The sources it shares with
-# the app (`src/storage_service/*.rs`, `src/storage/state.rs`) are compiled into each crate by
-# `#[path]`; the install-identity generator is shared through `build_support/`.
+# the platform layer crate (`platform/src/storage_service/*.rs`, `platform/src/storage/state.rs`) are
+# compiled into each crate by `#[path]`; the install-identity generator is shared through
+# `build_support/`.
 # `ci/test_storage_package_isolated.py` holds that line.
 [[bin]]
 name = "plxnative-storage"

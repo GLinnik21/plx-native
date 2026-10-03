@@ -128,7 +128,7 @@ fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
     let account = Account::new("pref-parent-refresh", 12, AudioPreferences { subtitle_mode: 0, ..Default::default() });
     let mut parent = loaded_audio_page(&account);
     let mode_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleMode)).unwrap();
-    assert_eq!(parent.state.values[mode_row], crate::i18n::msg::settings_audio_manual());
+    assert_eq!(parent.state.values[mode_row], plx_platform::i18n::msg::settings_audio_manual());
     let mut picker = PickerPage::new(EntryId(0), PickerKind::SubtitleMode);
     let emitted = drive(&mut picker, ScreenEvent::Activate(2), 2);
     let Some(Fx::App(AppFx::Preferences(PreferenceCmd::Save { reply, .. }))) = emitted.into_iter().map(|e| e.fx).find(|f| matches!(f, Fx::App(AppFx::Preferences(_)))) else {
@@ -138,7 +138,7 @@ fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
     assert!(popped(&drive(&mut picker, tick(), 2)), "the durable receipt pops the picker");
     // The page beneath is re-entered by the pop.
     drive(&mut parent, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(GroupId(0)) }), 0);
-    assert_eq!(parent.state.values[mode_row], crate::i18n::msg::settings_audio_always(),
+    assert_eq!(parent.state.values[mode_row], plx_platform::i18n::msg::settings_audio_always(),
         "the list's readout is the committed value, with no reload");
 }
 
@@ -170,13 +170,13 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
     let size_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleSize)).unwrap();
     let position_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap();
-    assert_eq!(parent.state.values[size_row], crate::i18n::msg::settings_playback_subtitle_size_medium());
+    assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_medium());
 
     crate::route::restore_subtitle_size(crate::route::SubtitleSize::Large);
     crate::route::restore_subtitle_position(crate::route::SubtitlePosition::High);
     drive(&mut parent, tick(), 0);
-    assert_eq!(parent.state.values[size_row], crate::i18n::msg::settings_playback_subtitle_size_large());
-    assert_eq!(parent.state.values[position_row], crate::i18n::msg::settings_playback_subtitle_position_high());
+    assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_large());
+    assert_eq!(parent.state.values[position_row], plx_platform::i18n::msg::settings_playback_subtitle_position_high());
     crate::route::restore_subtitle_size(size);
     crate::route::restore_subtitle_position(position);
 }

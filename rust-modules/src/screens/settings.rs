@@ -1004,7 +1004,7 @@ pub(crate) struct RootPage {
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
     pending_auto: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
-    /// The servers the signed-in account answered crate::i18n::msg::settings_plaintext_question() for, then the
+    /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
     plaintext_rows: Vec<(String, bool)>,
@@ -1022,7 +1022,7 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    language: crate::i18n::Preference,
+    language: plx_platform::i18n::Preference,
     /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
     /// one, so every other root's digest is unchanged.
     plaintext: Vec<bool>,
@@ -1075,7 +1075,7 @@ struct RootInputs {
     library_count: i64,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    language: crate::i18n::Preference,
+    language: plx_platform::i18n::Preference,
     /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
     /// an answered/offered plaintext question.
     plaintext: Vec<PlaintextRowInput>,
@@ -1092,24 +1092,24 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
     //
     // The Libraries section is Libraries and the row is Favorite libraries: the switch governs
     // the whole app — Home's shelves, the top tab strip and the Library's Sources picker.
-    let libraries = FormSection::new(crate::i18n::msg::settings_libraries_section())
+    let libraries = FormSection::new(plx_platform::i18n::msg::settings_libraries_section())
         .visible(signed_in)
         .item(
             RootId::Favourites,
             RowKind::Nav(SettingsPage::Favourites),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_libraries_title())
-                .detail(crate::i18n::msg::settings_libraries_detail())
-                .value(crate::i18n::msg::settings_libraries_count(inputs.library_count))
+            Row::new(plx_platform::i18n::msg::settings_libraries_title())
+                .detail(plx_platform::i18n::msg::settings_libraries_detail())
+                .value(plx_platform::i18n::msg::settings_libraries_count(inputs.library_count))
                 .chevron(true),
         );
-    let playback = FormSection::new(crate::i18n::msg::settings_playback_section())
+    let playback = FormSection::new(plx_platform::i18n::msg::settings_playback_section())
         .item(
             RootId::Playback,
             RowKind::Nav(SettingsPage::Playback),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_playback_title())
-                .detail(crate::i18n::msg::settings_playback_detail())
+            Row::new(plx_platform::i18n::msg::settings_playback_title())
+                .detail(plx_platform::i18n::msg::settings_playback_detail())
                 .chevron(true),
         )
         .item_if(
@@ -1117,17 +1117,17 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RootId::AudioSubtitles,
             RowKind::Nav(SettingsPage::AudioSubtitles),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_audio_title())
-                .detail(crate::i18n::msg::settings_audio_detail())
+            Row::new(plx_platform::i18n::msg::settings_audio_title())
+                .detail(plx_platform::i18n::msg::settings_audio_detail())
                 .chevron(true),
         );
-    let system = FormSection::new(crate::i18n::msg::settings_system_section())
+    let system = FormSection::new(plx_platform::i18n::msg::settings_system_section())
         .item(
             RootId::Language,
             RowKind::Nav(SettingsPage::Language),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_language_title())
-                .detail(crate::i18n::msg::settings_language_detail())
+            Row::new(plx_platform::i18n::msg::settings_language_title())
+                .detail(plx_platform::i18n::msg::settings_language_detail())
                 .value(preference_name(inputs.language))
                 .chevron(true),
         )
@@ -1136,8 +1136,8 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RootId::AutoSignIn,
             RowKind::Toggle,
             Action::AutoSignIn,
-            Row::new(crate::i18n::msg::settings_auto_sign_in_title())
-                .detail(crate::i18n::msg::settings_auto_sign_in_detail())
+            Row::new(plx_platform::i18n::msg::settings_auto_sign_in_title())
+                .detail(plx_platform::i18n::msg::settings_auto_sign_in_detail())
                 .toggle(inputs.auto_sign_in),
         )
         .item_if(
@@ -1145,12 +1145,12 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RootId::TrailerAutoplay,
             RowKind::Toggle,
             Action::TrailerAutoplay,
-            Row::new(crate::i18n::msg::settings_trailers_title())
-                .detail(crate::i18n::msg::settings_trailers_detail())
+            Row::new(plx_platform::i18n::msg::settings_trailers_title())
+                .detail(plx_platform::i18n::msg::settings_trailers_detail())
                 .toggle(inputs.trailer_autoplay),
         );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
-    let mut plaintext = FormSection::new(crate::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
+    let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
     if has_plaintext {
         for (i, row) in inputs.plaintext.iter().enumerate() {
             let label = Row::new(&row.name);
@@ -1166,29 +1166,29 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             );
         }
     }
-    let privacy = FormSection::new(crate::i18n::msg::settings_privacy_section())
+    let privacy = FormSection::new(plx_platform::i18n::msg::settings_privacy_section())
         .item(
             RootId::Privacy,
             RowKind::Nav(SettingsPage::Privacy),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_privacy_title())
-                .detail(crate::i18n::msg::settings_privacy_detail())
+            Row::new(plx_platform::i18n::msg::settings_privacy_title())
+                .detail(plx_platform::i18n::msg::settings_privacy_detail())
                 .chevron(true),
         )
         .item(
             RootId::Legal,
             RowKind::Nav(SettingsPage::Legal),
             Action::Door,
-            Row::new(crate::i18n::msg::settings_legal_title())
-                .detail(crate::i18n::msg::settings_legal_detail())
+            Row::new(plx_platform::i18n::msg::settings_legal_title())
+                .detail(plx_platform::i18n::msg::settings_legal_detail())
                 .chevron(true),
         );
-    let about = FormSection::new(crate::i18n::msg::settings_about_section()).item(
+    let about = FormSection::new(plx_platform::i18n::msg::settings_about_section()).item(
         RootId::About,
         RowKind::Nav(SettingsPage::About),
         Action::Door,
-        Row::new(crate::i18n::msg::settings_about_title())
-            .detail(crate::i18n::msg::settings_about_detail())
+        Row::new(plx_platform::i18n::msg::settings_about_title())
+            .detail(plx_platform::i18n::msg::settings_about_detail())
             .chevron(true),
     );
     Form::new()
@@ -1216,7 +1216,7 @@ impl RootPage {
                 sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
-                language: crate::i18n::Preference::System,
+                language: plx_platform::i18n::Preference::System,
                 plaintext: Vec::new(),
             },
         };
@@ -1237,7 +1237,7 @@ impl RootPage {
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
-        self.state.language = crate::i18n::saved_preference();
+        self.state.language = plx_platform::i18n::saved_preference();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
@@ -1254,7 +1254,7 @@ impl RootPage {
     }
 
     /// **Unencrypted connections**: one input per server the signed-in account answered
-    /// crate::i18n::msg::settings_plaintext_question() for (`grant::choices` — this session's answers over the
+    /// plx_platform::i18n::msg::settings_plaintext_question() for (`grant::choices` — this session's answers over the
     /// session file's, for THIS account only), so an allowed one is here to turn off again — and,
     /// switched off, one per server discovery offers the question for that nobody has answered
     /// (`grant::offers`), so a signed-in person whose server went plaintext-only has a place to
@@ -1300,7 +1300,7 @@ impl RootPage {
                         .find(|s| s.machine_id == machine && !s.name.is_empty())
                         .map(|s| s.name.clone()));
                 let named = real_name.is_some();
-                let name = real_name.unwrap_or_else(|| crate::i18n::msg::settings_plaintext_server().to_string());
+                let name = real_name.unwrap_or_else(|| plx_platform::i18n::msg::settings_plaintext_server().to_string());
                 let connected = on && crate::plex::grant::granted_origin(&machine).is_some();
                 PlaintextRowInput { machine: ServerMachineId(machine), name, named, on, connected }
             })
@@ -1312,8 +1312,8 @@ impl RootPage {
             Header::new(
                 RouteLayout::screen(),
                 None,
-                crate::i18n::msg::settings_title(),
-                crate::i18n::msg::settings_root_copy(),
+                plx_platform::i18n::msg::settings_title(),
+                plx_platform::i18n::msg::settings_root_copy(),
             ),
             &self.form.table,
             GroupId(0),
@@ -1576,29 +1576,29 @@ mod nav_structure_tests;
 
 // The picker persists an installation preference, while the immutable LocaleContext continues
 // to render the current session. Choosing a language never remounts a screen or resets playback.
-fn preference_name(preference: crate::i18n::Preference) -> &'static str {
-    if preference == crate::i18n::Preference::System {
-        crate::i18n::msg::settings_language_system()
+fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
+    if preference == plx_platform::i18n::Preference::System {
+        plx_platform::i18n::msg::settings_language_system()
     } else {
         preference.native_name()
     }
 }
 
-const LANGUAGES: [crate::i18n::Preference; 4] = [
-    crate::i18n::Preference::System, crate::i18n::Preference::En,
-    crate::i18n::Preference::Es, crate::i18n::Preference::Be,
+const LANGUAGES: [plx_platform::i18n::Preference; 4] = [
+    plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
+    plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
 ];
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum LangId {
-    Choice(crate::i18n::Preference),
+    Choice(plx_platform::i18n::Preference),
     Contribute,
 }
 
 impl FormId for LangId {
     fn key(&self) -> RowKey {
-        use crate::i18n::Preference as P;
+        use plx_platform::i18n::Preference as P;
         RowKey(match self {
             LangId::Choice(P::System) => 0,
             LangId::Choice(P::En) => 1,
@@ -1612,7 +1612,7 @@ impl FormId for LangId {
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum LangAction {
     /// Save this preference (a `Choice` row).
-    Pick(crate::i18n::Preference),
+    Pick(plx_platform::i18n::Preference),
     /// The contribution row's slot: opening its page is [`RowKind::Nav`]'s job, so nothing
     /// dispatches this.
     Open,
@@ -1620,7 +1620,7 @@ enum LangAction {
 
 /// The Language page's rows from plain inputs: one checked `Choice` per language, then the
 /// contribution guide as a `Nav` row in its own section.
-fn language_form(selected: crate::i18n::Preference, busy: bool) -> Form<LangId, LangAction, SettingsPage> {
+fn language_form(selected: plx_platform::i18n::Preference, busy: bool) -> Form<LangId, LangAction, SettingsPage> {
     let mut choices = FormSection::new("");
     for language in LANGUAGES {
         choices = choices.item(
@@ -1634,8 +1634,8 @@ fn language_form(selected: crate::i18n::Preference, busy: bool) -> Form<LangId, 
         LangId::Contribute,
         RowKind::Nav(SettingsPage::Contribute),
         LangAction::Open,
-        Row::new(crate::i18n::msg::settings_language_contribute())
-            .detail(crate::i18n::msg::settings_language_help())
+        Row::new(plx_platform::i18n::msg::settings_language_contribute())
+            .detail(plx_platform::i18n::msg::settings_language_help())
             .chevron(true),
     );
     Form::new().section(choices).section(contribution)
@@ -1645,11 +1645,11 @@ struct LanguagePage {
     entry: EntryId,
     form: FormTable<LangId, LangAction, SettingsPage>,
     state: LanguageState,
-    save: Option<(crate::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
+    save: Option<(plx_platform::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
 }
 
 struct LanguageState {
-    selected: crate::i18n::Preference,
+    selected: plx_platform::i18n::Preference,
     /// The focused row's key — an identity, not a position.
     sel: RowKey,
     failed: bool,
@@ -1667,7 +1667,7 @@ impl LogicalState for LanguageState {
 
 impl LanguagePage {
     fn new(entry: EntryId) -> Self {
-        let selected = crate::i18n::saved_preference();
+        let selected = plx_platform::i18n::saved_preference();
         let sel = LangId::Choice(selected).key();
         let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
         page.rebuild();
@@ -1675,7 +1675,7 @@ impl LanguagePage {
     }
 
     fn pending(&self) -> bool {
-        self.state.selected != crate::i18n::current().preference()
+        self.state.selected != plx_platform::i18n::current().preference()
     }
 
     /// Re-derive the rows, keeping the cursor on its row by identity (the saved language on the
@@ -1689,16 +1689,16 @@ impl LanguagePage {
 
     fn view(&self) -> TableScreen<'_> {
         let copy = if self.state.busy {
-            crate::i18n::msg::settings_language_saving()
+            plx_platform::i18n::msg::settings_language_saving()
         } else if self.state.failed {
-            crate::i18n::msg::settings_language_save_failed()
+            plx_platform::i18n::msg::settings_language_save_failed()
         } else if self.pending() {
-            crate::i18n::msg::settings_language_pending()
+            plx_platform::i18n::msg::settings_language_pending()
         } else {
-            crate::i18n::msg::settings_language_copy()
+            plx_platform::i18n::msg::settings_language_copy()
         };
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(crate::i18n::msg::settings_title()),
-            crate::i18n::msg::settings_language_title(), copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
+            plx_platform::i18n::msg::settings_language_title(), copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
 
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
@@ -1779,7 +1779,7 @@ crate::focusable_via_view!(LanguagePage, InnerHost, view);
 impl Screen<InnerHost> for LanguagePage {
     fn name(&self) -> &'static str { "language" }
     fn state(&self) -> &dyn LogicalState { &self.state }
-    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(crate::i18n::msg::settings_title())) }
+    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         crate::ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);

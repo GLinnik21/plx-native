@@ -781,25 +781,25 @@ impl PersonScreen {
         self.life_parts = Vec::new();
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
-            self.life_parts.push(crate::i18n::msg::browse_person_born(&born));
+            self.life_parts.push(plx_platform::i18n::msg::browse_person_born(&born));
         }
         if !p.birthplace.is_empty() {
             self.life_parts.push(p.birthplace.clone());
         }
         let died = crate::ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
-            self.life_parts.push(crate::i18n::msg::browse_person_died(&died));
+            self.life_parts.push(plx_platform::i18n::msg::browse_person_died(&died));
         }
 
         for k in 0..NSHELF {
             self.shelf_count_c[k] = match p.total(k) {
                 0 => CString::default(),
-                n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
+                n => CString::new(plx_platform::i18n::current().number(n as i64)).unwrap_or_default(),
             };
         }
         self.entry_count_c = match crate::person::filmography_total(p) {
             0 => CString::default(),
-            n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
+            n => CString::new(plx_platform::i18n::current().number(n as i64)).unwrap_or_default(),
         };
     }
 
@@ -873,7 +873,7 @@ impl PersonScreen {
     /// disagree about where it sits.
     /// The Filmography entry: the shared linked-heading control, titled from the catalog.
     fn entry_heading(&self) -> LinkedHeading<'_> {
-        LinkedHeading::entry(crate::i18n::msg::browse_person_filmography(), self.entry_count_c.to_str().unwrap_or(""))
+        LinkedHeading::entry(plx_platform::i18n::msg::browse_person_filmography(), self.entry_count_c.to_str().unwrap_or(""))
     }
 
     fn entry_rect(&self, _p: &Person, measure: &dyn Measure) -> Rect {
@@ -1315,7 +1315,7 @@ impl PersonScreen {
         }
         StatusOverlay::new(
             band,
-            crate::i18n::msg::browse_person_empty_c(),
+            plx_platform::i18n::msg::browse_person_empty_c(),
             StatusKind::Empty,
         )
         .draw(env, p);
@@ -1324,7 +1324,7 @@ impl PersonScreen {
 }
 
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows.
-fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [crate::i18n::msg::browse_kind_movies_c(), crate::i18n::msg::browse_kind_shows_c()] }
+fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [plx_platform::i18n::msg::browse_kind_movies_c(), plx_platform::i18n::msg::browse_kind_shows_c()] }
 
 // -------------------------------------------------------------------------------------------
 // Focusable / Machine / Screen
@@ -2242,9 +2242,9 @@ mod tests {
         let measure = FixtureMeasure;
         let flow = header_flow(false, "A short biography.", true, false, true, &measure);
         let mut labels = Vec::new();
-        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
-            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            labels.push(crate::i18n::msg::browse_person_filmography_in(&locale).to_owned());
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            labels.push(plx_platform::i18n::msg::browse_person_filmography_in(&locale).to_owned());
         }
         labels.push("[!! Fïlmöögrááphy !!]".to_owned());
         for label in &labels {

@@ -3,7 +3,7 @@
 //! Only idle source periods start refreshes. A key gets at most one attempt per account epoch
 //! within the bounded recent-attempt set, so revisiting stale art cannot hammer an offline PMS.
 
-use crate::imgcache::DiskKey;
+use plx_platform::imgcache::DiskKey;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -53,7 +53,7 @@ static READY: Condvar = Condvar::new();
 static WORKER: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 pub(super) fn enqueue(client: &'static crate::plex::Client, path: String, key: DiskKey, epoch: u64, token_gen: u32) {
-    if epoch != crate::imgcache::generation() { return; }
+    if epoch != plx_platform::imgcache::generation() { return; }
     let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     if q.as_mut().is_some_and(|q| q.push(Job { client, path, key, epoch, token_gen })) {
         READY.notify_one();
@@ -94,14 +94,14 @@ fn run() {
                     .map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
             }
         };
-        if job.epoch != crate::imgcache::generation() || !grant_is_current(&job) { continue; }
+        if job.epoch != plx_platform::imgcache::generation() || !grant_is_current(&job) { continue; }
         // Failed refresh leaves both the cached file and already-published texture untouched.
         if let Some(bytes) = super::fetch_image(job.client, &job.path) {
             let (mut w, mut h) = (0, 0);
             let px = crate::img::img_decode_rgba(bytes.as_ptr(), bytes.len() as i32, &mut w, &mut h);
             if !px.is_null() {
                 crate::img::img_free(px);
-                crate::imgcache::write_at(job.epoch, &job.key, &bytes);
+                plx_platform::imgcache::write_at(job.epoch, &job.key, &bytes);
             }
         }
     }
@@ -119,7 +119,7 @@ mod tests {
     use super::*;
     fn job(client: &'static crate::plex::Client, i: usize, epoch: u64) -> Job {
         let path = format!("/photo/:/transcode?url=%2Fthumb%2F{i}&width=250&height=375");
-        Job { client, key: crate::imgcache::classify("fixture", &path).unwrap(), path, epoch, token_gen: client.token_gen() }
+        Job { client, key: plx_platform::imgcache::classify("fixture", &path).unwrap(), path, epoch, token_gen: client.token_gen() }
     }
     #[test]
     fn refreshes_are_bounded_deduplicated_and_retired_with_the_account() {

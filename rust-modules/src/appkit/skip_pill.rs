@@ -43,8 +43,8 @@ impl Prompt {
     /// The button's copy — presentation, derived from the kind at the point of drawing.
     pub(crate) fn label(&self) -> &'static str {
         match self.kind {
-            MarkerKind::Intro => crate::i18n::msg::widgets_skip_intro(),
-            MarkerKind::Credits => crate::i18n::msg::widgets_skip_credits(),
+            MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
+            MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
         }
     }
 }

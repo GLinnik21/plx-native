@@ -66,7 +66,7 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
         choices = choices.item_keyed(OptionId::Choice(value.clone()), RowKey(i as u32), RowKind::Choice, PickAction::Pick(value), row);
     }
     let retry = FormSection::new("").visible(retry).item_keyed(OptionId::Retry, RowKey(RETRY_KEY), RowKind::Button, PickAction::Retry,
-        Row::new(crate::i18n::msg::settings_audio_retry()).detail(crate::i18n::msg::settings_audio_retry_detail()));
+        Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
     Form::new().section(choices).section(retry)
 }
 
@@ -77,7 +77,7 @@ impl PickerPage {
                 quality: crate::route::quality(), direct_play: crate::route::direct_play_mode(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
             copy: String::new(), txn: Txn::new(true),
-            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_playback_enable_force_c()) };
+            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
         s.rebuild(true);
         s
     }
@@ -160,7 +160,7 @@ impl PickerPage {
         // that changed nothing.
         if self.current() == value && self.durable(&value) { self.pop(fx); return; }
         if value == Value::DirectPlay(DirectPlayMode::Forced) && self.state.direct_play != DirectPlayMode::Forced {
-            self.alert.open(crate::i18n::msg::settings_playback_force_question_c(), crate::i18n::msg::settings_playback_force_body());
+            self.alert.open(plx_platform::i18n::msg::settings_playback_force_question_c(), plx_platform::i18n::msg::settings_playback_force_body());
             self.state.confirming = true; self.state.affirmative = false;
             self.state.alert_scroll = self.alert.scroll_target_bits(); self.focus(fx, ALERT_GROUP);
             fx.invalidate(plx_machine::present::Provenance::Input);
@@ -320,7 +320,7 @@ impl Screen<InnerHost> for PickerPage {
     fn name(&self) -> &'static str { word::PICKER }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(crate::i18n::msg::settings_title()))
+        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {

@@ -3,7 +3,7 @@
 //!
 //! `net::keypin` publishes the fact ([`keypin::engaged`], and a [`keypin::revision`] that moves
 //! when any fact changes); this is the one consumer that acts on it, through the television's own
-//! toast ([`crate::tv::toast`]). It is polled from the frame loop, so it works on every route:
+//! toast ([`plx_platform::tv::toast`]). It is polled from the frame loop, so it works on every route:
 //! at an offline cold boot key mode first engages during the startup connect, long before any
 //! screen could carry a read-out of its own.
 //!
@@ -65,7 +65,7 @@ impl ClockNotice {
 /// The year is passed as text: a catalog number argument is locale-formatted, and a year is not a
 /// quantity ("2,020").
 fn message(year: Option<i64>) -> String {
-    use crate::i18n::msg;
+    use plx_platform::i18n::msg;
     match year {
         Some(y) => msg::browse_clock_notice_year(&y.to_string()),
         None => msg::browse_clock_notice().to_owned(),
@@ -75,7 +75,7 @@ fn message(year: Option<i64>) -> String {
 /// Raise `message` off the frame thread and log what became of it, once.
 fn send(message: String) {
     plx_base::task::spawn_small("clock notice", move || {
-        let outcome = crate::tv::toast::toast(&message);
+        let outcome = plx_platform::tv::toast::toast(&message);
         plx_base::eventlog::log(&format!("clock notice: toast {outcome:?}"));
     });
 }
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn the_message_names_the_year_only_when_it_is_known() {
-        let _en = crate::i18n::language_on_this_thread_for_test(crate::i18n::Preference::En);
+        let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         assert_eq!(message(Some(2020)), "TV clock looks wrong (2020). Connected by the remembered key.");
         assert_eq!(message(None), "TV clock looks wrong. Connected by the remembered key.");
         // Not locale-grouped: a year is not a quantity.
@@ -164,8 +164,8 @@ mod tests {
         const LIMIT: usize = 120;
         const LINE: usize = 40;
         const LINES: usize = 3;
-        for language in crate::i18n::SHIPPED {
-            let _guard = crate::i18n::language_on_this_thread_for_test(language);
+        for language in plx_platform::i18n::SHIPPED {
+            let _guard = plx_platform::i18n::language_on_this_thread_for_test(language);
             for (what, text) in [("with a year", message(Some(2020))), ("no year", message(None))] {
                 let tag = language.tag();
                 assert!(!text.trim().is_empty(), "{tag} {what}: empty");
