@@ -137,7 +137,7 @@ const FOOTER_H: f32 = 60.0;
 const ERROR_Y: f32 = FOOTER_Y + FOOTER_H + theme::space::XL + theme::size::BODY as f32 * 0.5;
 
 // PIN pad geometry: the label, dots and keypad are ONE centred unit (`pad_geom`'s doc has the
-// reasoning, including why it is now `Measure`-driven rather than `crate::text::text_cap_band`-driven).
+// reasoning, including why it is now `Measure`-driven rather than `plx_gfx::text::text_cap_band`-driven).
 const PAD_KEY: f32 = 108.0;
 const PAD_KGAP: f32 = 20.0;
 const PAD_ROWS: usize = 4;
@@ -334,10 +334,10 @@ fn footer_rect(measure: &dyn Measure) -> Rect {
 /// from `ui/profiles.rs`'s `pad_geom`, whose header explains why the block is centred as a unit
 /// (it used to sit low on the panel — three independently hard-coded Ys).
 ///
-/// **Reworked onto `Measure` rather than `crate::text::text_cap_band`, and that is a real
+/// **Reworked onto `Measure` rather than `plx_gfx::text::text_cap_band`, and that is a real
 /// behaviour change, not a mechanical port.** A query this screen's `Focusable` impl answers (the
 /// keypad's cell rects, read by the engine on every direction key) must be reachable from a host
-/// test with no font loaded — `crate::text::text_cap_band` rasterizes a reference glyph and pulls
+/// test with no font loaded — `plx_gfx::text::text_cap_band` rasterizes a reference glyph and pulls
 /// SDL2_ttf into the link the moment anything reachable from a test calls it, which is exactly how
 /// `ui/profiles.rs`'s own pointer-dismissal hole was found ("the first version of this test called
 /// `click` and `cargo test --lib` stopped building" — that module's `PadClick` doc). `line_h` is
@@ -1214,7 +1214,7 @@ impl ProfilesScreen {
         } else {
             theme::TEXT_SECONDARY
         };
-        let name = crate::text::elide_by(
+        let name = plx_gfx::text::elide_by(
             &u.title,
             card_row::RowStyle::PROFILES.w + card_row::RowStyle::PROFILES.gap - 12.0,
             false,
@@ -1306,7 +1306,7 @@ impl ProfilesScreen {
                     );
                 } else if let Ok(lc) = CString::new((*k as char).to_string()) {
                     let ty =
-                        crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
+                        plx_gfx::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
                     p.text(
                         lc.as_ptr(),
                         rect.x + rect.w * 0.5,
@@ -1867,7 +1867,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
         // a failed switch (wrong PIN, offline) drops the flow back here with an error
         if !readout && !self.error.is_empty() && self.phase == Phase::Profiles {
             if let Ok(e) = CString::new(self.error.as_ref()) {
-                let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ERROR_Y);
+                let ey = plx_gfx::text::text_vcenter_y(theme::size::BODY, 0, ERROR_Y);
                 p.text(
                     e.as_ptr(),
                     SCR_W as f32 * 0.5,

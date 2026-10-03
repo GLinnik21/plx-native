@@ -300,7 +300,7 @@ pub(super) trait FanIo {
 /// is one opaque [`FAN_W`]×[`FAN_H`] image, delivered as an ordinary decoded poster.
 pub(super) fn bake(io: &mut dyn FanIo) -> Got<Rgba> {
     if let Some(bytes) = io.cached() {
-        match crate::img::img_decode_owned(&bytes) {
+        match plx_gfx::img::img_decode_owned(&bytes) {
             Some((w, h, px)) if w == FAN_W && h == FAN_H => {
                 return Got::Ok(Rgba { w, h, px })
             }
@@ -337,7 +337,7 @@ pub(super) fn bake(io: &mut dyn FanIo) -> Got<Rgba> {
     // A member that failed transiently would freeze a degraded fan on disk until the stamp
     // moves; show it now, but let the next demand bake the whole one.
     if !transient {
-        if let Some(png) = crate::img::img_encode_png(out.w, out.h, &out.px) {
+        if let Some(png) = plx_gfx::img::img_encode_png(out.w, out.h, &out.px) {
             io.persist(&png);
         }
     }

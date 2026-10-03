@@ -642,7 +642,7 @@ fn two_libraries_behind_one_pill_have_a_position_and_a_lone_one_has_none() {
 /// popover listed the other type's libraries under a row naming this one.
 ///
 /// It is graded here rather than at either call site because both of those go through text
-/// measurement — `crate::text` is SDL2_ttf, which the host test build does not link — so this
+/// measurement — `plx_gfx::text` is SDL2_ttf, which the host test build does not link — so this
 /// is the layer at which the shared decision is reachable at all.
 #[test]
 fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() {

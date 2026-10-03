@@ -282,7 +282,7 @@ fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_in
     if s.is_empty() {
         return CString::default();
     }
-    let elided = crate::text::elide_by(s, w, false, |t| measure.width_str(t, sz, bold != 0));
+    let elided = plx_gfx::text::elide_by(s, w, false, |t| measure.width_str(t, sz, bold != 0));
     CString::new(elided).unwrap_or_default()
 }
 
@@ -1205,7 +1205,7 @@ impl PersonScreen {
                 crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, y, BIO_W * w, h), phase);
             } else {
                 let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-                let (cap_top, _) = crate::text::text_cap_band(sz, 0);
+                let (cap_top, _) = plx_gfx::text::text_cap_band(sz, 0);
                 crate::ui::widgets::dotted_run(
                     p,
                     &refs,

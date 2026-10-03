@@ -1077,7 +1077,7 @@ impl Measurements {
 impl Measure for Measurements {
     fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
         if let Self::Live(source) = self { return source.fit_line(s, budget, sz, bold); }
-        crate::text::fit_line_by(self, s, budget, sz, bold)
+        plx_gfx::text::fit_line_by(self, s, budget, sz, bold)
     }
     fn width(&self,s:&CStr,sz:i32,bold:bool)->f32 {
         if let Self::Live(source)=self { return source.width(s,sz,bold); }
@@ -1106,11 +1106,11 @@ impl Measure for Measurements {
 pub(crate) fn assert_measured_geometry(mut geometry: impl FnMut(&dyn Measure) -> Vec<u32>) {
     static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
     let _no_live_font = crate::ui::text_view::ForbidLive::enter();
-    crate::text::take_measure_fault();
+    plx_gfx::text::take_measure_fault();
     let capture = Measurements::record(&FIXTURE);
     let expected = geometry(&capture);
     assert!(
-        !crate::text::take_measure_fault(),
+        !plx_gfx::text::take_measure_fault(),
         "product geometry bypassed Measure through a live font"
     );
     let metrics: HashMap<_, _> = capture.drain().unwrap().into_iter().collect();
@@ -1124,7 +1124,7 @@ pub(crate) fn assert_measured_geometry(mut geometry: impl FnMut(&dyn Measure) ->
     );
     replay.drain().unwrap();
     assert!(
-        !crate::text::take_measure_fault(),
+        !plx_gfx::text::take_measure_fault(),
         "table replay touched a live font"
     );
 

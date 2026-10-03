@@ -310,7 +310,7 @@ pub(crate) fn draw(
         1.0,
     );
 
-    let elided = crate::text::elide_by(&caption(u), l.caption.w, false, |t| {
+    let elided = plx_gfx::text::elide_by(&caption(u), l.caption.w, false, |t| {
         measure.width_str(t, theme::size::CAPTION, true)
     });
     if let Ok(cs) = CString::new(elided) {

@@ -32,7 +32,7 @@
 // `rgb8`, and the two stops the renderer itself paints with (`NEUTRAL_500`, the app ground, and
 // `NEUTRAL_1000`, the scrim ink behind `SCRIM_INK`), are written down in `gfx::tokens` (module-layers
 // step L5) and imported here, so a code still exists in exactly one place.
-use crate::gfx::tokens::{rgb8, NEUTRAL_500};
+use plx_gfx::gfx::tokens::{rgb8, NEUTRAL_500};
 
 // Cool — blue-leaning: everything that is text, and artwork that has not loaded.
 const COOL_0: [f32; 4] = rgb8(0xf7, 0xfa, 0xfc);
@@ -158,7 +158,7 @@ pub const SUBTITLE_INKS: [[f32; 4]; 6] =
 // The ladder is DEFINED in `gfx::tokens` (module-layers step L5): `text` warms exactly these faces and
 // the `gfx` layer may not name `ui`. Re-exported as a module, so `theme::size::BODY` and
 // `use theme::size::*` hold, and `tools/font-hint-audit.py` reads the rungs from there.
-pub use crate::gfx::tokens::size;
+pub use plx_gfx::gfx::tokens::size;
 
 /// The **spacing scale** — the vertical/horizontal *gap* axis of the design system, the sibling of
 /// [`size`]. Gaps between stacked elements come from a named rung, never a hand-tuned pixel offset,
@@ -401,7 +401,7 @@ pub const SURFACE_APP: [f32; 4] = NEUTRAL_500;
 pub const PLANE_COVER: [f32; 4] = SURFACE_APP;
 // GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha): [`SURFACE_APP`] itself (both are
 // the `NEUTRAL_500` stop), defined in `gfx::tokens` because `gfx` clears with it.
-pub use crate::gfx::tokens::CLEAR_RGB;
+pub use plx_gfx::gfx::tokens::CLEAR_RGB;
 /// Opaque menu panel / fade mask / badge knockout interior.
 pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
 /// Near-opaque sheet/card gradient — top stop. [`SURFACE_PANEL`]'s own stop at .985, so the sheet
@@ -604,7 +604,7 @@ pub const SKELETON_BOT: [f32; 4] = COOL_900;
 
 // ── Scrims (near-black; alpha supplied per call) ─────────────────────────────
 // Hero/scroll scrim ink; use via [`scrim`]. Defined in `gfx::tokens` (the renderer paints with it).
-pub use crate::gfx::tokens::SCRIM_INK;
+pub use plx_gfx::gfx::tokens::SCRIM_INK;
 /// Pure-black scrim ink (HUD bottom, subtitle outline, modal); use via [`scrim_black`].
 pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 
@@ -705,7 +705,7 @@ pub mod underlay {
 }
 // `with_a` is defined in `gfx::tokens` (module-layers step L5) beside the card constants that use it;
 // it is how a role spells a stop on the white/black alpha ramps: `with_a(WHITE, 0.20)`.
-pub use crate::gfx::tokens::with_a;
+pub use plx_gfx::gfx::tokens::with_a;
 /// Blend `a` toward `b` by `t` (rgb only; keeps `a`'s alpha) — for a token that is a *mix* of two
 /// roles rather than one of them, e.g. an ambient wash sitting `t` of the way from [`SURFACE_APP`]
 /// to an item's artwork colour. A screen that lerps channels in a loop wants this instead. `const`
@@ -1301,7 +1301,7 @@ pub const CARD_SHEEN_W: f32 = 1.0;
 // shader test and the design-system mirror read them today, so the re-export has no user in a
 // non-test build — hence the allow.)
 #[allow(unused_imports)]
-pub use crate::gfx::tokens::{
+pub use plx_gfx::gfx::tokens::{
     CARD_GLARE_A, CARD_GLARE_EASE, CARD_GLARE_PX, CARD_GLOSS_A, CARD_GLOSS_DIR, CARD_GLOSS_FADE,
     CARD_GLOW_A, CARD_GLOW_BAND_PX, CARD_GLOW_BOT_A, CARD_GLOW_BOT_PX, CARD_GLOW_TOP_A,
     CARD_GLOW_TOP_PX,

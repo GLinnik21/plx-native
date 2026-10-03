@@ -1749,22 +1749,22 @@ mod step_ladder_tests {
     #[test]
     fn prepare_queues_the_transport_clocks_only_while_the_playbar_is_drawn() {
         let _g = plx_base::testlock::serial();
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         let mut budget = Budget::new();
         let cx = cx();
         let mut page = PlayerScreen::new(ENTRY);
         page.transport = true;
         page.set_hud_policy(HudPolicy::Hidden);
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
-        assert!(!crate::text::prewarm_pending(), "nothing is drawn under the capsule: nothing to warm");
+        assert!(!plx_gfx::text::prewarm_pending(), "nothing is drawn under the capsule: nothing to warm");
         page.set_hud_policy(HudPolicy::Lifted);
         page.transport = false;
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
-        assert!(!crate::text::prewarm_pending(), "an Info card owns the middle: no playbar, no clocks");
+        assert!(!plx_gfx::text::prewarm_pending(), "an Info card owns the middle: no playbar, no clocks");
         page.transport = true;
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
-        assert!(crate::text::prewarm_pending(), "the playbar's clocks were left for the draw to rasterise");
-        crate::text::reset_prewarm_for_test();
+        assert!(plx_gfx::text::prewarm_pending(), "the playbar's clocks were left for the draw to rasterise");
+        plx_gfx::text::reset_prewarm_for_test();
     }
 
     /// **However the capsule's surface closes, the transport stays down after it** (finding: a

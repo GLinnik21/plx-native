@@ -4,7 +4,7 @@
 //! route::title_cptr/ctxline_cptr. The video-overlay subtitle draws below stay on the raw text/tex
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
-use crate::gfx::{delete_tex, upload_rgba};
+use plx_gfx::gfx::{delete_tex, upload_rgba};
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
 use crate::ui::widgets::{
@@ -104,7 +104,7 @@ impl ClockWarm {
             self.strings.extend(clocks.into_iter().filter_map(|(s, bold)| Some((CString::new(s).ok()?, bold))));
         }
         for (s, bold) in &self.strings {
-            crate::text::queue_prewarm(s.as_ptr(), theme::size::CAPTION, *bold);
+            plx_gfx::text::queue_prewarm(s.as_ptr(), theme::size::CAPTION, *bold);
         }
     }
 }
@@ -1725,7 +1725,7 @@ pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::
             TransportMark::Working | TransportMark::None => None,
         };
         let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
-        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
+        let icy = ty + plx_gfx::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
                                                                                 // scaled so every member of the family lands the SAME height of ink in this one box
         let bs = glyph.map_or(isz, |g| {
             isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause)
@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
         let _g = plx_base::testlock::serial();
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         let sz = theme::size::CAPTION;
         let mut warm = ClockWarm::default();
         // 1:23.4 into a 2:00 item: the draw shows "1:23" (bold) and "-0:36" (regular).
@@ -1944,32 +1944,32 @@ mod tests {
         assert_eq!((fmt_time(pos, false), fmt_time(dur - pos, true)), ("1:23".into(), "-0:36".into()));
         warm.queue(pos, dur);
         // `prepare` may run on a frame the loop then does not present: it records, uploads nothing.
-        assert!(crate::text::prewarm_pending(), "prepare queued the clocks");
-        assert!(!crate::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
+        assert!(plx_gfx::text::prewarm_pending(), "prepare queued the clocks");
+        assert!(!plx_gfx::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
         // Four strings against a three-string frame budget: the second presented frame finishes them.
-        while crate::text::prewarm_pending() {
+        while plx_gfx::text::prewarm_pending() {
             crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         }
         for (text, bold) in [("1:23", 1), ("-0:36", 0), ("1:24", 1), ("-0:35", 0)] {
             assert!(
-                crate::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
+                plx_gfx::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
                 "{text:?} (bold={bold}) was left for the draw to rasterise after the back-buffer wait"
             );
         }
 
         // The draw empties the queue every frame, so the offer is repeated every prepared frame —
         // and an undrained offer must come back rather than be remembered as done.
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         warm.queue(pos + 16_000_000, dur);
-        assert!(crate::text::prewarm_pending(), "the same second was not offered again");
+        assert!(plx_gfx::text::prewarm_pending(), "the same second was not offered again");
 
         // The end of the item: nothing below zero, and no string the clock cannot show.
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         warm.queue(dur + 5_000_000_000, dur);
         crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
-        assert!(crate::text::prewarm_resident_for_test(b"-0:00", sz, 0));
-        assert!(crate::text::prewarm_resident_for_test(b"2:05", sz, 1));
-        crate::text::reset_prewarm_for_test();
+        assert!(plx_gfx::text::prewarm_resident_for_test(b"-0:00", sz, 0));
+        assert!(plx_gfx::text::prewarm_resident_for_test(b"2:05", sz, 1));
+        plx_gfx::text::reset_prewarm_for_test();
     }
 
     use crate::metadata::{Marker, MarkerKind};

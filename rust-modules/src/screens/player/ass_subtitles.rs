@@ -85,7 +85,7 @@ impl AssSubtitles {
             for (slot, rect) in next.iter_mut().zip(&frame.rects) {
                 if slot.is_none() {
                     let previous = old.iter_mut().find_map(Option::take);
-                    let id = crate::gfx::upload_rgba(
+                    let id = plx_gfx::gfx::upload_rgba(
                         previous.as_ref().map_or(0, |t| t.id),
                         rect.width,
                         rect.height,
@@ -100,7 +100,7 @@ impl AssSubtitles {
                 }
             }
             for unused in old.into_iter().flatten() {
-                crate::gfx::delete_tex(unused.id);
+                plx_gfx::gfx::delete_tex(unused.id);
             }
             self.textures = next.into_iter().flatten().collect();
             self.uploaded = frame.serial;
@@ -150,7 +150,7 @@ struct CachedTexture {
 
 fn clear_textures(textures: &mut Vec<CachedTexture>) {
     for texture in textures.drain(..) {
-        crate::gfx::delete_tex(texture.id);
+        plx_gfx::gfx::delete_tex(texture.id);
     }
 }
 

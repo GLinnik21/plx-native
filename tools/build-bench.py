@@ -15,13 +15,16 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
   platform  ...after appending one to a leaf file of the PLATFORM layer crate
             (rust-modules/platform/src/devcaps.rs, in `plx_platform`): `plx_base` and `plx_machine`
             stay fresh, the platform crate and the app crate behind it recompile.
+  gfx       ...after appending one to a leaf file of the GFX layer crate
+            (rust-modules/gfx/src/overdraw.rs, in `plx_gfx`): `plx_base` and `plx_machine` stay
+            fresh, the gfx crate and the app crate behind it recompile.
   app       ...after appending one to a leaf file of the app crate (rust-modules/src/coldstart.rs):
             `plx_base` stays fresh and only the app crate recompiles.
   hub       ...after appending one to a hub file (rust-modules/src/ui/mod.rs).
   leaf-inc  `leaf` with CARGO_INCREMENTAL=1 in rust-modules/target-fast (the `make test-fast` tree).
   hub-inc   `hub`, incremental. The two -inc rows are skipped with a note when target-fast is
             absent, unless `--cold` (which builds it, untimed, first).
-  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform`) on
+  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx`) on
             a warm tree; the `test result:` counts of every crate are summed.
   arm       the ARM staticlib line (`cargo rustc ... --crate-type staticlib`) after touching lib.rs,
             then the archive's size and sha256. Skipped when the ARM archive was never built here;
@@ -72,6 +75,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LEAF_FILE = "rust-modules/base/src/cbuf.rs"
 MACHINE_LEAF_FILE = "rust-modules/machine/src/landgate.rs"
 PLATFORM_LEAF_FILE = "rust-modules/platform/src/devcaps.rs"
+GFX_LEAF_FILE = "rust-modules/gfx/src/overdraw.rs"
 APP_LEAF_FILE = "rust-modules/src/coldstart.rs"
 HUB_FILE = "rust-modules/src/ui/mod.rs"
 TOUCH_FILE = "rust-modules/src/lib.rs"
@@ -79,23 +83,25 @@ APP_PACKAGE = "plxnative-modules"
 BASE_PACKAGE = "plx_base"
 MACHINE_PACKAGE = "plx_machine"
 PLATFORM_PACKAGE = "plx_platform"
+GFX_PACKAGE = "plx_gfx"
 
 # The cargo subcommand skeletons the Makefile's recipes use. Everything else (toolchain, dirs,
 # feature flags, RUSTFLAGS) comes from `make -s print-bench-config`. ci/test_build_bench.py compares
 # these to the recipes in the Makefile.
-HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform")
+HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx")
 HOST_TEST_BUILD_ARGS = HOST_TEST_ARGS + ("--no-run", "--message-format=json")
 ARM_ARGS_HEAD = ("rustc", "--release", "--target")  # then the target triple
 ARM_ARGS_LIB = ("--lib", "--crate-type", "staticlib", "--target-dir")  # then the target dir
 ARM_ARGS_TAIL = ("--message-format=json-render-diagnostics",)  # after the feature flags
 
-ALL_SCENARIOS = ("noop", "leaf", "machine", "platform", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")
+ALL_SCENARIOS = ("noop", "leaf", "machine", "platform", "gfx", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")
 QUICK_SCENARIOS = ("noop", "leaf", "sizes")
 TITLES = {
     "noop": "No-op host test build",
     "leaf": "Edit leaf (plx_base cbuf.rs), non-incremental",
     "machine": "Edit leaf (plx_machine landgate.rs), non-incremental",
     "platform": "Edit leaf (plx_platform devcaps.rs), non-incremental",
+    "gfx": "Edit leaf (plx_gfx overdraw.rs), non-incremental",
     "app": "Edit leaf (app coldstart.rs), non-incremental",
     "hub": "Edit hub (ui/mod.rs), non-incremental",
     "leaf-inc": "Edit leaf (plx_base cbuf.rs), incremental",
@@ -105,7 +111,7 @@ TITLES = {
     "sizes": "Target dir sizes",
 }
 SWAP_WARN_PCT = 90.0
-EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "platform": PLATFORM_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
+EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "platform": PLATFORM_LEAF_FILE, "gfx": GFX_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
 
 
 class BenchError(Exception):
@@ -230,7 +236,7 @@ class Cargo:
 def summarize_artifacts(stdout: str) -> dict:
     """Read cargo's JSON records: how many units, how many were rebuilt, was the app crate."""
     total = rebuilt = 0
-    app_rebuilt = base_rebuilt = machine_rebuilt = platform_rebuilt = False
+    app_rebuilt = base_rebuilt = machine_rebuilt = platform_rebuilt = gfx_rebuilt = False
     for line in stdout.splitlines():
         try:
             rec = json.loads(line)
@@ -245,8 +251,10 @@ def summarize_artifacts(stdout: str) -> dict:
             base_rebuilt = base_rebuilt or BASE_PACKAGE in str(rec.get("package_id", ""))
             machine_rebuilt = machine_rebuilt or MACHINE_PACKAGE in str(rec.get("package_id", ""))
             platform_rebuilt = platform_rebuilt or PLATFORM_PACKAGE in str(rec.get("package_id", ""))
+            gfx_rebuilt = gfx_rebuilt or GFX_PACKAGE in str(rec.get("package_id", ""))
     return {"units": total, "rebuilt": rebuilt, "app_rebuilt": app_rebuilt, "base_rebuilt": base_rebuilt,
-            "machine_rebuilt": machine_rebuilt, "platform_rebuilt": platform_rebuilt}
+            "machine_rebuilt": machine_rebuilt, "platform_rebuilt": platform_rebuilt,
+            "gfx_rebuilt": gfx_rebuilt}
 
 
 def parse_test_result(text: str) -> dict | None:
@@ -439,8 +447,10 @@ def row_info(sid: str, res: dict) -> str:
         mwhich = "yes" if mflags == {True} else "no" if mflags == {False} else "mixed"
         pflags = {s.get("platform_rebuilt", False) for s in samples}
         pwhich = "yes" if pflags == {True} else "no" if pflags == {False} else "mixed"
+        gflags = {s.get("gfx_rebuilt", False) for s in samples}
+        gwhich = "yes" if gflags == {True} else "no" if gflags == {False} else "mixed"
         text = (f"app crate rebuilt: {which}, plx_base rebuilt: {bwhich}, plx_machine rebuilt: {mwhich}, "
-                f"plx_platform rebuilt: {pwhich} "
+                f"plx_platform rebuilt: {pwhich}, plx_gfx rebuilt: {gwhich} "
                 f"({last['rebuilt']}/{last['units']} units)")
         if sid == "noop" and True in flags:
             text += " **UNEXPECTED: a no-op build recompiled the app crate**"

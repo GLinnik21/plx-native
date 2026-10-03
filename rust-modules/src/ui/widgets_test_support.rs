@@ -22,10 +22,10 @@ use crate::ui::tile::Resume;
 /// same at every point of the unfurl, which is why one number can stand for the band.
 pub(super) fn band_region(w: f32) -> f32 {
     let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
-    let track = crate::gfx::blur_region((crate::ui::consts::SCR_W - w) * 0.5, y, w, h);
+    let track = plx_gfx::gfx::blur_region((crate::ui::consts::SCR_W - w) * 0.5, y, w, h);
     let cap = chip_cap(1.0, CHIP_NAME_MAX);
-    let chip = crate::gfx::blur_region(cap.x, cap.y, cap.w, cap.h);
-    let u = crate::gfx::blur_region_union(track, chip);
+    let chip = plx_gfx::gfx::blur_region(cap.x, cap.y, cap.w, cap.h);
+    let u = plx_gfx::gfx::blur_region_union(track, chip);
     u[2] * u[3]
 }
 

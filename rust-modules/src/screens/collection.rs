@@ -1092,9 +1092,9 @@ mod tests {
             });
             screen.sync(store.view().current().unwrap(), &FixtureMeasure);
             let context = cx(store.view(), None);
-            let runs = crate::text::capture_text_runs_for_test(|| {
+            let runs = plx_gfx::text::capture_text_runs_for_test(|| {
                 let mut f = DrawFrame::new(&context, crate::ui::Painter::recording());
-                crate::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
+                plx_gfx::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
             });
             assert!(runs.iter().any(|run| run.contains("[!!")), "{status:?} drew catalog text: {runs:?}");
             let pseudo = |run: &str| run.contains("[!!") || run.contains(['á', 'ë', 'ï', 'ö', 'ü']);

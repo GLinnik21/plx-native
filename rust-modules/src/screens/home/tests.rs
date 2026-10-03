@@ -2530,7 +2530,7 @@ fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge()
     s.layout_grid();
     let title = view.hub(0).unwrap().title.to_string();
     let drawn = |s: &HomeScreen| {
-        crate::text::capture_text_runs_for_test(|| {
+        plx_gfx::text::capture_text_runs_for_test(|| {
             let env = s.env(0.0);
             s.draw_grid(view, &env, Painter::recording(), 1.0, None, None, &FixtureMeasure);
         })
@@ -2775,7 +2775,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
         let context = cx(view, Some(play(s)));
         crate::ui::draw_census::capture_tex(|| {
             let mut f = DrawFrame::new(&context, Painter::recording());
-            crate::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
+            plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(s, &mut f));
         })
         .into_iter()
         .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01 && r.x < SCR_W && r.x + r.w > 0.0)

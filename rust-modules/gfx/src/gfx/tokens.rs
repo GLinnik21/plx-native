@@ -21,7 +21,7 @@
 /// FRACTIONAL one hands `GL_DITHER` (on by default in GLES2) a half-code to alternate on across a
 /// large flat fill, which banded the app ground visibly before it was snapped. So write the code and
 /// let this do the division; never a decimal guess.
-pub(crate) const fn rgb8(r: u8, g: u8, b: u8) -> [f32; 4] {
+pub const fn rgb8(r: u8, g: u8, b: u8) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
 }
 
@@ -29,9 +29,9 @@ pub(crate) const fn rgb8(r: u8, g: u8, b: u8) -> [f32; 4] {
 // the palette is `ui::theme`'s private primitive layer, which imports these so a code is still
 // written down in exactly one place.
 /// The app ground, Apple TV's shelf gray `#2c2c2e` (`theme::SURFACE_APP`'s stop).
-pub(crate) const NEUTRAL_500: [f32; 4] = rgb8(0x2c, 0x2c, 0x2e);
+pub const NEUTRAL_500: [f32; 4] = rgb8(0x2c, 0x2c, 0x2e);
 /// The scrim ink, near-black `#050508` (`theme::scrim`'s stop).
-pub(crate) const NEUTRAL_1000: [f32; 4] = rgb8(0x05, 0x05, 0x08);
+pub const NEUTRAL_1000: [f32; 4] = rgb8(0x05, 0x05, 0x08);
 
 /// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base, and
 /// `theme::SURFACE_APP` itself rather than a second copy of its code (both are [`NEUTRAL_500`]):
@@ -145,7 +145,7 @@ pub mod size {
     /// info/synopsis text under the home/detail hero's title block" for both of the releases in
     /// which that was false of one of them and then of neither. Detail's blurb moved to `LABEL`/36
     /// in `aa598bf2`, home's followed when the two were made one block
-    /// ([`crate::ui::hero_synopsis`], which holds the argument): a hero blurb is the longest run of
+    /// (`ui::hero_synopsis`, which holds the argument): a hero blurb is the longest run of
     /// prose on its page, so it is READING copy and the recorded "smaller than the meta line"
     /// directive is satisfied at `LABEL` 26 under a `BODY` 28 meta line. What is left here is the
     /// episode row's air date, the rating-row provider captions, the Library's note line, the

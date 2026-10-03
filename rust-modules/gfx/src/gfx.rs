@@ -7,29 +7,29 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
-use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
+use crate::overdraw::{gate, masked, note_px, set_clip, Class};
 
 // What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
 // overdraw ledger and the machine runtime (module-layers step L5). `ui` re-exports each of them
 // at its old path (`ui::Rect`, `ui::frame::backdrop`, `ui::profile`, `ui::theme`).
 /// The live-backdrop walk: layer/damage algebra, the discovery pass and the retained glass sources.
-pub(crate) mod backdrop;
+pub mod backdrop;
 mod geom;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
-pub(crate) mod profile;
+pub mod profile;
 /// The design tokens the renderer draws with: the app ground and scrim ink, the card shading
 /// constants its image shader mirrors, and the type-size ladder.
-pub(crate) mod tokens;
+pub mod tokens;
 pub use geom::{Crop, Rect};
-pub(crate) use geom::Zoom;
+pub use geom::Zoom;
 
 // Per-frame counters for the frame-drop detector: how many card composites are actually issued
 // (`draw_tex_carded`), and how many of those are (partly) off-screen — to confirm the cull is tight.
 static CARD_CT: AtomicU32 = AtomicU32::new(0);
 static CARD_OFF: AtomicU32 = AtomicU32::new(0);
 /// (card composites drawn, of which fully+partly off-screen) since the last call; resets both.
-pub(crate) fn take_card_stats() -> (u32, u32) {
+pub fn take_card_stats() -> (u32, u32) {
     (
         CARD_CT.swap(0, Ordering::Relaxed),
         CARD_OFF.swap(0, Ordering::Relaxed),
@@ -343,7 +343,7 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// away the region clamp for the rest of the pass.
 static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
 
-pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
+pub fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     backdrop::clip(Some(Rect::new(x,y,w,h)));
     if backdrop::discovering() { return; }
     let x0 = x.max(0.0);
@@ -401,7 +401,7 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// disabling the test: the box is the direct pass's only clamp on where the page may write, and a
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
-pub(crate) fn clip_clear() {
+pub fn clip_clear() {
     backdrop::clip(None);
     if backdrop::discovering() { return; }
     set_clip(None);
@@ -415,7 +415,7 @@ pub(crate) fn clip_clear() {
 
 /// clear the framebuffer to an opaque color — the retui frame's first op, so the
 /// framework doesn't have to link GLES itself (it draws only through gfx/text).
-pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
+pub fn frame_clear(r: f32, g: f32, b: f32) {
     frame_clear_alpha(r, g, b, 1.0);
 }
 
@@ -424,7 +424,7 @@ pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
 /// never paints a ground. A page that keeps its own chrome (the detail trailer preview) has to
 /// punch the same hole itself: [`frame_clear`] here is a full-screen sheet over the plane, which
 /// is sound with no picture.
-pub(crate) fn frame_clear_through() {
+pub fn frame_clear_through() {
     frame_clear_alpha(0.0, 0.0, 0.0, 0.0);
 }
 
@@ -434,7 +434,7 @@ thread_local! {
 
 /// A text-recording scene may call raw frame clears outside its recording Painter.
 /// Keep those calls off the visible framebuffer; restore even if the screen unwinds.
-pub(crate) fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
+pub fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -473,7 +473,7 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
 /// coarse wall-clock aid for the draw profiler (`ui::profile`) — it is not a GPU timestamp and it
 /// serializes the pipeline, so never call it on the normal render path.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn gl_finish() {
+pub fn gl_finish() {
     unsafe { glFinish() }
 }
 
@@ -483,7 +483,7 @@ pub(crate) fn gl_finish() {
 /// `GL_TIME_ELAPSED` interval closed before the flush contains no submitted job and reports a
 /// cost of essentially zero. Profiler-only, for the same reason `gl_finish` is.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn gl_flush() {
+pub fn gl_flush() {
     unsafe { glFlush() }
 }
 
@@ -786,7 +786,7 @@ unsafe fn supersample_aa(src: *const c_char) -> Option<std::ffi::CString> {
     std::ffi::CString::new(text.replace(EDGE, &format!("smoothstep(-{w:.6}, {w:.6}, d)"))).ok()
 }
 
-pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
+pub fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     try_compile(ty, src).unwrap_or_else(|| std::process::exit(1))
 }
 
@@ -836,7 +836,7 @@ fn try_compile(ty: c_uint, src: *const c_char) -> Option<c_uint> {
 /// Shared program bring-up for every shader pair: create → attach VS/FS → bind `a_pos`
 /// (attrib 0, the shared unit quad) → link. `None` = link failure; each caller keeps its
 /// own failure policy (hard-exit, degrade to 0, or early-return).
-pub(crate) fn link_program(vs: *const c_char, fs: *const c_char) -> Option<c_uint> {
+pub fn link_program(vs: *const c_char, fs: *const c_char) -> Option<c_uint> {
     link_shaders(gfx_compile(GL_VERTEX_SHADER, vs), gfx_compile(GL_FRAGMENT_SHADER, fs))
 }
 
@@ -863,7 +863,7 @@ fn link_shaders(vs: c_uint, fs: c_uint) -> Option<c_uint> {
 /// shadow paths used to pay on every call. Main-thread only, like all GL here.
 static mut CUR_PROG: c_uint = 0;
 #[inline]
-pub(crate) fn use_prog(p: c_uint) {
+pub fn use_prog(p: c_uint) {
     unsafe {
         if CUR_PROG != p {
             glUseProgram(p);
@@ -938,7 +938,7 @@ fn bind_core_profile_vao() {
     }
 }
 
-pub(crate) fn init_gl() {
+pub fn init_gl() {
     unsafe {
         // Before any buffer or attribute state is touched — in a core profile the calls below are
         // errors without it.
@@ -1148,14 +1148,14 @@ pub(crate) fn init_gl() {
 }
 
 /// The CAPSULE OUTLINE's solved geometry as the shader takes it — `[R, f, r, big centre y, end
-/// centre x, blend centre x, blend centre y, enabled]`. Built by [`crate::ui::pill::Pill::args`];
+/// centre x, blend centre x, blend centre y, enabled]`. Built by `ui::pill::Pill::args`;
 /// the renderer only ever forwards it.
-pub(crate) type PillArgs = [f32; 8];
+pub type PillArgs = [f32; 8];
 /// The focused face's INNER GLOW — `[top depth px, top weight, bottom depth px, bottom weight]`.
 /// The design draws it as two inset shadows either side of the perimeter line; this is the same
 /// light as a falloff inward from the edge, weighted by the surface normal so it dies out where the
 /// face turns away instead of stopping on an arc.
-pub(crate) type GlowArgs = [f32; 4];
+pub type GlowArgs = [f32; 4];
 
 /// Send "this draw is an ordinary rounded rect, with no inner glow" — the state every PROG path but
 /// the capsule's must leave behind. Uniforms are per-PROGRAM and persist across draws, so a shape
@@ -1252,7 +1252,7 @@ fn art_scrim_inner(w: f32, h: f32, radius: f32) -> [f32; 2] {
 /// Coordinates stay authored pixels, including during a scaled blur-source pass; no scissor
 /// state changes, so an enclosing panel's clip remains in force.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_art_scrim(
+pub fn draw_art_scrim(
     x: f32,
     y: f32,
     w: f32,
@@ -1284,7 +1284,7 @@ pub(crate) fn draw_art_scrim(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect(
+pub fn draw_rect(
     x: f32,
     y: f32,
     w: f32,
@@ -1345,7 +1345,7 @@ pub(crate) fn draw_rect(
 /// [`draw_rect`] with the focus edge-sheen (a `rimw`-px inset perimeter rim in `rimcol`) baked into
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect_sheened(
+pub fn draw_rect_sheened(
     x: f32,
     y: f32,
     w: f32,
@@ -1368,7 +1368,7 @@ pub(crate) fn draw_rect_sheened(
 /// solved outline is strictly inside the stadium, so a conservative test against the larger shape is
 /// conservative against this one too.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect_shaped(
+pub fn draw_rect_shaped(
     x: f32,
     y: f32,
     w: f32,
@@ -1408,7 +1408,7 @@ pub(crate) fn draw_rect_shaped(
 /// `1.0` is **load-bearing**, not incidental — `fs_ambient.frag` now interpolates alpha with the
 /// colour (see [`draw_grad4`]), so this is what keeps every ambient wash a ground that REPLACES what
 /// is under it rather than a translucent film over it.
-pub(crate) fn draw_ambient(
+pub fn draw_ambient(
     x: f32,
     y: f32,
     w: f32,
@@ -1474,7 +1474,7 @@ fn draw_ambient_impl(
 /// Can the wash carry an ink ramp ([`draw_ambient_inked`])? Only the dithered program has one; if
 /// it failed to link, the plain twin draws the wash and the caller keeps the ramp as its own layer.
 #[inline]
-pub(crate) fn wash_ink_ok() -> bool {
+pub fn wash_ink_ok() -> bool {
     // SAFETY: written once at init on the render thread, read on the render thread.
     unsafe { APROG != 0 }
 }
@@ -1492,7 +1492,7 @@ pub(crate) fn wash_ink_ok() -> bool {
 /// (`draw_art_wash`). Callers must check [`wash_ink_ok`] first — without the dithered program
 /// there is no ramp to carry, and this draws the wash alone.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_ambient_inked(
+pub fn draw_ambient_inked(
     x: f32,
     y: f32,
     w: f32,
@@ -1539,7 +1539,7 @@ unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_in
 /// Each pointer must address FOUR floats (rgba). Blending is the app-wide
 /// `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA` set at init, so this composites over whatever is already
 /// on the panel — which is the whole point of having it beside the opaque wash.
-pub(crate) fn draw_grad4(
+pub fn draw_grad4(
     x: f32,
     y: f32,
     w: f32,
@@ -1569,7 +1569,7 @@ pub(crate) fn draw_grad4(
     }
 }
 
-pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
+pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
@@ -1603,7 +1603,7 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
 }
 
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
-pub(crate) fn draw_rrect_sheened(
+pub fn draw_rrect_sheened(
     x: f32,
     y: f32,
     w: f32,
@@ -1645,12 +1645,12 @@ pub(crate) fn draw_rrect_sheened(
 /// so it doesn't disturb the base shader's uniforms.
 ///
 /// `cut` picks WHICH INTERIOR the shader throws away, and the choice is about the occluder's
-/// OPACITY, not its shape. Negative (the default, [`Painter::shadow`](crate::ui::Painter::shadow))
+/// OPACITY, not its shape. Negative (the default, `Painter::shadow`)
 /// takes the cheap box cut an opaque tile can afford — it leaves a full-strength band under the
 /// occluder's rim, which the occluder hides. A non-negative value is the occluder's own corner
 /// radius, and cuts the rounded shape exactly, so a TRANSLUCENT occluder has no ink under it to
-/// show through ([`Painter::shadow_outside`](crate::ui::Painter::shadow_outside)).
-pub(crate) fn draw_shadow(
+/// show through (`Painter::shadow_outside`).
+pub fn draw_shadow(
     x: f32,
     y: f32,
     w: f32,
@@ -1700,7 +1700,7 @@ pub(crate) fn draw_shadow(
 ///   overshoot — a visible "bounce").
 ///
 /// `x(t) = (x₀ + (v₀ + ω·x₀)·t)·e^(−ω·t)`, and its derivative for the velocity.
-pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
+pub fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
         let w = k.sqrt(); // natural frequency; critical damping is c = 2ω
         let e = plx_machine::motion::exp(-w * dt); // this crate's exp: what a recording can replay
@@ -1723,7 +1723,7 @@ pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32)
 /// stay on [`spring`] — they must NOT ring.
 ///
 /// `x(t) = e^(−ζω·t)·(A·cos(ω_d·t) + B·sin(ω_d·t))`, ω_d = ω·√(1−ζ²), A = x₀, B = (v₀ + ζω·x₀)/ω_d.
-pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zeta: f32, dt: f32) {
+pub fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zeta: f32, dt: f32) {
     unsafe {
         let w = k.sqrt();
         let z = zeta.clamp(0.0, 0.999); // guard the ω_d = 0 singularity at critical/over-damping
@@ -1788,7 +1788,7 @@ fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
 }
 
 #[cfg(feature = "devtools")]
-pub(crate) fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const f32) {
+pub fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const f32) {
     n = n.clamp(0, 999);
     let adv = s + 0.55 * s;
     let mut x = right_x - adv;
@@ -1803,7 +1803,7 @@ pub(crate) fn draw_number(mut n: i32, right_x: f32, y: f32, s: f32, col: *const 
 }
 
 // ---- image program: RGBA textures (posters/logos/backdrop) with rounded corners ----
-pub(crate) fn init_image() {
+pub fn init_image() {
     unsafe {
         IPROG = match link_program(VS_IMG.as_ptr(), FS_IMG.as_ptr()) {
             Some(p) => p,
@@ -1924,7 +1924,7 @@ fn init_hero() {
 /// Is the hero-ground program usable? `false` means its link failed and the caller must draw the
 /// art and the scrims the way it always has.
 #[inline]
-pub(crate) fn hero_ground_ok() -> bool {
+pub fn hero_ground_ok() -> bool {
     // Not `HPROG != 0`: the link has not been attempted until the first draw, so before that the
     // honest answer is "nothing has refused it yet". A refusal latches through `HERO_TRIED`.
     unsafe { HPROG != 0 || !HERO_TRIED }
@@ -1935,7 +1935,7 @@ pub(crate) fn hero_ground_ok() -> bool {
 /// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
 /// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_hero_ground(
+pub fn draw_hero_ground(
     tex: c_uint,
     x: f32,
     y: f32,
@@ -2000,7 +2000,7 @@ pub(crate) fn draw_hero_ground(
 /// Can the wash carry its artwork in one pass? `false` means the caller draws [`draw_ambient`] and
 /// then the art as two layers — the same picture.
 #[inline]
-pub(crate) fn art_wash_ok() -> bool {
+pub fn art_wash_ok() -> bool {
     // SAFETY: written once at init on the render thread, read on the render thread.
     unsafe { std::ptr::addr_of!(ART_WASH).read().is_some() }
 }
@@ -2029,7 +2029,7 @@ pub(crate) fn art_wash_ok() -> bool {
 /// `ink`/`inka` the screen's ramp over both, exactly as [`draw_ambient_inked`] takes it (zero
 /// alphas for none).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_art_wash(
+pub fn draw_art_wash(
     (x, y, w, h): (f32, f32, f32, f32),
     corners: [[f32; 3]; 4],
     tex: c_uint,
@@ -2072,7 +2072,7 @@ pub(crate) fn draw_art_wash(
 /// Under supersampling (`surface::render_scale`, simulator only) a whole PHYSICAL pixel is `1/n`
 /// of a logical one, and the textures are rasterised at `n`x to match, so that is what it snaps to.
 #[inline]
-pub(crate) fn snap(v: f32) -> f32 {
+pub fn snap(v: f32) -> f32 {
     #[cfg(feature = "hostsim")]
     {
         let n = plx_base::surface::render_scale();
@@ -2086,7 +2086,7 @@ pub(crate) fn snap(v: f32) -> f32 {
 /// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
 /// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
 /// image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures. Main-thread only.
-pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
+pub fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
     unsafe {
         let mut tex = prev;
         if tex == 0 {
@@ -2119,7 +2119,7 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
 /// includes GPU memory, so a stress bench that watches RSS grow cannot tell texture churn from a
 /// heap leak on its own; this ledger is the half it cannot see, and the stress benches print it
 /// beside `rss_kb=` on every cycle line. Main-render-thread only, like every GL call here.
-pub(crate) mod tex_ledger {
+pub mod tex_ledger {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::os::raw::{c_int, c_uint};
@@ -2130,7 +2130,7 @@ pub(crate) mod tex_ledger {
     }
 
     /// `tex` was (re)specified at `w`×`h`: a re-spec of a known name replaces its size.
-    pub(crate) fn specified(tex: c_uint, w: c_int, h: c_int) {
+    pub fn specified(tex: c_uint, w: c_int, h: c_int) {
         let bytes = w.max(0) as u64 * h.max(0) as u64 * 4;
         LIVE.with(|m| {
             let revision=REVISION.with(|n| { let next=n.get().wrapping_add(1); n.set(next); next });
@@ -2139,16 +2139,16 @@ pub(crate) mod tex_ledger {
     }
 
     /// `tex` was deleted. A name this ledger never saw is ignored.
-    pub(crate) fn deleted(tex: c_uint) {
+    pub fn deleted(tex: c_uint) {
         LIVE.with(|m| {
             m.borrow_mut().remove(&tex);
         });
     }
 
-    pub(crate) fn revision(tex: c_uint) -> u64 { LIVE.with(|m| m.borrow().get(&tex).map_or(0, |v|v.1)) }
+    pub fn revision(tex: c_uint) -> u64 { LIVE.with(|m| m.borrow().get(&tex).map_or(0, |v|v.1)) }
 
     /// `(live textures, live bytes)`.
-    pub(crate) fn totals() -> (usize, u64) {
+    pub fn totals() -> (usize, u64) {
         LIVE.with(|m| {
             let m = m.borrow();
             (m.len(), m.values().map(|v|v.0).sum())
@@ -2182,16 +2182,16 @@ static SNAPSHOT_DEFERRED: AtomicU32 = AtomicU32::new(0);
 /// appear spring see the same one.
 static SNAPSHOT_PENDING: AtomicBool = AtomicBool::new(false);
 /// Frames a capture may defer presents for — about 67 ms, several times the capture's own GPU cost.
-pub(crate) const SNAPSHOT_DEFER_MAX: u32 = 4;
+pub const SNAPSHOT_DEFER_MAX: u32 = 4;
 
 /// [`snapshot_frame_begin`]'s decision: `fence` is `None` with nothing to wait for, else whether
 /// it has signalled; `deferred` the frames already deferred for it.
-pub(crate) fn snapshot_defers(fence: Option<bool>, deferred: u32) -> bool {
+pub fn snapshot_defers(fence: Option<bool>, deferred: u32) -> bool {
     fence == Some(false) && deferred < SNAPSHOT_DEFER_MAX
 }
 
 /// Close a presented frame: a frame that captured the page leaves a fence behind it.
-pub(crate) fn snapshot_frame_end() {
+pub fn snapshot_frame_end() {
     if SNAPSHOT_THIS_FRAME.swap(false, Ordering::Relaxed) {
         // SAFETY: main render thread, like every GL call here.
         unsafe { SNAPSHOT_FENCE = crate::egl::fence::Fence::insert() };
@@ -2203,7 +2203,7 @@ pub(crate) fn snapshot_frame_end() {
 /// supply the observation used by motion and presentation. Ordinary frames retain the live
 /// answer; controlled replay supplies the recorded one. Native fence retirement still follows
 /// the actual GPU, and the independent physical window gate still governs every swap.
-pub(crate) fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
+pub fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
     // SAFETY: main render thread.
     let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
     let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
@@ -2218,12 +2218,12 @@ pub(crate) fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
 
 /// Has this frame captured the page so far? Its GPU work will be waited out before the next
 /// present, which makes this the frame to queue anything else that reads the capture.
-pub(crate) fn snapshot_captured_this_frame() -> bool {
+pub fn snapshot_captured_this_frame() -> bool {
     SNAPSHOT_THIS_FRAME.load(Ordering::Relaxed)
 }
 
 /// Is this iteration waiting for a page capture to leave the GPU? See [`SNAPSHOT_THIS_FRAME`].
-pub(crate) fn snapshot_pending() -> bool {
+pub fn snapshot_pending() -> bool {
     SNAPSHOT_PENDING.load(Ordering::Relaxed)
 }
 
@@ -2239,7 +2239,7 @@ pub(crate) fn snapshot_pending() -> bool {
 /// land one after another. Paying it HERE moves the cost into the pump, whose budget already
 /// bounds uploads per frame, and off the draw, which cannot bound anything. One pixel is enough:
 /// residency is per texture, not per texel. The page's `frame_clear` overwrites the pixel.
-pub(crate) fn warm_tex(tex: c_uint) {
+pub fn warm_tex(tex: c_uint) {
     if tex == 0 {
         return;
     }
@@ -2249,7 +2249,7 @@ pub(crate) fn warm_tex(tex: c_uint) {
 
 /// Delete a texture created by upload_rgba (0 = no-op). Main-thread only.
 ///
-/// **The real call is `cfg(not(test))`, and that is a boundary this module already had, only
+/// **The real call is `cfg(not(any(test, feature = "test-support")))`, and that is a boundary this module already had, only
 /// nowhere written down as code.** `poster.rs`'s own comments call this out twice — `lookup`
 /// "cannot be called from a host test binary (it reaches `gfx::delete_tex`, and nothing here
 /// links GL)" — which was true of every caller UNTIL `screens::login`'s `unmount_frees_the_qr_texture`
@@ -2264,10 +2264,10 @@ pub(crate) fn warm_tex(tex: c_uint) {
 /// doesn't run `cargo test`, and `make sim` boots through a live SDL/GL context before anything
 /// calls this), so nothing about actual texture lifetime on either target changes. Removing this
 /// guard resurrects the crash the moment a host test calls `delete_tex` with a nonzero id again.
-pub(crate) fn delete_tex(tex: c_uint) {
+pub fn delete_tex(tex: c_uint) {
     if tex != 0 {
         tex_ledger::deleted(tex);
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         unsafe {
             glDeleteTextures(1, &tex)
         };
@@ -2300,7 +2300,7 @@ fn uv_rect_padded(w: f32, h: f32, left: f32, top: f32, qw: f32, qh: f32) -> [f32
 
 /// The whole texture as a UV window `(offset.xy, scale.zw)` — the crop every textured draw took
 /// before pictures carried one, and still the right one for any texture made at its box's aspect.
-pub(crate) const UV_FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+pub const UV_FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// `inner` (quad → card, [`uv_rect_padded`]) followed by `crop` (card → texture, the window a
 /// cover crop keeps — `ui::Rect::cover_uv`): one `(offset, scale)` pair, because the vertex shader
@@ -2327,7 +2327,7 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
 /// `w×h` box projected onto the 160deg CSS direction ([`tokens::CARD_GLOSS_DIR`]) — the
 /// one CPU-folded term the shader cannot derive from its already-packed `u_card`, since that only
 /// carries the HALF-size minus the radius. `dy` is the caller's own downward shadow shift (0 for
-/// every draw but a focused card's — [`crate::ui::Painter::tex_carded`] and its still specialization
+/// every draw but a focused card's — `ui::Painter::tex_carded` and its still specialization
 /// are the only nonzero callers),
 /// carried through unconditionally rather than folded into an expression, since the shader gates its
 /// own shifted-SDF branch on it directly (`u_focus.z > 0.0`). `f <= 0.0` (the whole card except at
@@ -2469,14 +2469,14 @@ fn draw_tex_impl(
 
 const NO_RIM: [f32; 4] = [0.0, 0.0, 0.0, 0.0]; // rim/shadow disabled: alpha 0 ⇒ shader skips it
 
-pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
+pub fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
     draw_tex_uv(tex, UV_FULL, x, y, w, h, radius, tint);
 }
 
 /// [`draw_tex`] sampling only the `crop` window of the texture (`(offset.xy, scale.zw)`, see
 /// [`uv_compose`]) — how a picture of another aspect is drawn into its box uncropped by stretching.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_uv(
+pub fn draw_tex_uv(
     tex: c_uint,
     crop: [f32; 4],
     x: f32,
@@ -2513,7 +2513,7 @@ pub(crate) fn draw_tex_uv(
 /// `(ONE_MINUS_DST_ALPHA, ONE)` computes exactly that, and leaves the surface opaque. Used by
 /// `player::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
 #[cfg(feature = "hostsim")]
-pub(crate) fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
     unsafe {
         glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
         draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr());
@@ -2532,7 +2532,7 @@ pub(crate) fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
 /// Main-render-thread only, like every other GL resource in this module.
 // Host protocol tests substitute CPU copies; the GL backend is shipping-only in that build.
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) struct FrameCache {
+pub struct FrameCache {
     tex: c_uint,
     w: c_int,
     h: c_int,
@@ -2549,7 +2549,7 @@ pub(crate) struct FrameCache {
 
 #[cfg_attr(test, allow(dead_code))]
 impl FrameCache {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             tex: 0,
             w: 0,
@@ -2564,24 +2564,24 @@ impl FrameCache {
 
     /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
     /// construct dispatchers without a GL context; they must take the live fallback.
-    pub(crate) fn render_available(&self) -> bool {
+    pub fn render_available(&self) -> bool {
         let (x, y, w, h) = plx_base::surface::viewport();
         unsafe { IPROG != 0 && !self.off && !self.fbo_off && x == 0 && y == 0 && w > 0 && h > 0 }
     }
 
-    pub(crate) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.valid = false;
     }
 
     /// The captured texture, while it holds a capture: the drawable's viewport as
     /// `glCopyTexSubImage2D` left it (bottom-up, full size).
-    pub(crate) fn tex(&self) -> Option<c_uint> {
+    pub fn tex(&self) -> Option<c_uint> {
         (self.valid && self.tex != 0).then_some(self.tex)
     }
 
     /// Copy the authored viewport from framebuffer 0. Call after the host page and before the
     /// modal scrim: the cache is the stationary page, while the scrim is part of the live modal.
-    pub(crate) fn capture(&mut self) -> bool {
+    pub fn capture(&mut self) -> bool {
         if self.off || blur_source_pass() {
             return false;
         }
@@ -2643,7 +2643,7 @@ impl FrameCache {
     /// `None` — the caller copies instead — inside a blur source pass, on a video-plane frame, on
     /// a letterboxed drawable (the texture is the viewport's size and would not line up with a
     /// viewport that does not start at the origin), and once the FBO has proved incomplete.
-    pub(crate) fn render_into(&mut self) -> Option<plx_base::surface::PageTarget> {
+    pub fn render_into(&mut self) -> Option<plx_base::surface::PageTarget> {
         if self.off || self.fbo_off || blur_source_pass() {
             return None;
         }
@@ -2685,20 +2685,20 @@ impl FrameCache {
 
     /// Close a [`render_into`](Self::render_into): the frame's framebuffer is bound again, the
     /// texture holds the page, and the page goes onto the frame from it as one quad.
-    pub(crate) fn rendered(&mut self, target: plx_base::surface::PageTarget) {
+    pub fn rendered(&mut self, target: plx_base::surface::PageTarget) {
         self.finish_render(target);
         self.draw();
     }
 
     /// Finish a capture without compositing it yet. Page transitions clear the app ground and
     /// apply their alpha only to this texture, never to the page rendered into it.
-    pub(crate) fn finish_render(&mut self, target: plx_base::surface::PageTarget) {
+    pub fn finish_render(&mut self, target: plx_base::surface::PageTarget) {
         drop(target);
         self.valid = true;
         SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
     }
 
-    pub(crate) fn resident_bytes(&self) -> usize {
+    pub fn resident_bytes(&self) -> usize {
         if self.tex == 0 { 0 } else { self.w as usize * self.h as usize * 4 }
     }
 
@@ -2709,11 +2709,11 @@ impl FrameCache {
     /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
     /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
     /// that would show up as a blank screen with no error anywhere.
-    pub(crate) fn draw(&self) -> bool {
+    pub fn draw(&self) -> bool {
         self.draw_alpha(1.0)
     }
 
-    pub(crate) fn draw_alpha(&self, alpha: f32) -> bool {
+    pub fn draw_alpha(&self, alpha: f32) -> bool {
         if !self.valid || self.tex == 0 {
             return false;
         }
@@ -2754,7 +2754,7 @@ fn frame_cache_uv() -> [f32; 4] {
 /// the same lit-glass edge every other tile gets: `f` is the caller's pop factor (0 at rest). Used
 /// for the profile chip avatar.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_stroked(
+pub fn draw_tex_stroked(
     tex: c_uint,
     crop: [f32; 4],
     x: f32,
@@ -2793,7 +2793,7 @@ pub(crate) fn draw_tex_stroked(
 /// pass. Posters and circles use this entry point; episode stills can also fold their label ground
 /// through [`draw_tex_carded_still`]. Both share the compositor.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_carded(
+pub fn draw_tex_carded(
     tex: c_uint,
     crop: [f32; 4],
     x: f32,
@@ -2855,7 +2855,7 @@ impl Drop for StillBlend {
 
 /// Fold an opaque still's label ground into its card pass. False preserves the two-pass path.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_carded_still(
+pub fn draw_tex_carded_still(
     tex: c_uint, crop: [f32; 4], x: f32, y: f32, w: f32, h: f32, radius: f32, tint: [f32; 4],
     rimw: f32, rimcol: [f32; 4], pad: f32, shblur: f32, shcol: [f32; 4],
     band: f32, scrim: [f32; 4], f: f32, dy: f32,
@@ -2869,7 +2869,7 @@ pub(crate) fn draw_tex_carded_still(
     // drawing a focused still with no glow/shadow at all.
     if !still_fusion_eligible(tex, tint, image.is_some()) || band <= 0.0 || w <= 0.0 || h <= 0.0
         || radius < 0.5 || f > 0.0
-        || crate::ui::overdraw::masked(Class::Card) || crate::ui::overdraw::masked(Class::Grad) {
+        || crate::overdraw::masked(Class::Card) || crate::overdraw::masked(Class::Grad) {
         return false;
     }
     let (program, uniforms, loc_band, loc_col) = image.expect("eligible specialization");
@@ -3190,20 +3190,20 @@ struct BlurChain {
 }
 /// A z band's retained output. All bands share the reduction scratch chain; only the compact
 /// half-resolution result survives. A higher band may sample this while scratch is its target.
-pub(crate) struct BackdropImage {
+pub struct BackdropImage {
     chain: BlurChain,
     texture: std::rc::Rc<BackdropTexture>,
     alpha_invariant: bool,
 }
 impl BackdropImage {
-    pub(crate) fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
-    pub(crate) fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
+    pub fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
+    pub fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
 }
 struct BackdropTexture(c_uint);
 impl Drop for BackdropTexture {
     fn drop(&mut self) { delete_tex(self.0); }
 }
-pub(crate) fn retain_backdrop(z: backdrop::Z) -> bool {
+pub fn retain_backdrop(z: backdrop::Z) -> bool {
     unsafe {
         if !BLUR_VALID { return false; }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
@@ -3234,10 +3234,10 @@ pub(crate) fn retain_backdrop(z: backdrop::Z) -> bool {
 /// claim about the code into a number in the log.
 /// A configured cadence and the cadence that RAN are different claims: an invalidation only
 /// schedules a capture, and a containment miss can take one no clock asked for.
-pub(crate) static BLUR_SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
+pub static BLUR_SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
 
 /// Take and clear the snapshot count, for the once/sec heartbeat.
-pub(crate) fn take_blur_snapshots() -> u32 {
+pub fn take_blur_snapshots() -> u32 {
     BLUR_SNAPSHOTS.swap(0, Ordering::Relaxed)
 }
 
@@ -3296,7 +3296,7 @@ const STANDING_SHARP: f32 = 0.0;
 /// `fs_glass.frag`, where the physical argument for it is written out.
 ///
 /// It exists because the reference's rim is COLOURED BY ITS SURROUNDINGS and ours could not be: the
-/// density solve raises the scrim as high as [`crate::ui::theme::TAB_TRACK_A_TOP`] (.72) over a
+/// density solve raises the scrim as high as `ui::theme::TAB_TRACK_A_TOP` (.72) over a
 /// bright hero, and a uniform .72 paints out the very band the lens and the sharp source exist to
 /// fill. Shedding it at the edge costs the interior nothing — the ramp is zero where the bevel
 /// meets the flat middle, so the density the labels were solved against is untouched.
@@ -3420,7 +3420,7 @@ const GLASS_SPEC: [f32; 4] = [-0.7071, -0.7071, 3.0, 0.80];
 /// second material: [`GLASS_EDGE`]'s alpha is .14 and the design's own `--glass-rim` is white .14,
 /// arrived at from opposite ends.
 #[derive(Clone, Copy)]
-pub(crate) enum GlassRim {
+pub enum GlassRim {
     /// A sheet: the full 28px chamfer ramp and the 38px lens. The loading screen's panels.
     Bevelled,
     /// A standing container — the tab track, a popover, the loading capsule: a SHALLOW chamfer and
@@ -3525,7 +3525,7 @@ impl GlassRim {
 /// than as a rectangle of darker picture — is exactly what a lens does and what a drawn line
 /// cannot.
 ///
-/// So this exists for the same reason [`crate::ui::widgets::tab_glass_stops`]'s density override
+/// So this exists for the same reason `ui::widgets::tab_glass_stops`'s density override
 /// does: the values are a judgement about a picture, and a judgement about a picture is made by
 /// putting the ladder side by side. Absent, the returned params are byte-identical to the variant's
 /// own. Read once per process, so a simulator instance is one capture of one rung —
@@ -3625,7 +3625,7 @@ static mut GL_SOURCE_GROUND: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
-pub(crate) fn blur_invalidate() {
+pub fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
     // A popover's GROUND snapshot contains that popover's frost, composited from the very snapshot
     // being dropped here, and the host that owns it sits above this layer — so callers outside
@@ -3648,7 +3648,7 @@ pub(crate) fn blur_invalidate() {
 /// outward — subtle, and exactly the kind of thing that looks like a shader bug rather than a
 /// too-small grab.
 const BLUR_REACH: f32 = 68.0;
-/// The largest `rise` any popover slides through ([`crate::ui::popover::Popover::painter`]'s second
+/// The largest `rise` any popover slides through (`ui::popover::Popover::painter`'s second
 /// argument). It is 20 everywhere today; the assertion in the tests is what makes raising one a
 /// visible decision rather than a silent loss of margin.
 const POPOVER_MAX_RISE: f32 = 20.0;
@@ -3659,7 +3659,7 @@ const POPOVER_MAX_RISE: f32 = 20.0;
 /// comes to rest; every later frame moves it back INTO that region. Cache hits are therefore
 /// containment tests — key on equality, or grab only `BLUR_REACH`, and even a cached popover would
 /// recapture on every frame of its appear.
-pub(crate) const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
+pub const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 
 /// The region area a MOVING host can carry at 60 fps, in authored px² — the design system's
 /// `--glass-region-budget`. Past it the rate STEPS (45, 36, 30), because a refresh frame buys whole
@@ -3668,8 +3668,8 @@ pub(crate) const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 /// region law. It exists so a surface can be held to it by a TEST rather than by a comment — see
 /// `ui::widgets`' glass-track width test — which is also why it is `cfg(test)`: nothing at runtime
 /// decides anything from it, and a number the shipping build never reads should not pretend to.
-#[cfg(test)]
-pub(crate) const GLASS_REGION_BUDGET: f32 = 300_000.0;
+#[cfg(any(test, feature = "test-support"))]
+pub const GLASS_REGION_BUDGET: f32 = 300_000.0;
 
 /// The region a panel at `(x,y,w,h)` needs snapshotted, in authored coords, clamped to the screen.
 ///
@@ -3677,14 +3677,14 @@ pub(crate) const GLASS_REGION_BUDGET: f32 = 300_000.0;
 /// already gives the only answer available, so a panel against the frame simply gets a shorter
 /// margin on that side.
 ///
-/// `pub(crate)` for ONE reader outside this module, and for the reason the whole file keeps
+/// `pub` for ONE reader outside this module, and for the reason the whole file keeps
 /// repeating: `ui::widgets`' glass-band budget test grades a region against
 /// [`GLASS_REGION_BUDGET`], and while it modelled that region with its own copy of this arithmetic
 /// the copy was WRONG — it omitted this clamp and so priced the tab track at 281k px^2 where the
 /// real region is 223k, a 26% over-estimate that sat under a passing test for as long as the limit
 /// existed. The graded expression is now this one.
 #[inline]
-pub(crate) fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+pub fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
     let x0 = (x - BLUR_MARGIN).max(0.0);
     let y0 = (y - BLUR_MARGIN).max(0.0);
     let x1 = (x + w + BLUR_MARGIN).min(SCR_W);
@@ -3699,10 +3699,10 @@ pub(crate) fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
 /// reset carries; the union with it is the other side unchanged rather than a box anchored at the
 /// origin.
 ///
-/// `pub(crate)` alongside [`blur_region`], and for the same reader: a BAND of glass surfaces is
+/// `pub` alongside [`blur_region`], and for the same reader: a BAND of glass surfaces is
 /// priced as the union it actually converges on, not as either surface alone.
 #[inline]
-pub(crate) fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     if a[2] <= 0.0 || a[3] <= 0.0 {
         return b;
     }
@@ -3733,7 +3733,7 @@ static mut BLUR_WANT_CUR: [f32; 4] = [0.0; 4];
 /// Close the frame's region accounting. Called once per DRAWN frame, beside `profile::frame_end` —
 /// inside the idle gate, because a frame the gate skipped drew no glass and must not be allowed to
 /// forget what the last drawn one needed.
-pub(crate) fn blur_frame_end() {
+pub fn blur_frame_end() {
     unsafe {
         BLUR_WANT_PREV = *std::ptr::addr_of!(BLUR_WANT_CUR);
         BLUR_WANT_CUR = [0.0; 4];
@@ -3860,7 +3860,7 @@ fn blur_uv_rect(
 ///
 /// It is still safe to call nothing at all: [`draw_blur_backdrop`] builds the chain itself if this
 /// never ran, which is what keeps the host tests and any future entry point honest.
-pub(crate) fn init_blur() {
+pub fn init_blur() {
     if !blur_lazy_init() {
         log("blur: chain unavailable — panels keep their opaque ground");
     }
@@ -4315,7 +4315,7 @@ static mut BLUR_IN_PASS: bool = false;
 
 /// Is the page currently being drawn as a low-resolution blur source rather than for the panel?
 #[inline]
-pub(crate) fn blur_source_pass() -> bool {
+pub fn blur_source_pass() -> bool {
     unsafe { BLUR_IN_PASS || backdrop::source_walk() }
 }
 
@@ -4361,7 +4361,7 @@ static mut GROUND_RGB: Option<[f32; 3]> = None;
 /// curiosity or the common case is a question about real artwork, and it cannot be asked at all
 /// without publishing the span — so the sampler now reports how far apart its own taps were.
 static mut GROUND_SPAN: f32 = 0.0;
-pub(crate) fn ground_span() -> f32 {
+pub fn ground_span() -> f32 {
     unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
 }
 /// The bar's probe: its cadence, its target, and the reading in flight.
@@ -4412,7 +4412,7 @@ fn may_read_ground() -> bool {
 
 /// What a ground probe does on one sampler call — [`ProbeCadence::step`]'s answer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ProbeStep {
+pub enum ProbeStep {
     /// Answer from the last reading.
     Keep,
     /// Queue a copy of the tap boxes into the probe's own target, and read nothing.
@@ -4441,7 +4441,7 @@ pub(crate) enum ProbeStep {
 /// forces the next visible call to queue a reading whatever the count says, and is cleared only
 /// when one is collected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct ProbeCadence {
+pub struct ProbeCadence {
     every: u32,
     at: u32,
     last_drawn: u32,
@@ -4451,7 +4451,7 @@ pub(crate) struct ProbeCadence {
 }
 
 impl ProbeCadence {
-    pub(crate) const fn new(every: u32) -> Self {
+    pub const fn new(every: u32) -> Self {
         Self {
             every,
             at: 0,
@@ -4464,7 +4464,7 @@ impl ProbeCadence {
     /// One sampler call. `have`: a reading is latched. `drawn`: drawn frames so far
     /// ([`drawn_frames`]). `finished`: the GPU has passed the queued copy (its fence signalled, or
     /// there is no fence to ask).
-    pub(crate) fn step(&mut self, have: bool, drawn: u32, finished: bool) -> ProbeStep {
+    pub fn step(&mut self, have: bool, drawn: u32, finished: bool) -> ProbeStep {
         if let Some(kicked) = self.pending {
             if drawn.wrapping_sub(kicked) >= 1 && finished {
                 self.pending = None;
@@ -4487,7 +4487,7 @@ impl ProbeCadence {
 
     /// The pixels under the probe changed meaning (a new item behind the Hero row): drop any
     /// reading in flight and queue a fresh one on the next call.
-    pub(crate) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.at = 0;
         self.dirty = true;
         self.pending = None;
@@ -4505,7 +4505,7 @@ impl ProbeCadence {
 /// The target is built lazily on the first kick and never resized. An incomplete FBO latches `off`
 /// and the sampler answers from its last reading (`None` if it never had one) from then on — the
 /// same refusal every other chain in this module makes.
-pub(crate) struct GroundProbe<const N: usize> {
+pub struct GroundProbe<const N: usize> {
     cadence: ProbeCadence,
     px: c_int,
     /// `(texture, framebuffer)`, once built.
@@ -4518,7 +4518,7 @@ pub(crate) struct GroundProbe<const N: usize> {
 }
 
 impl<const N: usize> GroundProbe<N> {
-    pub(crate) const fn new(every: u32, px: c_int) -> Self {
+    pub const fn new(every: u32, px: c_int) -> Self {
         Self {
             cadence: ProbeCadence::new(every),
             px,
@@ -4600,7 +4600,7 @@ impl<const N: usize> GroundProbe<N> {
 
 /// Read back every ground probe whose copy the GPU has passed — `app::run` calls it right after
 /// the swap, beside [`field_frame_end`]. See [`GroundProbe::read_if_finished`].
-pub(crate) fn ground_probes_frame_end() {
+pub fn ground_probes_frame_end() {
     // SAFETY: main render thread, like every other access to the probes.
     unsafe {
         (*std::ptr::addr_of_mut!(GROUND_PROBE)).read_if_finished();
@@ -4626,7 +4626,7 @@ fn drawn_frames() -> u32 {
     FIELD_SWAPS.load(Ordering::Relaxed)
 }
 
-pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
+pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
         // cross-fade's case. `ui::nav` dips the whole page toward `SURFACE_APP` while the chrome
@@ -4731,7 +4731,7 @@ static mut CONTROL_PROBE: GroundProbe<CONTROL_GROUND_TAPS> =
 /// Mark a Hero's sampled ground stale when the item behind the row changes. The last honest answer
 /// remains available during the carousel/route transition; the first settled draw queues a fresh
 /// reading, and a reading still in flight for the old item is dropped rather than latched.
-pub(crate) fn control_ground_invalidate() {
+pub fn control_ground_invalidate() {
     unsafe {
         (*std::ptr::addr_of_mut!(CONTROL_PROBE)).invalidate();
     }
@@ -4745,7 +4745,7 @@ pub(crate) fn control_ground_invalidate() {
 /// those operations is a WEIGHTED SUM, which is only meaningful in linear light. Two copies of a
 /// transfer function are two chances to get an exponent wrong in a way nothing can see.
 #[inline]
-pub(crate) fn lin(v: f32) -> f32 {
+pub fn lin(v: f32) -> f32 {
     if v <= 0.04045 {
         v / 12.92
     } else {
@@ -4755,7 +4755,7 @@ pub(crate) fn lin(v: f32) -> f32 {
 
 /// The inverse of [`lin`] — linear radiance back to a display-encoded sRGB channel.
 #[inline]
-pub(crate) fn enc(v: f32) -> f32 {
+pub fn enc(v: f32) -> f32 {
     if v <= 0.0031308 {
         v * 12.92
     } else {
@@ -4774,7 +4774,7 @@ pub(crate) fn enc(v: f32) -> f32 {
 /// modal's field texture is 60x32x3 of these per latch: 5760 `powf` were ~4 ms of the Cortex-A53
 /// frame that latched it (2026-09-19); eight comparisons each are not measurable.
 #[inline]
-pub(crate) fn enc_u8(v: f32) -> u8 {
+pub fn enc_u8(v: f32) -> u8 {
     // `partition_point` counts the thresholds `v` has reached; NaN reaches none, as `as u8` maps
     // the formula's NaN to 0.
     enc_u8_thresholds().partition_point(|&t| t <= v) as u8
@@ -4850,7 +4850,7 @@ fn diffuse_ground_mean_u8<'a>(texels: impl IntoIterator<Item = &'a [u8]>) -> [f3
 }
 
 /// Sample the pixels already rendered beneath one Hero action row.
-pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
+pub fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         if !may_read || blur_source_pass() || !may_read_ground() {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
@@ -4888,7 +4888,7 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
 /// Triangular rather than uniform, and the triangle is already in the tile ([`noise_tex`]), so this
 /// is the ONE place the TPDF form differs from the ±½ LSB uniform it replaced — a factor of two on
 /// a number, not a second channel on two million fragments.
-pub(crate) const DITHER_LSB: f32 = 2.0 / 255.0;
+pub const DITHER_LSB: f32 = 2.0 / 255.0;
 
 /// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
 /// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
@@ -4932,7 +4932,7 @@ pub(crate) const DITHER_LSB: f32 = 2.0 / 255.0;
 /// area test is the whole of it, and the answer above the threshold is always yes.
 /// Measured on the television, Settings over Home before this existed: a 700-row column through
 /// the ground spanned luma 55.7 to 59.1 in FOUR distinct levels, treads of 158, 157 and 146 rows.
-pub(crate) fn dither_for_field(w: f32, h: f32) -> f32 {
+pub fn dither_for_field(w: f32, h: f32) -> f32 {
     if w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
         return 0.0;
     }
@@ -4985,7 +4985,7 @@ static mut CULL_RECT: Option<[f32; 4]> = None;
 // and its two accessors live in `plx_machine::idle`, the machine layer: `idle::invalidate` has to read it,
 // and this module may name that layer but not the reverse. Every primitive below consults it
 // through these two names exactly as it did when the flag was declared here.
-pub(crate) use plx_machine::idle::{page_frozen, set_page_frozen};
+pub use plx_machine::idle::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -5004,13 +5004,13 @@ static VIDEO_PLANE_TOLD: std::sync::atomic::AtomicBool =
 
 /// Arm or lift the video-plane frame, returning what was in force (restored, like the page freeze).
 #[inline]
-pub(crate) fn set_video_plane_frame(on: bool) -> bool {
+pub fn set_video_plane_frame(on: bool) -> bool {
     VIDEO_PLANE_FRAME.with(|f| f.replace(on))
 }
 
 /// Is this frame's picture the hardware video plane?
 #[inline]
-pub(crate) fn video_plane_frame() -> bool {
+pub fn video_plane_frame() -> bool {
     VIDEO_PLANE_FRAME.with(|f| f.get())
 }
 
@@ -5030,14 +5030,14 @@ pub(crate) fn video_plane_frame() -> bool {
 /// produces on a television is a black rectangle nobody can explain from a log. A release build
 /// logs ONCE and refuses; the once is deliberate, since a door reached at all is reached every
 /// frame and a per-frame line would bury the event log during playback.
-pub(crate) fn video_plane_refuses(what: &str) -> bool {
+pub fn video_plane_refuses(what: &str) -> bool {
     if !video_plane_frame() {
         return false;
     }
     // Under `cargo test` these doors are driven ON PURPOSE — the point of
     // `a_video_plane_screen_replaces_its_host_and_takes_no_snapshot` is to watch each one refuse —
     // so the assertion is the SHIPPING debug build's, not the harness's.
-    #[cfg(all(debug_assertions, not(test)))]
+    #[cfg(all(debug_assertions, not(any(test, feature = "test-support"))))]
     panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
     #[allow(unreachable_code)]
     {
@@ -5065,7 +5065,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 ///
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
-pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
+pub fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
     if page_frozen() || backdrop::suppressed() {
         return true;
     }
@@ -5126,7 +5126,7 @@ impl Drop for DirectPass {
 /// refusal — a drawable whose dimensions do not divide by the divisor — and its callers already
 /// read the fallback from this type.
 #[inline]
-pub(crate) fn blur_direct_scale() -> Option<u32> {
+pub fn blur_direct_scale() -> Option<u32> {
     // Supersampled, the drawable is `n`x the canvas, so the divisor grows by `n` to render the
     // source at the same AUTHORED resolution a television does — the same material, not a finer one.
     (!unsafe { BLUR_DIRECT_OFF })
@@ -5174,7 +5174,7 @@ pub(crate) fn blur_direct_scale() -> Option<u32> {
 ///
 /// Returns `false` if it could not run, in which case the caller must fall back to the capture
 /// path — the snapshot is left untouched and no GL state has changed.
-pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool {
+pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool {
     unsafe {
         let Some(scale) = blur_direct_scale() else {
             return false;
@@ -5320,7 +5320,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
 
 /// Declaration and visible drawing share these refusal conditions. A disabled glass or a
 /// hardware video plane must not schedule a source before the draw-time guard can refuse it.
-pub(crate) fn live_blur_available() -> bool {
+pub fn live_blur_available() -> bool {
     !unsafe { BLUR_OFF } && !video_plane_frame() && !masked(Class::Glass)
 }
 
@@ -5340,18 +5340,18 @@ pub(crate) fn live_blur_available() -> bool {
 /// `NONE` is the popover's case: a sheet's frost is already `u_tint` and its edge is the shader's
 /// own specular, so it wears nothing here and the block costs it one compare.
 #[derive(Clone, Copy)]
-pub(crate) struct GlassFace {
-    pub(crate) scrim_top: [f32; 4],
-    pub(crate) scrim_bot: [f32; 4],
-    pub(crate) rim: [f32; 4],
+pub struct GlassFace {
+    pub scrim_top: [f32; 4],
+    pub scrim_bot: [f32; 4],
+    pub rim: [f32; 4],
     /// The edge facing the light, as its OWN colour and weight, drawn over the perimeter. White in
     /// both polarities — the lamp does not move because the material did.
-    pub(crate) rim_lit: [f32; 4],
+    pub rim_lit: [f32; 4],
     /// Rim width in px. 1.0 is the design system's `inset 0 0 0 1px`.
-    pub(crate) rim_w: f32,
+    pub rim_w: f32,
 }
 impl GlassFace {
-    pub(crate) const NONE: Self = Self {
+    pub const NONE: Self = Self {
         scrim_top: [0.0; 4],
         scrim_bot: [0.0; 4],
         rim: [0.0; 4],
@@ -5360,7 +5360,7 @@ impl GlassFace {
     };
 }
 
-pub(crate) fn draw_blur_backdrop(
+pub fn draw_blur_backdrop(
     x: f32,
     y: f32,
     w: f32,
@@ -5681,8 +5681,8 @@ static mut CAP_LATCHED_OFF: bool = false;
 // glReadPixels time split out of the whole-cycle time (capture.rs owns that one and
 // folds both into its periodic stats line). The read is the only synchronous GL call
 // in the cycle — everything else is submission cost that lands at the swap.
-pub(crate) static CAP_READ_US: AtomicU32 = AtomicU32::new(0);
-pub(crate) static CAP_READ_N: AtomicU32 = AtomicU32::new(0);
+pub static CAP_READ_US: AtomicU32 = AtomicU32::new(0);
+pub static CAP_READ_N: AtomicU32 = AtomicU32::new(0);
 
 /// A capture-ready NPOT texture: storage only (pixels NULL), refreshed via CopyTexSubImage.
 /// `upload_rgba` already sets the CLAMP_TO_EDGE + LINEAR quartet these NPOT targets REQUIRE
@@ -5758,7 +5758,7 @@ fn cap_lazy_init() -> bool {
 /// into `buf` (resized exactly). Returns `Some((w, h, flip))` when `buf` was filled.
 /// `want_960` selects the 960x540 output (single pass) over the default 480x270 (two passes).
 /// Returns `None` and does nothing after a completeness/copy failure (latched off).
-pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_int, bool)> {
+pub fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_int, bool)> {
     unsafe {
         if CAP_LATCHED_OFF || !cap_lazy_init() {
             return None;
@@ -5877,10 +5877,10 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
 /// The field grid. 15x8 is the coarsest thing that still resolves a SIDE and a CORNER at 16:9 —
 /// finer than the four-corner envelope by a factor of 30 and still small enough that the readback
 /// is 480 bytes, under a single cache line's worth of rows.
-pub(crate) const FIELD_W: c_int = 15;
-pub(crate) const FIELD_H: c_int = 8;
+pub const FIELD_W: c_int = 15;
+pub const FIELD_H: c_int = 8;
 /// Cells in one field, in `FIELD_W`-major row order from the TOP-LEFT.
-pub(crate) const FIELD_CELLS: usize = (FIELD_W * FIELD_H) as usize;
+pub const FIELD_CELLS: usize = (FIELD_W * FIELD_H) as usize;
 
 struct FieldChain {
     grab: c_uint, // the viewport rect of the drawable, copied verbatim
@@ -5957,22 +5957,22 @@ fn field_lazy_init() -> bool {
 /// to finish it. `run` names the chain run (a later kick reuses the same targets, so an older
 /// ticket is simply lost), `swaps` the drawn-frame count it was queued in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct FieldTicket {
+pub struct FieldTicket {
     run: u32,
     swaps: u32,
 }
 
 impl FieldTicket {
     /// A ticket for a fake `DimSink` — a host test has no chain to queue on.
-    #[cfg(test)]
-    pub(crate) fn for_test(run: u32, swaps: u32) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(run: u32, swaps: u32) -> Self {
         Self { run, swaps }
     }
 }
 
 /// What [`field_collect`] answers for a ticket.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum FieldRead {
+pub enum FieldRead {
     /// The field the kick reduced.
     Ready([[f32; 3]; FIELD_CELLS]),
     /// Queued on this very frame: reading it now is the stall the ticket exists to avoid.
@@ -6004,13 +6004,13 @@ static mut FIELD_FENCE: Option<(u32, crate::egl::fence::Fence)> = None;
 /// Close a DRAWN frame for the field's tickets — `app::run` calls it beside `blur_frame_end`,
 /// inside the idle gate, because a frame the gate skipped queued nothing on the GPU and gives a
 /// pending read no more time to finish.
-pub(crate) fn field_frame_end() {
+pub fn field_frame_end() {
     FIELD_SWAPS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Where a ticket stands — [`field_collect`]'s decision before it touches GL.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum TicketState {
+pub enum TicketState {
     Due,
     Pending,
     Lost,
@@ -6018,7 +6018,7 @@ pub(crate) enum TicketState {
 
 /// [`field_collect`]'s decision, as a pure function of the ticket, the two counters and the GPU's
 /// word on the kick (`finished`: its fence has signalled, or there is no fence to ask).
-pub(crate) fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32, finished: bool) -> TicketState {
+pub fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32, finished: bool) -> TicketState {
     if t.run != runs {
         TicketState::Lost
     } else if swaps.wrapping_sub(t.swaps) < FIELD_READ_LAG_SWAPS || !finished {
@@ -6066,7 +6066,7 @@ fn field_run_finished(run: u32) -> bool {
 /// GL state is restored the way [`cap_cycle`] restores it: framebuffer and viewport back to the
 /// drawable, blend back on. Programs bind themselves lazily through [`use_prog`], texture unit 0
 /// never moves, and vertex state is untouched.
-pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
+pub fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
         if blur_source_pass() || page_frozen() || masked(Class::Field) {
             return None;
@@ -6159,7 +6159,7 @@ static mut FIELD_LANDED: Option<(u32, [[f32; 3]; FIELD_CELLS])> = None;
 /// modal's dim latched, 2026-09-19). At the head there is nothing of this frame to split. The
 /// decision is still [`field_ticket_state`]'s — a frame after the kick AND past its fence — so the
 /// read never waits for the GPU either; one it refuses is simply asked again next frame.
-pub(crate) fn field_frame_begin() {
+pub fn field_frame_begin() {
     // SAFETY: main render thread, like every other access to the chain.
     unsafe {
         let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() else {
@@ -6184,7 +6184,7 @@ pub(crate) fn field_frame_begin() {
 
 /// [`field_collect`]'s answer, as a pure function of the ticket, the live run and the run whose
 /// field [`field_frame_begin`] last read.
-pub(crate) fn field_answer(t: FieldTicket, runs: u32, landed: Option<u32>) -> TicketState {
+pub fn field_answer(t: FieldTicket, runs: u32, landed: Option<u32>) -> TicketState {
     if t.run != runs {
         TicketState::Lost
     } else if landed == Some(t.run) {
@@ -6197,7 +6197,7 @@ pub(crate) fn field_answer(t: FieldTicket, runs: u32, landed: Option<u32>) -> Ti
 /// **The field a [`field_kick`] queued, once the frame head has read it** — [`FieldRead::Pending`]
 /// before that, [`FieldRead::Lost`] if a later run has reused the targets. Touches no GL: the read
 /// itself is [`field_frame_begin`]'s, at the head of a frame, for the reason given there.
-pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
+pub fn field_collect(t: FieldTicket) -> FieldRead {
     // SAFETY: main render thread, like every other access to the chain.
     unsafe {
         if (*std::ptr::addr_of!(FIELDST)).is_none() {
@@ -6272,7 +6272,7 @@ fn fbo_tex_of(c: &FieldChain, fbo: c_uint) -> c_uint {
 /// The dither is [`dither_for_field`]'s decision and not the caller's: a field reconstructed from
 /// 15x8 cells is the slowest ramp this app produces, and motion is not part of the question for a
 /// field (see `shaders/dither.glsl`'s closing note).
-pub(crate) fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *const f32) {
+pub fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *const f32) {
     if tex == 0 || unsafe { UPROG } == 0 || culled(x, y, w, h) || gate(Class::Field, x, y, w, h) {
         return;
     }
@@ -6296,7 +6296,7 @@ pub(crate) fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *con
 /// `drawmask`ed quad answers `true`: the draw was ASKED for and refused on purpose, and a fallback
 /// sheet in its place would make the mask leg price the wrong primitive.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_field_panel(
+pub fn draw_field_panel(
     x: f32,
     y: f32,
     w: f32,

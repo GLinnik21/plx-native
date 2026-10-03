@@ -10,7 +10,7 @@ extern "C" {
 
 /// Rasterize `svg` to a `w*h` RGBA buffer (row-major, 4 bytes/px). `None` on bad args or a
 /// parse/alloc failure. The C side copies the input, so `svg` need not be NUL-terminated.
-pub(crate) fn rasterize(svg: &str, w: i32, h: i32) -> Option<Vec<u8>> {
+pub fn rasterize(svg: &str, w: i32, h: i32) -> Option<Vec<u8>> {
     if svg.is_empty() || w <= 0 || h <= 0 {
         return None;
     }

@@ -46,7 +46,7 @@ formed one strongly connected component** from production references alone. Only
 outside it. `ci/check-module-layers.py --cycles` prints the current components, with the config's
 members (`ui::machine`, `diag::zlib`, …) as separate nodes. After L14 every production component
 sat inside one layer: media's `abr curlio ff hls player route`, data's eight modules, app's `app
-dev textinput`, platform's `i18n storage webos`, gfx's `gfx gpu_timer ui::overdraw`, plex's `http
+dev textinput`, platform's `i18n storage webos`, gfx's `gfx gpu_timer overdraw`, plex's `http
 plex`, telemetry's `diag telemetry` and machine's `ui::machine ui::present`. L15 took the platform
 one apart (`webos` is behind the port, and `tv` names neither `i18n` nor `storage`: the release
 line is `i18n::webos_release_line`, and the port installs the storage helper's activator through
@@ -96,7 +96,7 @@ base
 | base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile devtrig diag::{zlib,spans,heartbeat} testlock testnet` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
-| gfx | `gfx egl text img svg gpu_timer hwcnt ui::overdraw` | 15k | 68% |
+| gfx | `gfx egl text img svg gpu_timer hwcnt overdraw` | 15k | 68% |
 | net | `net stream` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
@@ -600,6 +600,88 @@ fresh), the hub edit 30.8 s (min 28.2), and the unit suite 61.1 s with the same 
 is the 1 to 3 s that `platform` (11k of 450k lines) cost every application edit, and no more: the
 application crate is still about 30 s of every row. The leverage is in `gfx`, `net` and `plex`
 and above, which carry the line count.
+
+### Split 4 (gfx)
+
+`gfx` was extracted fourth: `rust-modules/gfx/` is the workspace member `plx_gfx` (an `rlib`,
+`uses = base machine`), holding `gfx` (with `backdrop`, `geom`, `profile`, `tokens`), `egl`, `text`,
+`img`, `svg`, `gpu_timer`, `hwcnt` and `overdraw` (which was `ui::overdraw`), and the `shaders/`
+directory the renderer embeds. The module paths are `plx_gfx::<member>::` (a path
+`plx_gfx::gfx::draw_rect` names module `gfx`), so `ci/module-layers.ini` lists `overdraw` where it
+listed `ui::overdraw`. A script wrote the rewrite (`crate::<member>::` to `plx_gfx::<member>::` in
+the application, `crate::ui::overdraw` to `plx_gfx::overdraw`, `pub(crate)` to `pub` in the moved
+files except the `glsl!` re-export, which names a non-exported `macro_rules!` and must stay
+`pub(crate)`); the application's `lib.rs` and `ui/mod.rs` lost the six `mod` lines and the
+`pub mod overdraw;`. Features: `devtriggers` and `hostsim` are forwarded to the lower layers, `devtools`
+is a feature of this crate alone (the seven-segment counter in `gfx`, enabled by the application's
+own `devtools`), and `test-support` is new and enables the two lower layers'. The 90 tests of the
+layer run in their own binary. What it taught beyond the recipe:
+
+- **A layer that holds `extern "C"` blocks has a test binary that has to link them.** Splits 1 to 3
+  moved no code whose own tests reach SDL, GL or nanosvg. `plx_gfx`'s `--test` binary does (the
+  drawing tests make `gfx` and `text` live), and with the link lines left in the application's
+  `build.rs` it fails on undefined symbols (observed: it did, with the call to the shared emitter
+  removed). A `cargo:rustc-link-lib` line reaches the package that prints it and the packages that
+  depend on it; `cargo:rustc-link-arg`, which carries the nanosvg object, reaches the printing
+  package's own targets only. So the host link configuration moved into
+  `rust-modules/build_support/host_link.rs`, which both build scripts include by `#[path]`
+  (`build.rs` and `gfx/build.rs`), the way the install-identity generator is shared. The brief's
+  "the new crate's build script links nothing" holds where it matters: on the television
+  (`target_arch = "arm"`) `host_link::emit` returns before printing a line, the final link is the
+  Makefile's, and `LIBS_REAL` and `ci/expected-dt-needed.txt` are untouched. On the host it prints
+  the same lines the application's script always printed, from one file, so they cannot disagree.
+- **`--report` listed 8 items, and the first thing it missed was behaviour.** `text::queue_prewarm`
+  records every run into `CAPTURED_FOR_TEST` under `cfg(test)`, `text::rasterise_warm` records
+  residency in a ledger instead of calling `text_tex` (no GL context on a host), and
+  `gfx::delete_tex` skips `glDeleteTextures` under `cfg(not(test))` because the host driver's
+  dispatch table is a null vtable and the call is an immediate SIGSEGV (`screens::login`'s
+  `unmount_frees_the_qr_texture` is the test that proves it). A dependent's tests build `plx_gfx`
+  without `cfg(test)`, so all three would have run in their shipping form: the last one as a crash
+  of the whole `plxnative-modules` test binary. A fourth was nested, `cfg(all(debug_assertions,
+  not(test)))` on `video_plane_refuses`' panic, and a grep for `cfg(not(test))` did not find it: the
+  suite did (two `ui` tests that drive the refusal on purpose died on it), so grep for `test` inside
+  any `cfg(...)`, not for the spelled forms. All are `cfg(any(test, feature = "test-support"))`
+  now, the shipping arms `cfg(not(any(...)))`, as are the 8 named items and `text`'s
+  `reset_font_warm_for_test` and a test-only `width` helper. `cargo check --lib --tests` passes on the first
+  try because every switched item is `pub` or already `allow(dead_code)`.
+- **An embedded asset moves with the file that names it, and nothing else follows it.** `gfx.rs`
+  and `text.rs` `include_str!` `shaders/*`, resolved relative to the including file, so the
+  directory moved beside them (`gfx/src/shaders/`); the Makefile's `RUST_INPUTS` `find` gained
+  `rust-modules/gfx`, which is also what rebuilds the ARM archive when a shader changes (a stale
+  shader on the television is the failure mode that comment exists for). `hwcnt`'s test reads
+  `tools/analyze-hwcnt.py` from `CARGO_MANIFEST_DIR`, one `..` deeper now, and `ui/fixture.rs`'s
+  "the four video-plane doors" test reads `gfx/src/gfx.rs` by the same manifest-relative path.
+- **A gate that spells a moved item's path goes silent, not red.** `ci/check-deps.sh`'s
+  `textmeasure` rule greps `crate::text::(text_width|elide|cap_h)(` and exempts `$SRC/text.rs`; after
+  the rewrite no file contains that spelling, so the zero-tolerance gate would have matched
+  nothing and stayed green. It accepts `(crate|plx_gfx)::text::` now and exempts
+  `$SRC_GFX/text.rs`. The libm allowlist (`ci/allow/libm.txt`) names `gfx.rs` by path and failed
+  loudly, which is the better way to be wrong. `ci/check-localization.py` read `ui/overdraw.rs`
+  as part of `ui/` and now reads it as `gfx/src/overdraw.rs`.
+- **`overdraw` left `ui`, and nothing in `ui` named it.** `gfx` and `text` use the ledger (`gate`,
+  `set_clip`, `note_px`) and the application drives it (`frame_end`, `set_ledger`, `set_mask`);
+  it was the one thing `gfx.rs`'s header said the renderer named of `ui`, so it moves down with
+  the renderer. The rules scoped to `$SRC/ui` stopped reading the file; it holds no clock, store
+  or session call, and the whole-tree rules read `$SRC_GFX`.
+- **The crate does not depend on `plx_platform`.** The layer's `uses` ceiling includes `platform`
+  and nothing in the moved files names it, so the manifest depends on `plx_base` and `plx_machine`
+  only. An edit in `plx_platform` therefore does not rebuild `plx_gfx`, which a declared-but-unused
+  dependency would have caused.
+- **No orphan-rule hazard and no dead code appeared.** No `impl` in the application has both its
+  trait and its type in `plx_gfx`; the compiler is the checker.
+- **Tooling that knows the tree's shape**: the `-p` lists (`... -p plx_platform -p plx_gfx`) in the
+  Makefile, the workflow, `tools/build-bench.py` and the tests that pin them;
+  `--src rust-modules/gfx/src` for the line budget; `RUST_INPUTS`; `tools/cargo-seed.py` keys on the
+  new manifest; the eventlog scrub test's root list gained `../gfx/src` (a log call in `gfx` would
+  otherwise be unread); `ci/test_no_host_staticlib.py` holds the crate to `rlib`;
+  `ci/test_build_not_always_dirty.py` fails on `plx_gfx` as well (and its throwaway-repository half
+  copies `build.rs` alone, so it has to copy `build_support/host_link.rs` too, or the script it
+  grades does not compile) (its build script prints
+  `rerun-if-changed` lines and reads no environment variable of ours); the
+  release-configuration hook treats an edit in `gfx/src` as a shipping-feature risk; the harness's
+  private tree copy and the `fpflags` rule include the new `Cargo.toml` and `build.rs`; and
+  `make build-bench` has a `gfx` scenario ("Edit leaf (plx_gfx overdraw.rs)"). The `--no-default-features`
+  and `cargo check --target arm-unknown-linux-gnueabi --lib` gates pass.
 
 ## Limits of the analysis
 

@@ -605,7 +605,7 @@ pub(crate) unsafe fn construct(
     // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
     // No platform carve-out: the probe asks EGL nothing unless an EGL context is current on this
     // thread (`egl::current_with`), which is what makes it safe on a GLX-backed Linux simulator.
-    crate::egl::probe();
+    plx_gfx::egl::probe();
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
@@ -623,10 +623,10 @@ pub(crate) unsafe fn construct(
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
     plx_platform::tv::window::arm_opaque_region();
-    crate::gfx::init_gl();
-    crate::text::init_text();
-    crate::gfx::init_image();
-    crate::gfx::init_blur();
+    plx_gfx::gfx::init_gl();
+    plx_gfx::text::init_text();
+    plx_gfx::gfx::init_image();
+    plx_gfx::gfx::init_blur();
     // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
     // over before any request can be made, so the first one already carries it.
     crate::net::set_user_agent(crate::plex::identity::user_agent());

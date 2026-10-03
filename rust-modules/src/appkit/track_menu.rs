@@ -433,7 +433,7 @@ pub(crate) struct TrackMenuState {
     /// The card's resize and the page slide ([`crate::ui::panel_motion`]): the layout target is
     /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
     motion: PanelMotion,
-    /// The owner token of the background queue this menu parked ([`crate::text::park_prewarm_as_background`]).
+    /// The owner token of the background queue this menu parked ([`plx_gfx::text::park_prewarm_as_background`]).
     /// [`Drop`] clears the queue only while it is still this menu's: a dismissed menu lives on
     /// through its fade-out (`ModalStack`'s `Closing`), and a Tracks menu reopened inside that
     /// fade has parked its own queue by the time the old one drops.
@@ -509,7 +509,7 @@ impl Drop for TrackMenuState {
     /// work for nobody.
     fn drop(&mut self) {
         if let Some(owner) = self.background_owner {
-            crate::text::clear_background_prewarm_owned(owner);
+            plx_gfx::text::clear_background_prewarm_owned(owner);
         }
     }
 }
@@ -1611,7 +1611,7 @@ impl TrackMenuState {
         if self.background_owner.is_some()
             || !self.pages.is_empty()
             || self.motion.transitioning()
-            || crate::text::prewarm_pending()
+            || plx_gfx::text::prewarm_pending()
         {
             return;
         }
@@ -2666,14 +2666,14 @@ mod enhancement_menu_tests {
     fn the_background_warm_is_not_charged_against_a_strict_replay() {
         use crate::ui::rec::{Measurements, TableMeasure};
         let _g = plx_base::testlock::serial();
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         let (mut menu, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
         let replay = Measurements::Replay(TableMeasure::new(std::collections::HashMap::new()));
         menu.warm_other_tab(&ps, store.view(), &replay);
         assert!(menu.background_owner.is_some(), "premise: the warm ran");
         assert_eq!(replay.drain(), Ok(Vec::new()), "the warm's queries are not strict replay queries");
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         teardown(&ps);
     }
 
@@ -2684,18 +2684,18 @@ mod enhancement_menu_tests {
     fn a_closing_menus_drop_keeps_the_newer_menus_background_queue() {
         use crate::ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         let (mut old, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
         old.warm_other_tab(&ps, store.view(), &M);
-        assert!(crate::text::background_prewarm_pending(), "premise: the old menu parked a warm");
+        assert!(plx_gfx::text::background_prewarm_pending(), "premise: the old menu parked a warm");
         let mut new = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
         new.warm_other_tab(&ps, store.view(), &M);
         drop(old);
-        assert!(crate::text::background_prewarm_pending(), "the old menu's drop wiped the new menu's queue");
+        assert!(plx_gfx::text::background_prewarm_pending(), "the old menu's drop wiped the new menu's queue");
         drop(new);
-        assert!(!crate::text::background_prewarm_pending(), "the current owner clears on drop");
-        crate::text::reset_prewarm_for_test();
+        assert!(!plx_gfx::text::background_prewarm_pending(), "the current owner clears on drop");
+        plx_gfx::text::reset_prewarm_for_test();
         teardown(&ps);
     }
 
@@ -3057,36 +3057,36 @@ mod enhancement_menu_tests {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         // a held modal's leftover must not eat the drain's budget
-        crate::text::queue_prewarm(c"stale held string".as_ptr(), 24, 0);
+        plx_gfx::text::queue_prewarm(c"stale held string".as_ptr(), 24, 0);
         menu.update(0.0, &M, &ps, store.view());
         let labels: Vec<String> =
             menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).map(|r| r.label.clone()).collect();
         assert!(!labels.is_empty(), "premise: the Audio tab has rows");
         // `update` alone is a frame that may not present: it records, it uploads nothing.
-        assert!(crate::text::prewarm_pending(), "update queued the page's strings");
+        assert!(plx_gfx::text::prewarm_pending(), "update queued the page's strings");
         for label in &labels {
             assert!(
-                !crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
+                !plx_gfx::text::prewarm_resident_any_size_for_test(label.as_bytes()),
                 "{label:?} was uploaded by update, which may run on a frame that does not present"
             );
         }
         // The presenting side's drain rasterises them, up to its time budget.
         crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         let resident =
-            labels.iter().filter(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
+            labels.iter().filter(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
         assert!(resident > 0, "the drain rasterised none of the page's strings");
         assert!(
-            !crate::text::prewarm_resident_any_size_for_test(b"stale held string"),
+            !plx_gfx::text::prewarm_resident_any_size_for_test(b"stale held string"),
             "the walk's queue must replace, not extend, what a held surface left"
         );
 
         // The same layout is walked once, not every frame.
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         menu.update(0.016, &M, &ps, store.view());
         assert!(
-            !crate::text::prewarm_resident_any_size_for_test(labels[0].as_bytes()),
+            !plx_gfx::text::prewarm_resident_any_size_for_test(labels[0].as_bytes()),
             "an unchanged layout was walked again"
         );
         teardown(&ps);
@@ -3104,9 +3104,9 @@ mod enhancement_menu_tests {
         use crate::ui::fixture::FixtureMeasure as M;
         let _g = plx_base::testlock::serial();
         let (menu, ps) = audio_tab(EnhTestFixture::default());
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         menu.warm_open(&M);
-        assert!(crate::text::prewarm_pending(), "warm_open queued the root page's strings");
+        assert!(plx_gfx::text::prewarm_pending(), "warm_open queued the root page's strings");
         let labels: Vec<String> = menu
             .form
             .table
@@ -3119,22 +3119,22 @@ mod enhancement_menu_tests {
         assert!(!labels.is_empty(), "premise: the Audio tab has rows");
         for label in &labels {
             assert!(
-                !crate::text::prewarm_resident_any_size_for_test(label.as_bytes()),
+                !plx_gfx::text::prewarm_resident_any_size_for_test(label.as_bytes()),
                 "{label:?} was uploaded by a walk, which may run on a frame that does not present"
             );
         }
         crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         assert!(
-            labels.iter().any(|l| crate::text::prewarm_resident_any_size_for_test(l.as_bytes())),
+            labels.iter().any(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())),
             "the presenting side's drain rasterised none of the root page"
         );
         // The same layout is walked once: the first `update` does not queue it again.
-        crate::text::clear_prewarm();
+        plx_gfx::text::clear_prewarm();
         menu.warm_open(&M);
-        assert!(!crate::text::prewarm_pending(), "an unchanged layout was walked again by warm_open");
+        assert!(!plx_gfx::text::prewarm_pending(), "an unchanged layout was walked again by warm_open");
         let mut menu = menu;
         menu.update(0.016, &M, &ps, crate::stores::metadata::MetadataStore::default().view());
-        assert!(!crate::text::prewarm_pending(), "the first update walked the layout again");
+        assert!(!plx_gfx::text::prewarm_pending(), "the first update walked the layout again");
         teardown(&ps);
     }
 
@@ -3162,7 +3162,7 @@ mod enhancement_menu_tests {
         item.audio = vec![metadata::Stream { id: 501, index: 0, codec: "ac3".into(), channels: 2, default: true, ..Default::default() }];
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         // A second of presented frames on the Audio tab: open, settle, drain. The first frame
         // drains the live page; every later one drains the other tab's strings in the
         // background, as many as the frame's time budget admits (the host clock charges 1 ms a
@@ -3173,7 +3173,7 @@ mod enhancement_menu_tests {
             let drained = crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // The draw drops whatever the live queue still holds (`ui::dispatch`, every frame
             // with no page warm), which on the TV left the background warm one string deep.
-            crate::text::clear_prewarm();
+            plx_gfx::text::clear_prewarm();
             if frame > 0 {
                 assert!(drained <= 3, "frame {frame} rasterised {drained} background strings");
             }
@@ -3190,7 +3190,7 @@ mod enhancement_menu_tests {
             .collect();
         assert!(!labels.is_empty(), "premise: the Subtitles tab has rows");
         let cold: Vec<&String> =
-            labels.iter().filter(|l| !crate::text::prewarm_resident_any_size_for_test(l.as_bytes())).collect();
+            labels.iter().filter(|l| !plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())).collect();
         assert!(cold.is_empty(), "the switch met these Subtitles labels cold: {cold:?}");
         teardown(&ps);
     }
@@ -3238,17 +3238,17 @@ mod enhancement_menu_tests {
         ];
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        crate::text::reset_prewarm_for_test();
+        plx_gfx::text::reset_prewarm_for_test();
         let frame = |menu: &mut TrackMenuState| {
             menu.update(0.016, &M, &ps, store.view());
             crate::ui::panel_motion::PanelMotion::drain_queued_text_for_test();
             // What the drain left of the live queue, the draw drops (`ui::dispatch`).
-            crate::text::clear_prewarm();
+            plx_gfx::text::clear_prewarm();
         };
         // The open drains the Subtitles root; the next frame queues Audio and drains one string.
         frame(&mut menu);
         frame(&mut menu);
-        assert!(crate::text::background_prewarm_pending(), "premise: the Audio warm is draining");
+        assert!(plx_gfx::text::background_prewarm_pending(), "premise: the Audio warm is draining");
         // Into Other languages and straight back, the way the osc walks it.
         let nav = (menu.form.table.sections.iter())
             .flat_map(|s| s.rows.iter())
@@ -3272,7 +3272,7 @@ mod enhancement_menu_tests {
             .flat_map(|s| s.rows.iter())
             .map(|r| r.label.clone())
             .filter(|l| {
-                !l.is_empty() && !crate::text::prewarm_resident_any_size_for_test(l.as_bytes())
+                !l.is_empty() && !plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())
             })
             .collect();
         assert!(cold.is_empty(), "the switch met these Audio labels cold: {cold:?}");
