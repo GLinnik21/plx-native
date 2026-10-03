@@ -445,7 +445,11 @@ video::-webkit-media-controls-start-playback-button {
     background-color 200ms ease;
 }
 /* Ko-fi's cup carries half again the GitHub mark's ink at the same height,
-   so it is drawn a little smaller to weigh the same. */
+   so it is drawn a little smaller and a step dimmer, behind GitHub; it lifts
+   to the same white on hover. */
+.header-kofi {
+  color: var(--text-tertiary);
+}
 .kofi-icon {
   width: 22px;
   height: 17.6px;
