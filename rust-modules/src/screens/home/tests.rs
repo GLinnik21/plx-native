@@ -1382,6 +1382,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         elems: vec![second_elem],
         link: None,
     });
+    s.elem_at.insert(second_elem, (1, 0));
     s.snap.jump(1.0);
     s.snap_target = 1.0;
     s.layout_grid();
@@ -2855,4 +2856,71 @@ fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
     }
     assert!(saw_decor, "the hero pop / wash dissolve must still report visible page motion");
     assert_eq!(layout_moving_frames, 0, "decorative springs must not count as page layout motion");
+}
+
+#[test]
+fn locate_agrees_with_a_row_scan() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 5, 7);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let s = screen(snapshot.view());
+    let scan = |elem: u32| s.rows.iter().enumerate().find_map(|(row, hub)| {
+        hub.elems.iter().position(|&e| e == elem).map(|col| Located::Item(row, col))
+    });
+    let mut seen = 0;
+    for hub in &s.rows {
+        for &elem in &hub.elems {
+            assert_eq!(s.locate(elem), scan(elem));
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 35);
+    // A key the table holds but no row lists (a card that left the catalog), and one it never held.
+    for stale in [s.next_elem, s.next_elem + 1] {
+        assert_eq!(s.locate(stale), scan(stale));
+    }
+}
+
+#[test]
+fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 16, 3);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let on_screen = |s: &HomeScreen, row: usize| {
+        let shelf = &s.grid.shelves[row];
+        let top = heading_y(shelf.base_y, shelf.lift());
+        on_axis(top, shelf.base_y + CARD_H + shelf.under_band() - top, SCR_H, 0.0)
+    };
+    let visible: Vec<usize> = (0..s.rows.len()).filter(|&r| on_screen(&s, r)).collect();
+    assert!(!visible.is_empty() && visible.len() < s.rows.len(), "the fixture must straddle the screen edge");
+    let far = s.rows.len() - 1;
+    assert!(!visible.contains(&far));
+    let elems = |s: &HomeScreen, rows: &[usize]| {
+        let mut e: Vec<u32> = rows.iter().flat_map(|&r| s.rows[r].elems.clone()).collect();
+        e.sort_unstable();
+        e
+    };
+    for (focus_row, expected_rows) in [
+        (None, visible.clone()),
+        (Some(far), { let mut v = visible.clone(); v.push(far); v }),
+    ] {
+        let focus = focus_row.map(|r| FocusKey { entry: s.entry, elem: s.rows[r].elems[0] });
+        let context = cx(snapshot.view(), focus);
+        let mut frame = DrawFrame::new(&context, Painter::root());
+        s.record_stops(&mut frame, snapshot.view());
+        let mut recorded: Vec<u32> = frame.into_stops().iter()
+            .map(|stop| stop.key.elem)
+            .filter(|e| e & HEADING_BASE == 0)
+            .collect();
+        recorded.sort_unstable();
+        assert_eq!(recorded, elems(&s, &expected_rows));
+    }
 }

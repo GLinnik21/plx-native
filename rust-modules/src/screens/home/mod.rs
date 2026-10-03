@@ -10,6 +10,7 @@
 //! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ffi::CString;
 
 use crate::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
@@ -347,6 +348,9 @@ pub(crate) struct HomeScreen {
     next_group: u32,
     next_elem: u32,
     rows: Vec<HubProjection>,
+    /// `elem` -> `(row, col)` for every card in `rows`, so [`HomeScreen::locate`] is a lookup
+    /// rather than a scan of every row. Derived in `sync_catalog`; not canon.
+    elem_at: HashMap<u32, (u32, u32)>,
     projected_generation: Option<u32>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
@@ -403,6 +407,7 @@ impl HomeScreen {
             next_group: FIRST_HUB_GROUP,
             next_elem: FIRST_ITEM_ELEM,
             rows: Vec::new(),
+            elem_at: HashMap::new(),
             projected_generation: None,
             restored_scroll: Vec::new(),
             restore_reveal: false,
@@ -570,6 +575,13 @@ impl HomeScreen {
                 self.grid.shelves[index].restore_scroll(scroll, row.elems.len(), &RowStyle::HOME);
             }
         }
+        self.elem_at.clear();
+        for (row, hub) in rows.iter().enumerate() {
+            for (col, &elem) in hub.elems.iter().enumerate() {
+                // First row wins, as the scan this replaces did.
+                self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+            }
+        }
         self.rows = rows;
         self.restored_scroll.retain(|(group, _)| {
             view.state != crate::pms::HubState::Ready
@@ -684,12 +696,9 @@ impl HomeScreen {
                 heading_elem(row.group) == elem && row.link.is_some()
             }).map(Located::Heading);
         }
-        self.rows.iter().enumerate().find_map(|(row, hub)| {
-            hub.elems
-                .iter()
-                .position(|&e| e == elem)
-                .map(|col| Located::Item(row, col))
-        })
+        self.elem_at
+            .get(&elem)
+            .map(|&(row, col)| Located::Item(row as usize, col as usize))
     }
 
     fn focused_loc(&self, focus: Option<FocusKey<u32>>) -> Option<Located> {
@@ -792,7 +801,12 @@ impl HomeScreen {
             let col = focused
                 .filter(|&(r, _)| grid_live && r == row)
                 .map(|(_, c)| c);
-            self.grid.shelves[row].update(count, col, &RowStyle::HOME, dt);
+            let shelf = &mut self.grid.shelves[row];
+            // A row at exact rest is a fixed point of `update`: skipping it changes no bit.
+            if col.is_none() && shelf.at_exact_rest() {
+                continue;
+            }
+            shelf.update(count, col, &RowStyle::HOME, dt);
         }
         let revealed = focused.map(|(row, _)| (row, Some(row)))
             .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
@@ -1351,6 +1365,17 @@ impl HomeScreen {
         crate::ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
     }
 
+    /// Whether shelf `row` overlaps the screen vertically. The shelf spans from its heading's
+    /// line — ABOVE the cards — to the bottom of its label band. Culling by the card rect alone
+    /// left a heading already on screen undrawn until the first card pixel crossed the bottom
+    /// edge, so it popped in mid-scroll.
+    fn shelf_on_screen(&self, row: usize) -> bool {
+        let shelf = &self.grid.shelves[row];
+        let top = heading_y(shelf.base_y, shelf.lift());
+        let bottom = shelf.base_y + CARD_H + shelf.under_band();
+        on_axis(top, bottom - top, SCR_H, 0.0)
+    }
+
     fn draw_grid(
         &self,
         view: HubsView<'_>,
@@ -1365,15 +1390,10 @@ impl HomeScreen {
             let Some(hub) = self.hub(view, row) else {
                 continue;
             };
-            let row_y = self.grid.shelves[row].base_y;
-            // The shelf spans from its heading's line — ABOVE the cards — to the bottom of its
-            // label band. Culling by the card rect alone left a heading already on screen undrawn
-            // until the first card pixel crossed the bottom edge, so it popped in mid-scroll.
-            let top = heading_y(row_y, self.grid.shelves[row].lift());
-            let bottom = row_y + CARD_H + self.grid.shelves[row].under_band();
-            if !on_axis(top, bottom - top, SCR_H, 0.0) {
+            if !self.shelf_on_screen(row) {
                 continue;
             }
+            let row_y = self.grid.shelves[row].base_y;
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
                 let m = linked.measure(measure);
                 let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
@@ -1520,12 +1540,15 @@ impl HomeScreen {
             }
         }
         if self.snap.pos >= 0.5 {
-            for row in &self.rows {
+            let focused_row = self.focused_grid(focus).map(|(row, _)| row);
+            for (row_index, row) in self.rows.iter().enumerate() {
                 // Keep the whole focused row hoverable while vertical reveal is in flight.
                 // Other partially visible rows must not steal focus as they pass the pointer.
-                let row_focused = focus.is_some_and(|key| {
-                    key.entry == self.entry && row.elems.contains(&key.elem)
-                });
+                let row_focused = focused_row == Some(row_index);
+                // A row off screen has nothing to hit; only the focused one keeps its stops.
+                if !row_focused && !self.shelf_on_screen(row_index) {
+                    continue;
+                }
                 for &elem in &row.elems {
                     let Some(placed) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else {
                         continue;
@@ -1553,17 +1576,14 @@ impl HomeScreen {
                     );
                 }
                 // After the row's tiles, so a popped tile's glow never wins the heading's hit.
-                let row_index = self.rows.iter().position(|r| r.group == row.group);
-                if let Some(row_index) = row_index {
-                    if let (Some(heading), Some(rect)) = (
-                        self.heading_widget(view, row_index),
-                        self.heading_rect(view, row_index, f.measure, At::Drawn, focus),
-                    ) {
-                        let visible = rect.y >= crate::ui::widgets::TOP_BAR_BOTTOM
-                            && rect.y + rect.h <= SCR_H;
-                        if visible {
-                            heading.stop(f, rect, FocusKey { entry: self.entry, elem: heading_elem(row.group) });
-                        }
+                if let (Some(heading), Some(rect)) = (
+                    self.heading_widget(view, row_index),
+                    self.heading_rect(view, row_index, f.measure, At::Drawn, focus),
+                ) {
+                    let visible = rect.y >= crate::ui::widgets::TOP_BAR_BOTTOM
+                        && rect.y + rect.h <= SCR_H;
+                    if visible {
+                        heading.stop(f, rect, FocusKey { entry: self.entry, elem: heading_elem(row.group) });
                     }
                 }
             }
@@ -1668,7 +1688,8 @@ impl LogicalState for HomeScreen {
         // phase and backdrop resources only paint. Every motion value queried by input/reveal
         // is encoded below, including velocities that determine the next Tick's answer.
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
-            rows: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
+            // `elem_at` is derived from `rows`, which the census already covers via its elems.
+            rows: _, elem_at: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,

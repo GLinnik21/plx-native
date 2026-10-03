@@ -201,7 +201,19 @@ impl CardRow {
             base_y: 0.0,
         }
     }
-    /// Step every cell's scale spring (all `MAX_ROW_ITEMS` every frame — invariant #10) toward
+    /// Whether every spring sits bit-exactly at its target with no velocity and nothing holds
+    /// focus. An unfocused [`update`](Self::update) of such a row writes back the same bits and
+    /// reports nothing to the idle gate, so a caller may skip the call (Home does, per row).
+    pub(crate) fn at_exact_rest(&self) -> bool {
+        let at = |sp: &Spring, rest: f32| sp.pos == rest && sp.vel == 0.0;
+        self.focus == -1
+            && self.scale.iter().all(|sp| at(sp, 1.0))
+            && at(&self.overflow, 1.0)
+            && at(&self.lift, 0.0)
+            && at(&self.band, 0.0)
+    }
+    /// Step every cell's scale spring (all `MAX_ROW_ITEMS` every call — invariant #10; Home skips the
+    /// call for a row at [`at_exact_rest`](Self::at_exact_rest), a fixed point of this method) toward
     /// `focus_scale` for the focused cell else 1.0; then, ONLY when this row is focused, glide the
     /// scroll spring *minimally*: scroll just far enough that the focused cell (plus one gap of
     /// breathing room) sits fully inside the viewport, and not at all when it already does — no
@@ -1478,6 +1490,44 @@ mod tests {
     }
 
     use super::*;
+
+    fn motion_hash(row: &CardRow) -> u64 {
+        let mut canon = plx_machine::machine::Canon::new();
+        row.write_motion(&mut canon);
+        canon.finish()
+    }
+
+    #[test]
+    fn a_fresh_row_is_at_exact_rest_and_update_is_a_fixed_point() {
+        let mut row = CardRow::new();
+        assert!(row.at_exact_rest());
+        let before = motion_hash(&row);
+        row.update(24, None, &RowStyle::HOME, 1.0 / 60.0);
+        assert_eq!(motion_hash(&row), before);
+        row.update(0, None, &RowStyle::HOME, 1.0 / 60.0);
+        assert_eq!(motion_hash(&row), before);
+    }
+
+    /// FINDING: this FAILS, so a row that has held focus never parks and Home's skip only helps
+    /// rows never visited. After 30 focused frames and 1,200 released ones at dt = 1/60 (still
+    /// stuck after 20,000): the focused cell's `scale` sits at pos 1.0000001, vel -9.8e-7 (one ulp
+    /// above rest with a velocity too small to move it, a fixed point of `step` that is not rest),
+    /// and `band` sits at the denormals, pos 3e-45, vel -2e-44. `lift` and `overflow` do land
+    /// exactly. Parking a visited row needs a snap at rest; kept ignored until that lands.
+    #[test]
+    #[ignore = "a released row stalls one ulp from rest (scale) and at denormals (band)"]
+    fn a_released_row_reaches_exact_rest() {
+        let dt = 1.0 / 60.0;
+        let mut row = CardRow::new();
+        for _ in 0..30 {
+            row.update(24, Some(3), &RowStyle::HOME, dt);
+        }
+        assert!(!row.at_exact_rest());
+        for _ in 0..1200 {
+            row.update(24, None, &RowStyle::HOME, dt);
+        }
+        assert!(row.at_exact_rest());
+    }
 
     #[test]
     fn restored_scroll_is_retained_and_clamped_to_current_content() {
