@@ -52,7 +52,7 @@ use std::sync::Arc;
 use crate::auth::{self, Phase};
 use crate::ui::frame::Budget;
 use crate::ui::label::HAlign;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
     LogicalState, Machine, Measure, Tick,
 };
@@ -477,7 +477,7 @@ fn label_for(kind: ControlKind) -> &'static CStr {
 }
 
 /// Every branch but the two SETTLED read-outs (`Failed`/`Deleted`) draws the spinner — the one
-/// thing on this screen that animates from a raw clock (`spin_ms`) rather than a spring `ui::idle`
+/// thing on this screen that animates from a raw clock (`spin_ms`) rather than a spring `plx_machine::idle`
 /// can see on its own. `Spinner::draw`'s own module note is the standing warning that this class of
 /// animator ships FROZEN if it forgets to report every frame it is on screen.
 fn control_has_spinner(phase: Phase, warning_showing: bool) -> bool {
@@ -816,11 +816,11 @@ pub(crate) struct LoginScreen {
     phase_ms: f32,
     /// The underlying clocks for [`spin_ms`](Self::spin_ms)/[`phase_ms`](Self::phase_ms)
     /// (`motion::Phase` — spec phase 12 D4): an UNBOUNDED clock-driven animator reports `Motion`
-    /// from inside its own `advance`, the way [`motion::Ramp`](crate::ui::motion::Ramp) does for a
+    /// from inside its own `advance`, the way [`motion::Ramp`](plx_machine::motion::Ramp) does for a
     /// bounded one, rather than the raw `+= dt` these two fields used to accumulate with
     /// `fx.note(Motion)` called separately, out of band, below.
-    spin_phase: crate::ui::motion::Phase,
-    phase_clock: crate::ui::motion::Phase,
+    spin_phase: plx_machine::motion::Phase,
+    phase_clock: plx_machine::motion::Phase,
     wait: Wait,
     /// The uploaded GL texture of Plex's QR PNG (0 until decoded+uploaded) and which generation it
     /// describes. Render resources only — built and freed in [`Screen::prepare`], never in `step`,
@@ -870,8 +870,8 @@ impl LoginScreen {
             entry,
             spin_ms: 0.0,
             phase_ms: 0.0,
-            spin_phase: crate::ui::motion::Phase::default(),
-            phase_clock: crate::ui::motion::Phase::default(),
+            spin_phase: plx_machine::motion::Phase::default(),
+            phase_clock: plx_machine::motion::Phase::default(),
             wait: (Phase::Idle, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
@@ -1046,7 +1046,7 @@ impl LoginScreen {
         self.sync_state();
     }
 
-    fn enter_elem<H: AppLike>(fx: &mut Effects<'_, H>, key: crate::ui::machine::FocusKey<u32>) {
+    fn enter_elem<H: AppLike>(fx: &mut Effects<'_, H>, key: plx_machine::machine::FocusKey<u32>) {
         let me = fx.from();
         fx.push(Fx::Deliver(
             me,
@@ -1355,7 +1355,7 @@ impl LoginScreen {
     /// The control, pressed. Every action is a typed Session command. Restart additionally records
     /// its addressed correlation and leaves the elapsed clock untouched until acceptance returns.
     fn allocate_reply<H: AppLike>(&mut self, fx: &Effects<'_, H>) -> Option<auth::owner::ReplyTo> {
-        let crate::ui::machine::MachineId::Instance(instance) = fx.from() else {
+        let plx_machine::machine::MachineId::Instance(instance) = fx.from() else {
             return None;
         };
         let correlation = self.next_correlation?;
@@ -1497,7 +1497,7 @@ impl LoginScreen {
         self.pending_restart = None;
         if accepted {
             self.phase_ms = 0.0;
-            self.phase_clock = crate::ui::motion::Phase::default();
+            self.phase_clock = plx_machine::motion::Phase::default();
         }
         self.sync_state();
     }
@@ -1575,7 +1575,7 @@ impl LoginScreen {
         f.stop(
             p,
             Stop {
-                key: crate::ui::machine::FocusKey {
+                key: plx_machine::machine::FocusKey {
                     entry: self.entry,
                     elem,
                 },
@@ -1769,7 +1769,7 @@ impl LoginScreen {
 
     /// The QR screen's report status — [`Self::report_note`], the failed read-out's own line — as
     /// fine print sitting on the action band, in the narrative column *Details* stands in.
-    fn draw_disclosure(&self, p: Painter, layout: RouteLayout, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_disclosure(&self, p: Painter, layout: RouteLayout, measure: &dyn plx_machine::machine::Measure) {
         let bottom = layout.action.y - theme::space::MD;
         if let Some(note) = self.report_note() {
             // A report on its way: the shared inline spinner in a leading gutter, on the first
@@ -1811,7 +1811,7 @@ impl LoginScreen {
                 f.stop(
                     Painter::root(),
                     Stop {
-                        key: crate::ui::machine::FocusKey { entry: self.entry, elem },
+                        key: plx_machine::machine::FocusKey { entry: self.entry, elem },
                         rect,
                         rest_rect: rect,
                         clip: Rect::FULL,
@@ -1900,8 +1900,8 @@ impl LoginScreen {
         if elem == ALERT_SEND { send } else { cancel }
     }
 
-    fn key(&self, elem: u32) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey { entry: self.entry, elem }
+    fn key(&self, elem: u32) -> plx_machine::machine::FocusKey<u32> {
+        plx_machine::machine::FocusKey { entry: self.entry, elem }
     }
 
     /// The open alert's answers: both, or — a Details card with nothing left to send — *Close*
@@ -1968,7 +1968,7 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
     }
     fn neighbour(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         _cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -2019,9 +2019,9 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
     /// the head of the group.
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
+        want: plx_machine::machine::FocusKey<u32>,
         cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         if self.group_of(&want.elem, cx).is_some() {
             return want;
         }
@@ -2045,7 +2045,7 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         g: GroupId,
         _from: Placed,
         _cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         if g == ALERT_GROUP {
             // The Details card opens on *Send report* while there is one; the question on *Not now*.
             let send = self.report.sheet == Sheet::Details && self.alert_elems().contains(&ALERT_SEND);
@@ -2119,11 +2119,11 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
             }
             ScreenEvent::Activate(elem) => {
                 self.activate_elem(*elem, fx);
-                fx.invalidate(crate::ui::present::Provenance::Input);
+                fx.invalidate(plx_machine::present::Provenance::Input);
                 Handled::Yes
             }
             ScreenEvent::Async(
-                crate::ui::machine::RequestId(request),
+                plx_machine::machine::RequestId(request),
                 AppMsg::RestartReply {
                     correlation,
                     accepted,
@@ -2133,7 +2133,7 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
                 Handled::Yes
             }
             ScreenEvent::Async(
-                crate::ui::machine::RequestId(request),
+                plx_machine::machine::RequestId(request),
                 AppMsg::BackReply { correlation, .. },
             ) if request == correlation => Handled::Yes,
             // BACK asks Session for its addressed root decision; Session/core owns stored-session
@@ -2282,10 +2282,10 @@ mod tests {
     use std::sync::{Arc, LazyLock};
 
     use crate::ui::consts::inside_safe;
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         FocusRead, Host, InputOwner, InstanceId, MachineId, PressRead, Source, Stamped,
     };
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
 
     struct SessionHost;
 
@@ -2636,8 +2636,8 @@ mod tests {
             entry: EntryId(0),
             spin_ms: 0.0,
             phase_ms,
-            spin_phase: crate::ui::motion::Phase::default(),
-            phase_clock: crate::ui::motion::Phase::default(),
+            spin_phase: plx_machine::motion::Phase::default(),
+            phase_clock: plx_machine::motion::Phase::default(),
             wait: (phase, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
@@ -2736,7 +2736,7 @@ mod tests {
     ) -> Cx<'a, SessionHost> {
         Cx {
             views: snapshot.read(),
-            tick: crate::ui::machine::Tick::default(),
+            tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
             focus: FocusRead {
@@ -2969,7 +2969,7 @@ mod tests {
 
     fn key_back_down() -> ScreenEvent<SessionHost> {
         ScreenEvent::Input(InputEvent {
-            at: crate::ui::machine::Tick::default(),
+            at: plx_machine::machine::Tick::default(),
             source: Source::Script,
             kind: InputKind::Key {
                 key: Key::Back,
@@ -3139,7 +3139,7 @@ mod tests {
         step_ev_with(
             &mut screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(1),
+                plx_machine::machine::RequestId(1),
                 AppMsg::RestartReply {
                     correlation: 1,
                     accepted: false,
@@ -3166,7 +3166,7 @@ mod tests {
         step_ev_with(
             &mut screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(99),
+                plx_machine::machine::RequestId(99),
                 AppMsg::RestartReply {
                     correlation: 2,
                     accepted: true,
@@ -3185,7 +3185,7 @@ mod tests {
         step_ev_with(
             &mut screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(2),
+                plx_machine::machine::RequestId(2),
                 AppMsg::RestartReply {
                     correlation: 2,
                     accepted: true,
@@ -3202,7 +3202,7 @@ mod tests {
         step_ev_with(
             &mut screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(2),
+                plx_machine::machine::RequestId(2),
                 AppMsg::RestartReply {
                     correlation: 2,
                     accepted: true,
@@ -3248,7 +3248,7 @@ mod tests {
         step_ev_with(
             &mut screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(1),
+                plx_machine::machine::RequestId(1),
                 AppMsg::RestartReply {
                     correlation: 1,
                     accepted: true,
@@ -3434,7 +3434,7 @@ mod tests {
     ) -> Vec<Stamped<SessionHost>> {
         let m = crate::ui::fixture::FixtureMeasure;
         let mut cx = cx_with(&m, snapshot);
-        cx.focus.current = Some(crate::ui::machine::FocusKey { entry: EntryId(0), elem });
+        cx.focus.current = Some(plx_machine::machine::FocusKey { entry: EntryId(0), elem });
         let mut present = Present::new();
         let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
         {
@@ -3592,7 +3592,7 @@ mod tests {
             let fx = if via_back {
                 step_ev_with(&mut s, &key_back_down(), &failed, InstanceId(0), &m).1
             } else {
-                step_focused(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &failed, ALERT_CANCEL)
+                step_focused(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &failed, ALERT_CANCEL)
             };
             assert!(!s.report.alert.is_open(), "via_back={via_back}: the card closes");
             assert!(enters_elem(&fx, DETAILS), "via_back={via_back}: focus returns to Details");
@@ -3617,7 +3617,7 @@ mod tests {
         let (_, early) = step_ev_with(&mut s, &ScreenEvent::Activate(ALERT_SEND), &failed, InstanceId(0), &m);
         assert!(!sends(&early), "no answer is live before the card is open");
         step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
-        let fx = step_focused(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &failed, ALERT_SEND);
+        let fx = step_focused(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &failed, ALERT_SEND);
         assert!(sends(&fx), "Send report sends the held offer");
         assert!(!s.report.alert.is_open(), "…and closes the card");
         assert!(enters_elem(&fx, DETAILS), "…handing focus back to Details");
@@ -3721,8 +3721,8 @@ mod tests {
             assert_eq!(Focusable::<SessionHost>::seat(&s, ALERT_GROUP, Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx).elem,
                 ALERT_CANCEL, "{how}: seated on Not now");
             let fx = match how {
-                "connect" => step_focused(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &failed, ALERT_SEND),
-                "not now" => step_focused(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &failed, ALERT_CANCEL),
+                "connect" => step_focused(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &failed, ALERT_SEND),
+                "not now" => step_focused(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &failed, ALERT_CANCEL),
                 _ => step_ev_with(&mut s, &key_back_down(), &failed, InstanceId(0), &m).1,
             };
             assert_eq!(answers(&fx), [allow], "{how}");

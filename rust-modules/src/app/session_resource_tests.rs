@@ -591,8 +591,8 @@ mod tests {
         }
 
         fn assert_receipt(rig: &Bridge, record: &SessionEnvelope, req: u32) {
-            assert_eq!(record.addr, crate::ui::machine::Addr {
-                to: MachineId::Session, req: crate::ui::machine::RequestId(req),
+            assert_eq!(record.addr, plx_machine::machine::Addr {
+                to: MachineId::Session, req: plx_machine::machine::RequestId(req),
             });
             assert_eq!(record.key.epoch, EPOCH);
             assert!(rig.session_adapter.admitted(record));
@@ -810,8 +810,8 @@ mod tests {
             let records = rig.session_adapter.take_results();
             assert_eq!(records.len(), 1);
             let record = records[0].clone();
-            assert_eq!(record.addr, crate::ui::machine::Addr {
-                to: MachineId::Session, req: crate::ui::machine::RequestId(req),
+            assert_eq!(record.addr, plx_machine::machine::Addr {
+                to: MachineId::Session, req: plx_machine::machine::RequestId(req),
             });
             assert_eq!(record.key.epoch, epoch);
             assert!(epoch > u64::from(u32::MAX));

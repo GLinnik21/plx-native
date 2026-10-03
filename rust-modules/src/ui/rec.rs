@@ -5,7 +5,7 @@
 //! object per line, `{"f":<frame>,"t":"<kind>",…}`. Kinds per frame: `tick` (EVERY frame),
 //! `present` (the bit and WHY), `in` (an input), `eff` (an effect, `from`/`e`/`addr`), `async`
 //! (an adapter result's address and payload or blob hash), `land` (how many landings a STORE
-//! consumed on this frame — the schedule `ui::landgate` holds a replay to), `life`, `timer`, `st`
+//! consumed on this frame — the schedule `plx_machine::landgate` holds a replay to), `life`, `timer`, `st`
 //! (the logical-state hash, on every EVENT frame), plus schema-3 `metrics` typed measurement
 //! records, pointwise `rs` Focus/Hit resolutions and exactly one final `fo` product-focus
 //! observation per frame. The
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::machine::{Canon, LogicalState, Measure, Tick};
+use plx_machine::machine::{Canon, LogicalState, Measure, Tick};
 mod strict_json;
 #[cfg(test)]
 mod measurements_tests; // `Measurements` over a memoizing native source (moved from `text.rs`, module-layers step L5)
@@ -48,7 +48,7 @@ mod measurements_tests; // `Measurements` over a memoizing native source (moved 
 /// Schema 2's `{s,sz,b,w,h}` row cannot represent those three capabilities losslessly.
 ///
 /// **2 (phase 11): `land`.** A recording now carries the frame every STORE consumed a landing on
-/// — the schedule `ui::landgate` holds a replay's live landings to (§3.3 step 3). Schema 1 could
+/// — the schedule `plx_machine::landgate` holds a replay's live landings to (§3.3 step 3). Schema 1 could
 /// not: the only per-frame arrival it recorded was the dispatcher's `async`, so every result the
 /// legacy pumps drain OUTSIDE that drain had no recorded frame at all, and a schema-1 recording
 /// replayed under the gate would silently grade nothing. Refusing it is the honest answer;
@@ -534,7 +534,7 @@ impl Writer {
     }
 
     /// One STORE's landings on this frame (schema 2): `n` is HOW MANY of its sites consumed a
-    /// mailbox, which is what `ui::landgate`'s cursor is stepped by, one unit per arrival. The
+    /// mailbox, which is what `plx_machine::landgate`'s cursor is stepped by, one unit per arrival. The
     /// count and not a boolean, because a store with several sites (`person` has one per fetch)
     /// can take two answers on one frame and one on the next, and collapsing that to "it landed"
     /// lets a replay consume two arrivals for one cursor step — after which every later landing
@@ -875,7 +875,7 @@ impl Recording {
     }
 
     /// The LANDING SCHEDULE (§3.3 step 3): for each store ordinal, the `(frame, count)` pairs it
-    /// was recorded consuming landings on, oldest first. This is what `ui::landgate::arm_replay`
+    /// was recorded consuming landings on, oldest first. This is what `plx_machine::landgate::arm_replay`
     /// holds a replay's live landings to; an empty inner list means "this store never landed",
     /// which the gate reads as "deliver at once and grade it `extra`", never as "hold forever".
     pub fn land_schedule(&self) -> std::collections::BTreeMap<u32,Vec<(u64, u32)>> {
@@ -1399,9 +1399,9 @@ mod tests {
         assert_eq!(schedule.len(),1);
         assert_eq!(schedule[&u32::MAX],vec![(0,u32::MAX)]);
         let _serial = plx_base::testlock::serial();
-        let _gate = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_sparse_replay(schedule);
-        assert_eq!(crate::ui::landgate::unmatched_counts(),vec![(u32::MAX,0,u32::MAX)]);
+        let _gate = plx_machine::landgate::Armed;
+        plx_machine::landgate::arm_sparse_replay(schedule);
+        assert_eq!(plx_machine::landgate::unmatched_counts(),vec![(u32::MAX,0,u32::MAX)]);
     }
 
     #[test]

@@ -14,12 +14,12 @@ use std::ffi::CStr;
 
 use super::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use super::frame::{Budget, RenderReport};
-use super::machine::{
+use plx_machine::machine::{
     Addr, Canon, Chrome, Cx, Delivery, Effects, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     Key, LogLine, LogicalState, Machine, MachineId, Measure, NavOp, PartId, PosterKey, RequestId,
     ScreenId, StoreOrd, Tick, TimerId,
 };
-use super::present::{Present, Provenance};
+use plx_machine::present::{Present, Provenance};
 use super::screen::{
     composed_draw, composed_prepare, Activate, At, AxisMask, Composed, Dir, DrawFrame, EdgeRule,
     ElemKind, Focusable, GroupKind, GroupSpec, Hover, Mounter, Part, Placed, RenderStrategy, ReturnState,
@@ -28,7 +28,7 @@ use super::screen::{
 use super::tex::{Decoded, PosterReady, Tex, TexCache, Uploader};
 use super::Rect;
 
-use crate::ui::machine::FocusKey;
+use plx_machine::machine::FocusKey;
 
 // ---------------------------------------------------------------------------------------------
 // the bundle
@@ -138,7 +138,7 @@ impl Host for FixtureHost {
     type Elem = u32;
     type Views<'a> = FixtureViews<'a>;
     type Init = FixtureInit;
-    /// No fixture screen remembers anything on its own `ReturnState` (`ui::machine::Host::Memory`).
+    /// No fixture screen remembers anything on its own `ReturnState` (`plx_machine::machine::Host::Memory`).
     type Memory = ();
 }
 
@@ -174,7 +174,7 @@ impl FixtureStore {
 pub struct FixtureRow {
     pub len: usize,
     pub group: GroupId,
-    pub entry: super::machine::EntryId,
+    pub entry: plx_machine::machine::EntryId,
     pub prepared: u32,
     pub drawn: u32,
     /// What the row's elements are for the press: `Page(5xx)` rows are `Bare`, `Page(6xx)`
@@ -302,7 +302,7 @@ impl LogicalState for FixtureState {
 }
 
 /// The page argument whose body steps a REAL spring on every Tick — `gfx::spring`, the integrator
-/// the product's owned screens animate through, so `ui::idle` hears it exactly as it hears the
+/// the product's owned screens animate through, so `plx_machine::idle` hears it exactly as it hears the
 /// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
 /// awake, and every other test in this bundle grades quiet frames.
 pub const ANIMATED_PAGE: u32 = 950;
@@ -365,8 +365,8 @@ impl Machine<FixtureHost> for FixtureScreen {
         // Page 801 observes the context of each delivered input, without consuming directions.
         if self.arg == FixtureArg::Page(801) && matches!(ev, ScreenEvent::Input(_)) {
             self.state.events.push(match cx.owner {
-                super::machine::InputOwner::System(_) => "system_owner",
-                super::machine::InputOwner::Entry(_) => "entry_owner",
+                plx_machine::machine::InputOwner::System(_) => "system_owner",
+                plx_machine::machine::InputOwner::Entry(_) => "entry_owner",
             });
             if cx.focus.current.is_some() { self.state.events.push("has_focus"); }
         }
@@ -432,7 +432,7 @@ impl Machine<FixtureHost> for FixtureScreen {
                 Handled::Yes
             }
             // The PAGE's own spring, through `gfx::spring` — the integrator every owned screen
-            // animates through, and the only one `ui::idle` can see. It reports no `Motion` to the
+            // animates through, and the only one `plx_machine::idle` can see. It reports no `Motion` to the
             // container's gate on purpose: `screens::library` does not either, which is why
             // `idle::page_moving` is the only witness that a page under a panel is moving.
             ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(ANIMATED_PAGE) => {
@@ -440,7 +440,7 @@ impl Machine<FixtureHost> for FixtureScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(QUIESCENCE_PAGE) && t.ms < 400 => {
-                fx.note(super::present::PresentEvent::Motion);
+                fx.note(plx_machine::present::PresentEvent::Motion);
                 Handled::Yes
             }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
@@ -534,12 +534,12 @@ pub struct FixtureModal {
     pub inner: super::containers::stack::NavStack<FixtureHost>,
     ids: super::containers::Minter,
     pub state: FixtureState,
-    entry: super::machine::EntryId,
+    entry: plx_machine::machine::EntryId,
     /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
     pub pop: f32,
-    /// The same pop through `gfx::spring`, so `ui::idle` hears the surface's own motion the way it
+    /// The same pop through `gfx::spring`, so `plx_machine::idle` hears the surface's own motion the way it
     /// hears a page's — the two halves of the §4.4 attribution have to be gradeable against each
-    /// other, and `ui::motion`'s integrator (the appear spring's) never reaches `ui::idle` at all.
+    /// other, and `plx_machine::motion`'s integrator (the appear spring's) never reaches `plx_machine::idle` at all.
     /// Held to the `pop` window so a settled surface still makes quiet frames.
     spring: crate::ui::Spring,
     pub last_draw_alpha: f32,
@@ -582,7 +582,7 @@ pub fn draw_order() -> usize {
 }
 
 impl FixtureModal {
-    pub fn new(entry: super::machine::EntryId) -> Self {
+    pub fn new(entry: plx_machine::machine::EntryId) -> Self {
         Self {
             inner: super::containers::stack::NavStack::new(Box::new(
                 super::containers::transition::RoutePush::new(),
@@ -746,7 +746,7 @@ impl Machine<FixtureHost> for FixtureModal {
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
                     self.spring.step(1.0, 300.0, t.dt());
-                    fx.note(super::present::PresentEvent::Motion);
+                    fx.note(plx_machine::present::PresentEvent::Motion);
                 }
                 Handled::Yes
             }
@@ -871,7 +871,7 @@ struct FixtureMounter {
 impl Mounter<FixtureHost> for FixtureMounter {
     fn mount(
         &mut self,
-        _id: super::machine::InstanceId,
+        _id: plx_machine::machine::InstanceId,
         arg: &FixtureArg,
         _ret: &ReturnState<u32>,
         cx: &Cx<'_, FixtureHost>,
@@ -879,8 +879,8 @@ impl Mounter<FixtureHost> for FixtureMounter {
     ) -> Box<dyn Screen<FixtureHost>> {
         self.mounted += 1;
         let entry = match cx.owner {
-            super::machine::InputOwner::Entry(e) => e,
-            _ => super::machine::EntryId(0),
+            plx_machine::machine::InputOwner::Entry(e) => e,
+            _ => plx_machine::machine::EntryId(0),
         };
         if *arg == FixtureArg::Modal {
             return Box::new(FixtureModal::new(entry));
@@ -917,7 +917,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
 /// composites UNDER a hole punched in our surface, and the page's whole job is to leave the hole
 /// alone. `drawn` is what a test reads to see whether the page pass reached it.
 pub struct VideoPlaneScreen {
-    pub entry: super::machine::EntryId,
+    pub entry: plx_machine::machine::EntryId,
     pub state: FixtureState,
     pub drawn: u32,
 }
@@ -1128,7 +1128,7 @@ impl Rig<FixtureHost> for FixtureRig {
     }
 
     fn prepare(&mut self, b: &mut Budget, present: &mut Present) {
-        let mut ph = super::machine::PresentHandle(present);
+        let mut ph = plx_machine::machine::PresentHandle(present);
         let us = self.us;
         self.cache.prepare(b, &mut self.uploader, &mut ph, || us);
         // The rig owns a bare `TexCache` with no `Source` behind it (see the module doc above the
@@ -1202,12 +1202,12 @@ pub(crate) fn tick(ms: u32) -> Tick {
 pub(crate) fn key(k: Key, at: Tick) -> InputEvent<u32> {
     InputEvent {
         at,
-        source: super::machine::Source::Script,
+        source: plx_machine::machine::Source::Script,
         kind: InputKind::Key {
             key: k,
             sym: 0,
             wcode: 0,
-            edge: super::machine::Edge::Down,
+            edge: plx_machine::machine::Edge::Down,
             at_edge: false,
         },
     }
@@ -1333,7 +1333,7 @@ impl Tap<FixtureHost> for RecTap {
         self.w.tick(f, t);
     }
     fn input(&mut self, f: u64, ev: &InputEvent<u32>) {
-        use super::machine::TextEdit;
+        use plx_machine::machine::TextEdit;
         let input = match &ev.kind {
             InputKind::Key { key, .. } => json!({"kind": "key", "key": key_name(*key), "ms": ev.at.ms}),
             InputKind::SystemKeyboard(up) => json!({"kind": "keyboard", "up": up, "ms": ev.at.ms}),
@@ -1361,7 +1361,7 @@ impl Tap<FixtureHost> for RecTap {
         };
         self.w.result(f, &to, addr.req.0, payload);
     }
-    fn effect(&mut self, f: u64, s: &super::machine::Stamped<FixtureHost>) {
+    fn effect(&mut self, f: u64, s: &plx_machine::machine::Stamped<FixtureHost>) {
         let e = match &s.fx {
             Fx::Nav(_) => "nav",
             Fx::Mount(_) => "mount",
@@ -1395,7 +1395,7 @@ pub struct FixtureCodec;
 
 impl Codec<FixtureHost> for FixtureCodec {
     fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
-        use super::machine::{Source, TextEdit};
+        use plx_machine::machine::{Source, TextEdit};
         let at = tick(v["ms"].as_u64()?.try_into().ok()?);
         let kind = match v["kind"].as_str()? {
             "keyboard" => Some(InputKind::SystemKeyboard(v["up"].as_bool()?)),
@@ -1425,7 +1425,7 @@ impl Codec<FixtureHost> for FixtureCodec {
         let to = v["to"].as_str()?;
         let inst = to.strip_prefix("inst:")?.parse::<u32>().ok()?;
         let addr = Addr {
-            to: MachineId::Instance(super::machine::InstanceId(inst)),
+            to: MachineId::Instance(plx_machine::machine::InstanceId(inst)),
             req: RequestId(v["req"].as_u64()?.try_into().ok()?),
         };
         let p = &v["payload"];
@@ -1716,7 +1716,7 @@ fn the_fixture_bundles_state_shape_is_pinned() {
     assert_eq!(fixture_state_fp(), 0x23c4_4e83_a90a_8644);
 }
 
-pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {
+pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, plx_machine::machine::InstanceId) {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
@@ -2072,7 +2072,7 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
     );
 
     // ---- the plane binds: the ONE input, from the machine's edge ----
-    d.present.note(crate::ui::present::PresentEvent::VideoPlane(true));
+    d.present.note(plx_machine::present::PresentEvent::VideoPlane(true));
     assert!(d.video_plane_frame(), "declared AND bound");
 
     let drew_before_the_plane = below_drawn(&d);

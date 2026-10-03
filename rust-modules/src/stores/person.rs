@@ -2,7 +2,7 @@
 //! production `Bridge` owns one [`PersonStore`]; no free selector can connect two Bridges.
 
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ impl PersonStore {
     }
 
     /// Route-unconditional landing/spawn pass for this owner's adapter.
-    pub(crate) fn pump(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = self.state.pump_with_gate(&self.adapter, gate);
         if changed {
             self.bump();
@@ -141,7 +141,7 @@ impl<H: Host> Machine<H> for PersonStore {
                 self.run(command.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump(&crate::ui::landgate::Gate::default());
+                self.pump(&plx_machine::landgate::Gate::default());
             }
         }
         Handled::Yes

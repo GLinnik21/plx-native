@@ -1,8 +1,8 @@
 use super::*;
 use crate::ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use crate::ui::fixture::{tick, FixtureMeasure};
-use crate::ui::machine::{Chrome, Host, InputOwner, InstanceId, MachineId, NavOp, ScreenId, TimerId};
-use crate::ui::present::Present;
+use plx_machine::machine::{Chrome, Host, InputOwner, InstanceId, MachineId, NavOp, ScreenId, TimerId};
+use plx_machine::present::Present;
 use crate::ui::screen::{Mounter, ReturnState, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -85,7 +85,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         ctl_pop: CtlPop::new(), disc_unfurl: [Spring::at(0.0); 3],
         season_metrics: season::Metrics::new(), about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP), selected: None, spin_ms: 0.0,
-        spin_phase: crate::ui::motion::Phase::default(),
+        spin_phase: plx_machine::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
@@ -308,7 +308,7 @@ fn reordered_detail_keys_activate_the_same_related_cast_and_episode_text_targets
         land(&mut d, &mut rig, item("a", true), 32);
         let id = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(id),
-            crate::ui::machine::Delivery::Screen(ScreenEvent::Activate(key))));
+            plx_machine::machine::Delivery::Screen(ScreenEvent::Activate(key))));
         frame(&mut d, &mut rig, 48);
         assert_eq!(rig.opened.len(), 1);
         assert!(rig.opened[0] == expected, "activation follows identity, never the stale local slot");
@@ -353,7 +353,7 @@ fn a_live_return_does_not_rewind_ids_minted_after_its_request_snapshot() {
     let counter = screen(&d).next_elem;
     let id = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(id),
-        crate::ui::machine::Delivery::Screen(ScreenEvent::RestoreMemory(saved))));
+        plx_machine::machine::Delivery::Screen(ScreenEvent::RestoreMemory(saved))));
     frame(&mut d, &mut rig, 48);
     assert_eq!(screen(&d).next_elem, counter);
     assert_eq!(screen(&d).key_of(Located::Related(2)), Some(third_key));

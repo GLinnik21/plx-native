@@ -6,9 +6,9 @@ use super::*;
 
 /// Preserve one IME commit and its place among key events. Desktop text does not imply an
 /// on-screen panel; the owning field decides whether it is editing when delivery reaches it.
-pub(crate) fn text_inputs(text: &str, panel: bool, at: crate::ui::machine::Tick,
-    source: crate::ui::machine::Source) -> Vec<crate::ui::machine::InputEvent<u32>> {
-    use crate::ui::machine::{InputEvent, InputKind, TextEdit};
+pub(crate) fn text_inputs(text: &str, panel: bool, at: plx_machine::machine::Tick,
+    source: plx_machine::machine::Source) -> Vec<plx_machine::machine::InputEvent<u32>> {
+    use plx_machine::machine::{InputEvent, InputKind, TextEdit};
     if text.is_empty() { return Vec::new(); }
     let mut events = Vec::with_capacity(if panel { 2 } else { 1 });
     if panel { events.push(InputEvent { at, source, kind: InputKind::SystemKeyboard(true) }); }
@@ -482,7 +482,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
     } else {
         crate::ui::popover::host::input_scope()
     };
-    crate::ui::idle::invalidate(); // injected input is input like any other
+    plx_machine::idle::invalidate(); // injected input is input like any other
     if let Some((kind, x, y)) = remote_token_pointer(tok) {
         let name = match kind {
             RemotePointer::Click => "click",

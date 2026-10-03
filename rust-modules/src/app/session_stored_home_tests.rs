@@ -143,7 +143,7 @@ fn prove_home_observations(conflicting_owner: bool) {
             let mut bad = original.clone();
             bad.arrival += 100 + variant;
             match variant {
-                0 => bad.addr.to = crate::ui::machine::MachineId::Player,
+                0 => bad.addr.to = plx_machine::machine::MachineId::Player,
                 1 => bad.addr.req.0 += 100,
                 2 => bad.key.epoch += 1_u64 << 32,
                 3 => bad.admission.0 += 100,

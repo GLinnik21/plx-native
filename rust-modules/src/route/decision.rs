@@ -5324,7 +5324,7 @@ pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_direct_play_mode(mode)))
         .is_some_and(|write| matches!(write.classify(),
             crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_direct_play_mode(mode); crate::ui::idle::invalidate(); }
+    if saved { restore_direct_play_mode(mode); plx_machine::idle::invalidate(); }
     saved
 }
 
@@ -5351,7 +5351,7 @@ pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
             crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved {
         restore_next_episode_mode(mode);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
             feature: crate::diag::schema::Feature::NextEpisode(mode),
         });
@@ -5381,7 +5381,7 @@ pub(crate) fn set_skip_interval(interval: SkipInterval) -> bool {
             crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved {
         restore_skip_interval(interval);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
             feature: crate::diag::schema::Feature::SkipInterval(interval),
         });
@@ -5394,7 +5394,7 @@ pub(crate) fn set_default_quality(q: Quality) -> bool {
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
         .is_some_and(|write| matches!(write.classify(),
             crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_quality(q); crate::ui::idle::invalidate(); }
+    if saved { restore_quality(q); plx_machine::idle::invalidate(); }
     saved
 }
 
@@ -5420,7 +5420,7 @@ pub(crate) fn restore_subtitle_size(size: SubtitleSize) {
 /// failure claims nothing about the next boot and republishes nothing.
 pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::mpsc::Sender<bool>>) {
     restore_subtitle_size(size);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     let _ = plx_base::storage_worker::submit_retained(move || {
         let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
             .is_some_and(|write| matches!(write.classify(),
@@ -5431,7 +5431,7 @@ pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::
         if let Some(reply) = reply {
             let _ = reply.send(saved);
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     });
 }
 
@@ -5453,7 +5453,7 @@ pub(crate) fn restore_subtitle_position(position: SubtitlePosition) {
 /// [`select_subtitle_size`] for the caption's vertical placement.
 pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option<std::sync::mpsc::Sender<bool>>) {
     restore_subtitle_position(position);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     let _ = plx_base::storage_worker::submit_retained(move || {
         let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
             .is_some_and(|write| matches!(write.classify(),
@@ -5464,7 +5464,7 @@ pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option
         if let Some(reply) = reply {
             let _ = reply.send(saved);
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     });
 }
 
@@ -5542,7 +5542,7 @@ fn persist_quality_choice(q: Quality) -> Quality {
     });
     // The picker's checkmark moves on this and on nothing else — a settled popover presents no
     // frames, so without this the row would still read as the old rung until the next keypress.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     q
 }
 
@@ -7104,12 +7104,12 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     // advance never outlives its sidecar.
     crate::player::reclamp_subtitle_offset();
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
-    // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
+    // `plx_machine::idle::invalidate`'s call-site list is that module's correctness argument. The caller
     // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns
     // false by construction (empty url) while flipping the player from Resolving to Error. That it
     // still repainted was an accident of the player route bypassing the gate entirely; here it is
     // the rule instead.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     start
 }
 

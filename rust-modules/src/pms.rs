@@ -1540,7 +1540,7 @@ fn commit(state: &mut PmsState, build: HubBuild) -> c_int {
     let n = new_cat.len();
     state.published = Some(Arc::new(HomeCatalog { items: new_cat, hubs: new_hubs, heroes: new_pool }));
     state.catalog_gen = state.catalog_gen.wrapping_add(1);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     n as c_int
 }
 
@@ -1933,7 +1933,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
         // a failure rewrites no shelf but does change the status caption, under a Home screen that
         // may have gone idle with nothing else on it to move.
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     if let Some(build) = build {
         let n = commit(state, build);

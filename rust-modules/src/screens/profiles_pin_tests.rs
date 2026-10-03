@@ -57,7 +57,7 @@ fn a_pin_digit_is_read_from_either_field() {
 
 /// A 1.4s error window reads as several distinct red pulses, not one — the assertion a static
 /// tint fails no matter how red it is. Ported from `ui/profiles.rs`'s own property test,
-/// minus the `ui::idle` half (this screen reports through `Effects` instead — see the next
+/// minus the `plx_machine::idle` half (this screen reports through `Effects` instead — see the next
 /// test for that half).
 #[test]
 fn the_wrong_pin_flash_blinks_at_least_four_times() {
@@ -86,7 +86,7 @@ fn the_wrong_pin_flash_blinks_at_least_four_times() {
     );
 }
 
-/// The flip reports to the dispatcher's `Present`, not to `ui::idle` — the new half of the
+/// The flip reports to the dispatcher's `Present`, not to `plx_machine::idle` — the new half of the
 /// property above. Graded on a fresh `Present` (whose own `dirty` starts `true` — "the first
 /// frame always draws" — so it is drained once before the assertion means anything).
 #[test]

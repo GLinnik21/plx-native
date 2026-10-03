@@ -224,7 +224,7 @@ pub trait Measure {
 ///
 /// Lives here, beside [`Measure::fit_line`] whose default body is built on it, rather than in
 /// `text` (which re-exports it at its old path): the machine runtime may not name the text layer.
-pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) -> f32) -> String {
+pub fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) -> f32) -> String {
     let target = if cont {
         format!("{s}\u{2026}")
     } else {
@@ -261,7 +261,7 @@ pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) 
 /// [`Measure::fit_line`]'s default: [`elide_by`] over this capability's `width_str`, as a drawable
 /// run. A native capability that memoises fitted runs (`text::TtfMeasure`) and a recording one
 /// (`ui::rec::Measurements`) call it for the part they do not override.
-pub(crate) fn fit_line_by<M: Measure + ?Sized>(
+pub fn fit_line_by<M: Measure + ?Sized>(
     measure: &M, s: &str, budget: f32, sz: i32, bold: bool,
 ) -> std::rc::Rc<CStr> {
     std::ffi::CString::new(elide_by(s, budget, false, |text| measure.width_str(text, sz, bold)))
@@ -314,7 +314,7 @@ pub struct Cx<'a, H: Host> {
 }
 
 /// The dispatcher's reborrow of `App.present` for one step (§3.1, §4.4): `note` is its one method.
-pub struct PresentHandle<'p>(pub(super) &'p mut Present);
+pub struct PresentHandle<'p>(pub &'p mut Present);
 
 impl<'p> PresentHandle<'p> {
     /// The application's reborrow of its `Present` for one step (the dispatcher's, or the
@@ -577,7 +577,7 @@ pub struct InputEvent<K> {
 
 impl<K> InputEvent<K> {
     /// Canonical pending-input payload; text is content, never an Arc address.
-    pub(crate) fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
+    pub fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
         c.u32(self.at.ms).u32(self.at.dt_us);
         c.u32(match self.source { Source::Sdl => 0, Source::RemoteFifo => 1, Source::Script => 2, Source::Replay => 3 });
         match &self.kind {
@@ -982,17 +982,17 @@ mod canon_tests {
 /// The screen argument a test hands a [`Host`] when the machine under test has no screen of its
 /// own: the session owner's tests, which sit in a layer above this one and so cannot stand on
 /// `ui::fixture`'s `FixtureArg` (that is the UI library's own rig and lives in `ui`).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BareArg;
+pub struct BareArg;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl LogicalState for BareArg {
     fn write(&self, c: &mut Canon) { c.u32(0); }
     fn probe(&self, out: &mut String) { out.push_str("bare_arg"); }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ScreenArg for BareArg {
     fn chrome(&self) -> Chrome {
         Chrome::None
@@ -1010,10 +1010,10 @@ impl ScreenArg for BareArg {
 
 /// The text measure a test hands a [`Cx`] when the machine under test draws nothing: a half-em
 /// advance per UTF-8 byte, the answers `ui::fixture::FixtureMeasure` gives.
-#[cfg(test)]
-pub(crate) struct BareMeasure;
+#[cfg(any(test, feature = "test-support"))]
+pub struct BareMeasure;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Measure for BareMeasure {
     fn width(&self, s: &CStr, sz: i32, _bold: bool) -> f32 {
         s.to_bytes().len() as f32 * sz as f32 * 0.5
@@ -1029,7 +1029,7 @@ impl Measure for BareMeasure {
 /// The host-test text measure over the shipped faces' real advances. The type is `fontcov`'s (base)
 /// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
 /// the one place the orphan rule lets it sit once the layers are crates.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Measure for plx_base::fontcov::advances::ShippedMeasure {
     fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
         plx_base::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)

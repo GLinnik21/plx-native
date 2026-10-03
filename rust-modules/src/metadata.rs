@@ -122,7 +122,7 @@ pub(crate) struct MetadataState {
 pub(crate) struct MetadataAdapter {
     detail_gen: std::sync::atomic::AtomicU32,
     detail_done: std::sync::atomic::AtomicU32,
-    detail_landing: crate::ui::landing::Landing<DetailKey, Option<Detail>>,
+    detail_landing: plx_machine::landing::Landing<DetailKey, Option<Detail>>,
     detail_want: std::sync::Mutex<Option<DetailKey>>,
     alt_gen: std::sync::atomic::AtomicU32,
     alt_roster_gen: std::sync::atomic::AtomicU32,
@@ -143,7 +143,7 @@ impl Default for MetadataAdapter {
         Self {
             detail_gen: std::sync::atomic::AtomicU32::new(0),
             detail_done: std::sync::atomic::AtomicU32::new(0),
-            detail_landing: crate::ui::landing::Landing::with_inflight(2, 4),
+            detail_landing: plx_machine::landing::Landing::with_inflight(2, 4),
             detail_want: std::sync::Mutex::new(None),
             alt_gen: std::sync::atomic::AtomicU32::new(0),
             alt_roster_gen: std::sync::atomic::AtomicU32::new(0),
@@ -203,7 +203,7 @@ impl MetadataAdapter {
 }
 
 impl MetadataAdapter {
-    fn detail_landing_ref(&self) -> &crate::ui::landing::Landing<DetailKey, Option<Detail>> {
+    fn detail_landing_ref(&self) -> &plx_machine::landing::Landing<DetailKey, Option<Detail>> {
         &self.detail_landing
     }
     fn tracker_mutex(&self) -> &std::sync::Mutex<record::Tracker> {
@@ -3305,10 +3305,10 @@ pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::syn
     pump_detail(state, adapter)
 }
 
-fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
-    crate::ui::machine::Addr {
-        to: crate::ui::machine::MachineId::Store(crate::stores::StoreId::Metadata.ord()),
-        req: crate::ui::machine::RequestId(gen),
+fn detail_addr(gen: u32) -> plx_machine::machine::Addr {
+    plx_machine::machine::Addr {
+        to: plx_machine::machine::MachineId::Store(crate::stores::StoreId::Metadata.ord()),
+        req: plx_machine::machine::RequestId(gen),
     }
 }
 
@@ -3338,7 +3338,7 @@ fn land_detail(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
 /// and admit the request. The spawn is the caller's; a refused one is `refused` back.
 fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> (
-    u32, crate::ui::machine::Addr, Result<(), crate::ui::landing::AdmissionError>,
+    u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
     use std::sync::atomic::Ordering;
     // drop any season fetch in flight for the OLD item — its landing would patch the new one
@@ -3472,12 +3472,12 @@ pub(crate) fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAd
 /// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
 /// dropped.
 pub(crate) fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
-    gate: &crate::ui::landgate::Gate) -> bool {
-    use crate::ui::landing::Lane;
+    gate: &plx_machine::landgate::Gate) -> bool {
+    use plx_machine::landing::Lane;
     use std::sync::atomic::Ordering;
     let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // Under a replay this drains on the frame the recording drained it on (§3.3 step 3,
-    // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
+    // `plx_machine::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
     // supersede/install below, so a held frame leaves the record in the landing untouched.
     let out = if crate::stores::tape::active() {
         crate::stores::take_landings(gate, crate::stores::StoreId::Metadata, || {
@@ -3512,7 +3512,7 @@ pub(crate) fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sy
 #[cfg(test)]
 pub(crate) fn pump_detail(state: &mut MetadataState,
     adapter: &std::sync::Arc<MetadataAdapter>) -> bool {
-    pump_detail_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
+    pump_detail_with_gate(state, adapter, plx_machine::landgate::fixture_gate())
 }
 
 /// Install a landed fetch: a `None` (the fetch failed or panicked) keeps the previously loaded
@@ -3898,20 +3898,20 @@ fn resolve_alt_sources(
 /// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
 /// the data layer instead, which is the shape phase 4 replaced.
 pub(crate) fn pump_alt_sources_with_gate(state: &mut MetadataState, adapter: &MetadataAdapter,
-    gate: &crate::ui::landgate::Gate) -> bool {
+    gate: &plx_machine::landgate::Gate) -> bool {
     pump_alt_sources_with_library(state, adapter, None, gate)
 }
 
 #[cfg(test)]
 pub(crate) fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
-    pump_alt_sources_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
+    pump_alt_sources_with_gate(state, adapter, plx_machine::landgate::fixture_gate())
 }
 
 pub(crate) fn pump_alt_sources_with_directory_and_gate(
     state: &mut MetadataState,
     adapter: &MetadataAdapter,
     directory: crate::stores::browse::DirectoryView<'_>,
-    gate: &crate::ui::landgate::Gate,
+    gate: &plx_machine::landgate::Gate,
 ) -> bool {
     let library = directory.current()
         .and_then(|section| directory.sections().get(section))
@@ -3924,7 +3924,7 @@ fn pump_alt_sources_with_library(
     state: &mut MetadataState,
     adapter: &MetadataAdapter,
     library: Option<&str>,
-    gate: &crate::ui::landgate::Gate,
+    gate: &plx_machine::landgate::Gate,
 ) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
@@ -4284,7 +4284,7 @@ pub(crate) fn season_loading(adapter: &MetadataAdapter) -> bool {
 /// (a newer request is in flight) and results for a different item. Returns true when the episode
 /// list just changed — the detail page resets its episode focus/scroll on it.
 pub(crate) fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapter,
-    gate: &crate::ui::landgate::Gate) -> bool {
+    gate: &plx_machine::landgate::Gate) -> bool {
     use std::sync::atomic::Ordering;
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
     let res = crate::stores::take_landing(gate, crate::stores::StoreId::Metadata, || {
@@ -4335,7 +4335,7 @@ pub(crate) fn pump_season_with_gate(state: &mut MetadataState, adapter: &Metadat
 
 #[cfg(test)]
 pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
-    pump_season_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
+    pump_season_with_gate(state, adapter, plx_machine::landgate::fixture_gate())
 }
 
 #[cfg(test)]

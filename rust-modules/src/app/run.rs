@@ -119,7 +119,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(plx_base::diag::heartbeat::Phase::Top);
-        // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `ui::landgate`),
+        // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `plx_machine::landgate`),
         // published at the TOP because a landing site is reachable from the dev scenarios below
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
         // unless `plxnative-rec` or `plxnative-recplay` is armed.
@@ -189,7 +189,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // and the draw that follows it, so every owned screen in one frame reads one consistent
         // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
         if app.adapters.player.poll_repair(&mut app.player.repair) {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
@@ -206,7 +206,7 @@ pub(crate) unsafe fn run(app: &mut App) {
                 break;
             }
         };
-        let tick = crate::ui::machine::Tick { ms: fr.now, dt_us: (fr.dt * 1_000_000.0) as u32 };
+        let tick = plx_machine::machine::Tick { ms: fr.now, dt_us: (fr.dt * 1_000_000.0) as u32 };
         if first_controlled_frame { plx_base::eventlog::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
             tick.dt_us, app.pages.nav.tabs.stack.transition.commit_point(),
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
@@ -214,12 +214,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         let (_word, tree_report) = if let Some(results) = supplied {
             let mut stores = std::collections::BTreeSet::new();
             for (address, _) in &results {
-                if let crate::ui::machine::MachineId::Store(ord) = address.to {
+                if let plx_machine::machine::MachineId::Store(ord) = address.to {
                     stores.insert(ord.0);
                 }
             }
             for ord in stores {
-                app.bridge.landgate().landed(crate::ui::machine::StoreOrd(ord));
+                app.bridge.landgate().landed(plx_machine::machine::StoreOrd(ord));
             }
             super::bridge::frame_with_results(&mut app.pages, &mut app.bridge, tick,
                 std::mem::take(&mut app.inputs), || {
@@ -230,7 +230,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         } else { super::bridge::frame_with_tap(
             &mut app.pages,
             &mut app.bridge,
-            crate::ui::machine::Tick {
+            plx_machine::machine::Tick {
                 ms: fr.now,
                 dt_us: (fr.dt * 1_000_000.0) as u32,
             },
@@ -284,7 +284,7 @@ pub(crate) unsafe fn run(app: &mut App) {
 /// **The frame's clock and the click's spring** (spec §3.3 step 3's head).
 ///
 /// `dt` is clamped at 50 ms: a frame that took longer than that is a stall, and integrating one
-/// as if it were real time teleports every spring. It is stamped into `ui::idle::frame_begin`
+/// as if it were real time teleports every spring. It is stamped into `plx_machine::idle::frame_begin`
 /// BEFORE the update phase re-steps anything, so the motion flag the gate reads at the bottom
 /// describes THIS frame and a spring's velocity can be judged as travel-this-frame rather than as
 /// a bare units-per-second.
@@ -305,11 +305,11 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     };
     app.prev = fr.now;
     app.rec.tick(fr.now, fr.dt);
-    // Whole-frame present gate (`ui::idle`): forget last frame's motion BEFORE the update
+    // Whole-frame present gate (`plx_machine::idle`): forget last frame's motion BEFORE the update
     // phase below re-steps every spring, so the flag it leaves describes THIS frame, and
     // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
     // a bare units-per-second. The decision itself is taken just above `glViewport`.
-    crate::ui::idle::frame_begin(fr.dt);
+    plx_machine::idle::frame_begin(fr.dt);
     // Is a page capture still in flight on the GPU, and is recorded text still warming? Latched
     // once, before the springs step, so the held appear spring and the present gate below read
     // the same answer — and, being the machine's speed rather than the inputs, recorded or
@@ -324,7 +324,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // commits (the spring-back bounce has played), run it for whichever CARD view armed the
     // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
     // on Home it opens the item menu below, and anywhere else it just springs back.
-    let (_, press_moving) = crate::ui::idle::scoped_motion(|| {
+    let (_, press_moving) = plx_machine::idle::scoped_motion(|| {
         app.input.press.tick(fr.now, fr.dt);
     });
     // The motion of whatever page is UNDER a popover — Home, the Library or Search, since
@@ -366,11 +366,11 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
             .map(|p| p.clock_fingerprint(&app.player.session, fr.now));
         if let Some(fp) = fp {
             if app.player.note_clock(fp) {
-                crate::ui::idle::invalidate();
+                plx_machine::idle::invalidate();
             }
         }
     }
-    // ---- whole-frame present gate (`ui::idle`) --------------------------------------
+    // ---- whole-frame present gate (`plx_machine::idle`) --------------------------------------
     // A screen with nothing moving on it does not need to be re-sent to the panel. This
     // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
     // tracking, which `ui/mod.rs`'s renderer doc rejects: when this says yes, the frame
@@ -419,7 +419,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         || app.scenarios.shots.pending());
     fr.present = !crate::gfx::snapshot_pending()
         && app.window_activity.allow_present(
-            crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
+            plx_machine::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
         );
     app.rec.present(fr.present);
     if fr.present {
@@ -444,7 +444,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
         // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
         app.pages.nav.modals.preload_underlay();
-        let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
+        let mut ph = plx_machine::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,
             &mut ph,
@@ -571,9 +571,9 @@ unsafe fn present_and_swap(
         crate::gfx::snapshot_frame_end();
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
         crate::gfx::ground_probes_frame_end();
-        crate::ui::idle::note_present(fr.now);
+        plx_machine::idle::note_present(fr.now);
         // The poster-gate scenes' frame counter, at the same post-swap seam as the present count
-        // above. It was called from inside `note_present`; `ui::idle` is the machine layer and
+        // above. It was called from inside `note_present`; `plx_machine::idle` is the machine layer and
         // no longer names `ui`'s metrics.
         #[cfg(feature = "devtriggers")]
         crate::ui::card_motion_metrics::presented(fr.now);
@@ -590,7 +590,7 @@ unsafe fn present_and_swap(
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
-        SDL_Delay(crate::ui::idle::IDLE_POLL_MS);
+        SDL_Delay(plx_machine::idle::IDLE_POLL_MS);
     }
 }
 
@@ -640,7 +640,7 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
     if super::bridge::search_owns_input(&app.pages) {
         if let Some(text) = token.strip_prefix("txt:") {
             ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
-                crate::ui::machine::Source::RemoteFifo);
+                plx_machine::machine::Source::RemoteFifo);
             return true;
         }
     }
@@ -668,13 +668,13 @@ pub(crate) fn pin_headless_hud(app: &mut App, now: u32, tab: Option<i32>) {
     }
 }
 
-fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machine::Source) {
+fn ingest_text(app: &mut App, text: &str, panel: bool, source: plx_machine::machine::Source) {
     if text.is_empty() { return; }
-    let at = crate::ui::machine::Tick { ms: clock::now(), dt_us: 0 };
+    let at = plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 };
     app.rec.input(super::recorder::enc_text(text, panel, at, source));
     app.inputs.extend(text_inputs(text, panel, at, source));
     app.last_input = at.ms;
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
@@ -712,11 +712,11 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else {
         None
     };
-    // ANY event is a reason to repaint (`ui::idle`): a key changes focus or a label,
+    // ANY event is a reason to repaint (`plx_machine::idle`): a key changes focus or a label,
     // a lifecycle event changes the whole screen. Marked here — once, for every event
     // kind — rather than in each of the ~30 arms below, where the next one added would
     // silently draw nothing.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     if et == SDL_KEYDOWN
         || et == SDL_KEYUP
         || et == SDL_TEXTINPUT
@@ -779,9 +779,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // there is no legacy fallback left to dispatch to.
         // Keep dismissal after earlier text/keys in this input batch. The dispatcher
         // releases both system ownership and the native start latch at delivery.
-        app.inputs.push(crate::ui::machine::InputEvent {
-            at: crate::ui::machine::Tick { ms: fr.now, dt_us: 0 }, source: crate::ui::machine::Source::Sdl,
-            kind: crate::ui::machine::InputKind::SystemKeyboard(false),
+        app.inputs.push(plx_machine::machine::InputEvent {
+            at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 }, source: plx_machine::machine::Source::Sdl,
+            kind: plx_machine::machine::InputKind::SystemKeyboard(false),
         });
         // **The TREE hears it too** (spec §9, §12.1) — phase 9. `ScreenEvent::Suspend` down every
         // mounted body at this frame's NAV COMMIT, and `Navigation.suspended` set. The vocabulary
@@ -862,7 +862,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             crate::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
                 &mut app.player.session,
@@ -897,7 +897,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         let key = classify(sym, wcode);
         if app.boot_initial.is_some() {
             let event = super::bridge::key_input(sym, wcode, state,
-                crate::ui::machine::Tick { ms: clock::now(), dt_us: 0 }, crate::ui::machine::Source::Sdl);
+                plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 }, plx_machine::machine::Source::Sdl);
             controlled_key_input(app, event);
             return;
         }
@@ -919,13 +919,13 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
         // because an event's `at` is a stamp, not a timestep: every machine the
         // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
-        let tree_tick = crate::ui::machine::Tick {
+        let tree_tick = plx_machine::machine::Tick {
             ms: clock::now(),
             dt_us: 0,
         };
         if (state & 0xff) != 1 {
             if tree_owns_key {
-                app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+                app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
             }
             // …and the loop's own key-up bookkeeping runs either way: it retires the sym
             // from the physically-down slot and releases a deferred press, both of which are
@@ -956,7 +956,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 // looks like a lost key-up and springs back without activating.
                 let ok = is_ok(sym);
                 if ok || app.modal_repeat.ready(tree_tick.ms) {
-                    app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+                    app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
                 }
                 return;
             }
@@ -1028,7 +1028,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // it. Nothing is stranded by going to the television's Home — the question is
         // neither answered nor dismissed, and selecting the tile again comes back to it.
         if tree_owns_key {
-            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
             return;
         }
         // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
@@ -1193,7 +1193,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             && !app.pages.surface_up()
             && super::bridge::owns_input(&app.pages)
         {
-            let at = crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 };
+            let at = plx_machine::machine::Tick { ms: app.last_input, dt_us: 0 };
             app.inputs.push(if app.ptr.button_down {
                 super::bridge::drag_input(mx, my, at)
             } else {
@@ -1221,7 +1221,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.inputs.push(super::bridge::pointer_input(
                 mx,
                 my,
-                crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                plx_machine::machine::Tick { ms: app.last_input, dt_us: 0 },
             ));
             return;
         }
@@ -1266,7 +1266,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.inputs.push(super::bridge::click_input(
                 cx,
                 cy,
-                crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                plx_machine::machine::Tick { ms: app.last_input, dt_us: 0 },
             ));
             return;
         }
@@ -1324,7 +1324,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // else). Unconditional on ownership for `press.release`'s reason above — a
         // release with nothing armed is a no-op, and asking `owns_input` would drop the
         // release of a press armed on the frame a surface began to close.
-        app.inputs.push(super::bridge::release_input(crate::ui::machine::Tick {
+        app.inputs.push(super::bridge::release_input(plx_machine::machine::Tick {
             ms: app.last_input,
             dt_us: 0,
         }));
@@ -1371,10 +1371,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 return;
             }
             if super::bridge::search_owns_input(&app.pages) {
-                app.inputs.push(crate::ui::machine::InputEvent {
-                    at: crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
-                    source: crate::ui::machine::Source::Sdl,
-                    kind: crate::ui::machine::InputKind::Wheel { dy: dy as f32 },
+                app.inputs.push(plx_machine::machine::InputEvent {
+                    at: plx_machine::machine::Tick { ms: app.last_input, dt_us: 0 },
+                    source: plx_machine::machine::Source::Sdl,
+                    kind: plx_machine::machine::InputKind::Wheel { dy: dy as f32 },
                 });
             } else if super::bridge::owns_input(&app.pages) {
                 // A tick becomes the DIRECTION KEY it stands for (`bridge::wheel_input`),
@@ -1385,7 +1385,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 // repeat, so sharing it would let a held key mute a scroll and vice versa.
                 app.inputs.extend(super::bridge::wheel_input(
                     dy,
-                    crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                    plx_machine::machine::Tick { ms: app.last_input, dt_us: 0 },
                 ));
             }
             // `Route::Search` is deliberately absent here: `search_owns_input()` above
@@ -1407,7 +1407,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // own edit state, because the route changes at the fade floor.
         if super::bridge::search_owns_input(&app.pages) {
             let text = crate::textinput::decode(&app.ev);
-            ingest_text(app, &text, crate::textinput::available(), crate::ui::machine::Source::Sdl);
+            ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);
         } else {
             crate::textinput::on_event(&app.ev);
         }
@@ -1446,11 +1446,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // nothing keys the plane's consequences on the route any more.
         if let Some(bound) = crate::player::observe_video_plane(&mut app.player, &mut app.adapters.player) {
             // One edge, three gates. `set_video_plane_bound` has already told the LIVE one
-            // (`ui::idle`); these are the two §4.4 machines — the one `App` owns and the
+            // (`plx_machine::idle`); these are the two §4.4 machines — the one `App` owns and the
             // dispatcher's, which is what answers `Rig::opaque_route` at step 9 — plus the rig's
             // own copy for the draw-entry call. `PresentEvent::VideoPlane` has no other source.
-            app.present.note(crate::ui::present::PresentEvent::VideoPlane(bound));
-            app.pages.present.note(crate::ui::present::PresentEvent::VideoPlane(bound));
+            app.present.note(plx_machine::present::PresentEvent::VideoPlane(bound));
+            app.pages.present.note(plx_machine::present::PresentEvent::VideoPlane(bound));
             app.bridge.publish_video_plane(bound);
         }
         if playback_may_run(app) {
@@ -2005,7 +2005,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // only when home is actually drawn — stepping its 16×24 cell springs during
             // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
             // route-agnostically right after `dt` above)
-            let (_, moving) = crate::ui::idle::scoped_motion(|| {
+            let (_, moving) = plx_machine::idle::scoped_motion(|| {
                 app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
@@ -2016,7 +2016,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             crate::dev::scenarios::lib_switch_tick(app, fr.now);
             // scoped like Home's above, because this page can be the one UNDER the account
             // popover now and its glass backdrop is refreshed off the underlay's motion
-            let (_, moving) = crate::ui::idle::scoped_motion(|| {
+            let (_, moving) = plx_machine::idle::scoped_motion(|| {
                 app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
@@ -2031,7 +2031,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // previously-drawn page left them at, and `ChromeSnapshot::members`'s published
             // strip rects (read by pointer hit-testing and focus) go stale. This mirrors the
             // Home/Library arms above rather than adding a fourth call site.
-            let (_, moving) = crate::ui::idle::scoped_motion(|| {
+            let (_, moving) = plx_machine::idle::scoped_motion(|| {
                 app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
@@ -2113,7 +2113,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     return;
                 }
                 if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
-                    crate::ui::idle::invalidate();
+                    plx_machine::idle::invalidate();
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
                     // it, so nothing would stop it at its end or hand the engine to a later Play.
@@ -2187,7 +2187,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // the same reason as pump_play — play_item_now requests a detail from Home and flips
         // straight to the player, so a Detail-gated pump would never land it.
         if app.bridge.metadata_pump_detail() {
-            crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
+            plx_machine::idle::invalidate(); // a detail landing rewrites the page under us
         }
         // Async season load: install the worker's episode list into CURRENT. Route-unconditional
         // for the same reason as pump_detail above; see `stores/metadata.rs`'s module doc for why
@@ -2197,7 +2197,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Pumping season first could apply a stale season landing to CURRENT in the one frame
         // before pump_detail() replaces it.
         if app.bridge.metadata_pump_season() {
-            crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
+            plx_machine::idle::invalidate(); // a season landing rewrites the episode row under us
         }
         // D7: the continuation half of `activate_card`'s show/season Play — see
         // `App::menu_play_await`/`input::menu_play_tick`'s own doc. Right beside the pump above
@@ -2496,7 +2496,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // been handled and the screen already drawn, so what it samples is the state a press
         // MOVED rather than the state it was about to act on; and this point is outside the
         // idle gate's `present` block, so a settled screen — which stops presenting but keeps
-        // looping — is still observed. The probe reports nothing to `ui::idle` in return: a
+        // looping — is still observed. The probe reports nothing to `plx_machine::idle` in return: a
         // frame gate that a diagnostic could hold open would stop being measurable.
         //
         // `rn` is passed rather than re-derived so the fingerprint's `route=` is the same
@@ -2743,14 +2743,14 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             } else {
                 String::new()
             };
-            // `fps=<n>` — frames actually SWAPPED this second, which is what `ui::idle` moves,
+            // `fps=<n>` — frames actually SWAPPED this second, which is what `plx_machine::idle` moves,
             // and the only field here that is a frame rate. `loop=` counts LOOP iterations: it
             // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
             // on a screen that is merely idle. The pair is the diagnostic — `loop=62 fps=0` is
             // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
             // own is not a fault at all. The dev on-screen counter draws this same drained
             // value, cached below; it never reads a second presentation counter.
-            let pres = crate::ui::idle::take_presents();
+            let pres = plx_machine::idle::take_presents();
             #[cfg(feature = "devtools")]
             {
                 app.fps_shown = pres.min(i32::MAX as u32) as i32;
@@ -2838,14 +2838,14 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
                 // Same navigation owner as ordinary foreground, with platform and
                 // player restoration kept behind actual SDL lifecycle ingress.
                 super::bridge::foreground(&mut app.pages);
-                crate::ui::idle::invalidate();
+                plx_machine::idle::invalidate();
                 return;
             }
             Err(reason) => { app.rec.refuse(reason); return; }
             Ok(None) => {}
         }
         match super::recorder::decode_input(v) {
-            Ok(input) if input.source == crate::ui::machine::Source::Script => {
+            Ok(input) if input.source == plx_machine::machine::Source::Script => {
                 // The typed initial scenario regenerates this internal step at its recorded
                 // clock. Dispatch still observes and grades it once; it is not external ingress.
             }
@@ -2864,7 +2864,7 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
                 log("replay: text has no owned Search recipient");
             } else if let Some(events) = super::recorder::dec_text(v) {
                 app.inputs.extend(events);
-                crate::ui::idle::invalidate();
+                plx_machine::idle::invalidate();
             } else { log("replay: malformed text input"); }
         }
         "key" => {
@@ -2892,19 +2892,19 @@ fn controlled_replay(app: &App) -> bool {
 
 /// The same bounded physical-key bookkeeping for controlled recording and supplied replay.
 /// The original source and event timestamp survive; replay does not synthesize a new SDL time.
-unsafe fn controlled_key_input(app: &mut App, event: crate::ui::machine::InputEvent<u32>) {
-    use crate::ui::machine::{InputKind, Key, Edge};
+unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::InputEvent<u32>) {
+    use plx_machine::machine::{InputKind, Key, Edge};
     if matches!(event.kind, InputKind::Pointer{..}|InputKind::Click{..}|InputKind::Drag{..}) {
         app.last_input=event.at.ms;
         app.ptr.last_motion=event.at.ms;
         app.ptr.cur_hidden=false;
         if matches!(event.kind,InputKind::Click{..}) { app.ptr.button_down=true; }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         app.inputs.push(event);
         return;
     }
     if matches!(event.kind,InputKind::Key { key:Key::Ok,sym:0,wcode:0,edge:Edge::Up,at_edge:false })
-        && event.source==crate::ui::machine::Source::Sdl {
+        && event.source==plx_machine::machine::Source::Sdl {
         app.last_input=event.at.ms;
         app.input.press.release(event.at.ms);
         app.ptr.button_down=false;
@@ -3080,7 +3080,7 @@ mod lifecycle_regression_tests {
             rec: super::super::recorder::Recplay::Off,
             boot_initial: Default::default(),
             telemetry_guard: Default::default(),
-            present: crate::ui::present::Present::new(),
+            present: plx_machine::present::Present::new(),
             glass: Default::default(),
             pages: crate::ui::dispatch::Dispatcher::new(),
             inputs: Default::default(),
@@ -3094,7 +3094,7 @@ mod lifecycle_regression_tests {
         super::super::bridge::frame(
             &mut app.pages,
             &mut app.bridge,
-            crate::ui::machine::Tick {
+            plx_machine::machine::Tick {
                 ms: now,
                 dt_us: 16_000,
             },
@@ -3111,7 +3111,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn controlled_content_boot_waits_for_the_queued_home_root() {
-        use crate::ui::machine::{Fx, MachineId, NavOp};
+        use plx_machine::machine::{Fx, MachineId, NavOp};
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         let encoded = super::super::synthetic_home_initial(1, 32517, Some("flow12".into())).unwrap();
@@ -3150,7 +3150,7 @@ mod lifecycle_regression_tests {
             assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
         }
         app.rec.end_frame(&|| 7);
-        std::mem::replace(&mut app.rec, Recplay::Off).finish(crate::ui::landgate::fixture_gate());
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(plx_machine::landgate::fixture_gate());
         let recording = Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
         assert_eq!(recording.frames[0].inputs[0]["tok"], "hang-raw:1");
@@ -3173,7 +3173,8 @@ mod lifecycle_regression_tests {
     #[test]
     fn controlled_foreground_replays_once_without_platform_authority() {
         use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
-        use crate::ui::{dispatch::Tap, machine::Tick, rec::{Header, Recording}};
+        use crate::ui::{dispatch::Tap, rec::{Header, Recording}};
+        use plx_machine::{machine::Tick};
         let _serial = plx_base::testlock::serial();
         for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
             let mut app = app();
@@ -3301,7 +3302,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn remote_fifo_exposes_independent_pointer_edges() {
-        use crate::ui::machine::{Edge, InputKind, Key};
+        use plx_machine::machine::{Edge, InputKind, Key};
         let _serial = plx_base::testlock::serial();
         // SDL's event subsystem only: no window, renderer, native playback or device.
         assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
@@ -3330,7 +3331,8 @@ mod lifecycle_regression_tests {
         // Deliver the same collected edges through the dispatcher and the real player, one
         // frame per edge. Screen tests separately grade these coordinates against record_stops;
         // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
-        use crate::ui::{machine::{FocusKey, Tick}, screen::{Activate, Hover, Stop}, Rect};
+        use crate::ui::{screen::{Activate, Hover, Stop}, Rect};
+        use plx_machine::{machine::{FocusKey, Tick}};
         use crate::screens::registry::PlayerReq;
         let key = FocusKey { elem: crate::appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
@@ -3408,7 +3410,8 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn controlled_sdl_records_one_owned_event_after_hitmap_for_each_pointer_edge() {
-        use crate::ui::{machine::Tick,rec::{MemSink,Header,Recording},screen::{Stop,Hover,Activate},Rect};
+        use crate::ui::{rec::{MemSink,Header,Recording}, screen::{Stop,Hover,Activate}, Rect};
+        use plx_machine::{machine::Tick};
         let _serial=plx_base::testlock::serial();
         let mut app=app();
         super::super::bridge::show_page(&mut app.pages,AppArg::Settings(crate::screens::family::SettingsPage::Root));
@@ -3448,7 +3451,7 @@ mod lifecycle_regression_tests {
         assert_eq!(inputs[1]["body"]["kind"],"pointer");
         for v in &inputs[..2] { assert_eq!(v["body"]["hit"],key.elem); }
         assert_eq!(inputs[2]["body"]["edge"],"Up");
-        crate::ui::landgate::disarm();
+        plx_machine::landgate::disarm();
     }
 
     struct Rig {
@@ -3969,7 +3972,7 @@ mod lifecycle_regression_tests {
     /// resolved plan lands).
     use crate::ui::screen::ScreenArg;
 
-    fn step(app: &mut App, t: &mut u32, inputs: Vec<crate::ui::machine::InputEvent<u32>>) {
+    fn step(app: &mut App, t: &mut u32, inputs: Vec<plx_machine::machine::InputEvent<u32>>) {
         *t += 16;
         app.inputs.extend(inputs);
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
@@ -3978,7 +3981,7 @@ mod lifecycle_regression_tests {
         let was_player = super::super::bridge::player(&app.pages).is_some();
         unsafe { playback_tick(app, &mut fr); }
         super::super::bridge::frame(&mut app.pages, &mut app.bridge,
-            crate::ui::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
+            plx_machine::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
@@ -4009,7 +4012,7 @@ mod lifecycle_regression_tests {
     /// origin seed; and when the plan then lands, the committed route still names the page under
     /// the dip, so `update`'s landing arm asks for the player a second time (`pump_play: engine
     /// started off-route`). Returns the entry the session was launched from.
-    fn play_with_a_landing_inside_the_dip(rig: &mut Rig, t: &mut u32) -> crate::ui::machine::EntryId {
+    fn play_with_a_landing_inside_the_dip(rig: &mut Rig, t: &mut u32) -> plx_machine::machine::EntryId {
         let origin = rig.app.pages.nav.top_page().expect("a page is on top").id;
         rig.request();
         rig.accept_start();
@@ -4034,9 +4037,9 @@ mod lifecycle_regression_tests {
 
     /// BACK as the remote spells it (ESC — the dev remote's own spelling of BACK in the field
     /// report): the player classifies `sym`/`wcode`, not the fixture's `Key`.
-    fn back_key(ms: u32) -> crate::ui::machine::InputEvent<u32> {
-        let mut event = crate::ui::fixture::key(crate::ui::machine::Key::Back, crate::ui::fixture::tick(ms));
-        if let crate::ui::machine::InputKind::Key { sym, .. } = &mut event.kind {
+    fn back_key(ms: u32) -> plx_machine::machine::InputEvent<u32> {
+        let mut event = crate::ui::fixture::key(plx_machine::machine::Key::Back, crate::ui::fixture::tick(ms));
+        if let plx_machine::machine::InputKind::Key { sym, .. } = &mut event.kind {
             *sym = crate::ui::consts::SDLK_ESCAPE;
         }
         event
@@ -4247,12 +4250,12 @@ mod lifecycle_regression_tests {
 
 #[cfg(test)]
 mod video_plane_gate_tests {
-    //! **The present gate's plane term, end to end.** It began in `ui::idle`'s tests and lives here
+    //! **The present gate's plane term, end to end.** It began in `plx_machine::idle`'s tests and lives here
     //! because it needs three things no lower layer owns together: a `Player` (the bit's one
-    //! writer), the gate (`ui::idle`, the machine layer) and this file's own source (the loop is
+    //! writer), the gate (`plx_machine::idle`, the machine layer) and this file's own source (the loop is
     //! the one consumer a unit test cannot drive). The gate-only half stayed beside the gate:
-    //! `ui::idle`'s `the_present_gate_answers_true_only_while_the_plane_bit_is_set`.
-    use crate::ui::idle::{
+    //! `plx_machine::idle`'s `the_present_gate_answers_true_only_while_the_plane_bit_is_set`.
+    use plx_machine::idle::{
         invalidate, reset_for_test, should_present, take_local_damage, video_plane_bound,
     };
 

@@ -5197,7 +5197,7 @@ def do_build(tv):
 #
 #   loop=  LOOP ITERATIONS per second. Liveness only. A settled screen still reports ~62 while
 #          swapping nothing, so this CANNOT see a frozen animation. Graded by `loop_floor`.
-#   fps=   FRAMES actually swapped per second — the real frame rate, moved by `ui::idle`'s present
+#   fps=   FRAMES actually swapped per second — the real frame rate, moved by `plx_machine::idle`'s present
 #          gate. Graded by `fps_floor` (it must keep animating) and `fps_ceiling` (it must stop).
 #
 # RENAMED 2026-08-01 and the old name was REUSED: what these fields are called today is the reverse
@@ -5258,7 +5258,7 @@ def parse_loop(lines, route, overlay):
     return out
 
 
-# `fps=<n>` — frames actually SWAPPED in that second, which is what `ui::idle`'s present gate moves.
+# `fps=<n>` — frames actually SWAPPED in that second, which is what `plx_machine::idle`'s present gate moves.
 # Deliberately a SECOND regex rather than a group on LOOP_RE: the field is newer than the heartbeat,
 # and a scene graded on a log from a build without it must fail as "no samples" rather than silently
 # match zero and read as a spectacular pass.

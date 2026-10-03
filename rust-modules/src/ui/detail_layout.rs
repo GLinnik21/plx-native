@@ -70,7 +70,7 @@ pub(crate) struct HeroChain {
 pub(crate) fn hero_chain(
     syn_h: f32,
     has_ratings: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> HeroChain {
     let meta_y = TITLE_BOTTOM + theme::space::SM;
     // The identity line's own bounding box is its BADGE, not its caption: `draw_identity_line`
@@ -125,7 +125,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
 
     /// The facts row and the people column are LEVEL, so the thing that keeps them apart is a
     /// width bound and nothing else.

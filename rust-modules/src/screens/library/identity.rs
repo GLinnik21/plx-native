@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::screens::registry::{
     LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
 };
-use crate::ui::machine::GroupId;
+use plx_machine::machine::GroupId;
 
 const LIBRARY_BASE: u32 = 0x2100_0000;
 const SHELF_BASE: u32 = 0x2200_0000;

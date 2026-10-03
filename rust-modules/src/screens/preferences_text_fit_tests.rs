@@ -11,7 +11,7 @@ use crate::i18n::{language_on_this_thread_for_test, SHIPPED};
 use crate::plex::account::AudioPreferences;
 use crate::route::available_quality_ladder;
 use crate::ui::table::{Section, TableView};
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 
 fn frame_w() -> f32 {
     RouteLayout::screen().sectioned_table().w

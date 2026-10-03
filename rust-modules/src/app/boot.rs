@@ -179,10 +179,10 @@ pub(crate) unsafe fn hide_cursor() {
 /// elapsed, recompute `loop_shown`, reset the window, and return `true` so the caller logs the
 /// heartbeat with its own route/overlay tag. Shared by the player and home/detail draw paths.
 ///
-/// This counts **loop iterations, not frames**. Since the present gate (`ui::idle`) landed the two
+/// This counts **loop iterations, not frames**. Since the present gate (`plx_machine::idle`) landed the two
 /// are different numbers, and conflating them is the single most reliable way to misread this app:
 /// a settled screen runs the loop at the `IDLE_POLL_MS` rate while swapping nothing. The frame
-/// count lives beside it in the heartbeat as `fps=`, from `ui::idle::take_presents`.
+/// count lives beside it in the heartbeat as `fps=`, from `plx_machine::idle::take_presents`.
 pub(crate) fn loop_tick(iters_ct: &mut i32, loop_t: &mut u32, loop_shown: &mut i32, now: u32) -> bool {
     *iters_ct += 1;
     if now.wrapping_sub(*loop_t) < 1000 {
@@ -414,7 +414,7 @@ pub(crate) unsafe fn boot(
 }
 
 pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
-    gate: &crate::ui::landgate::Gate,
+    gate: &plx_machine::landgate::Gate,
     deferred: crate::plex::session::DeferredLoad) -> Result<(), &'static str> {
     if let Err(reason) = deferred.apply() {
         rec.abort_startup(gate)?;
@@ -787,7 +787,7 @@ pub(crate) unsafe fn construct(
         rec: &mut super::recorder::Recplay| {
         if forced_login {
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
-        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+        pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         #[cfg(feature = "devtriggers")]
         log("boot: /tmp/plxnative-login — starting QR login");
@@ -806,7 +806,7 @@ pub(crate) unsafe fn construct(
             "boot: dev token — link={tier:?} (classified from the configured address)"
         ));
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ActivateDevBootstrap);
-        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+        pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         if let Some(ready) = bridge.take_session_ready() {
             if controlled {
@@ -815,7 +815,7 @@ pub(crate) unsafe fn construct(
                     return BootTo::Login;
                 }
                 use crate::stores::{StoreCmd, StoreWork};
-                use crate::ui::machine::{Fx, MachineId};
+                use plx_machine::machine::{Fx, MachineId};
                 use crate::screens::registry::AppFx;
                 for cmd in [
                     StoreCmd::Browse(crate::stores::browse::BrowseCmd::Reset),
@@ -823,7 +823,7 @@ pub(crate) unsafe fn construct(
                     StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs),
                 ] { pages.emit(MachineId::Nav, Fx::App(AppFx::Store(cmd.store(), cmd))); }
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
-                pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
+                pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
             } else {
                 let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
                     &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
@@ -839,7 +839,7 @@ pub(crate) unsafe fn construct(
             // protected/unknown-profile refusal policy rather than silently entering Home.
             super::bridge::execute_session_command(pages,
                 crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::Boot));
-            pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             log("boot: stored session — who's watching");
             BootTo::Profiles
@@ -849,7 +849,7 @@ pub(crate) unsafe fn construct(
             // credentials. This is the normal bounded dispatcher drain over the same owner
             // and queue later moved into App, not a recursive bootstrap reducer.
             super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ResumeStored);
-            pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             if let Some(ready) = bridge.take_session_ready() {
                 let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
@@ -858,7 +858,7 @@ pub(crate) unsafe fn construct(
                 // Refresh only AFTER installing the captured primary, so a fast accepted
                 // endpoint observation cannot be overwritten by that older boot snapshot.
                 super::bridge::execute_session_command(pages, crate::auth::SessionCmd::RefreshRoster);
-                pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
                     rec, false);
                 if session.auto_sign_in()
                     && session.home_users.len() > 1
@@ -879,7 +879,7 @@ pub(crate) unsafe fn construct(
         }
     } else {
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
-        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+        pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
         log("boot: no session — starting QR sign-in");
         BootTo::Login
@@ -942,7 +942,7 @@ pub(crate) unsafe fn construct(
     // once, no glFinish. The one mode that can see a frame the frame-drop detector reports as
     // all `draw=` and no `swap=`; the two GPU modes above are blind to it by construction.
     if !controlled { crate::dev::scenarios::arm_cpuprof(); }
-    // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
+    // dev: /tmp/plxnative-noidle turns the whole-frame present gate (plx_machine::idle) OFF, so a still
     // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
     // precisely so an A/B costs one file and does not also change which screen you boot to —
     // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
@@ -952,7 +952,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
+        plx_machine::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -1332,7 +1332,7 @@ pub(crate) unsafe fn construct(
         rec: super::recorder::Recplay::Off,
         boot_initial: initial,
         telemetry_guard: None,
-        present: crate::ui::present::Present::new(),
+        present: plx_machine::present::Present::new(),
         glass,
         // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
         // phase 12 while `ui::nav` held a second fader and the loop applied its own route change
@@ -1482,8 +1482,8 @@ pub(crate) unsafe fn construct(
     // an empty stack mints the first entry, which is what makes this a hard CUT — there is no
     // outgoing screen to dip.
     if controlled {
-        app.pages.emit(crate::ui::machine::MachineId::Nav,
-            crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Root(route)));
+        app.pages.emit(plx_machine::machine::MachineId::Nav,
+            plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Root(route)));
     } else {
         super::bridge::nav_root(&mut app.pages, route);
     }

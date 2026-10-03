@@ -49,7 +49,6 @@ pub(crate) mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod icons;
-pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod form; // declared, ordered rows with stable keys: Form / FormTable (docs/settings-form.md)
 #[cfg(test)]
 mod form_tests;
@@ -60,16 +59,12 @@ pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner o
 pub(crate) mod runtime_warning;
 pub mod label;
 pub(crate) mod linked_heading; // linked shelf-entry control: shared entry/heading geometry, focus and hits
-pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
-pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
-pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
 pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy
 // Library is owned by screens::library; its legacy state/focus model is retired.
 // `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
 // ladders. Its deletion readout now borrows the Session owner's immutable publication;
 // no module-level deletion counter remains for a newly mounted screen to poll.
-pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub(crate) mod page_stack; // the drill-in page stack Tracks and More share
 pub(crate) mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
@@ -77,7 +72,6 @@ pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instr
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
-pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub(crate) use crate::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
 pub(crate) mod route_screen;
@@ -196,7 +190,7 @@ impl Spring {
     pub fn step_zeta(&mut self, target: f32, k: f32, zeta: f32, dt: f32) {
         crate::gfx::spring_zeta(&mut self.pos, &mut self.vel, target, k, zeta, dt);
     }
-    /// Teleport, with no motion in between. Reports to [`ui::idle`](crate::ui::idle) — a jump
+    /// Teleport, with no motion in between. Reports to [`plx_machine::idle`](plx_machine::idle) — a jump
     /// changes the drawn value without ever reaching a spring integrator, so nothing else would
     /// hear it.
     ///
@@ -205,7 +199,7 @@ impl Spring {
     /// would pin the loop at 60 fps on precisely the screen the present gate exists for.
     #[inline]
     pub fn jump(&mut self, v: f32) {
-        crate::ui::idle::note_jump(self.pos != v || self.vel != 0.0);
+        plx_machine::idle::note_jump(self.pos != v || self.vel != 0.0);
         self.pos = v;
         self.vel = 0.0;
     }
@@ -259,7 +253,7 @@ fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     if s.is_null() {
         return 0.0;
     }
-    use crate::ui::machine::Measure as _;
+    use plx_machine::machine::Measure as _;
     widgets::LegacyMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
 }
 
@@ -1637,7 +1631,7 @@ pub trait Column {
     fn height(&self, i: usize) -> f32;
     fn gap_before(&self, i: usize) -> f32;
     fn focus_child(&self) -> Option<usize>;
-    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure);
+    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure);
 }
 
 impl ScrollColumn {
@@ -1665,7 +1659,7 @@ impl ScrollColumn {
     /// Draw every present child, scrolled and band-culled — off-screen children are SKIPPED by
     /// culling (this flow culls rather than using the `Painter::clip` scissor). The focused child is never culled (the scroll keeps it at
     /// `margin`). The child `Painter` is pre-translated to the child origin, so children draw 0-based.
-    pub fn draw(&self, c: &impl Column, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
+    pub fn draw(&self, c: &impl Column, env: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure) {
         let ps = p.translate(0.0, -self.scroll.pos);
         let f = c.focus_child();
         let mut y = self.top;
@@ -1982,13 +1976,13 @@ mod tests {
 #[cfg(test)]
 mod spring_tests {
     //! `Spring`'s own reports to the present gate. They need `testlock`, which the geometry tests
-    //! above do not (`ui::idle`'s gate state is process-wide).
+    //! above do not (`plx_machine::idle`'s gate state is process-wide).
     use super::Spring;
-    use crate::ui::idle::{frame_begin, note_present, reset_for_test, should_present};
+    use plx_machine::idle::{frame_begin, note_present, reset_for_test, should_present};
 
     /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
     /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
-    /// The gate's half of this (`note_jump`) is graded in `ui::idle`; this is the guard on the
+    /// The gate's half of this (`note_jump`) is graded in `plx_machine::idle`; this is the guard on the
     /// `Spring` side of it.
     #[test]
     fn spring_jump_reports_only_when_it_changes_something() {

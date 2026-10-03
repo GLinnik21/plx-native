@@ -6,11 +6,11 @@ use super::containers::modal::Style;
 use super::containers::tabs::StripMember;
 use super::dispatch::{Dispatcher, NoTap, STRIP_BASE};
 use super::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig};
-use super::machine::{Edge, FocusKey, InputEvent, InputKind, Key, MachineId, NavOp, Source, StoreOrd, Tick};
+use plx_machine::machine::{Edge, FocusKey, InputEvent, InputKind, Key, MachineId, NavOp, Source, StoreOrd, Tick};
 use super::Rect;
 
 fn interactive_event(kind: u8, at: Tick) -> super::screen::ScreenEvent<FixtureHost> {
-    use super::machine::PressId;
+    use plx_machine::machine::PressId;
     use super::screen::ScreenEvent;
     match kind {
         0 => ScreenEvent::Input(key(Key::Ok, at)),
@@ -22,7 +22,7 @@ fn interactive_event(kind: u8, at: Tick) -> super::screen::ScreenEvent<FixtureHo
 }
 
 fn rejects_inactive_interactive_delivery(kind: u8) {
-    use super::machine::{Delivery, Fx};
+    use plx_machine::machine::{Delivery, Fx};
     let (mut d, mut rig) = boot(FixtureArg::Page(800));
     d.nav.tabs.stack.transition = Box::new(super::containers::transition::Immediate);
     let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -60,7 +60,7 @@ fn inactive_press_commit_delivery_never_steps_the_old_owner() { rejects_inactive
 #[test]
 fn covered_entries_still_receive_addressed_commands_memory_and_restore_focus() {
     use super::fixture::FixtureMsg;
-    use super::machine::{Delivery, Fx};
+    use plx_machine::machine::{Delivery, Fx};
     use super::screen::{By, ScreenEvent};
     let (mut d, mut rig) = boot(FixtureArg::Page(800));
     let entry = d.nav.top_page().unwrap().id;
@@ -93,14 +93,14 @@ fn ev(kind: InputKind<u32>, at: Tick) -> InputEvent<u32> {
 
 #[test]
 fn remembering_a_projected_item_does_not_move_current_focus() {
-    use super::machine::{Fx, GroupId};
+    use plx_machine::machine::{Fx, GroupId};
     let (mut d, mut rig) = boot(FixtureArg::Page(20));
     let page = d.nav.top_page().unwrap();
     let entry = page.id;
     let source = page.inst.as_ref().unwrap().id;
     let focus = d.focus();
     let focus_hash = |d: &Dispatcher<FixtureHost>| {
-        let mut canon = super::machine::Canon::new();
+        let mut canon = plx_machine::machine::Canon::new();
         d.input.engine.write_with(&mut canon, &|elem, canon| { canon.u32(*elem); });
         canon.finish()
     };
@@ -114,7 +114,7 @@ fn remembering_a_projected_item_does_not_move_current_focus() {
 
 #[test]
 fn remembering_rejects_foreign_groups_and_non_instance_sources() {
-    use super::machine::{Fx, GroupId};
+    use plx_machine::machine::{Fx, GroupId};
     let (mut d, mut rig) = boot(FixtureArg::Page(20));
     let page = d.nav.top_page().unwrap();
     let entry = page.id;
@@ -130,7 +130,7 @@ fn remembering_rejects_foreign_groups_and_non_instance_sources() {
 
 #[test]
 fn a_covered_master_cannot_rewrite_either_pages_remembered_cursor() {
-    use super::machine::{Fx, GroupId};
+    use plx_machine::machine::{Fx, GroupId};
     let (mut d, mut rig) = boot(FixtureArg::Page(20));
     d.nav.tabs.stack.transition = Box::new(super::containers::transition::Immediate);
     let old = d.nav.top_page().unwrap();
@@ -154,7 +154,7 @@ fn a_covered_master_cannot_rewrite_either_pages_remembered_cursor() {
 
 #[test]
 fn remembering_a_strip_item_requires_an_actual_member_not_just_the_reserved_range() {
-    use super::machine::Fx;
+    use plx_machine::machine::Fx;
     let (mut d, mut rig) = boot(FixtureArg::Home);
     d.nav.tabs.strip = vec![StripMember::new(STRIP_BASE, Rect::new(100.0, 10.0, 160.0, 48.0))];
     let page = d.nav.top_page().unwrap();
@@ -421,7 +421,7 @@ fn a_covered_strip_cannot_focus_or_activate_the_modal_and_counts_as_an_outside_c
     let focus = d.focus();
     assert_eq!(focus.unwrap().entry, modal);
     d.frame(&mut rig, tick(1616), vec![click(150.0, 30.0, tick(1616))], vec![], &mut NoTap);
-    let modal_focus = d.input.engine.current(super::machine::InputOwner::Entry(modal));
+    let modal_focus = d.input.engine.current(plx_machine::machine::InputOwner::Entry(modal));
     assert_ne!(modal_focus.map(|k| k.entry), Some(page), "the modal must not adopt a covered page's key");
     assert_eq!(d.nav.modals.top().unwrap().phase, super::containers::modal::Phase::Closing,
         "a click outside the compact panel dismisses it even over a covered tab");
@@ -491,7 +491,7 @@ fn a_pointer_press_is_cancelled_when_the_hit_leaves_its_arm() {
 /// and the commit is delivered to the arming owner.
 #[test]
 fn press_identity_and_queued_press_identity_are_canonical_state() {
-    use super::machine::{Canon, Delivery, Fx, PressArm, PressFrom, PressId};
+    use plx_machine::machine::{Canon, Delivery, Fx, PressArm, PressFrom, PressId};
     let (mut d, _) = boot(FixtureArg::Page(600));
     let key = d.focus().unwrap();
     let owner = MachineId::Instance(d.nav.instance_of(key.entry).unwrap());
@@ -530,7 +530,7 @@ fn press_identity_and_queued_press_identity_are_canonical_state() {
 
 #[test]
 fn a_budget_carried_press_keeps_its_original_item_identity() {
-    use super::machine::{Delivery, Fx};
+    use plx_machine::machine::{Delivery, Fx};
     use super::screen::ScreenEvent;
     for (held, move_focus) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut d, mut rig) = boot(FixtureArg::Page(if held { 700 } else { 600 }));
@@ -552,7 +552,7 @@ fn a_budget_carried_press_keeps_its_original_item_identity() {
         assert_eq!(d.input.arm.is_some(), held, "commit retires its arm; a held press stays armed");
         assert!(!events_of(&d, 0).contains(event));
         if move_focus {
-            d.set_focus_in(Some(FocusKey { entry: original.entry, elem: 1 }), Some(super::machine::GroupId(1)));
+            d.set_focus_in(Some(FocusKey { entry: original.entry, elem: 1 }), Some(plx_machine::machine::GroupId(1)));
         }
         d.frame(&mut rig, tick(now + 16), vec![], vec![], &mut NoTap);
         assert_eq!(events_of(&d, 0).matches(event).count(), usize::from(!move_focus),
@@ -702,7 +702,7 @@ fn a_keyboard_round_trip_revokes_press_results_already_queued_for_this_frame() {
 #[test]
 fn whole_text_commits_and_keyboard_edges_round_trip_in_order() {
     use super::fixture::{fixture_state_fp, FixtureCodec, FixtureInit, RecTap};
-    use super::machine::{LogicalState, TextEdit};
+    use plx_machine::machine::{LogicalState, TextEdit};
     use super::rec::{Header, MemSink, Recording, Writer};
     use super::replay::{Codec, run_resolve, run_targets};
     use serde_json::json;
@@ -758,7 +758,7 @@ fn whole_text_commits_and_keyboard_edges_round_trip_in_order() {
 
 #[test]
 fn pending_input_hash_distinguishes_text_and_ownership_edges_not_arc_addresses() {
-    use super::machine::{Delivery, Fx, TextEdit};
+    use plx_machine::machine::{Delivery, Fx, TextEdit};
     let hash = |kind| {
         let (mut d, _) = boot(FixtureArg::Page(801));
         let target = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -776,7 +776,7 @@ fn pending_input_hash_distinguishes_text_and_ownership_edges_not_arc_addresses()
 
 #[test]
 fn keyboard_request_payload_and_owner_binding_are_part_of_the_state_hash() {
-    use super::machine::{Delivery, Fx, InstanceId};
+    use plx_machine::machine::{Delivery, Fx, InstanceId};
     let queued = |up| {
         let (mut d, _) = boot(FixtureArg::Page(801));
         let target = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
@@ -817,7 +817,7 @@ fn a_legacy_page_never_consults_the_map_or_the_engine() {
 #[test]
 fn resolve_mode_reports_every_mismatch_and_continues_from_the_recording() {
     use super::fixture::{fixture_state_fp, FixtureCodec, FixtureInit, RecTap};
-    use super::machine::LogicalState;
+    use plx_machine::machine::LogicalState;
     use super::rec::{Header, MemSink, Recording, Writer};
     use super::replay::{run_resolve, run_targets};
     use serde_json::json;

@@ -397,7 +397,7 @@ fn a_failing_source_leaves_a_populated_home_completely_intact() {
     reset(&mut o.state, &o.adapter);
 }
 
-/// A PARTIAL landing repaints. A settled Home stops presenting entirely (`ui::idle`), so a
+/// A PARTIAL landing repaints. A settled Home stops presenting entirely (`plx_machine::idle`), so a
 /// source arriving seconds after the owned server did — which is the normal shape of this
 /// feature, not an edge case — would otherwise draw its shelves invisibly until the next
 /// keypress. The failure half matters just as much: a retry that fails changes the status
@@ -407,7 +407,7 @@ fn a_source_landing_repaints_a_settled_home() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    crate::ui::idle::set_enabled(true);
+    plx_machine::idle::set_enabled(true);
     seed(&mut o.state, vec![
         src(0, "", HubState::Ready, Some(build_test(1))),
         src(1, "friend", HubState::Loading, None),
@@ -417,15 +417,15 @@ fn a_source_landing_repaints_a_settled_home() {
         ("a share arriving", Some(build_test(2))),
         ("a share failing", None),
     ] {
-        crate::ui::idle::should_present(0); // takes-and-clears whatever was already pending
+        plx_machine::idle::should_present(0); // takes-and-clears whatever was already pending
         assert!(
-            !crate::ui::idle::should_present(0),
+            !plx_machine::idle::should_present(0),
             "the panel is settled with nothing happening"
         );
         land(&o.state, &o.adapter, 1, build);
         pump(&mut o.state, &o.adapter, 0.0);
         assert!(
-            crate::ui::idle::should_present(0),
+            plx_machine::idle::should_present(0),
             "{what} must invalidate the frame"
         );
     }

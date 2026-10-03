@@ -10,7 +10,7 @@
 use super::*;
 use super::run::Frame;
 use crate::screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, HomeItemIdentity, HomeReq, HomeTab, PageMemory};
-use crate::ui::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
+use plx_machine::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
 use crate::ui::screen::{ReturnState, ScreenEvent};
 
 // (`node` stood here — `ContentArg` → `ui::trail::Node`, one of the two conversions the trail
@@ -50,7 +50,7 @@ fn halt_preview(app: &mut App) {
 std::thread_local! {
     /// The page instance whose hero started the preview in flight, set when its
     /// `ContentReq::PreviewStart` is accepted. See [`halt_preview_off_its_page`].
-    static PREVIEW_HOST: std::cell::Cell<Option<crate::ui::machine::InstanceId>> =
+    static PREVIEW_HOST: std::cell::Cell<Option<plx_machine::machine::InstanceId>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -641,10 +641,10 @@ fn home_requests(app: &mut App, now: u32) {
                 // The screen owns the fold; the input engine owns the hero group's last
                 // control. Restore that cursor without introducing a Home-local focus copy.
                 let remembered = app.pages.input.engine.remembered_for(entry).into_iter()
-                    .find(|(group, _)| *group == crate::ui::machine::GroupId(0)).map(|(_, elem)| elem);
+                    .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
                 let focus = remembered.map(|elem| crate::ui::screen::FocusTarget::Elem(
-                    crate::ui::machine::FocusKey { entry, elem }))
-                    .unwrap_or(crate::ui::screen::FocusTarget::ContainerGroup(crate::ui::machine::GroupId(0)));
+                    plx_machine::machine::FocusKey { entry, elem }))
+                    .unwrap_or(crate::ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
                 app.pages.emit(MachineId::Nav, Fx::Deliver(source,
                     Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh { focus }))));
             }
@@ -892,7 +892,7 @@ mod library_publication_tests {
         rig: &mut bridge::Bridge,
         frame_no: &mut u32,
     ) {
-        let (_, report) = bridge::frame(pages, rig, crate::ui::machine::Tick {
+        let (_, report) = bridge::frame(pages, rig, plx_machine::machine::Tick {
             ms: *frame_no * 16,
             dt_us: 16_000,
         }, Vec::new());
@@ -905,7 +905,7 @@ mod library_publication_tests {
         entry: EntryId,
         sid: crate::plex::ServerId,
         episode: &str,
-    ) -> (crate::metadata::Spot, crate::ui::machine::FocusKey<u32>) {
+    ) -> (crate::metadata::Spot, plx_machine::machine::FocusKey<u32>) {
         let spot = crate::metadata::Spot {
             section: 2,
             col: 3,
@@ -913,7 +913,7 @@ mod library_publication_tests {
             saved_col: [0, 1, 3, 0, 0, 0, 0, 0],
             season: Some(2),
         };
-        let focus = crate::ui::machine::FocusKey { entry, elem: 3003 };
+        let focus = plx_machine::machine::FocusKey { entry, elem: 3003 };
         let retained = pages.nav.entry_mut(entry).expect("Detail A remains on the stack");
         retained.ret.focus = Some(focus);
         retained.ret.memory = PageMemory::Detail(crate::screens::registry::DetailMemory {
@@ -1003,7 +1003,7 @@ mod library_publication_tests {
     }
 
     impl crate::ui::dispatch::Tap<bridge::AppHost> for SettleDetailBeforeRestoredEnter {
-        fn effect(&mut self, _frame: u64, stamped: &crate::ui::machine::Stamped<bridge::AppHost>) {
+        fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<bridge::AppHost>) {
             if self.landed || !matches!(&stamped.fx,
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
                     crate::ui::screen::Enter::Restored)))) { return; }
@@ -1451,7 +1451,7 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else {
             panic!("Detail A publishes Detail memory");
         };
-        let focus = crate::ui::machine::FocusKey {
+        let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
                 crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
@@ -1503,7 +1503,7 @@ mod library_publication_tests {
                 store: *mut crate::stores::metadata::MetadataStore,
             }
             impl crate::ui::dispatch::Tap<bridge::AppHost> for AtomicStart {
-                fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<bridge::AppHost>) {
+                fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<bridge::AppHost>) {
                     if self.saw_restore && !self.checked_after_restore {
                         self.checked_after_restore = true;
                         // SAFETY: see `SettleDetailBeforeRestoredEnter::effect`.
@@ -1521,7 +1521,7 @@ mod library_publication_tests {
             // the next effect boundary observes the state before either can consume a stale status.
             pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(
                 pages.nav.top_page().unwrap().inst.as_ref().unwrap().id),
-                Delivery::Screen(ScreenEvent::Tick(crate::ui::machine::Tick {
+                Delivery::Screen(ScreenEvent::Tick(plx_machine::machine::Tick {
                     ms: frame_no * 16, dt_us: 16_000,
                 }))));
             pages.store_changed(crate::stores::StoreId::Metadata.ord(), pre_refresh);
@@ -1530,7 +1530,7 @@ mod library_publication_tests {
                 store: rig.metadata_mut() as *mut _,
             };
             let (_, report) = bridge::frame_with_tap(&mut pages, &mut rig,
-                crate::ui::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut tap);
+                plx_machine::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut tap);
             frame_no += 1;
             pages.prune(&report.unmounted);
             assert!(tap.saw_restore && tap.checked_after_restore);
@@ -1550,8 +1550,8 @@ mod library_publication_tests {
 
         let mut return_focus = focus;
         if navigate {
-            detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Down,
-                crate::ui::machine::Edge::Down);
+            detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Down,
+                plx_machine::machine::Edge::Down);
             let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
             let related = memory.keys.iter().find(|key| matches!(&key.identity,
                 crate::screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-b"))
@@ -1563,10 +1563,10 @@ mod library_publication_tests {
             assert_eq!(detail_refresh_phase(&pages, a_entry),
                 crate::screens::registry::DetailRefreshPhase::Requested,
                 "directional input leaves the server obligation outstanding");
-            detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Ok,
-                crate::ui::machine::Edge::Down);
-            detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Ok,
-                crate::ui::machine::Edge::Up);
+            detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Ok,
+                plx_machine::machine::Edge::Down);
+            detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Ok,
+                plx_machine::machine::Edge::Up);
             for _ in 0..20 { frame(&mut pages, &mut rig, &mut frame_no); }
             let requests = rig.take_content_reqs();
             assert_eq!(requests.len(), 1, "the Related press emits exactly one activation");
@@ -1585,8 +1585,8 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-b"), Some(true));
 
         if navigate {
-            detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Back,
-                crate::ui::machine::Edge::Down);
+            detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Back,
+                plx_machine::machine::Edge::Down);
             let requests = rig.take_content_reqs();
             assert_eq!(requests.len(), 1);
             let (_, request, ret) = requests.into_iter().next().unwrap();
@@ -1616,8 +1616,8 @@ mod library_publication_tests {
         if navigate {
             // BACK may restore its own navigation snapshot. Cancel that too, while the retry
             // is outstanding, so its eventual landing must complete without ANY restore intent.
-            detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Right,
-                crate::ui::machine::Edge::Down);
+            detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Right,
+                plx_machine::machine::Edge::Down);
             let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
             return_focus.elem = memory.keys.iter().find_map(|key| matches!(&key.identity,
                 crate::screens::registry::DetailIdentity::Related { rk, .. } if rk == "detail-c")
@@ -1668,13 +1668,13 @@ mod library_publication_tests {
         pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
         rig: &mut bridge::Bridge,
         frame_no: &mut u32,
-        key: crate::ui::machine::Key,
-        edge: crate::ui::machine::Edge,
+        key: plx_machine::machine::Key,
+        edge: plx_machine::machine::Edge,
     ) {
-        let at = crate::ui::machine::Tick { ms: *frame_no * 16, dt_us: 16_000 };
-        let (_, report) = bridge::frame(pages, rig, at, vec![crate::ui::machine::InputEvent {
-            at, source: crate::ui::machine::Source::Script,
-            kind: crate::ui::machine::InputKind::Key { key, edge, sym: 0, wcode: 0, at_edge: false },
+        let at = plx_machine::machine::Tick { ms: *frame_no * 16, dt_us: 16_000 };
+        let (_, report) = bridge::frame(pages, rig, at, vec![plx_machine::machine::InputEvent {
+            at, source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Key { key, edge, sym: 0, wcode: 0, at_edge: false },
         }]);
         *frame_no += 1;
         pages.prune(&report.unmounted);
@@ -1711,7 +1711,7 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else {
             panic!("Detail A publishes Detail memory");
         };
-        let focus = crate::ui::machine::FocusKey {
+        let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
                 crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
@@ -1753,7 +1753,7 @@ mod library_publication_tests {
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
         let (_, report) = bridge::frame_with_tap(&mut pages, &mut rig,
-            crate::ui::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut settle);
+            plx_machine::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut settle);
         frame_no += 1;
         pages.prune(&report.unmounted);
 
@@ -1805,7 +1805,7 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else {
             panic!("Detail A publishes Detail memory");
         };
-        let focus = crate::ui::machine::FocusKey {
+        let focus = plx_machine::machine::FocusKey {
             entry: a_entry,
             elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
                 crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
@@ -1850,7 +1850,7 @@ mod library_publication_tests {
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
         let (_, report) = bridge::frame_with_tap(&mut pages, &mut rig,
-            crate::ui::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut settle);
+            plx_machine::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut settle);
         frame_no += 1;
         pages.prune(&report.unmounted);
 

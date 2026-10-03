@@ -485,7 +485,7 @@ fn a_midframe_reorder_keeps_painted_keys_matched_and_a_click_activates_the_seen_
 #[test]
 fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     use crate::ui::dispatch::Tap;
-    use crate::ui::machine::Addr;
+    use plx_machine::machine::Addr;
     #[derive(Default)]
     struct Results(Vec<Addr>);
     impl Tap<AppHost> for Results {
@@ -504,7 +504,7 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(0), vec![], &mut tap);
     assert_eq!(rig.stores.hubs.hub_len_for_test(0), 5);
     assert_eq!(tap.0, vec![Addr {
-        to: MachineId::Store(StoreId::Hubs.ord()), req: crate::ui::machine::RequestId(req),
+        to: MachineId::Store(StoreId::Hubs.ord()), req: plx_machine::machine::RequestId(req),
     }]);
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(1), vec![], &mut tap);
     assert_eq!(tap.0.len(), 1, "the store tick must not re-deliver the result");
@@ -512,9 +512,9 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     rig.stores.hubs.queue_test_landing(Some(9));
     let result = rig.stores.hubs.take_results().pop().unwrap();
     let parts = CxParts { tick: tick(2), press: Default::default(), focus: Default::default(),
-        owner: crate::ui::machine::InputOwner::Entry(EntryId(0)) };
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(0)) };
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Nav, &mut present);
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
         &AppMsg::HubsResult(result), &parts, &mut fx), Handled::No);
@@ -529,7 +529,7 @@ fn one_home_landing_notifies_the_home_screen_once() {
     struct HubsNotices(u32);
 
     impl Tap<AppHost> for HubsNotices {
-        fn effect(&mut self, _frame: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
             if matches!(
                 &stamped.fx,
                 Fx::Deliver(
@@ -594,9 +594,9 @@ fn store_work_is_addressed_and_idle_polling_does_not_invent_a_change() {
     assert_eq!(rig.stores.gen(StoreId::Hubs), before);
 
     let parts = CxParts { tick: tick(2), press: Default::default(), focus: Default::default(),
-        owner: crate::ui::machine::InputOwner::Entry(EntryId(0)) };
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(0)) };
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Nav, &mut present);
     for work in [StoreWork::Hubs, StoreWork::BrowseDiscovery] {
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),

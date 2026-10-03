@@ -37,7 +37,7 @@ use super::document_reader::DocumentReader;
 use super::form::{RowKey, RowKeys};
 use super::frame::Budget;
 use super::geom::{Document, IndexElem, Table};
-use super::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
 use super::route_screen::RouteLayout;
 use super::screen::{
     composed_draw, composed_group_of, composed_groups, composed_neighbour, composed_place,
@@ -779,7 +779,7 @@ where
 mod tests {
     use super::*;
     use crate::ui::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
     use crate::ui::screen::{GroupKind, Seat};
     use crate::ui::table::{Row, Section};
 

@@ -49,7 +49,7 @@ pub(crate) struct Player {
     /// before the plane binds and a second after it unbinds, when the compositor has an ordinary
     /// UI surface and the gate should be treating it like one.
     ///
-    /// Its EDGES are the only source of [`crate::ui::present::PresentEvent::VideoPlane`]; see
+    /// Its EDGES are the only source of [`plx_machine::present::PresentEvent::VideoPlane`]; see
     /// [`Player::set_video_plane_bound`].
     pub(crate) video_plane_bound: bool,
     /// Last frame's [`crate::screens::player::PlayerScreen::clock_fingerprint`] — the machine's
@@ -86,7 +86,7 @@ impl Player {
     /// come to disagree about which frame the plane went away on and the false edge lands on a
     /// frame that was never presented.
     /// `Some(bound)` when this was an EDGE — the loop forwards that, and only that, to the two
-    /// `ui::present::Present` machines it owns beside the live gate.
+    /// `plx_machine::present::Present` machines it owns beside the live gate.
     pub(crate) fn set_video_plane_bound(&mut self, bound: bool) -> Option<bool> {
         if self.video_plane_bound == bound {
             return None;
@@ -100,13 +100,13 @@ impl Player {
         } else {
             "videoplane: unbound — ordinary idle rules from here"
         });
-        crate::ui::idle::note(crate::ui::present::PresentEvent::VideoPlane(bound));
+        plx_machine::idle::note(plx_machine::present::PresentEvent::VideoPlane(bound));
         // The FALSE edge has to reach the panel, and the frame it lands on is very often one the
         // gate would otherwise skip — the picture is gone and nothing is animating (spec §3.3
         // step 9). `invalidate` is what makes that frame present, so the opaque region is really
         // cleared and the UI surface really goes back to being blended.
         if !bound {
-            crate::ui::idle::invalidate();
+            plx_machine::idle::invalidate();
         }
         Some(bound)
     }

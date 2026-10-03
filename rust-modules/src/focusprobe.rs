@@ -21,7 +21,7 @@
 //! mailbox — `detail::take_open_request`, `detail::take_alt_open` and `person::take_request` are
 //! deliberately untouched, because reading one would consume a navigation.
 //!
-//! **It must not touch [`crate::ui::idle`].** It never calls `invalidate()`. Reporting to the frame
+//! **It must not touch [`plx_machine::idle`].** It never calls `invalidate()`. Reporting to the frame
 //! gate would hold every screen presenting forever, which would destroy the very idle behaviour a
 //! harness built on this is meant to be able to observe.
 //!

@@ -31,7 +31,7 @@ impl LegacyMeasure {
     }
 }
 
-impl crate::ui::machine::Measure for LegacyMeasure {
+impl plx_machine::machine::Measure for LegacyMeasure {
     fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
         crate::text::text_width(s.as_ptr(), sz, bold as c_int)
     }
@@ -414,7 +414,7 @@ pub(crate) fn still_line(
     sub: &str,
     press_plays: bool,
     has_bar: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
     // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
@@ -488,7 +488,7 @@ pub(crate) fn still_overlay(
     card: Rect,
     rad: f32,
     press_plays: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let show = if m.show_title.is_empty() {
         m.title
@@ -520,7 +520,7 @@ pub(crate) fn poster_label(
     card: Rect,
     rad: f32,
     text: &str,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     if text.is_empty() { return; }
     const INSET_X: f32 = 16.0;
@@ -1046,7 +1046,7 @@ pub struct CtlPop<const N: usize> {
 impl<const N: usize> CtlPop<N> {
     /// Captured geometry needs the spring velocity as well as its current scale: the next
     /// input may land after another Tick. GPU resources and paint palettes are not encoded.
-    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
         let Self { sp, focused } = self;
         c.seq(sp.len());
         for spring in sp { c.f32(spring.pos).f32(spring.vel); }
@@ -1244,7 +1244,7 @@ const KEYLINE_W: f32 = 1.5;
 const KEYLINE_BOLD: std::os::raw::c_int = 1;
 
 /// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
-pub(crate) fn keyline_chip_w(text: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn keyline_chip_w(text: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     measure.width_str(text, theme::size::CAPTION, KEYLINE_BOLD != 0) + 2.0 * KEYLINE_PAD_X
 }
 
@@ -1269,7 +1269,7 @@ pub(crate) fn keyline_chip_w(text: &str, measure: &dyn crate::ui::machine::Measu
 /// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
 /// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
 /// this chip read as an empty frame in the first device photograph of the identity line.
-pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], measure: &dyn plx_machine::machine::Measure) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
@@ -1360,7 +1360,7 @@ pub(crate) enum CapFace<'a> {
 
 /// The width [`key_cap`] will occupy for `face` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.
-pub(crate) fn key_cap_w(face: CapFace<'_>, measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn key_cap_w(face: CapFace<'_>, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let inner = match face {
         CapFace::Label(label) => measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0),
         CapFace::Glyph(_) => KEYCAP_GLYPH,
@@ -1375,7 +1375,7 @@ pub(crate) fn key_cap(
     cy: f32,
     face: CapFace<'_>,
     ink: [f32; 4],
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let w = key_cap_w(face, measure);
     p.rring(
@@ -1466,12 +1466,12 @@ impl<'a> KeyHint<'a> {
     }
 
     /// Total width of the assembled line.
-    pub(crate) fn width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub(crate) fn width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
         self.layout(measure).width
     }
 
     /// One set of advances for measuring and painting, including the catalog's own spaces.
-    fn layout(&self, measure: &dyn crate::ui::machine::Measure) -> KeyHintLayout {
+    fn layout(&self, measure: &dyn plx_machine::machine::Measure) -> KeyHintLayout {
         let sz = theme::size::CAPTION;
         let key_x = measure.width(&self.pre, sz, false)
             + if self.pre.is_empty() { 0.0 } else { self.fragment_gap };
@@ -1513,7 +1513,7 @@ impl<'a> KeyHint<'a> {
         p: Painter,
         x: f32,
         cy: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         let sz = theme::size::CAPTION;
         let ty = crate::text::text_vcenter_y(sz, 0, cy);
@@ -1702,7 +1702,7 @@ const SKEL_BAND: f32 = 0.35;
 const SKEL_STRIPS: usize = 6;
 
 /// Phase 0..1 from a millisecond clock, for a caller accumulating its own — [`Spinner::phase`]'s
-/// pattern. Stepping the clock itself needs no `ui::idle` report (see that module: the six phase
+/// pattern. Stepping the clock itself needs no `plx_machine::idle` report (see that module: the six phase
 /// accumulators tick unconditionally); the report is [`skeleton_sheen`]'s, from the draw, exactly
 /// as [`Spinner::draw`] does it and for the same reason recorded there.
 pub(crate) fn skeleton_phase(ms: u32) -> f32 {
@@ -1711,12 +1711,12 @@ pub(crate) fn skeleton_phase(ms: u32) -> f32 {
 
 /// The sweep, over whatever ground the caller has already laid down.
 ///
-/// Reports to `ui::idle` from HERE, not from the clock that feeds it — `Spinner::draw`'s rule:
+/// Reports to `plx_machine::idle` from HERE, not from the clock that feeds it — `Spinner::draw`'s rule:
 /// only a placeholder actually ON SCREEN should hold the loop awake, and reporting from draw can
 /// only latch the gate on for the next frame, never off, so it self-sustains for exactly as long as
 /// something keeps drawing one.
 fn skeleton_sheen(p: Painter, r: Rect, rad: f32, phase: f32) {
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     let band = (r.w * SKEL_BAND).max(1.0);
     // travel from fully off the left edge to fully off the right, so the block is clean at both
     // ends of the cycle rather than starting mid-flash
@@ -2417,7 +2417,7 @@ pub(crate) struct ChromeRead<'a> {
 pub(crate) fn profile_chip_text(
     label: &str,
     initial: &str,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> (CString, CString, f32) {
     let name = CString::new(crate::text::elide_by(label, CHIP_NAME_MAX, false, |t| {
         measure.width_str(t, theme::size::BODY, true)
@@ -2986,7 +2986,7 @@ impl Spinner {
 }
 impl View for Spinner {
     fn draw(&self, _e: &Env, p: Painter) {
-        // A spinner is driven by a CLOCK, not a spring, so `ui::idle`'s spring instrumentation
+        // A spinner is driven by a CLOCK, not a spring, so `plx_machine::idle`'s spring instrumentation
         // cannot see it: before this line, a Home waiting on /hubs — the exact state the read-out
         // exists for — drew a STOPPED spinner. Reported here, in `draw`, and that is deliberate:
         // only a spinner actually ON SCREEN should hold the loop awake, whereas the six phase
@@ -3001,8 +3001,8 @@ impl View for Spinner {
         // Not while the screenshot pipeline holds the clocks (`stillclock`): the phase this draws
         // from is then a constant, so the next frame would be identical and a waiting screen
         // (the sign-in QR's "Waiting for you to sign in…") could never come to rest.
-        if !crate::ui::motion::phase_clocks_held() {
-            crate::ui::idle::invalidate();
+        if !plx_machine::motion::phase_clocks_held() {
+            plx_machine::idle::invalidate();
         }
         let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
         for i in 0..self.dots {
@@ -3386,7 +3386,7 @@ impl PageGround {
 
     /// Canonical animation state, not GL resources. A held target and spring velocity influence
     /// subsequent frames even when two grounds currently draw the same colours.
-    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
         let Self { wash, target } = self;
         let AmbientWash { corners } = wash;
         for corner in target {
@@ -3779,7 +3779,7 @@ impl<'a> StatusOverlay<'a> {
     /// Whether `reason` would be cut short in a `Failed` read-out's two-line slot [`Self::REASON_W`]
     /// wide, measured through the slot's own view, with `headroom` of the width to spare.
     #[cfg(test)]
-    pub(crate) fn failed_reason_truncates(reason: &core::ffi::CStr, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> bool {
+    pub(crate) fn failed_reason_truncates(reason: &core::ffi::CStr, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> bool {
         let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed);
         let width = Self::REASON_W * headroom;
         match Self::reason_segments(reason.to_str().unwrap_or("")) {
@@ -3920,7 +3920,7 @@ impl<'a> StatusOverlay<'a> {
         self.bands_measured(&LegacyMeasure)
     }
 
-    fn bands_measured(&self, measure: &dyn crate::ui::machine::Measure) -> StatusBands {
+    fn bands_measured(&self, measure: &dyn plx_machine::machine::Measure) -> StatusBands {
         let (cap_sz, _, _) = Self::verdict_face(self.kind);
         let (reason_sz, _) = Self::reason_face(self.kind);
         self.bands_from_heights(measure.line_h(cap_sz), self.reason_h(measure.line_h(reason_sz)))
@@ -3995,7 +3995,7 @@ impl<'a> StatusOverlay<'a> {
     /// The note's band: `space::MD` under the row when there is one, in the row's place when not.
     /// A note on its way is one line (its spinner sits on it); a settled one is its wrapped view's
     /// height inside [`Self::REASON_W`].
-    fn note_band(&self, bands: &StatusBands, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+    fn note_band(&self, bands: &StatusBands, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         let line = self.note?;
         let top = if self.action.is_some() {
             bands.action_y + Self::CTRL_H + theme::space::MD
@@ -4026,19 +4026,19 @@ impl<'a> StatusOverlay<'a> {
     }
 
     /// Owned-screen placement uses the same metrics capability as its draw, including replay.
-    pub(crate) fn action_frame_measured(&self, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+    pub(crate) fn action_frame_measured(&self, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         self.action_frames_measured(measure)[0]
     }
 
     /// Every control, by slot (0 the primary, 1 the secondary), through the geometry the draw uses.
-    pub(crate) fn action_frames_measured(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; 2] {
+    pub(crate) fn action_frames_measured(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; 2] {
         let row = self.row_frames_measured(measure);
         [row[0], row[1]]
     }
 
     /// Every control of the row, by slot (0 the primary, 1 the secondary, 2.. the `extra`
     /// slots), through the geometry the draw uses.
-    pub(crate) fn row_frames_measured(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; STATUS_ROW_MAX] {
+    pub(crate) fn row_frames_measured(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; STATUS_ROW_MAX] {
         if self.action.is_none() {
             return [None; STATUS_ROW_MAX];
         }
@@ -4052,7 +4052,7 @@ impl<'a> StatusOverlay<'a> {
     /// The verdict band through the draw's own geometry — for a screen's test that two read-outs
     /// stand on one line.
     #[cfg(test)]
-    pub(crate) fn verdict_band_measured(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    pub(crate) fn verdict_band_measured(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.bands_measured(measure).cap
     }
 
@@ -4063,7 +4063,7 @@ impl<'a> StatusOverlay<'a> {
 
     /// Render through the very geometry used by `action_frames_measured`, without live font
     /// measurements deciding the hit target behind the host's measurement capability.
-    pub(crate) fn draw_measured(&self, e: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn draw_measured(&self, e: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure) {
         let bands = self.bands_measured(measure);
         let frames = self.row_frames_measured(measure);
         self.draw_geometry(e, p, bands, frames, measure);
@@ -4084,7 +4084,7 @@ impl<'a> StatusOverlay<'a> {
         p: Painter,
         b: StatusBands,
         frames: [Option<Rect>; STATUS_ROW_MAX],
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         // spinner above, caption below, the pair centred on the frame
         let cy = self.frame.cy();
@@ -4420,7 +4420,7 @@ pub(crate) fn diagnostic_lines(value: &str, width: f32, bold: bool) -> Vec<Strin
     // called directly before, so the measured widths are unchanged.
     #[cfg(not(test))]
     let measure = |s: &str| {
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         CString::new(s)
             .ok()
             .map(|c| crate::text::TtfMeasure.width(&c, FIELD_VAL_SZ, bold))
@@ -4616,7 +4616,7 @@ pub struct TabPill {
 }
 impl TabPill {
     /// Width from the actual bold glyph advances, shared by paint and hit geometry.
-    pub(crate) fn width_measured(label: &str, sz: c_int, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub(crate) fn width_measured(label: &str, sz: c_int, measure: &dyn plx_machine::machine::Measure) -> f32 {
         measure.width_str(label, sz, true) + 44.0
     }
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
@@ -4854,7 +4854,7 @@ impl View for TabPill {
             // something this lane's scope covers reshaping. `TtfMeasure` wraps the identical
             // `text_width` this line called directly.
             {
-                use crate::ui::machine::Measure as _;
+                use plx_machine::machine::Measure as _;
                 LegacyMeasure.width(
                     unsafe { std::ffi::CStr::from_ptr(self.label) },
                     self.sz,
@@ -5103,7 +5103,7 @@ pub(crate) fn strip_layout_measured(
     x0: f32,
     sz: c_int,
     gap: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> Vec<StripLay> {
     strip_layout_by(labels, x0, gap, |label| measure.width(label, sz, true))
 }
@@ -5186,7 +5186,7 @@ impl TabStrip {
     pub(crate) const SHAPE: &'static str = "TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}}";
 
     /// Held capsule geometry and velocity determine the next frame even before a new target.
-    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
         let Self { sel, foc } = self;
         for capsule in [sel, foc] {
             let Capsule { x, w, a, at } = capsule;
@@ -5661,7 +5661,7 @@ fn track_density(ground: [f32; 3], d: &mut TrackDensity) -> f32 {
 /// Called from [`StripRender::update`] — the one function all three screens wearing this bar go
 /// through, and the same reason the strip's scroll and its capsules are stepped there rather than
 /// in each screen. On a still screen the readback returns the same bytes, so the solve is
-/// bit-identical, the spring is already on it, and `ui::idle` hears nothing: the present gate is
+/// bit-identical, the spring is already on it, and `plx_machine::idle` hears nothing: the present gate is
 /// not defeated by a bar that adapts.
 fn track_density_step(dt: f32, d: &mut TrackDensity) {
     if d.seeded {
@@ -6182,7 +6182,7 @@ fn tab_metrics_from(labels: &[String], measure: impl Fn(&std::ffi::CStr) -> f32)
 
 /// Measure a published vocabulary once when it changes. The same metric rule feeds paint and
 /// input geometry; the capability keeps host fixtures independent of a loaded SDL font.
-pub(crate) fn tab_widths(labels: &[String], measure: &dyn crate::ui::machine::Measure) -> Vec<f32> {
+pub(crate) fn tab_widths(labels: &[String], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
     tab_metrics_from(labels, |word| measure.width(word, theme::size::BODY, true)).1
 }
 
@@ -6239,7 +6239,7 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32
         // geometry. Paint receives the same captured labels but no `Measure` capability, so these
         // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
         // identical glyph widths on both paths.
-        use crate::ui::machine::Measure as _;
+        use plx_machine::machine::Measure as _;
         let measure = LegacyMeasure;
         let (labels, widths) = tab_metrics_from(data.labels,
             |l| measure.width(l, theme::size::BODY, true));
@@ -7212,7 +7212,7 @@ impl Button {
         // retained-leaf trait is out of this lane's scope) as well as from a host test that
         // deliberately compares this exact formula against `RawTextMeasure`. `TtfMeasure` wraps the
         // identical `text_width` this line called directly.
-        use crate::ui::machine::Measure as _;
+        use plx_machine::machine::Measure as _;
         let advance = LegacyMeasure.width(
             unsafe { std::ffi::CStr::from_ptr(label) },
             sz,
@@ -7222,7 +7222,7 @@ impl Button {
     }
 
     pub(crate) fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: bool,
-        measure: &dyn crate::ui::machine::Measure) -> f32 {
+        measure: &dyn plx_machine::machine::Measure) -> f32 {
         Self::pill_w_from_advance(measure.width(label, sz, true), sz, icon, trailing)
     }
 
@@ -7361,7 +7361,7 @@ impl View for Button {
         // `Button` draws through the generic retui `View::draw` (no `Measure` parameter; see the
         // identical note on `TabPill::draw` above). `TtfMeasure` wraps the same `text_width`.
         let tw = {
-            use crate::ui::machine::Measure as _;
+            use plx_machine::machine::Measure as _;
             LegacyMeasure.width(
                 unsafe { std::ffi::CStr::from_ptr(self.label) },
                 self.sz,
@@ -7501,7 +7501,7 @@ const PASS_CHARS: [&std::ffi::CStr; 9] = [c"P", c"L", c"E", c"X", c" ", c"P", c"
 /// [`VEIL_TEX`], applied to a float memo.
 static PASS_W: AtomicU32 = AtomicU32::new(0);
 
-fn pass_label_w(measure: &dyn crate::ui::machine::Measure) -> f32 {
+fn pass_label_w(measure: &dyn plx_machine::machine::Measure) -> f32 {
     // The width reads 0 until `init_text` has run (a live `TtfMeasure`) — never cache a pre-init
     // measurement (the same guard `ctrl_slot`'s width memo keeps, and for the same reason). Under
     // replay the threaded `Measure` is a `TableMeasure`, which answers from the recorded table
@@ -7523,7 +7523,7 @@ fn pass_label_w(measure: &dyn crate::ui::machine::Measure) -> f32 {
 }
 
 /// Layout width of the capsule — for right-anchoring and row flow.
-pub(crate) fn pass_capsule_w(measure: &dyn crate::ui::machine::Measure) -> f32 {
+pub(crate) fn pass_capsule_w(measure: &dyn plx_machine::machine::Measure) -> f32 {
     pass_label_w(measure) + 2.0 * PASS_PAD_X
 }
 
@@ -7544,7 +7544,7 @@ pub(crate) fn pass_capsule(
     x: f32,
     cy: f32,
     filled: bool,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let w = pass_capsule_w(measure);
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
@@ -7567,7 +7567,7 @@ pub(crate) fn pass_capsule(
 pub(crate) fn badge_w(
     text: &str,
     icon: Option<crate::ui::icons::Icon>,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     const PAD: f32 = 12.0;
     const MIN_W: f32 = 56.0;
@@ -7586,7 +7586,7 @@ pub(crate) fn badge(
     text: &str,
     icon: Option<crate::ui::icons::Icon>,
     style: BadgeStyle,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
@@ -7695,7 +7695,7 @@ pub(crate) struct RatingCell<'a> {
 pub(crate) fn rating_group_w(
     caption: &str,
     cells: &[RatingCell],
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     if caption.contains('\0') {
         return 0.0;
@@ -7725,7 +7725,7 @@ pub(crate) fn rating_group(
     cy: f32,
     caption: &str,
     cells: &[RatingCell],
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     let Ok(cap) = std::ffi::CString::new(caption) else {
         return 0.0;
@@ -7799,7 +7799,7 @@ pub(crate) fn rating_group(
 #[cfg(test)]
 #[test]
 fn rating_group_measures_each_run_once_and_returns_its_drawn_width() {
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     use std::cell::Cell;
     let _serial = plx_base::testlock::serial();
     struct Counting(Cell<usize>);

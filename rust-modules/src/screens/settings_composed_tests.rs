@@ -50,8 +50,8 @@ use crate::screens::registry::{self, AppFx, AppMsg};
 use crate::ui::containers::modal::{Phase, Style};
 use crate::ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use crate::ui::fixture::{key, tick, FixtureMeasure};
-use crate::ui::machine::{InputOwner, TimerId};
-use crate::ui::present::Present;
+use plx_machine::machine::{InputOwner, TimerId};
+use plx_machine::present::Present;
 
 /// The dispatcher's own mounter: the surface for anything but [`SettingsPage::About`],
 /// which stands in for whatever page the application has UNDER Settings. The root stack
@@ -167,7 +167,7 @@ pub(super) fn frame(
     d: &mut Dispatcher<InnerHost>,
     rig: &mut SurfaceRig,
     ms: u32,
-    inputs: Vec<crate::ui::machine::InputEvent<u32>>,
+    inputs: Vec<plx_machine::machine::InputEvent<u32>>,
 ) {
     d.frame_with(rig, tick(ms), inputs, vec![], &mut NoTap, false);
 }
@@ -281,7 +281,7 @@ fn composed_owner_settings_done_survives_then_disappears_with_reverted_draft() {
 
 #[test]
 fn composed_owner_pointer_seats_and_validates_answer_press_identity_without_committing() {
-    use crate::ui::machine::{InputEvent, InputKind, PressId, Source};
+    use plx_machine::machine::{InputEvent, InputKind, PressId, Source};
     use crate::ui::screen::{Activate, Hover, Stop};
     let _g = plx_base::testlock::serial();
     for stage in [0, 1] {
@@ -623,7 +623,7 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
 /// down/up pair must confirm its focused answer, after entering through the real table flow.
 #[test]
 fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
-    use crate::ui::machine::{Edge, InputKind};
+    use plx_machine::machine::{Edge, InputKind};
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("composed-force-warning");
     let previous = crate::route::direct_play_mode();

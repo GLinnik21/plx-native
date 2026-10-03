@@ -16,7 +16,7 @@ pub mod transition;
 #[cfg(test)]
 mod tests;
 
-use super::machine::{Addr, Canon, EntryId, Host, InputOwner, InstanceId, LogicalState, MachineId, NavOp, PresentHandle, Tick};
+use plx_machine::machine::{Addr, Canon, EntryId, Host, InputOwner, InstanceId, LogicalState, MachineId, NavOp, PresentHandle, Tick};
 use super::geom::IndexElem;
 use super::screen::{ReturnState, ScreenEvent};
 use modal::{ModalStack, Style};
@@ -286,7 +286,7 @@ impl<H: Host> Navigation<H> {
                 let surface = modal.surfaces.remove(at);
                 modal.retired.push(surface.entry);
                 vec![
-                    Life::Ev(id, ScreenEvent::WillLeave(super::machine::Leave::ForGood)),
+                    Life::Ev(id, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood)),
                     Life::Unmount(id),
                 ]
             }
@@ -349,7 +349,7 @@ impl<H: Host> Navigation<H> {
             for (host, modal) in &mut self.covered_modals {
                 if !self.tabs.stack.entries.iter().any(|e| e.id == *host) {
                     for surface in modal.surfaces.drain(..).rev() {
-                        out.push(Life::Ev(surface.entry.id, ScreenEvent::WillLeave(super::machine::Leave::ForGood)));
+                        out.push(Life::Ev(surface.entry.id, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood)));
                         out.push(Life::Unmount(surface.entry.id));
                         modal.retired.push(surface.entry);
                     }
@@ -423,14 +423,14 @@ impl<H: Host> Navigation<H> {
         let mut out = Vec::new();
         for (_, modal) in &mut self.covered_modals {
             for surface in modal.surfaces.drain(..).rev() {
-                out.push(Life::Ev(surface.entry.id, ScreenEvent::WillLeave(super::machine::Leave::ForGood)));
+                out.push(Life::Ev(surface.entry.id, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood)));
                 out.push(Life::Unmount(surface.entry.id));
                 modal.retired.push(surface.entry);
             }
         }
         let surfaces: Vec<EntryId> = self.modals.surfaces.iter().rev().map(|s| s.entry.id).collect();
         for id in surfaces {
-            out.push(Life::Ev(id, ScreenEvent::WillLeave(super::machine::Leave::ForGood)));
+            out.push(Life::Ev(id, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood)));
             out.push(Life::Unmount(id));
             if let Some(i) = self.modals.surfaces.iter().position(|s| s.entry.id == id) {
                 let s = self.modals.surfaces.remove(i);
@@ -439,7 +439,7 @@ impl<H: Host> Navigation<H> {
         }
         let pages: Vec<EntryId> = self.tabs.stack.entries.iter().rev().map(|e| e.id).collect();
         for id in pages {
-            out.push(Life::Ev(id, ScreenEvent::WillLeave(super::machine::Leave::ForGood)));
+            out.push(Life::Ev(id, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood)));
             out.push(Life::Unmount(id));
             if let Some(i) = self.tabs.stack.entries.iter().position(|e| e.id == id) {
                 let e = self.tabs.stack.entries.remove(i);

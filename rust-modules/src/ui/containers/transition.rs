@@ -31,8 +31,8 @@
 //! precedence and capture failure falls back to live rendering. RoutePush still draws both levels
 //! live: it cannot share one image across two simultaneously visible pages.
 
-use super::super::machine::{PresentHandle, Tick};
-use super::super::motion;
+use plx_machine::machine::{PresentHandle, Tick};
+use plx_machine::motion;
 
 /// When a pending op applies (§6.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,7 +187,7 @@ impl Transition for PageDip {
     fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) -> bool {
         let dt = t.dt();
         if matches!(self.phase, DipPhase::Out | DipPhase::In) {
-            present.note(super::super::present::PresentEvent::Motion);
+            present.note(plx_machine::present::PresentEvent::Motion);
         }
         match self.phase {
             DipPhase::Idle => {
@@ -323,7 +323,7 @@ impl Transition for RoutePush {
 /// Presentation policy for the single shared page image; no screen or GL ownership.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PageImage {
-    entry: Option<super::super::machine::EntryId>,
+    entry: Option<plx_machine::machine::EntryId>,
     settle_since: Option<u32>,
     replacement_ready: bool,
 }
@@ -345,18 +345,18 @@ impl PagePaint {
 }
 
 impl PageImage {
-    pub(crate) fn captured(&mut self, entry: super::super::machine::EntryId) {
+    pub(crate) fn captured(&mut self, entry: plx_machine::machine::EntryId) {
         self.entry = Some(entry);
         self.settle_since = None;
         self.replacement_ready = false;
     }
-    pub(crate) fn replacement_captured(&mut self, entry: super::super::machine::EntryId) {
+    pub(crate) fn replacement_captured(&mut self, entry: plx_machine::machine::EntryId) {
         self.entry = Some(entry);
         self.replacement_ready = true;
     }
     pub(crate) fn plan(
         &mut self,
-        entry: super::super::machine::EntryId,
+        entry: plx_machine::machine::EntryId,
         active: bool,
         alpha: f32,
         ms: u32,
@@ -390,7 +390,7 @@ impl PageImage {
         PagePaint::Live
     }
 
-    pub(crate) fn held_entry(&self) -> Option<super::super::machine::EntryId> {
+    pub(crate) fn held_entry(&self) -> Option<plx_machine::machine::EntryId> {
         self.entry
     }
     pub(crate) fn is_held(&self) -> bool { self.entry.is_some() }
@@ -457,7 +457,7 @@ impl Drop for PageCapture<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
 
     fn frames(t: &mut dyn Transition, n: usize) -> (usize, Vec<f32>, Vec<f32>) {
         let mut present = Present::new();
@@ -556,7 +556,7 @@ mod tests {
 #[cfg(test)]
 mod page_image_tests {
     use super::*;
-    use crate::ui::machine::EntryId;
+    use plx_machine::machine::EntryId;
 
     #[test]
     fn frozen_out_and_in_do_not_invoke_live_page_draw() {
@@ -564,7 +564,7 @@ mod page_image_tests {
         let mut dip = PageDip::new();
         let mut entry = EntryId(1);
         dip.request(true);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         for i in 0..14 {
             let floor = dip.tick(
                 Tick {
@@ -592,7 +592,7 @@ mod page_image_tests {
     fn frozen_capture_wait_pauses_the_dip_without_spending_its_floor() {
         let mut dip = PageDip::new();
         dip.request(true);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         for i in 0..4 {
             assert!(!dip.tick_presented(
                 Tick {

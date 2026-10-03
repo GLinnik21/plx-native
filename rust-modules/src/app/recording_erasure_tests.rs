@@ -101,7 +101,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
         );
         rec.tick(1, 0.016);
         rec.end_frame(&|| 0);
-        assert!(!rec.finish(crate::ui::landgate::fixture_gate()));
+        assert!(!rec.finish(plx_machine::landgate::fixture_gate()));
         assert!(
             !recording.exists(),
             "subsequent frames and shutdown cannot recreate erased data"

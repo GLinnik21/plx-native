@@ -13,8 +13,8 @@ use crate::ui::fixture::FixtureMeasure;
 use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::hit::{HitMap, PointerKind};
 use crate::ui::screen::By;
-use crate::ui::machine::{FocusRead, Host, InputEvent, PressRead, Source, Stamped, Tick};
-use crate::ui::present::Present;
+use plx_machine::machine::{FocusRead, Host, InputEvent, PressRead, Source, Stamped, Tick};
+use plx_machine::present::Present;
 use crate::ui::screen::{Activate, Hover, ScreenArg, Stop};
 
 #[derive(Clone)]
@@ -24,8 +24,8 @@ impl LogicalState for Arg {
     fn probe(&self, _: &mut String) {}
 }
 impl ScreenArg for Arg {
-    fn chrome(&self) -> crate::ui::machine::Chrome { crate::ui::machine::Chrome::None }
-    fn id(&self) -> crate::ui::machine::ScreenId { crate::ui::machine::ScreenId(1) }
+    fn chrome(&self) -> plx_machine::machine::Chrome { plx_machine::machine::Chrome::None }
+    fn id(&self) -> plx_machine::machine::ScreenId { plx_machine::machine::ScreenId(1) }
     fn title(&self) -> Option<&str> { None }
     fn same_instance(&self, _: &Self) -> bool { true }
 }
@@ -524,7 +524,7 @@ fn revealing_the_second_shelf_carries_the_query_field_under_the_track() {
 /// over-reporting animator costs the whole idle saving while every fps floor still passes.
 ///
 /// Graded on the DISPATCHER's gate (`Present`), which is what an owned page's `Effects` reach;
-/// `ui::idle` is the loop's gate and the bridge ORs the two.
+/// `plx_machine::idle` is the loop's gate and the bridge ORs the two.
 #[test]
 fn the_scroll_spring_reports_while_it_runs_and_goes_quiet_at_rest() {
     let _serial = plx_base::testlock::serial();

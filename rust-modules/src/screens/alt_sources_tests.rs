@@ -750,8 +750,8 @@ fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
     use crate::ui::containers::modal::{ModalStack, Phase, Style};
     use crate::ui::containers::Minter;
     use crate::ui::fixture::{tick, FixtureArg, FixtureHost};
-    use crate::ui::machine::PresentHandle;
-    use crate::ui::present::Present;
+    use plx_machine::machine::PresentHandle;
+    use plx_machine::present::Present;
 
     let opened = || {
         let mut ms: ModalStack<FixtureHost> = ModalStack::new();
@@ -809,7 +809,7 @@ fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
 mod focus_and_hit {
     use super::*;
     use crate::screens::registry::{AppFx, AppMsg, PageMemory};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Canon, Chrome, Edge, FocusKey, FocusRead, Handled, Host, InputEvent, InputKind,
         InputOwner, Key, LogicalState, Machine, PressRead, ScreenId, Source, Tick,
     };
@@ -848,12 +848,12 @@ mod focus_and_hit {
         type Memory = PageMemory;
     }
     impl crate::screens::registry::MetadataLike for HostFixture {
-        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        fn metadata<'a>(_cx: &plx_machine::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
             test_store().view()
         }
     }
-    fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
-        crate::ui::machine::Cx {
+    fn fixture_cx(focus: Option<FocusKey<u32>>) -> plx_machine::machine::Cx<'static, HostFixture> {
+        plx_machine::machine::Cx {
             views: (),
             tick: Tick::default(),
             measure: &crate::ui::fixture::FixtureMeasure,
@@ -968,8 +968,8 @@ mod focus_and_hit {
         let entry = p.entry;
         let cx = fixture_cx(None);
         let mut buf = Vec::new();
-        let mut present = crate::ui::present::Present::default();
-        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let mut present = plx_machine::present::Present::default();
+        let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
         let ev = ScreenEvent::FocusMoved {
             from: None,
             to: FocusKey { entry, elem: 1 },
@@ -989,23 +989,23 @@ mod focus_and_hit {
         let host = p.arg.host;
         let cx = fixture_cx(Some(FocusKey { entry, elem: 1 }));
         let mut buf = Vec::new();
-        let mut present = crate::ui::present::Present::default();
+        let mut present = plx_machine::present::Present::default();
         {
-            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
             let ev = ScreenEvent::Activate(1);
             assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
         }
         assert!(
             buf.iter().any(|s| matches!(
                 &s.fx,
-                crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e)) if *e == entry
+                plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Dismiss(e)) if *e == entry
             )),
             "the panel closes on any commit"
         );
         let opened = buf.iter().find_map(|s| match &s.fx {
-            crate::ui::machine::Fx::Deliver(
-                crate::ui::machine::MachineId::Instance(h),
-                crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(
+            plx_machine::machine::Fx::Deliver(
+                plx_machine::machine::MachineId::Instance(h),
+                plx_machine::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(
                     crate::screens::registry::ContentArg::Detail { sid, rk },
                 ))),
             ) if *h == host => Some((*sid, rk.clone())),
@@ -1023,13 +1023,13 @@ mod focus_and_hit {
         let entry = p.entry;
         let cx = fixture_cx(Some(FocusKey { entry, elem: 0 }));
         let mut buf = Vec::new();
-        let mut present = crate::ui::present::Present::default();
-        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let mut present = plx_machine::present::Present::default();
+        let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
         let ev = ScreenEvent::Activate(0);
         assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
         assert!(buf.iter().all(|s| !matches!(
             &s.fx,
-            crate::ui::machine::Fx::Deliver(.., crate::ui::machine::Delivery::Screen(ScreenEvent::App(_)))
+            plx_machine::machine::Fx::Deliver(.., plx_machine::machine::Delivery::Screen(ScreenEvent::App(_)))
         )));
     }
 
@@ -1039,13 +1039,13 @@ mod focus_and_hit {
         let entry = p.entry;
         let cx = fixture_cx(None);
         let mut buf = Vec::new();
-        let mut present = crate::ui::present::Present::default();
-        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let mut present = plx_machine::present::Present::default();
+        let mut fx = plx_machine::machine::Effects::new(&mut buf, plx_machine::machine::MachineId::Input, &mut present);
         let ev = key_event(Key::Back, Edge::Down);
         assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
         assert!(matches!(
             buf.last().map(|s| &s.fx),
-            Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+            Some(plx_machine::machine::Fx::Nav(plx_machine::machine::NavOp::Dismiss(e))) if *e == entry
         ));
     }
 }

@@ -393,7 +393,7 @@ fn edit_local_with_owners(
             });
         }
     }
-    crate::ui::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
+    plx_machine::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
 }
 
 /// Drop any QUEUED write for the same item and toggle — see [`Write::family`]. The write already in
@@ -484,7 +484,7 @@ impl ViewStateState {
 pub(crate) fn pump_with_gate(
     &mut self,
     adapter: &Arc<ViewStateAdapter>,
-    gate: &crate::ui::landgate::Gate,
+    gate: &plx_machine::landgate::Gate,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -494,7 +494,7 @@ pub(crate) fn pump_with_gate(
 ) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = self.retry_tick();
-    // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
+    // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay the server's answer is taken
     // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
     let landed = crate::stores::take_landing(gate, crate::stores::StoreId::ViewState, || {
         adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -547,7 +547,7 @@ pub(crate) fn pump_with_gate(
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
         browse(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     endpoints
 }
@@ -563,7 +563,7 @@ pub(crate) fn pump(
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
-    self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate(), browse, hubs, person, collection,
+    self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), browse, hubs, person, collection,
         search, metadata)
 }
 

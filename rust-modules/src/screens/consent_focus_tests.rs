@@ -638,7 +638,7 @@ mod composed {
 
 #[test]
 fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     use crate::i18n::{msg, LocaleContext, Preference};
     struct ReadingMeasure;
     impl Measure for ReadingMeasure {
@@ -701,7 +701,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
 #[test]
 fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_replays() {
     use crate::ui::focus::{FocusEngine, Outcome};
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     use crate::ui::rec::{Measurements, TableMeasure};
     use crate::ui::screen::By;
     // Expand only BODY text: titles and links remain normal, while a future long disclosure

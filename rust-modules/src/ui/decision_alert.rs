@@ -53,7 +53,7 @@
 use std::borrow::Cow;
 
 use crate::ui::consts::{K_SCROLL, SAFE};
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
@@ -281,7 +281,7 @@ impl DecisionAlert {
         // The body determines the panel's size. A cached ground can contain the OLD outline;
         // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
         crate::ui::popover::host::ground_invalidate();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         true
     }
     /// One answer or two, as last opened or reconciled.
@@ -300,7 +300,7 @@ impl DecisionAlert {
         // A fresh open is a fresh page under it: re-latch at the next `draw_scrim`.
         self.field.reset();
         self.pop.open();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     /// Measure retained content through the caller's capability, before paint or during replay.
     fn measured(&self, measure: &dyn Measure) -> Layout {
@@ -321,7 +321,7 @@ impl DecisionAlert {
         self.scroll_target = (self.scroll_target + delta as f32 * theme::size::BODY as f32 * 6.0)
             .clamp(0.0, max);
         let _own = crate::ui::popover::own_motion();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         self.scroll_target.to_bits()
     }
     pub(crate) fn scroll_target_bits(&self) -> u32 { self.scroll_target.to_bits() }
@@ -345,12 +345,12 @@ impl DecisionAlert {
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
         self.pop.close();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     /// The shared exit choreography, in reverse of the entry (`Popover::dismiss`).
     pub(crate) fn dismiss(&mut self) {
         self.pop.dismiss();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     /// Open or still fading out — the DRAW gate, never the input gate.
     pub(crate) fn visible(&self) -> bool {
@@ -364,7 +364,7 @@ impl DecisionAlert {
     }
     pub(crate) fn set_choice(&mut self, choice: Choice) {
         self.choice = self.valid_choice(choice);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     pub(crate) fn update(&mut self, dt: f32) {
         if !self.visible() {
@@ -547,9 +547,9 @@ mod tests {
         assert_eq!(alert.choice(), Choice::Destructive);
         assert_eq!(alert.pop.appear(), appear, "content must not restart the entrance");
         assert_eq!(crate::ui::popover::host_users_for_test(), users);
-        crate::ui::idle::take_local_damage();
+        plx_machine::idle::take_local_damage();
         assert!(!alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
-        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a settled card must stay idle");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a settled card must stay idle");
         assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::One));
         assert_eq!(alert.choice(), Choice::Cancel, "the removed answer hands focus to Close");
         alert.set_choice(Choice::Destructive);

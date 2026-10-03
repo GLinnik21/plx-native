@@ -72,11 +72,11 @@ pub(crate) trait Sink {
 /// the trait: `Canon` is the `machine` layer's, which this layer may name, while an impl written
 /// in `app` — whose layer owns neither the trait nor the type — would break the orphan rule
 /// (E0117) once the layers are crates.
-impl Sink for crate::ui::machine::Canon {
-    fn u32(&mut self, v: u32) { crate::ui::machine::Canon::u32(self, v); }
-    fn u64(&mut self, v: u64) { crate::ui::machine::Canon::u64(self, v); }
-    fn boolean(&mut self, v: bool) { crate::ui::machine::Canon::bool(self, v); }
-    fn text(&mut self, v: &str) { crate::ui::machine::Canon::str(self, v); }
+impl Sink for plx_machine::machine::Canon {
+    fn u32(&mut self, v: u32) { plx_machine::machine::Canon::u32(self, v); }
+    fn u64(&mut self, v: u64) { plx_machine::machine::Canon::u64(self, v); }
+    fn boolean(&mut self, v: bool) { plx_machine::machine::Canon::bool(self, v); }
+    fn text(&mut self, v: &str) { plx_machine::machine::Canon::str(self, v); }
 }
 
 impl Initial {

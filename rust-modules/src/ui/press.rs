@@ -322,8 +322,8 @@ impl Press {
     pub const SHAPE: &'static str = "Press{sp:(f32,f32),phase:u8,down_at:u32,alive:u32,got_beat:bool,release_at:u32,commit_at:u32,want_commit:bool,cancelled:bool,long:bool,took:bool,holdable:bool}";
 }
 
-impl crate::ui::machine::LogicalState for Press {
-    fn write(&self, w: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for Press {
+    fn write(&self, w: &mut plx_machine::machine::Canon) {
         w.f32(self.sp.pos)
             .f32(self.sp.vel)
             .discriminant(match self.phase {

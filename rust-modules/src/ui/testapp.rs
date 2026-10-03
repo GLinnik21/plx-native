@@ -6,7 +6,7 @@
 
 use super::dispatch::{Dispatcher, FrameReport, NoTap};
 use super::fixture::{key, FixtureArg, FixtureHost, FixtureRig};
-use super::machine::{Clock, Key, MachineId, NavOp, Tick, VirtualClock};
+use plx_machine::machine::{Clock, Key, MachineId, NavOp, Tick, VirtualClock};
 
 pub struct TestApp {
     pub d: Dispatcher<FixtureHost>,
@@ -66,7 +66,7 @@ impl TestApp {
     /// The input owner's screen state, probed.
     pub fn owner_probe(&self) -> String {
         let mut s = String::new();
-        if let Some(super::machine::InputOwner::Entry(e)) = self.d.nav.input_owner() {
+        if let Some(plx_machine::machine::InputOwner::Entry(e)) = self.d.nav.input_owner() {
             if let Some(i) = self.d.nav.entry(e).and_then(|e| e.inst.as_ref()) {
                 i.screen.state().probe(&mut s);
             }

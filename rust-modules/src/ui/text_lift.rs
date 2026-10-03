@@ -27,7 +27,7 @@ pub(crate) const TOP_CENTRE: (f32, f32) = (0.5, 0.0);
 /// One block's animated focus state: a single spring in the normalized 0..1 focus factor, from
 /// which [`scale`](Self::scale) is derived.
 ///
-/// The spring runs in 0..1, not over the 1.0..1.05 scale band, because `ui::idle` calls a spring at
+/// The spring runs in 0..1, not over the 1.0..1.05 scale band, because `plx_machine::idle` calls a spring at
 /// rest by a threshold relative to its own magnitude: over the narrow band that threshold is a large
 /// fraction of the span, leaving a visible plate behind. On top of that, [`step`](Self::step) snaps
 /// a settled spring onto its target, so at rest the factor is exactly 0 and the scale exactly 1.0
@@ -44,7 +44,7 @@ impl TextLift {
     pub(crate) fn step(&mut self, focused: bool, dt: f32) {
         let target = if focused { 1.0 } else { 0.0 };
         self.0.step(target, crate::ui::consts::K_SCALE, dt);
-        if super::idle::settled(self.0.pos, target, self.0.vel) {
+        if plx_machine::idle::settled(self.0.pos, target, self.0.vel) {
             // `jump` reports to idle (it is a change no integrator saw), so the exact resting frame
             // is presented.
             self.0.jump(target);

@@ -80,7 +80,7 @@ but a photograph could show it (`gfx.rs`, at the `glBlendFuncSeparate` call).
 
 ### Tier 1 — `make check`
 
-`cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base`, preceded by `make lint` (three **named** clippy lints —
+`cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine`, preceded by `make lint` (three **named** clippy lints —
 `ifs_same_cond`, `same_functions_in_if_condition`, `if_same_then_else` — the shadowed-branch gate),
 and followed by **three** host checks that are easy to forget are in here: `python3 ci/flavor.py
 --selftest` (the flavour transform, whose central assertion is that the STABLE transform is the
@@ -105,7 +105,7 @@ lock.) Do not write a new number here: measure it if you need one — this file 
 Count it yourself if you need the number:
 
 ```sh
-cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -- --list | grep -c ': test'
+cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -- --list | grep -c ': test'
 ```
 
 **Run it on nightly.** `make check` uses `cargo +$(RUST_NIGHTLY)`; a bare `cargo test` uses your
@@ -129,7 +129,7 @@ ships, because `-Z build-std` is what ships.
    an owned screen keeps no focus of its own (the `FocusEngine` does), but `pms`'s catalog statics
    are shared across modules. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
    pure value semantics **with one exception that costs them their parallelism** — `tick` reports
-   to `ui::idle`'s process-global dirty flag, which `ui::idle`'s own "a settled screen does not
+   to `plx_machine::idle`'s process-global dirty flag, which `plx_machine::idle`'s own "a settled screen does not
    repaint" assertions read. Without the lock they fail *other modules'* tests intermittently,
    which is the worst shape a flake can take. **Anything you make report to the frame gate inherits
    that obligation**, and reach for `testlock` rather than a fresh local mutex when the global is
@@ -165,9 +165,9 @@ It provably cannot answer:
 named here only so you can tell them from a regression in your own edit.
 
 - **`make sim-shot` hangs on a settled screen.** `PLXNATIVE_SHOT_FRAME` (`SIM_FRAME`, default 200)
-  counts **presented** frames, and `ui::idle` gates presents — so a screen that settles before
+  counts **presented** frames, and `plx_machine::idle` gates presents — so a screen that settles before
   frame 200 never reaches it. Arm `plxnative-noidle` in the instance root, or drive the `shot` FIFO
-  token instead, which calls `ui::idle::invalidate()` for you (`shot.rs::request`).
+  token instead, which calls `plx_machine::idle::invalidate()` for you (`shot.rs::request`).
 - **A synthetic `SDL_TEXTINPUT` SIGSEGVs inside SDL** — macOS `libSDL2` is sdl2-compat forwarding
   into SDL3, whose text event carries a `char *text` where SDL2 carries an inline `char[32]`. No
   Rust panic, no log line, the process is just gone. The FIFO's key and `ck:` tokens are safe
@@ -239,14 +239,14 @@ given screen is its business, not this file's.
 
 **Anything animated.** It owes **two** tests, because the failure modes are opposite and each is
 invisible to the other's gate. Host: it reports while running **and** goes quiet at rest —
-`ui/idle.rs` and `ui/xfade.rs` are the pattern, including a settled-tree case that steps 439
+`machine/src/idle.rs` and `ui/xfade.rs` are the pattern, including a settled-tree case that steps 439
 springs and asserts *nothing* is requested. Device: an `fps_floor` scene proving it still animates
 under the present gate, and an `fps_ceiling` proving its screen actually stops. The ceiling is not
 politeness — an over-reporting animator gives back the whole ~38-points-of-a-core idle saving while
 every `floor` in the suite still passes.
 
 **Anything that animates from a CLOCK rather than a spring** — a millisecond ramp, a phase, a
-countdown — must call `ui::idle::invalidate()` itself. `note_spring` cannot see it, and both
+countdown — must call `plx_machine::idle::invalidate()` itself. `note_spring` cannot see it, and both
 `Xfade::tick` (every CONTENT cross-fade) and `Spinner::draw` (every loading read-out) **shipped
 FROZEN** before they were made to report. (`Xfade` drove the ROUTE dip too until restructure phase
 12 lifted that onto `ui::containers::transition::PageDip`, which reports from inside its own

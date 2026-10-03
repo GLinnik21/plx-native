@@ -3,7 +3,7 @@
 
 use crate::ui::containers::tabs::StripMember;
 use crate::ui::dispatch::STRIP_BASE;
-use crate::ui::machine::{FocusKey, Measure};
+use plx_machine::machine::{FocusKey, Measure};
 use crate::ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
 use crate::stores::browse::{DirectoryView, SecKind};
 
@@ -167,7 +167,7 @@ impl ChromeSnapshot {
 mod tests {
     use super::*;
     use crate::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
-    use crate::ui::machine::EntryId;
+    use plx_machine::machine::EntryId;
 
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
         DirectorySnapshot::fixture(7, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {

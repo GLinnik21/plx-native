@@ -79,7 +79,7 @@ use crate::metadata::track_label;
 use crate::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
+use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
 use crate::ui::popover::Popover;
 use crate::ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
@@ -272,7 +272,7 @@ type EnhState = (
 /// **A tab root's natural panel rect** — the layout of `table` as the panel would hug it. Each
 /// tab hugs its own rows (shared menu rule); the right edge is fixed, so switching tabs moves only
 /// the left edge.
-fn table_natural(table: &TableView, measure: &dyn crate::ui::machine::Measure) -> Rect {
+fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
     // the transport control row's own right edge — one number for the discs and both panels
     let px = crate::appkit::player_hud::CTRL_RIGHT - pw;
@@ -1528,13 +1528,13 @@ impl TrackMenuState {
     /// `draw` and the focus queries so scrolling math matches. Cached against the table's
     /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
     /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
-    fn panel_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || table_natural(&self.form.table, measure))
     }
 
     /// The card as it is drawn this frame: its top and left edges on their springs toward
     /// [`Self::panel_rect`], the bottom and right on the anchor.
-    fn shown_rect(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn shown_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.shown(self.panel_rect(measure))
     }
 
@@ -1556,7 +1556,7 @@ impl TrackMenuState {
     pub(crate) fn update(
         &mut self,
         dt: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         ps: &crate::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
     ) {
@@ -1587,7 +1587,7 @@ impl TrackMenuState {
     /// `prepare` runs after the mount on the same frame and before the presenting side's drain
     /// (`app::run::prepare_window`), so the strings are resident before the draw. Idempotent per
     /// table layout, like `update`'s own walk; queues only, uploads nothing.
-    pub(crate) fn warm_open(&self, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
     }
 
@@ -1606,7 +1606,7 @@ impl TrackMenuState {
         &mut self,
         ps: &crate::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         if self.background_owner.is_some()
             || !self.pages.is_empty()
@@ -1633,7 +1633,7 @@ impl TrackMenuState {
         self.background_owner = Some(owner);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
         // The appear fade/rise — the container drives the phase and the appear spring. The dim
         // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
         // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
@@ -3714,7 +3714,7 @@ mod enhancement_menu_tests {
     /// judges the note row, and its row is as tall as its wrapped lines.
     #[test]
     fn spanish_locked_note_wraps_within_the_subtitles_panel() {
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, Preference};
@@ -3741,7 +3741,7 @@ mod enhancement_menu_tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     /// The focus element of the `i`-th Audio row, named by identity.
     fn audio_key(i: usize) -> u32 {
@@ -5046,9 +5046,9 @@ mod motion_tests {
     /// One loop frame, as the dispatcher runs it: forget last frame's motion, then update. Returns
     /// whether a spring moved (what keeps the present gate awake).
     fn frame(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore) -> bool {
-        crate::ui::idle::frame_begin(DT);
+        plx_machine::idle::frame_begin(DT);
         menu.update(DT, &ShippedMeasure, ps, store.view());
-        crate::ui::idle::present_moving()
+        plx_machine::idle::present_moving()
     }
 
     fn run(menu: &mut TrackMenuState, ps: &crate::route::PlaybackSession, store: &crate::stores::metadata::MetadataStore, n: usize) {

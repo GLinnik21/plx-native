@@ -104,7 +104,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     #[derive(Default)]
     struct Saves(Vec<(crate::stores::browse::SectionAddress, crate::stores::browse::Cursor)>);
     impl crate::ui::dispatch::Tap<AppHost> for Saves {
-        fn effect(&mut self, _: u64, effect: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             if let Fx::App(AppFx::Store(
                 _,
                 crate::stores::StoreCmd::Browse(crate::stores::browse::BrowseCmd::Addressed {

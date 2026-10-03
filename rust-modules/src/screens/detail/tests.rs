@@ -5,7 +5,7 @@
 //! package, either in this module or beside the factored helper it exercises.
 
 use super::*;
-use crate::ui::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
+use plx_machine::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
 use crate::ui::screen::{At, Focusable, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -68,19 +68,19 @@ impl crate::screens::registry::MetadataLike for TestHost {
     }
 }
 
-fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
         tick: Default::default(),
         measure,
         press: PressRead::default(),
-        focus: crate::ui::machine::FocusRead {
+        focus: plx_machine::machine::FocusRead {
             current: elem.map(|elem| FocusKey {
                 entry: EntryId(7),
                 elem,
             }),
         ..Default::default() },
-        owner: crate::ui::machine::InputOwner::Entry(EntryId(7)),
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(7)),
     }
 }
 
@@ -138,7 +138,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
                 .cloned()
         },
         spin_ms: 0.0,
-        spin_phase: crate::ui::motion::Phase::default(),
+        spin_phase: plx_machine::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
@@ -202,7 +202,7 @@ fn step(
     screen: &mut DetailScreen,
     event: &ScreenEvent<TestHost>,
     focus: Option<u32>,
-) -> (Handled, Vec<crate::ui::machine::Stamped<TestHost>>) {
+) -> (Handled, Vec<plx_machine::machine::Stamped<TestHost>>) {
     screen.sync_keys(test_store().view());
     let focus = focus.and_then(|key| screen.engine_key(key).or(Some(key)));
     let translated;
@@ -221,11 +221,11 @@ fn step(
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = cx(&measure, focus);
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let handled = {
         let mut sink = Effects::new(
             &mut effects,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
             &mut present,
         );
         Machine::<TestHost>::step(screen, event, &context, &mut sink)
@@ -238,10 +238,10 @@ fn step(
 /// scaffold, since none of the call sites below inspect the pushed effects.
 fn pump_restore(screen: &mut DetailScreen) {
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
         &mut effects,
-        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
     screen.pump_restore::<TestHost>(test_store().view(), &mut sink);
@@ -468,8 +468,8 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         let mut screen = bare(&guard, sid, "show");
         screen.restore_episode(&Spot::default(), Some("e2"), test_store().view());
         screen.refresh = DetailRefreshPhase::Requested;
-        step(&mut screen, &ScreenEvent::Input(crate::ui::machine::InputEvent {
-            at: Default::default(), source: crate::ui::machine::Source::Script,
+        step(&mut screen, &ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(), source: plx_machine::machine::Source::Script,
             kind: InputKind::Key { key: Key::Down, edge: Edge::Down, sym: 0, wcode: 0, at_edge: false },
         }), None);
         assert!(screen.restore_intent.is_none());
@@ -639,7 +639,7 @@ fn the_filmstrips_text_row_opens_that_episodes_own_page() {
     let mut screen = bare(&_guard, ServerId::UNSET, "show");
     let (_, effects) = step(
         &mut screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(key),
     );
     assert!(effects.iter().any(|effect| matches!(
@@ -672,7 +672,7 @@ fn the_related_shelf_raises_the_same_open_request() {
     let mut screen = bare(&_guard, ServerId::UNSET, "show");
     let (_, effects) = step(
         &mut screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(related::elem(0).unwrap()),
     );
     assert!(effects.iter().any(|effect| matches!(
@@ -693,7 +693,7 @@ fn an_open_request_does_not_outlive_its_page() {
     }];
     let _guard = install(d);
     let mut screen = bare(&_guard, sid, "show");
-    let press = ScreenEvent::PressCommit(crate::ui::machine::PressId(1));
+    let press = ScreenEvent::PressCommit(plx_machine::machine::PressId(1));
     let (_, first) = step(&mut screen, &press, Some(related::elem(0).unwrap()));
     assert!(first
         .iter()
@@ -722,7 +722,7 @@ fn an_open_request_does_not_outlive_its_page() {
 /// Applies every `AppFx::Store(StoreId::Metadata, ..)` effect in `effects` to `test_store()` —
 /// the store-side half of what a real `Bridge` does on its next dispatch turn, for tests that
 /// drive a screen with no dispatcher around it (see `step`'s own module doc).
-fn apply_metadata_effects(effects: &[crate::ui::machine::Stamped<TestHost>]) {
+fn apply_metadata_effects(effects: &[plx_machine::machine::Stamped<TestHost>]) {
     for effect in effects {
         if let Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd))) = &effect.fx {
             test_store().run(cmd.clone());
@@ -816,7 +816,7 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     // Enter right after the Push this test simulates by driving both directly.
     step(&mut screen, &ScreenEvent::Mount, None);
     let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-        focus: crate::ui::screen::FocusTarget::ContainerGroup(crate::ui::machine::GroupId(0)),
+        focus: crate::ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)),
     }), None);
     apply_metadata_effects(&entered);
     assert!(
@@ -1239,10 +1239,10 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
 
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
         &mut effects,
-        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
     let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
@@ -1297,10 +1297,10 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     );
 
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
         &mut effects,
-        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
     let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
@@ -1373,10 +1373,10 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     });
 
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
         &mut effects,
-        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
     let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
@@ -1519,7 +1519,7 @@ fn only_holdable_media_and_season_cards_request_the_item_menu() {
         tag_key: String::new(),
     });
     let _guard = install(d);
-    let event = ScreenEvent::PressHold(crate::ui::machine::PressId(9));
+    let event = ScreenEvent::PressHold(plx_machine::machine::PressId(9));
     for (elem, expected) in [
         (season::elem(0).unwrap(), true),
         (episodes::elem(0, episodes::Row::Still).unwrap(), true),
@@ -1549,7 +1549,7 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
     let elem = episodes::elem(1, episodes::Row::Text).unwrap();
     let event = ScreenEvent::Input(InputEvent {
         at: Default::default(),
-        source: crate::ui::machine::Source::Script,
+        source: plx_machine::machine::Source::Script,
         kind: InputKind::Key {
             key: Key::Ok,
             sym: 0,
@@ -1578,7 +1578,7 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     fn key_event(key: Key) -> ScreenEvent<TestHost> {
         ScreenEvent::Input(InputEvent {
             at: Default::default(),
-            source: crate::ui::machine::Source::Script,
+            source: plx_machine::machine::Source::Script,
             kind: InputKind::Key { key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
         })
     }
@@ -1621,7 +1621,7 @@ fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_do
     fn key_event(key: Key, edge: Edge) -> ScreenEvent<TestHost> {
         ScreenEvent::Input(InputEvent {
             at: Default::default(),
-            source: crate::ui::machine::Source::Script,
+            source: plx_machine::machine::Source::Script,
             kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
         })
     }
@@ -1651,7 +1651,7 @@ fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_do
 fn trailer_act(
     screen: &mut DetailScreen,
     act: trailer::TrailerKey,
-) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+) -> Vec<plx_machine::machine::Stamped<TestHost>> {
     trailer_act_edge(screen, act, Edge::Down, 0)
 }
 
@@ -1662,12 +1662,12 @@ fn trailer_act_edge(
     act: trailer::TrailerKey,
     edge: Edge,
     now: u32,
-) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+) -> Vec<plx_machine::machine::Stamped<TestHost>> {
     let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
         &mut effects,
-        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
     screen.trailer_act::<TestHost>(act, edge, now, &mut sink);
@@ -1676,7 +1676,7 @@ fn trailer_act_edge(
 }
 
 fn transport_reqs(
-    effects: &[crate::ui::machine::Stamped<TestHost>],
+    effects: &[plx_machine::machine::Stamped<TestHost>],
 ) -> Vec<Option<bool>> {
     effects
         .iter()
@@ -1687,7 +1687,7 @@ fn transport_reqs(
         .collect()
 }
 
-fn seek_reqs(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Vec<i64> {
+fn seek_reqs(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Vec<i64> {
     effects
         .iter()
         .filter_map(|effect| match &effect.fx {
@@ -1878,7 +1878,7 @@ fn back_falls_through_to_navigation_when_no_background_preview_is_up() {
     let mut screen = bare(&_guard, sid, "show");
     let event = ScreenEvent::Input(InputEvent {
         at: Default::default(),
-        source: crate::ui::machine::Source::Script,
+        source: plx_machine::machine::Source::Script,
         kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
     });
     let (handled, effects) = step(&mut screen, &event, None);
@@ -2027,7 +2027,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let mut screen = bare(&_guard, sid, "movie");
     let (_, effects) = step(
         &mut screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(hero::ELEM_MARK_WATCHED),
     );
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
@@ -2074,7 +2074,7 @@ fn season_focus_debounces_the_load_without_storing_a_focus_cursor() {
     let first_hash = screen.hash();
     step(
         &mut screen,
-        &ScreenEvent::Tick(crate::ui::machine::Tick {
+        &ScreenEvent::Tick(plx_machine::machine::Tick {
             ms: 100,
             dt_us: 100_000,
         }),
@@ -2119,18 +2119,18 @@ fn a_pending_season_settle_reports_motion_from_inside_advance() {
     assert_eq!(screen.pending_season, Some(1));
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = cx(&measure, Some(to.elem));
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let _ = present.take(0);
     let mut effects = Vec::new();
     for ms in [50, 100, 150] {
         let mut sink = Effects::new(
             &mut effects,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
             &mut present,
         );
         Machine::<TestHost>::step(
             &mut screen,
-            &ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 50_000 }),
+            &ScreenEvent::Tick(plx_machine::machine::Tick { ms, dt_us: 50_000 }),
             &context,
             &mut sink,
         );
@@ -2155,18 +2155,18 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     assert!(screen.detail(test_store().view()).is_none(), "no metadata installed for this test");
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let _ = present.take(0);
     let mut effects = Vec::new();
     for ms in [16, 32, 48] {
         let mut sink = Effects::new(
             &mut effects,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
             &mut present,
         );
         Machine::<TestHost>::step(
             &mut screen,
-            &ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 16_667 }),
+            &ScreenEvent::Tick(plx_machine::machine::Tick { ms, dt_us: 16_667 }),
             &context,
             &mut sink,
         );
@@ -2192,7 +2192,7 @@ fn trailer_extra() -> crate::metadata::Extra {
     }
 }
 
-fn play_item(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Option<(&PlayIntent, i64)> {
+fn play_item(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Option<(&PlayIntent, i64)> {
     effects.iter().find_map(|effect| match &effect.fx {
         Fx::App(AppFx::Content(ContentReq::Play { play, resume_ns })) => Some((play, *resume_ns)),
         _ => None,
@@ -2426,7 +2426,7 @@ fn section_tops_do_not_remeasure_per_credit() {
     struct CountMeasure {
         widths: Cell<u32>,
     }
-    impl crate::ui::machine::Measure for CountMeasure {
+    impl plx_machine::machine::Measure for CountMeasure {
         fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
             self.widths.set(self.widths.get() + 1);
             crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
@@ -2640,7 +2640,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
     struct CountMeasure {
         widths: Cell<u32>,
     }
-    impl crate::ui::machine::Measure for CountMeasure {
+    impl plx_machine::machine::Measure for CountMeasure {
         fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
             self.widths.set(self.widths.get() + 1);
             crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
@@ -2669,7 +2669,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
     assert_eq!(measure.widths.get(), after_first, "still cached before tick");
     step(
         &mut screen,
-        &ScreenEvent::Tick(crate::ui::machine::Tick {
+        &ScreenEvent::Tick(plx_machine::machine::Tick {
             ms: 16,
             dt_us: 16_667,
         }),
@@ -3154,7 +3154,7 @@ fn collection_move(
     engine: &mut crate::ui::focus::FocusEngine<u32>,
     dir: Dir,
 ) -> crate::ui::focus::Outcome<u32> {
-    let owner = crate::ui::machine::InputOwner::Entry(EntryId(7));
+    let owner = plx_machine::machine::InputOwner::Entry(EntryId(7));
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = Cx { focus: engine.read(owner), ..cx(&measure, None) };
     let mut links = Vec::new();
@@ -3226,7 +3226,7 @@ fn up_from_a_member_reaches_the_heading_and_down_returns_to_that_member() {
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
     let screen = bare(&_guard, sid, "m1");
-    let owner = crate::ui::machine::InputOwner::Entry(EntryId(7));
+    let owner = plx_machine::machine::InputOwner::Entry(EntryId(7));
     let mut engine = FocusEngine::new();
     let member = |i| screen.engine_key(collection::elem(i).unwrap()).unwrap();
     let key = |elem| FocusKey { entry: EntryId(7), elem };

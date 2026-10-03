@@ -18,7 +18,7 @@ use crate::screens::registry;
 use crate::ui::dispatch::Dispatcher;
 use crate::ui::fixture::{key, tick};
 use crate::ui::form::{FormTable, RowKind};
-use crate::ui::machine::{Edge, InputEvent, InputKind, Source, Tick};
+use plx_machine::machine::{Edge, InputEvent, InputKind, Source, Tick};
 use crate::ui::screen::{Activate, Hover, Stop};
 
 #[derive(Clone, Copy, Debug)]

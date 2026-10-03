@@ -4,7 +4,7 @@ use crate::metadata::Detail;
 use crate::pms::PmsMovie;
 use crate::screens::registry::tile_facts;
 use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::machine::GroupId;
+use plx_machine::machine::GroupId;
 use crate::ui::widgets::Art;
 use crate::ui::{theme, Painter, Rect};
 
@@ -77,7 +77,7 @@ pub(crate) fn draw(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let lift = row.lift();
     p.text(
@@ -100,7 +100,7 @@ pub(crate) fn draw_strip(
     row: &CardRow,
     top: f32,
     focused: Option<usize>,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     card_row::strip(
         p,
@@ -127,7 +127,7 @@ pub(crate) fn draw_focused(
     index: usize,
     top: f32,
     press: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     draw_focused_in(p, &d.related, row, index, top, press, measure);
 }
@@ -140,7 +140,7 @@ pub(crate) fn draw_focused_in(
     index: usize,
     top: f32,
     press: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) {
     let Some(item) = items.get(index) else {
         return;

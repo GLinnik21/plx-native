@@ -112,7 +112,7 @@ pub(crate) fn declines_request() -> bool {
 
 /// A declined miss has no worker whose completion could wake it. The next sample
 /// MUST present, including an unknown card first appearing on an otherwise idle page.
-pub(crate) fn deferred() { crate::ui::idle::invalidate(); }
+pub(crate) fn deferred() { plx_machine::idle::invalidate(); }
 
 #[cfg(test)]
 mod tests {
@@ -212,8 +212,8 @@ mod tests {
             assert!(!declines_request());
         }
         assert!(!declines_request(), "hero/heading work outside card() has no motion scope");
-        crate::ui::idle::take_local_damage();
+        plx_machine::idle::take_local_damage();
         deferred();
-        assert!(crate::ui::idle::take_local_damage() > 0, "a declined miss must request its next observation");
+        assert!(plx_machine::idle::take_local_damage() > 0, "a declined miss must request its next observation");
     }
 }

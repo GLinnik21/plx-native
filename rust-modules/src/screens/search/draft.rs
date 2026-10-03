@@ -1,6 +1,6 @@
 //! The Search instance's unacknowledged editing state. The store owns committed query/results;
 //! this draft owns edits until the next store notice acknowledges them. Draw never reads a store.
-use crate::ui::machine::{Canon, TextEdit};
+use plx_machine::machine::{Canon, TextEdit};
 use crate::ui::text_buffer::TextBuffer;
 
 pub(super) struct Draft {

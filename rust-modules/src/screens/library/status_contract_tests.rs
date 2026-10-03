@@ -3,7 +3,7 @@ use crate::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::screens::registry::{LibraryLike, PageMemory};
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::consts::SCR_W;
-use crate::ui::machine::{Canon, Cx, EntryId, FocusKey, FocusRead, Host, InputOwner, InstanceId, LogicalState, PressRead, ScreenId, Tick};
+use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, FocusRead, Host, InputOwner, InstanceId, LogicalState, PressRead, ScreenId, Tick};
 use crate::ui::screen::{At, Focusable, GroupSpec, ScreenArg};
 
 #[derive(Clone)]
@@ -15,7 +15,7 @@ impl LogicalState for Arg {
 }
 
 impl ScreenArg for Arg {
-    fn chrome(&self) -> crate::ui::machine::Chrome { crate::ui::machine::Chrome::None }
+    fn chrome(&self) -> plx_machine::machine::Chrome { plx_machine::machine::Chrome::None }
     fn id(&self) -> ScreenId { ScreenId(1) }
     fn title(&self) -> Option<&str> { None }
     fn same_instance(&self, _: &Self) -> bool { true }

@@ -36,12 +36,12 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 # The layer crates split out of the app crate (docs/module-layers.md), each a dependency of it and
 # each held to the same rule: an rlib, never an archive. One archive is linked, and it is the app's.
-LAYER_CRATES = ("plx_base",)
+LAYER_CRATES = ("plx_base", "plx_machine")
 NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
 # the manifest names. A mutated copy replaces `Cargo.toml` only.
-WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base")
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine")
 
 
 def offences(unit_graph=None, metadata=None):
@@ -125,10 +125,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(offences(self.graph(name="other"), self.meta(name="other"))), 2)
 
     def test_a_layer_crate_must_be_present_and_an_rlib(self):
-        clean = self.graph(name="plx_base")
-        self.assertEqual(layer_offences(clean), [])
-        self.assertEqual(layer_offences(self.graph(("staticlib",), name="plx_base")), [("plx_base", "staticlib")])
-        self.assertEqual(layer_offences(self.graph()), [("plx_base", "no library unit at all")])
+        def layers(types=("rlib",), skip=()):
+            return {"units": [u for layer in LAYER_CRATES if layer not in skip
+                              for u in self.graph(types, name=layer)["units"]]}
+        self.assertEqual(layer_offences(layers()), [])
+        self.assertEqual(layer_offences(layers(("staticlib",))), [(layer, "staticlib") for layer in LAYER_CRATES])
+        self.assertEqual(layer_offences(layers(skip=("plx_machine",))), [("plx_machine", "no library unit at all")])
+        self.assertEqual(layer_offences(self.graph()), [(layer, "no library unit at all") for layer in LAYER_CRATES])
 
     def test_other_crates_may_be_archives(self):
         graph = {"units": [{"target": {"name": "zstd_sys", "kind": ["staticlib"],

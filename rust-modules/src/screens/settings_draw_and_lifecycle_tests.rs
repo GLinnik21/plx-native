@@ -4,7 +4,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::ui::machine::Measure as _;
+use plx_machine::machine::Measure as _;
 
 /// Spec §14 phase 8: `Family::Settings`'s scrim/entrance composition reads
 /// `DrawFrame::nav_page_alpha` rather than the `ui::nav` statics — these two pin the

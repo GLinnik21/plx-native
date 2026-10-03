@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::machine::PosterKey;
+use plx_machine::machine::PosterKey;
 use crate::ui::tex::{Source, Warm};
 use std::cell::RefCell;
 

@@ -2,16 +2,16 @@
 
 use super::*;
 pub(super) use crate::ui::fixture::FixtureMeasure;
-pub(super) use crate::ui::machine::{
+pub(super) use plx_machine::machine::{
     Edge, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, InstanceId, MachineId,
     PressRead, Source, Stamped, Tick,
 };
-pub(super) use crate::ui::present::Present;
+pub(super) use plx_machine::present::Present;
 pub(super) use std::sync::LazyLock;
 
 pub(super) struct SessionHost;
 
-impl crate::ui::machine::Host for SessionHost {
+impl plx_machine::machine::Host for SessionHost {
     type Arg = super::super::family::SettingsPage;
     type Fx = AppFx;
     type Msg = AppMsg;
@@ -97,7 +97,7 @@ pub(super) fn bare(pad: Pad) -> ProfilesScreen {
         row_sty: card_row::RowStyle::PROFILES,
         footer_pop: CtlPop::new(),
         spin_ms: 0.0,
-        spin_phase: crate::ui::motion::Phase::default(),
+        spin_phase: plx_machine::motion::Phase::default(),
         ground: RouteGround::new(),
         pad,
         users: Arc::from(Vec::<auth::UserTile>::new()),
@@ -182,12 +182,12 @@ pub(super) fn click(hit: Option<u32>) -> ScreenEvent<SessionHost> {
 
 pub(super) fn commit_avatar(s: &mut ProfilesScreen, index: u32, read: &auth::owner::SessionSnapshot) -> Vec<Stamped<SessionHost>> {
     let entry = s.entry;
-    step_ev_with(s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+    step_ev_with(s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(FocusKey { entry, elem: index }), read, InstanceId(17)).1
 }
 
 pub(super) fn accept_selection(s: &mut ProfilesScreen, correlation: u32, epoch: u64, read: &auth::owner::SessionSnapshot) {
-    step_ev_with(s, &ScreenEvent::Async(crate::ui::machine::RequestId(correlation),
+    step_ev_with(s, &ScreenEvent::Async(plx_machine::machine::RequestId(correlation),
         AppMsg::SelectionReply { correlation, accepted: true, flow_epoch: epoch }),
         None, read, InstanceId(17));
 }

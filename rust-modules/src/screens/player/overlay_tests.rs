@@ -26,7 +26,7 @@ use crate::ui::form::FormId;
 use crate::appkit::more_menu::{Action as MoreAction, MoreRow, MorePage};
 use crate::ui::page_stack::TITLE_KEY;
 use crate::appkit::track_menu::{StyleField, TrackPage, TrackRow};
-use crate::ui::machine::{
+use plx_machine::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
 };
@@ -84,7 +84,7 @@ fn cx() -> Cx<'static, TestHost> {
 /// it asked the container to dismiss it)` — the three things every test below reads back.
 fn deliver(page: &mut PlayerOverlayScreen, ev: ScreenEvent<TestHost>) -> (Handled, Vec<PlayerReq>, bool) {
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let handled = page.step(
         &ev,
         &cx(),
@@ -108,7 +108,7 @@ fn press(page: &mut PlayerOverlayScreen, sym: u32, wcode: u32, edge: Edge) -> (H
         page,
         ScreenEvent::Input(InputEvent {
             kind: InputKind::Key {
-                key: crate::ui::machine::Key::Other,
+                key: plx_machine::machine::Key::Other,
                 sym,
                 wcode,
                 edge,
@@ -129,7 +129,7 @@ fn press_at_edge(page: &mut PlayerOverlayScreen, sym: u32) -> (Handled, Vec<Play
         page,
         ScreenEvent::Input(InputEvent {
             kind: InputKind::Key {
-                key: crate::ui::machine::Key::Other,
+                key: plx_machine::machine::Key::Other,
                 sym,
                 wcode: 0,
                 edge: Edge::Down,
@@ -355,7 +355,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
         f.into_stops()
     };
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
     };
     tick(&mut page, 1_000);
@@ -672,7 +672,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
     };
     tick(&mut page, 1_000);
@@ -707,7 +707,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
 /// and the selected KEY all move the hash; the same state hashes the same.
 #[test]
 fn the_replay_canon_includes_the_page_path_and_return_ids() {
-    use crate::ui::machine::{Canon, LogicalState};
+    use plx_machine::machine::{Canon, LogicalState};
     let _g = plx_base::testlock::serial();
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();

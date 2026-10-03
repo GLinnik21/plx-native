@@ -9,7 +9,7 @@ use crate::screens::registry::{tile_facts, LibraryIdentity, LibraryLike, Library
 use crate::ui::card_row;
 use crate::ui::consts::{MARGIN_X, SCR_H};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId};
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
     Placed, Seat, Step, Stop,
@@ -149,7 +149,7 @@ impl GridPart {
 
     pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,elems:[u32],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),shrink:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
 
-    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+    pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout,
@@ -599,7 +599,7 @@ mod pop_tests {
     use super::*;
     use crate::ui::card_row::RowStyle;
     use crate::ui::consts::{CARD_H, CARD_W};
-    use crate::ui::machine::{EntryId, GroupId};
+    use plx_machine::machine::{EntryId, GroupId};
 
     #[test]
     fn episode_grid_geometry_and_page_window_share_four_column_rows() {

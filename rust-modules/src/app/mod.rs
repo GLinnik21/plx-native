@@ -324,9 +324,9 @@ pub(crate) struct App {
     pub(crate) rec: recorder::Recplay,
     pub(crate) boot_initial: Option<bootstrap::Initial>,
     pub(crate) telemetry_guard: Option<crate::telemetry::native::Guard>,
-    /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
+    /// The present gate as a machine (spec §4.4). `plx_machine::idle` is still the product's verdict on
     /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
-    present: crate::ui::present::Present,
+    present: plx_machine::present::Present,
     /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
     /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
     pub(crate) glass: crate::ui::frame::glass::GlassPlan,
@@ -344,7 +344,7 @@ pub(crate) struct App {
     /// never agree with each other.
     pub(crate) pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
-    pub(crate) inputs: Vec<crate::ui::machine::InputEvent<u32>>,
+    pub(crate) inputs: Vec<plx_machine::machine::InputEvent<u32>>,
     /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
     /// the consent machine and the queue of requests an owned screen makes of this loop.
     pub(crate) bridge: bridge::Bridge,
@@ -505,7 +505,7 @@ unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     i32::from(failed)
 }
 
-fn finish_recording(rec: &mut recorder::Recplay, gate: &crate::ui::landgate::Gate) -> bool {
+fn finish_recording(rec: &mut recorder::Recplay, gate: &plx_machine::landgate::Gate) -> bool {
     std::mem::replace(rec, recorder::Recplay::Off).finish(gate)
 }
 

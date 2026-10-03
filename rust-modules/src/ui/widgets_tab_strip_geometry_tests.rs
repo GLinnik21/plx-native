@@ -85,7 +85,7 @@ fn measured_strip_reuses_shared_padding_gap_and_source_indices() {
     assert_eq!((lays[0].i, lays[1].i), (0, 2));
     assert_eq!(lays[0].x, 96.0);
     for lay in &lays {
-        assert_eq!(lay.w, crate::ui::machine::Measure::width(&measure, &lay.label, size, true));
+        assert_eq!(lay.w, plx_machine::machine::Measure::width(&measure, &lay.label, size, true));
     }
     let first = strip_pill_rect(&lays[0], 10.0, 60.0);
     let second = strip_pill_rect(&lays[1], 10.0, 60.0);

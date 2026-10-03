@@ -76,8 +76,8 @@ pub(super) fn reset_tracker_for_test(adapter: &super::MetadataAdapter, enabled: 
     arm(adapter, enabled);
 }
 
-pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr)
-    -> Result<(), crate::ui::landing::AdmissionError> {
+pub(super) fn admit(adapter: &super::MetadataAdapter, addr: plx_machine::machine::Addr)
+    -> Result<(), plx_machine::landing::AdmissionError> {
     let mut tracker = tracker(adapter);
     let result = adapter.detail_landing_ref().admit(addr);
     if result.is_ok() && tracker.enabled && tracker.active.insert(addr.req.0, false).is_some() {
@@ -131,14 +131,14 @@ fn push_terminal(tracker: &mut Tracker, req: u32, lane: ReplyLane) {
     tracker.pending.push_back(Reply { seq:tracker.seq, req, terminal:true, lane });
 }
 
-pub(super) fn put(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr, key: DetailKey, data: Option<Detail>) {
+pub(super) fn put(adapter: &super::MetadataAdapter, addr: plx_machine::machine::Addr, key: DetailKey, data: Option<Detail>) {
     let mut tracker = tracker(adapter);
     let shadow = if tracker.enabled {
         serde_json::to_value(&data).ok().and_then(|value| serde_json::from_value(value).ok())
     } else { None };
     let result = adapter.detail_landing_ref().put(addr, key.clone(), data);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false)
-        || result == Err(crate::ui::landing::PublishError::Full) {
+        || result == Err(plx_machine::landing::PublishError::Full) {
         Some(ReplyLane::Dropped(addr.req.0))
     } else if result.is_ok() {
         shadow.map(|data| ReplyLane::Data(((key.0).raw(), key.1), data))
@@ -149,7 +149,7 @@ pub(super) fn put(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Ad
     }
 }
 
-pub(super) fn refused(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr) {
+pub(super) fn refused(adapter: &super::MetadataAdapter, addr: plx_machine::machine::Addr) {
     let replay = crate::stores::tape::replaying();
     let mut tracker = tracker(adapter);
     let result = adapter.detail_landing_ref().refused(addr);
@@ -167,8 +167,8 @@ pub(super) fn refused(adapter: &super::MetadataAdapter, addr: crate::ui::machine
     else if tracker.enabled { tracker.failure = Some("failed detail refusal publication"); }
 }
 
-fn matches_landed(reply: &Reply, landed: &crate::ui::landing::Landed<DetailKey, Option<Detail>>) -> bool {
-    use crate::ui::landing::Lane;
+fn matches_landed(reply: &Reply, landed: &plx_machine::landing::Landed<DetailKey, Option<Detail>>) -> bool {
+    use plx_machine::landing::Lane;
     if reply.req != landed.addr.req.0 || reply.terminal != landed.terminal { return false; }
     match (&reply.lane, &landed.lane) {
         (ReplyLane::Data((sid, rk), expected), Lane::Data((actual_sid, actual_rk), actual)) =>
@@ -215,7 +215,7 @@ pub(crate) fn validate_retired(value: &serde_json::Value) -> Result<(), &'static
 }
 
 pub(super) struct Drain {
-    pub(super) landed: Vec<crate::ui::landing::Landed<DetailKey, Option<Detail>>>,
+    pub(super) landed: Vec<plx_machine::landing::Landed<DetailKey, Option<Detail>>>,
 }
 
 pub(super) fn drain_live(adapter: &super::MetadataAdapter, want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)> {
@@ -625,7 +625,7 @@ mod tests {
             let landed = supply(test_adapter(), decoded, &None).unwrap().1.landed;
             assert_eq!(landed.len(), 1);
             assert_eq!(test_adapter().detail_landing.inflight(detail_addr(gen).to), 0);
-            let crate::ui::landing::Lane::Data(_, Some(detail)) = &landed[0].lane else { panic!("detail") };
+            let plx_machine::landing::Lane::Data(_, Some(detail)) = &landed[0].lane else { panic!("detail") };
             assert_eq!(detail.video_fps.to_bits(), (-0.0f64).to_bits());
             assert_eq!(detail.aspect_ratio.to_bits(), 0x7ff8000000000013);
             assert_eq!(detail.blur[0][0].to_bits(), 0x7fc00013);

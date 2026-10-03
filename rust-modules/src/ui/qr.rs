@@ -1,7 +1,7 @@
 //! Offline QR links with a four-module quiet zone and integer-sized modules.
 //! Encode on mount, upload once in `prepare`, then paint one texture per frame.
 use super::{theme, Painter, Rect};
-use super::machine::Measure;
+use plx_machine::machine::Measure;
 use super::label::HAlign;
 use super::text_view::TextView;
 

@@ -76,7 +76,7 @@ impl GridBands {
             |row| GridBand { row, expansion: spring.pos }))
     }
 
-    pub(crate) fn write(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.option(self.focus, |c, row| { c.u32(row as u32); });
         c.seq(self.slots.iter().filter(|(row, _)| row.is_some()).count());
         for (row, spring) in &self.slots {
@@ -219,7 +219,7 @@ mod tests {
         bands.focus(Some(0), false);
         bands.focus(Some(1), true);
         let k = RowStyle::HOME.k_scroll;
-        let (_, moving) = crate::ui::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(moving, "caption motion keeps the presenter awake");
         let geometry = bands.geometry();
         let opened = geometry.iter().find(|b| b.row == 1).unwrap().expansion;
@@ -228,7 +228,7 @@ mod tests {
         assert!((opened + closing - 1.0).abs() < 0.0001);
         assert_eq!(card_row::band_reveal(opened), 0.0, "caption waits until its space is open");
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
-        let (_, moving) = crate::ui::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
         assert_eq!(bands.slots.iter().filter(|(r, _)| r.is_some()).count(), 1);
         assert!(card_row::band_reveal(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);

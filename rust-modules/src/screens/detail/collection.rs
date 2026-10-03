@@ -8,7 +8,7 @@ use crate::metadata::{CollectionShelf, Detail};
 use crate::pms::PmsMovie;
 use crate::ui::card_row::CardRow;
 use crate::ui::linked_heading::LinkedHeading;
-use crate::ui::machine::{GroupId, Measure};
+use plx_machine::machine::{GroupId, Measure};
 use crate::ui::{Painter, Rect};
 
 use super::related;

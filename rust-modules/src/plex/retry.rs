@@ -50,15 +50,15 @@ impl EndpointRefreshSet {
     pub(crate) fn iter(&self) -> impl Iterator<Item = EndpointRefresh> + '_ {
         self.ids[..self.len].iter().map(|&sid| EndpointRefresh { sid })
     }
-    pub(crate) fn emit<H: EndpointRefreshHost>(self, fx: &mut crate::ui::machine::Effects<'_, H>) {
-        for request in self.iter() { fx.push(crate::ui::machine::Fx::App(H::endpoint_refresh(request))); }
+    pub(crate) fn emit<H: EndpointRefreshHost>(self, fx: &mut plx_machine::machine::Effects<'_, H>) {
+        for request in self.iter() { fx.push(plx_machine::machine::Fx::App(H::endpoint_refresh(request))); }
     }
 }
 
 /// A host that can turn one [`EndpointRefresh`] into its own effect, which is what
 /// [`EndpointRefreshSet::emit`] needs of it. The app's `AppHost` implements it; `stores` re-exports
 /// it as `StoreEffectHost`, the name its machines are written against.
-pub(crate) trait EndpointRefreshHost: crate::ui::machine::Host {
+pub(crate) trait EndpointRefreshHost: plx_machine::machine::Host {
     fn endpoint_refresh(request: EndpointRefresh) -> Self::Fx;
 }
 
@@ -80,7 +80,7 @@ mod tests {
         assert_eq!(first.iter().map(|r| r.sid.raw()).collect::<Vec<_>>(), [3, 1, 2, 0]);
         for id in 0..MAX_SERVERS { first.insert(request(id as u16)); }
         assert_eq!(first.iter().count(), MAX_SERVERS);
-        assert!(first.iter().count() <= crate::ui::machine::MAX_EMIT_PER_STEP as usize);
+        assert!(first.iter().count() <= plx_machine::machine::MAX_EMIT_PER_STEP as usize);
         first.merge(first);
         assert_eq!(first.iter().count(), MAX_SERVERS);
     }

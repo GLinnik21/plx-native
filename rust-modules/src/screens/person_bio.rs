@@ -37,7 +37,7 @@
 //! per-paragraph cull for free.
 //!
 //! **3. Nothing here animates from a clock.** The scroll is a [`Spring`], so `gfx::spring` reports
-//! it to [`crate::ui::idle`] and the present gate sees the paging motion without this module opting
+//! it to [`plx_machine::idle`] and the present gate sees the paging motion without this module opting
 //! in. That is deliberate rather than incidental — `Xfade` and `Spinner` both shipped FROZEN behind
 //! that gate because they integrate milliseconds, and a hand-rolled scroll offset here would have
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
@@ -114,7 +114,7 @@ const RISE: f32 = crate::ui::popover::Popover::RISE;
 /// The person page's biography, in full. Presented on that page's own `ModalStack`
 /// (`registry::ContentPanel::Bio`), dismissed by BACK; UP/DOWN page the prose.
 pub(crate) struct PersonBioScreen {
-    entry: crate::ui::machine::EntryId,
+    entry: plx_machine::machine::EntryId,
     /// The current page, 1-based. The scroll spring chases [`scroll_for_page`] of it, rather than
     /// the page being derived from the scroll: paging is the input, and a spring still travelling
     /// must not be read back as a different page half way there.
@@ -123,7 +123,7 @@ pub(crate) struct PersonBioScreen {
 }
 
 impl PersonBioScreen {
-    pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
+    pub(crate) fn new(entry: plx_machine::machine::EntryId) -> Self {
         Self {
             entry,
             page: 1,
@@ -183,7 +183,7 @@ impl PersonBioScreen {
         &mut self,
         person: &Person,
         appear: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         field: Option<&crate::ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
@@ -215,15 +215,15 @@ impl PersonBioScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::machine::Machine<H> for PersonBioScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> plx_machine::machine::Machine<H> for PersonBioScreen {
     type Ev = crate::ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
-        cx: &crate::ui::machine::Cx<'_, H>,
-        fx: &mut crate::ui::machine::Effects<'_, H>,
-    ) -> crate::ui::machine::Handled {
-        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        cx: &plx_machine::machine::Cx<'_, H>,
+        fx: &mut plx_machine::machine::Effects<'_, H>,
+    ) -> plx_machine::machine::Handled {
+        use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
         use crate::ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Tick(t) => {
@@ -242,7 +242,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
                 }
                 InputKind::Key { sym, edge: Edge::Down | Edge::Repeat, .. } => {
                     if self.step_page(sym as c_uint) {
-                        fx.invalidate(crate::ui::present::Provenance::Input);
+                        fx.invalidate(plx_machine::present::Provenance::Input);
                     }
                     Handled::Yes
                 }
@@ -270,45 +270,45 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
 /// it always was: `Self::page`, moved by `step_page` from the screen's own `step`, sprung to by
 /// `tick` — the engine has no opinion about it, under either source.
 impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
-    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
         None
     }
     fn neighbour(
         &self,
-        _key: crate::ui::machine::FocusKey<u32>,
+        _key: plx_machine::machine::FocusKey<u32>,
         _dir: crate::ui::screen::Dir,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> crate::ui::screen::Step<u32> {
         crate::ui::screen::Step::Edge
     }
     fn place(
         &self,
         _key: &u32,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
         _at: crate::ui::screen::At,
     ) -> Option<crate::ui::screen::Placed> {
         None
     }
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+        want: plx_machine::machine::FocusKey<u32>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
         want
     }
     fn seat(
         &self,
-        _g: crate::ui::machine::GroupId,
+        _g: plx_machine::machine::GroupId,
         _from: crate::ui::screen::Placed,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey { entry: self.entry, elem: 0 }
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
+        plx_machine::machine::FocusKey { entry: self.entry, elem: 0 }
     }
 }
 
-impl crate::ui::machine::LogicalState for PersonBioScreen {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for PersonBioScreen {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u64(self.page as u64).f32(self.scroll.pos).f32(self.scroll.vel);
     }
     fn probe(&self, out: &mut String) {
@@ -320,13 +320,13 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
     fn name(&self) -> &'static str {
         "bio"
     }
-    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+    fn state(&self) -> &dyn plx_machine::machine::LogicalState {
         self
     }
-    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+    fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The page dim, at the PROSE role. Heavier than a menu's on purpose — see the module doc's
     /// point 1: this page draws the person's own name at `size::DISPLAY` directly behind this
     /// sheet's top corner, and the page around a panel of fine print should recede further than
@@ -453,7 +453,7 @@ fn head_h() -> f32 {
     // site — going through `TtfMeasure` (spec §4.3's device/simulator impl) directly is exactly
     // the capability a draw-time caller would have handed in, and `cap_h` is a pure `f(sz)` font
     // metric no string or replay state can move.
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     theme::alert::EYEBROW_LEAD
         + theme::alert::GAP_EYEBROW_TITLE
         + theme::alert::TITLE_LEAD
@@ -565,7 +565,7 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 
 /// Eyebrow, name, identity line — stacked from the content box's top edge on the alert family's
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
-fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
+fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::machine::Measure) {
     let mut y = c.y;
     Label::new(crate::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
@@ -646,7 +646,7 @@ fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f3
 
 /// The footer: what the library holds on the left, how to leave on the right, both on one centre
 /// line so the keycap and the prose share a band.
-fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
+fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::machine::Measure) {
     let cy = c.y + c.h - foot_h() * 0.5;
     let sz = theme::size::CAPTION;
     if let Some(line) = library_line(person.total(0), person.total(1)) {
@@ -864,12 +864,12 @@ mod tests {
     // is the sibling dependency the layer gate exists to refuse.
 
     use crate::screens::registry::{AppFx, AppMsg};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Canon, Chrome, Cx, Edge, Effects, EntryId, FocusRead, Fx, Handled, Host, InputEvent,
         InputKind, InputOwner, Key, LogicalState, Machine, NavOp, PressRead, ScreenId,
         Source, Stamped, Tick,
     };
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
     use crate::ui::screen::{ScreenArg, ScreenEvent};
 
     #[derive(Clone, PartialEq, Eq)]
@@ -934,7 +934,7 @@ mod tests {
         let measure = crate::ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let (mut out, mut present) = (Vec::new(), Present::new());
-        let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Nav, &mut present);
+        let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Nav, &mut present);
         let mut panel = PersonBioScreen::new(ENTRY);
         let handled = panel.step(
             &ScreenEvent::Input(InputEvent {
@@ -1031,7 +1031,7 @@ mod tests {
     #[test]
     fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
         use crate::ui::focus::{FocusEngine, Outcome};
-        use crate::ui::machine::GroupId;
+        use plx_machine::machine::GroupId;
         use crate::ui::screen::FocusTarget;
 
         let measure = crate::ui::fixture::FixtureMeasure;

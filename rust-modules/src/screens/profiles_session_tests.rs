@@ -43,7 +43,7 @@ fn selection_pin_and_signout_are_typed_session_commands() {
 
     let (_, select_fx) = step_ev_with(
         &mut open_screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(FocusKey {
             entry: EntryId(3),
             elem: 0,
@@ -70,7 +70,7 @@ fn selection_pin_and_signout_are_typed_session_commands() {
     let mut signout_screen = ProfilesScreen::new(EntryId(4), published.read());
     let (_, signout_fx) = step_ev_with(
         &mut signout_screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(2)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(2)),
         Some(FocusKey {
             entry: EntryId(4),
             elem: FOOTER,
@@ -149,7 +149,7 @@ fn a_fresh_pad_cannot_consume_the_previous_instances_pin_denial() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -225,7 +225,7 @@ fn a_new_denial_is_not_lost_when_dismiss_and_switch_publish_between_ticks() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -298,7 +298,7 @@ fn a_carried_select_command_does_not_look_like_an_immediate_switch_failure() {
     let (_, refused) = step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: false,
@@ -326,7 +326,7 @@ fn a_fast_ready_read_seen_before_its_ack_is_consumed_at_that_epoch() {
     let mut screen = ProfilesScreen::new(EntryId(3), old.read());
     let (_, effects) = step_ev_with(
         &mut screen,
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
         Some(FocusKey {
             entry: EntryId(3),
             elem: 0,
@@ -362,7 +362,7 @@ fn a_fast_ready_read_seen_before_its_ack_is_consumed_at_that_epoch() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -384,7 +384,7 @@ fn older_reads_wait_and_a_newer_flow_drops_only_local_pending_state() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -464,7 +464,7 @@ fn closing_and_reopening_the_pad_makes_old_and_foreign_acks_harmless() {
 
     for event in [
         ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -472,7 +472,7 @@ fn closing_and_reopening_the_pad_makes_old_and_foreign_acks_harmless() {
             },
         ),
         ScreenEvent::Async(
-            crate::ui::machine::RequestId(99),
+            plx_machine::machine::RequestId(99),
             AppMsg::SelectionReply {
                 correlation: 2,
                 accepted: true,
@@ -504,7 +504,7 @@ fn closing_and_reopening_the_pad_makes_old_and_foreign_acks_harmless() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(2),
+            plx_machine::machine::RequestId(2),
             AppMsg::SelectionReply {
                 correlation: 2,
                 accepted: true,
@@ -521,7 +521,7 @@ fn closing_and_reopening_the_pad_makes_old_and_foreign_acks_harmless() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(2),
+            plx_machine::machine::RequestId(2),
             AppMsg::SelectionReply {
                 correlation: 2,
                 accepted: true,
@@ -567,7 +567,7 @@ fn canonical_state_distinguishes_awaiting_and_each_accepted_epoch() {
     step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -586,7 +586,7 @@ fn canonical_state_distinguishes_awaiting_and_each_accepted_epoch() {
     step_ev_with(
         &mut other,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::SelectionReply {
                 correlation: 1,
                 accepted: true,
@@ -627,7 +627,7 @@ fn canon_distinguishes_the_cached_read_used_to_reduce_the_same_accepted_ack() {
         step_ev_with(
             screen,
             &ScreenEvent::Async(
-                crate::ui::machine::RequestId(1),
+                plx_machine::machine::RequestId(1),
                 AppMsg::SelectionReply {
                     correlation: 1,
                     accepted: true,
@@ -684,7 +684,7 @@ fn root_back_uses_the_instance_address_and_checked_correlation_space() {
     let (handled, _) = step_ev_with(
         &mut screen,
         &ScreenEvent::Async(
-            crate::ui::machine::RequestId(1),
+            plx_machine::machine::RequestId(1),
             AppMsg::BackReply {
                 correlation: 1,
                 resumed: false,
@@ -757,7 +757,7 @@ fn a_roster_readout_offers_a_focused_back_whose_ok_is_the_back_key() {
             "Sign out stays reachable");
         assert!(matches!(Focusable::<SessionHost>::neighbour(&s, back, Dir::Right, &c), Step::Move(k) if k == sign_out));
 
-        let (_, ok) = step_ev_with(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        let (_, ok) = step_ev_with(&mut s, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
             Some(back), &read, InstanceId(3));
         let (_, key) = step_ev_with(&mut s, &key_down(Key::Back, 0, 0), Some(back), &read, InstanceId(3));
         assert_eq!(session_cmds(&ok), vec!["BackAtRoot"], "{reason}: OK on Back asks to leave");

@@ -2,7 +2,7 @@
 use crate::search::Kind;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
-use crate::ui::machine::GroupId;
+use plx_machine::machine::GroupId;
 use crate::ui::Rect;
 
 /// `pub(crate)`, alongside this module itself (`screens/search/mod.rs`'s `pub(crate) mod layout`)
@@ -87,7 +87,7 @@ pub(super) fn recent(slot: usize, scroll: f32) -> Rect {
         crate::ui::table::ROW_H,
     )
 }
-pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn crate::ui::machine::Measure) -> Rect {
+pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let width = crate::ui::widgets::Button::pill_w_measured(
         crate::i18n::msg::browse_search_clear_c(),
         crate::ui::theme::size::BODY,
@@ -117,7 +117,7 @@ mod tests {
     use super::*;
 
     struct Measure;
-    impl crate::ui::machine::Measure for Measure {
+    impl plx_machine::machine::Measure for Measure {
         fn width(&self, _: &std::ffi::CStr, _: i32, _: bool) -> f32 {
             0.0
         }

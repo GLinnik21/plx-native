@@ -1703,14 +1703,14 @@ pub(crate) fn draw_shadow(
 pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
         let w = k.sqrt(); // natural frequency; critical damping is c = 2ω
-        let e = crate::ui::motion::exp(-w * dt); // this crate's exp: what a recording can replay
+        let e = plx_machine::motion::exp(-w * dt); // this crate's exp: what a recording can replay
         let x = *pos - target; // offset from target
         let b = *vel + w * x;
         *pos = target + (x + b * dt) * e;
         *vel = (*vel - w * b * dt) * e;
         // Every animation in the app lands here or in `spring_zeta`, which is what lets
-        // `ui::idle` know EXACTLY whether the screen is still moving without any screen opting in.
-        crate::ui::idle::note_spring(*pos, target, *vel);
+        // `plx_machine::idle` know EXACTLY whether the screen is still moving without any screen opting in.
+        plx_machine::idle::note_spring(*pos, target, *vel);
     }
 }
 
@@ -1730,13 +1730,13 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
         let wd = w * (1.0 - z * z).sqrt(); // damped natural frequency
         let x0 = *pos - target; // offset from target
         let v0 = *vel;
-        let e = crate::ui::motion::exp(-z * w * dt);
-        let (s, c) = crate::ui::motion::sin_cos(wd * dt);
+        let e = plx_machine::motion::exp(-z * w * dt);
+        let (s, c) = plx_machine::motion::sin_cos(wd * dt);
         let a = x0;
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);
         *vel = e * ((b * wd - z * w * a) * c - (a * wd + z * w * b) * s);
-        crate::ui::idle::note_spring(*pos, target, *vel); // see the note in `spring`
+        plx_machine::idle::note_spring(*pos, target, *vel); // see the note in `spring`
     }
 }
 
@@ -4982,10 +4982,10 @@ unsafe fn dither_uniforms(prog: c_uint) -> c_int {
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
 // **Is the host page being served from [`FrameCache`] rather than rasterized?** The flag, its doc
-// and its two accessors live in `ui::idle`, the machine layer: `idle::invalidate` has to read it,
+// and its two accessors live in `plx_machine::idle`, the machine layer: `idle::invalidate` has to read it,
 // and this module may name that layer but not the reverse. Every primitive below consults it
 // through these two names exactly as it did when the flag was declared here.
-pub(crate) use crate::ui::idle::{page_frozen, set_page_frozen};
+pub(crate) use plx_machine::idle::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -7219,7 +7219,7 @@ mod tests {
 
     #[test]
     fn the_dither_policy_refuses_small_fields() {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         let broad = 700.0;
         assert_eq!(
             dither_for_field(40.0, broad),

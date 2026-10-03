@@ -2,7 +2,7 @@
 
 use crate::collection::{CollectionAdapter, CollectionState, CollectionTarget, CollectionView};
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -47,7 +47,7 @@ impl CollectionStore {
         if changed { self.bump(); }
         changed
     }
-    pub(crate) fn pump(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = self.state.pump_with_gate(&self.adapter, gate);
         if changed { self.bump(); }
         changed
@@ -80,7 +80,7 @@ impl<H: Host> Machine<H> for CollectionStore {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             StoreEv::Cmd(cmd) => { self.run(cmd.clone()); }
-            StoreEv::Pump { .. } => { self.pump(&crate::ui::landgate::Gate::default()); }
+            StoreEv::Pump { .. } => { self.pump(&plx_machine::landgate::Gate::default()); }
         }
         Handled::Yes
     }

@@ -5,8 +5,8 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use crate::ui::form::Activation;
-use crate::ui::machine::{Edge, InputEvent, InputKind, Source};
-use crate::ui::present::Present;
+use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
+use plx_machine::present::Present;
 use crate::ui::screen::By;
 
 /// Mounting the surface at its `Root` page runs the inner stack's own lifecycle (§3.4) and
@@ -689,7 +689,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
     let connect = FocusKey { entry: EntryId(0), elem: super::super::registry::ALERT + 1 };
-    root.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &cx(Some(connect)), &mut fx);
+    root.step(&ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(Some(connect)), &mut fx);
     let answers: Vec<_> = out.iter().filter_map(|st| match &st.fx {
         Fx::App(super::super::registry::AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
             if machine_id == "lan-machine" => Some(*choice),

@@ -13,7 +13,7 @@
 use crate::ui::consts::Key;
 use crate::ui::icons::{self, Icon};
 use crate::ui::label::{HAlign, Label};
-use crate::ui::machine::Edge;
+use plx_machine::machine::Edge;
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::ffi::CString;
 
@@ -402,7 +402,7 @@ mod tests {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{LocaleContext, Preference};
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         let mut out = Vec::new();
         for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY")] {
             let locale = LocaleContext::resolve(language, None, Some(region), None, None);

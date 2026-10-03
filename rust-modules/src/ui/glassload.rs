@@ -475,7 +475,7 @@ impl Dial {
         }
         // A dial run is a perf measurement: it must keep presenting whatever the idle gate thinks.
         // `wake` rather than `invalidate` — nothing here claims the PAGE's pixels changed.
-        crate::ui::idle::wake();
+        plx_machine::idle::wake();
         let Some((hold_ms, len)) = self.sweep.as_ref().map(|s| (s.hold_ms, s.steps.len())) else {
             return;
         };

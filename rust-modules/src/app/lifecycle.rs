@@ -187,13 +187,13 @@ mod root_back_tests {
         assert_eq!(after_cancel(true), AfterCancel::BackedOut);
     }
 
-    fn back_input(ms: u32) -> crate::ui::machine::InputEvent<u32> {
-        crate::ui::machine::InputEvent {
-            at: crate::ui::machine::Tick { ms, dt_us: 16_000 },
-            source: crate::ui::machine::Source::Script,
-            kind: crate::ui::machine::InputKind::Key {
-                key: crate::ui::machine::Key::Back, sym: 0, wcode: 0,
-                edge: crate::ui::machine::Edge::Down, at_edge: false,
+    fn back_input(ms: u32) -> plx_machine::machine::InputEvent<u32> {
+        plx_machine::machine::InputEvent {
+            at: plx_machine::machine::Tick { ms, dt_us: 16_000 },
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Key {
+                key: plx_machine::machine::Key::Back, sym: 0, wcode: 0,
+                edge: plx_machine::machine::Edge::Down, at_edge: false,
             },
         }
     }
@@ -209,14 +209,14 @@ mod root_back_tests {
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
-        crate::app::bridge::frame(&mut d, &mut rig, crate::ui::machine::Tick::default(), vec![]);
+        crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         let entry = d.nav.top_page().expect("Home root").id;
         let instance = d.nav.instance_of(entry).expect("owned Home body");
         assert!(d.top_screen().unwrap().as_any().unwrap()
             .is::<crate::screens::home::HomeScreen>());
 
         let (_, report) = crate::app::bridge::frame(&mut d, &mut rig,
-            crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }, vec![back_input(16)]);
+            plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![back_input(16)]);
         assert!(!report.back_at_root, "Home answered its own root BACK exactly once");
         let requests = rig.take_reqs();
         assert!(matches!(requests.as_slice(),
@@ -241,24 +241,24 @@ mod root_back_tests {
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Home);
-        crate::app::bridge::frame(&mut d, &mut rig, crate::ui::machine::Tick::default(), vec![]);
+        crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         crate::app::bridge::nav_push(&mut d, crate::screens::registry::AppArg::Content(
             crate::screens::registry::ContentArg::Detail {
                 sid: crate::plex::ServerId::UNSET, rk: "nonroot-back".into(),
             }));
         crate::app::bridge::frame(&mut d, &mut rig,
-            crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }, vec![]);
+            plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![]);
         let detail_entry = d.nav.top_page().expect("Detail page").id;
         let detail_instance = d.nav.instance_of(detail_entry).expect("owned Detail body");
 
         let (_, report) = crate::app::bridge::frame(&mut d, &mut rig,
-            crate::ui::machine::Tick { ms: 32, dt_us: 16_000 }, vec![back_input(32)]);
+            plx_machine::machine::Tick { ms: 32, dt_us: 16_000 }, vec![back_input(32)]);
         assert!(!report.back_at_root);
         assert!(rig.take_reqs().iter().all(|req|
             !matches!(req, crate::screens::registry::LoopReq::BackAtRoot)));
         assert!(rig.take_content_reqs().iter().any(|(from, req, _)| matches!(
             (from, req),
-            (crate::ui::machine::MachineId::Instance(instance),
+            (plx_machine::machine::MachineId::Instance(instance),
                 crate::screens::registry::ContentReq::Back) if *instance == detail_instance
         )));
         assert_eq!(crate::tv::home::home_requests(), before);
@@ -275,14 +275,14 @@ mod root_back_tests {
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Onboard);
-        crate::app::bridge::frame(&mut d, &mut rig, crate::ui::machine::Tick::default(), vec![]);
+        crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         let onboard_entry = d.nav.top_page().expect("Onboard root").id;
         let onboard_instance = d.nav.instance_of(onboard_entry).expect("owned Onboard body");
         assert!(matches!(d.top_arg(), Some(crate::screens::registry::AppArg::Onboard)));
         assert_eq!(d.top_screen().unwrap().name(), "onboard");
 
         let (_, report) = crate::app::bridge::frame(&mut d, &mut rig,
-            crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }, vec![back_input(16)]);
+            plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![back_input(16)]);
         assert!(!report.back_at_root, "Onboard has an in-app destination");
         let requests = rig.take_reqs();
         assert!(matches!(requests.as_slice(),
@@ -292,7 +292,7 @@ mod root_back_tests {
             assert!(crate::app::run::reduce_navigation_request(request, &mut d).is_ok());
         }
         crate::app::bridge::frame(&mut d, &mut rig,
-            crate::ui::machine::Tick { ms: 32, dt_us: 16_000 }, vec![]);
+            plx_machine::machine::Tick { ms: 32, dt_us: 16_000 }, vec![]);
         assert!(matches!(d.top_arg(), Some(crate::screens::registry::AppArg::Profiles)));
         assert_eq!(d.top_screen().unwrap().name(), "profiles");
         assert_ne!(d.nav.instance_of(d.nav.top_page().unwrap().id), Some(onboard_instance));

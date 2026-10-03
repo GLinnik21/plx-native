@@ -2,8 +2,8 @@
 //! (`preferences/picker_tests.rs`); this file also owns the fixtures both share.
 use super::*;
 use crate::plex::account::PreferenceRequest;
-use crate::ui::machine::{FocusRead, InputOwner, PressRead, Stamped, Tick};
-use crate::ui::present::Present;
+use plx_machine::machine::{FocusRead, InputOwner, PressRead, Stamped, Tick};
+use plx_machine::present::Present;
 use crate::ui::fixture::FixtureMeasure;
 
 pub(super) fn context(focus: u32) -> Cx<'static, InnerHost> {
@@ -24,10 +24,10 @@ pub(super) fn preference_commands(emitted: &[Stamped<InnerHost>]) -> usize {
     emitted.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Preferences(_)))).count()
 }
 pub(super) fn popped(emitted: &[Stamped<InnerHost>]) -> bool {
-    emitted.iter().any(|e| matches!(&e.fx, Fx::Nav(crate::ui::machine::NavOp::Pop)))
+    emitted.iter().any(|e| matches!(&e.fx, Fx::Nav(plx_machine::machine::NavOp::Pop)))
 }
 pub(super) fn pushed(emitted: &[Stamped<InnerHost>]) -> Vec<SettingsPage> {
-    emitted.iter().filter_map(|e| match &e.fx { Fx::Nav(crate::ui::machine::NavOp::Push(p)) => Some(*p), _ => None }).collect()
+    emitted.iter().filter_map(|e| match &e.fx { Fx::Nav(plx_machine::machine::NavOp::Push(p)) => Some(*p), _ => None }).collect()
 }
 
 /// A published account profile with a synthetic (request, snapshot) pair, restoring the previous

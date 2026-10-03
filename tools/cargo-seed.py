@@ -177,6 +177,7 @@ def seed_key(root, kind):
     part("manifest", manifest_bytes(os.path.join(root, "rust-modules", "Cargo.toml")))
     part("manifest-storage", manifest_bytes(os.path.join(root, "rust-modules", "storage", "Cargo.toml")))
     part("manifest-base", manifest_bytes(os.path.join(root, "rust-modules", "base", "Cargo.toml")))
+    part("manifest-machine", manifest_bytes(os.path.join(root, "rust-modules", "machine", "Cargo.toml")))
     for p in cargo_configs(root):
         # CONTENT ONLY, never the path: a path would make every lane's key differ from every
         # other's, and a seed would match only the lane that made it.

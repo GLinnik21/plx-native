@@ -73,7 +73,7 @@ fn a_type_switch_never_draws_the_empty_interim_layout() {
     let at_rest = head(&page);
     assert!(page.scroll.pos > 0.0, "the heading sits below shelves, so the page is scrolled to it");
 
-    let (mut out, mut present) = (Vec::new(), crate::ui::present::Present::new());
+    let (mut out, mut present) = (Vec::new(), plx_machine::present::Present::new());
     page.command(LibraryCmd::SetType(LibraryType::Seasons), &fixture.cx(engine.current(OWNER)),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     let old = fixture.listing.clone();

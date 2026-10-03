@@ -138,8 +138,8 @@ impl PickerPage {
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
     }
     fn pop(&self, fx: &mut Effects<'_, InnerHost>) {
-        fx.push(Fx::Nav(crate::ui::machine::NavOp::Pop));
-        fx.invalidate(crate::ui::present::Provenance::Input);
+        fx.push(Fx::Nav(plx_machine::machine::NavOp::Pop));
+        fx.invalidate(plx_machine::present::Provenance::Input);
     }
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
         if self.state.io.busy { return; }
@@ -149,7 +149,7 @@ impl PickerPage {
                 if let Some(update) = self.txn.retry.clone() { self.txn.start_account(&mut self.state.io, Some(update), fx); }
                 else { self.txn.load(&mut self.state.io, fx); }
                 self.rebuild(false);
-                fx.invalidate(crate::ui::present::Provenance::Input);
+                fx.invalidate(plx_machine::present::Provenance::Input);
             }
             None => {}
         }
@@ -163,12 +163,12 @@ impl PickerPage {
             self.alert.open(crate::i18n::msg::settings_playback_force_question_c(), crate::i18n::msg::settings_playback_force_body());
             self.state.confirming = true; self.state.affirmative = false;
             self.state.alert_scroll = self.alert.scroll_target_bits(); self.focus(fx, ALERT_GROUP);
-            fx.invalidate(crate::ui::present::Provenance::Input);
+            fx.invalidate(plx_machine::present::Provenance::Input);
             return;
         }
         self.commit(value, fx);
         self.rebuild(false);
-        fx.invalidate(crate::ui::present::Provenance::Input);
+        fx.invalidate(plx_machine::present::Provenance::Input);
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
@@ -214,12 +214,12 @@ impl Machine<InnerHost> for PickerPage {
                     self.rebuild(false);
                 }
                 self.focus(fx, GroupId(0));
-                fx.invalidate(crate::ui::present::Provenance::Input); return Handled::Yes;
+                fx.invalidate(plx_machine::present::Provenance::Input); return Handled::Yes;
             }
         }
         match ev {
             ScreenEvent::Enter(_) => {
-                if self.start_initial_load(fx) { self.rebuild(true); fx.invalidate(crate::ui::present::Provenance::Input); }
+                if self.start_initial_load(fx) { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Input); }
                 Handled::No
             }
             ScreenEvent::Tick(t) => {
@@ -245,14 +245,14 @@ impl Machine<InnerHost> for PickerPage {
                             self.state.selected = RETRY_KEY;
                             self.focus(fx, GroupId(0));
                         } else if !had_rows && cx.focus.current.is_none() { self.focus(fx, GroupId(0)); }
-                        fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                        fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                     }
                     // an optimistic Size/Position pick published its value: move the checkmark now
                     Landed::Nothing if !started && self.checked_position() != self.state.checked => {
                         self.rebuild(false);
-                        fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                        fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                     }
-                    Landed::Nothing if started => { self.rebuild(true); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
+                    Landed::Nothing if started => { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
                     Landed::Nothing => {}
                 }
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);

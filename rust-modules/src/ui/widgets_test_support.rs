@@ -56,14 +56,14 @@ pub(super) fn row(watched: bool, in_progress: bool) -> TileFacts<'static> {
 // Pure over `theme` tokens and the real corner springs, as the block above is.
 
 pub(super) fn ground_hash(ground: &PageGround) -> u64 {
-    let mut c = crate::ui::machine::Canon::new();
+    let mut c = plx_machine::machine::Canon::new();
     ground.write_motion(&mut c);
     c.finish()
 }
 
 pub(super) struct StatusMetrics;
 
-impl crate::ui::machine::Measure for StatusMetrics {
+impl plx_machine::machine::Measure for StatusMetrics {
     fn width(&self, _: &core::ffi::CStr, size: i32, bold: bool) -> f32 {
         // the status note wraps in the reason rung's regular face; everything else measured is
         // the action pill
@@ -175,7 +175,7 @@ pub(super) fn span_of(w: &[f32], i: usize) -> (f32, f32) {
 }
 
 /// The capsule/strip tests drive `Capsule::step`, whose landing frame `Spring::jump`s — and
-/// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
+/// `Spring::jump` reports to `plx_machine::idle`'s process-global dirty flag. So they are serial by
 /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
 /// failed OTHER modules' "a settled screen asks for nothing" assertions.
 pub(super) fn serial_for_motion() -> plx_base::testlock::Serial {

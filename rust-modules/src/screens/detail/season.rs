@@ -3,7 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use crate::metadata::Detail;
-use crate::ui::machine::{GroupId, Measure};
+use plx_machine::machine::{GroupId, Measure};
 use crate::ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
 use crate::ui::{theme, Painter, Rect};
 

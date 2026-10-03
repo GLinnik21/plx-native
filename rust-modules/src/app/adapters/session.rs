@@ -3,8 +3,8 @@
 
 use crate::auth::owner::{SessionArrival, SessionEnvelope, SessionWorkKey};
 use crate::auth::AuthProgress;
-use crate::ui::landing::{AdmissionError, Landing, Lane, PublishError};
-use crate::ui::machine::{Addr, MachineId, RequestId};
+use plx_machine::landing::{AdmissionError, Landing, Lane, PublishError};
+use plx_machine::machine::{Addr, MachineId, RequestId};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -535,8 +535,8 @@ impl SessionAdapter {
         let cancelled = Arc::clone(&pending.cancelled);
         pending.ticket = plx_base::storage_worker::submit(move || {
             let result = if cancelled.load(Ordering::Acquire) { Err(()) } else { write_credentials(&plan, &cancelled) };
-            crate::ui::idle::wake();
-            crate::ui::present::wake_from_worker();
+            plx_machine::idle::wake();
+            plx_machine::present::wake_from_worker();
             result
         }).ok();
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);
@@ -778,8 +778,8 @@ impl SessionAdapter {
                 Vec::new()
             };
             if all_local { failures.extend(erasure.preference_failures); }
-            crate::ui::idle::wake();
-            crate::ui::present::wake_from_worker();
+            plx_machine::idle::wake();
+            plx_machine::present::wake_from_worker();
             EraseWorkerOutcome { complete, failures, language: erasure.retained_language }
         }).ok();
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);

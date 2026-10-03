@@ -50,7 +50,7 @@ use crate::ui::consts::*;
 use crate::ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::ui::frame::Budget;
 use crate::ui::icons::Icon;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
@@ -510,7 +510,7 @@ impl ItemMenuScreen {
         self.form.opening_key().map_or(0, |k| k.0)
     }
 
-    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
         panel_at(Rect::new(x, y, w, h), self.form.table.measured_width(measure), self.form.table.measured_height())
     }
@@ -1377,7 +1377,7 @@ mod tests {
     #[test]
     fn translated_action_menus_measure_complete_verbs_and_keep_safe_anchors() {
         use crate::i18n::{LocaleContext, Preference};
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         struct MenuMeasure;
         impl Measure for MenuMeasure {
             fn width(&self, text: &std::ffi::CStr, size: i32, bold: bool) -> f32 {
@@ -1512,7 +1512,7 @@ mod tests {
 
     use crate::screens::registry::{AppMsg, PageMemory};
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{FocusRead, Host, InputEvent, InputOwner, PressRead, Source, Tick};
+    use plx_machine::machine::{FocusRead, Host, InputEvent, InputOwner, PressRead, Source, Tick};
     use crate::ui::screen::ScreenArg;
 
     #[derive(Clone)]
@@ -1522,11 +1522,11 @@ mod tests {
         fn probe(&self, _: &mut String) {}
     }
     impl ScreenArg for Arg {
-        fn chrome(&self) -> crate::ui::machine::Chrome {
-            crate::ui::machine::Chrome::None
+        fn chrome(&self) -> plx_machine::machine::Chrome {
+            plx_machine::machine::Chrome::None
         }
-        fn id(&self) -> crate::ui::machine::ScreenId {
-            crate::ui::machine::ScreenId(1)
+        fn id(&self) -> plx_machine::machine::ScreenId {
+            plx_machine::machine::ScreenId(1)
         }
         fn title(&self) -> Option<&str> {
             None
@@ -1615,10 +1615,10 @@ mod tests {
     /// Commit a row and return the ONE request it emitted.
     fn commit(s: &mut ItemMenuScreen, elem: u32) -> ItemMenuReq {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(8)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
             &mut present,
         );
         s.activate::<HostFixture>(elem, &mut fx);
@@ -1640,10 +1640,10 @@ mod tests {
 
     fn feed(s: &mut ItemMenuScreen, key: Key, edge: Edge, ms: u32) -> Handled {
         let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(8)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
             &mut present,
         );
         let ev = ScreenEvent::<HostFixture>::Input(InputEvent {

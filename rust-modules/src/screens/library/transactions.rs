@@ -80,8 +80,8 @@ impl PendingTransactions {
 
 pub(super) const SHAPE: &str = "PendingTransactions{section:Option<{epoch:u32,index:u32,identity:{sid:u32,key:u64},kind:u32}>,grid:Option<{target:{epoch:u32,sid:u32,section:u64,query:u32},action:Sort{key:str,desc:bool}|Unwatched{desired:bool}|Genre{id:Option<str>}|LibraryType{code:u32}}>}";
 
-impl crate::ui::machine::LogicalState for PendingTransactions {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for PendingTransactions {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         let Self { section, grid } = self;
         c.option(section.as_ref(), |c, target| {
             let SectionTarget { epoch, index, identity, kind } = target;

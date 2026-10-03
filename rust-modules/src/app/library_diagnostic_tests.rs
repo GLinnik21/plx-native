@@ -61,7 +61,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     #[derive(Default)]
     struct PressTap(usize);
     impl crate::ui::dispatch::Tap<AppHost> for PressTap {
-        fn effect(&mut self, _: u64, effect: &crate::ui::machine::Stamped<AppHost>) {
+        fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
             if matches!(effect.fx, Fx::Press(_)) {
                 self.0 += 1;
             }
@@ -150,7 +150,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
         let parts = CxParts {
             tick: tick(85),
             press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: d.focus(), ..Default::default() },
+            focus: plx_machine::machine::FocusRead { current: d.focus(), ..Default::default() },
             owner: InputOwner::Entry(menu_entry),
         };
         let split = rig.split();

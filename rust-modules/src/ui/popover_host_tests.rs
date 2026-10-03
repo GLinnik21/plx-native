@@ -133,7 +133,7 @@ fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
     assert_eq!(embedded_alert_frame(false, true), expected, "opening frame");
     assert_eq!(embedded_alert_frame(true, true), expected, "first settled frame");
     assert_eq!(embedded_alert_frame(true, true), expected, "cached input frame");
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     assert_eq!(embedded_alert_frame(true, true), expected, "host damage recapture");
 }
 
@@ -172,7 +172,7 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
 // term to be reached through.
 #[test]
 fn a_field_keeps_its_dither_through_every_motion() {
-    use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
+    use plx_machine::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
     use crate::ui::popover::host::begin_frame;
     let _g = plx_base::testlock::serial();
     frame_begin(1.0 / 60.0);

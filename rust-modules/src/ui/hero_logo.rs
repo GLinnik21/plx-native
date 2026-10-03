@@ -25,7 +25,7 @@
 //! need the store to distinguish `P_FAILED`/absent from `P_WANT`/`P_LOADING` first. The swap is a
 //! cut, but nothing around it MOVES, which is the part that used to read as a glitch.
 use crate::ui::label::{HAlign, Label, VAlign};
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::{theme, Painter, Rect};
 use std::os::raw::c_int;
 

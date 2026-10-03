@@ -371,8 +371,8 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
 /// releases and scripted navigation have no raw SDL pair at all. Only `Other` needs raw fields
 /// to distinguish transport actions outside the small navigation alphabet. Screens must use
 /// this boundary instead of reclassifying raw fields and losing the machine's decision.
-pub fn classify_input(key: super::machine::Key, sym: c_uint, wcode: c_uint) -> Key {
-    use super::machine::Key as Canonical;
+pub fn classify_input(key: plx_machine::machine::Key, sym: c_uint, wcode: c_uint) -> Key {
+    use plx_machine::machine::Key as Canonical;
     match key {
         Canonical::Up => Key::Up,
         Canonical::Down => Key::Down,
@@ -387,7 +387,7 @@ pub fn classify_input(key: super::machine::Key, sym: c_uint, wcode: c_uint) -> K
 #[cfg(test)]
 mod canonical_input_tests {
     use super::*;
-    use crate::ui::machine::Key as Canonical;
+    use plx_machine::machine::Key as Canonical;
 
     #[test]
     fn canonical_keys_work_without_raw_codes_and_outrank_them() {

@@ -8,8 +8,8 @@ use crate::auth::LoginProgress;
 use crate::telemetry::incident::{IncidentContext, IncidentKind, InternalClass, LinkClass};
 
 struct OwnerHost;
-impl crate::ui::machine::Host for OwnerHost {
-    type Arg = crate::ui::machine::BareArg;
+impl plx_machine::machine::Host for OwnerHost {
+    type Arg = plx_machine::machine::BareArg;
     type Fx = SessionFx;
     type Msg = SessionEvent;
     type Elem = u32;
@@ -24,17 +24,17 @@ impl SessionHost for OwnerHost {
 }
 
 fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
-    use crate::ui::machine::{Cx, Effects, EntryId, Fx, InputOwner, Machine, Tick};
+    use plx_machine::machine::{Cx, Effects, EntryId, Fx, InputOwner, Machine, Tick};
     let publication = owner.publication();
     let cx = Cx::<OwnerHost> {
         views: publication.read(),
         tick: Tick::default(),
-        measure: &crate::ui::machine::BareMeasure,
+        measure: &plx_machine::machine::BareMeasure,
         press: Default::default(),
         focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)),
     };
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut effects = Vec::new();
     owner.step(&event, &cx, &mut Effects::new(&mut effects, MachineId::Session, &mut present));
     effects
@@ -56,7 +56,7 @@ fn observe(owner: &mut SessionMachine, progress: LoginProgress, terminal: bool) 
     let pending = &owner.state.pending[&req];
     let arrival = pending.last_arrival.map_or(1, |a| a + 1);
     let envelope = SessionEnvelope {
-        addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+        addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: pending.key,
         admission: AdmissionId(req),
         arrival,
@@ -155,9 +155,9 @@ fn legacy_no_servers_context_keeps_the_parent_canonical_digest() {
                     resources, trigger,
                 })
         };
-        let mut old = crate::ui::machine::Canon::new();
+        let mut old = plx_machine::machine::Canon::new();
         write_context(&mut old, &restored);
-        let mut current = crate::ui::machine::Canon::new();
+        let mut current = plx_machine::machine::Canon::new();
         write_context(&mut current, &expected);
         assert_eq!(old.finish(), current.finish(),
             "NoServers must not acquire the new discovery canonical suffix");
@@ -445,7 +445,7 @@ fn arrive(owner: &mut SessionMachine, outcome: SessionArrival) -> Vec<SessionFx>
     let req = signin_request(owner);
     let pending = &owner.state.pending[&req];
     let envelope = SessionEnvelope {
-        addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+        addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: pending.key,
         admission: AdmissionId(req),
         arrival: pending.last_arrival.map_or(1, |a| a + 1),
@@ -494,7 +494,7 @@ fn a_refused_worker_and_a_refused_admission_offer_their_own_failure() {
     let req = signin_request(&owner);
     let key = owner.state.pending[&req].key;
     step(&mut owner, SessionEvent::Admission(AdmissionReply {
-        addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+        addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key,
         correlation: AdmissionId(req),
         accepted: false,
@@ -876,7 +876,7 @@ fn the_account_name_is_absent_from_every_report_effect_and_digest() {
 
     // The observation digest (what a recording hashes) is the same with and without the name.
     let digest = |account: Option<&str>| {
-        let mut canon = crate::ui::machine::Canon::new();
+        let mut canon = plx_machine::machine::Canon::new();
         crate::auth::observation::Observation::Login(LoginProgress::Failed {
             epoch: 1, message: crate::i18n::msg::browse_auth_no_servers().into(),
             incident: no_servers_incident(), plaintext: None, account: account.map(str::to_owned),

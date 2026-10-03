@@ -85,7 +85,7 @@
 
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::text_view::TextView;
 use crate::ui::underlay::{FrameLatch, Grade, Role, UnderlayField};
 use crate::ui::widgets::ControlPalette;
@@ -345,14 +345,14 @@ impl RoutePush {
     pub(crate) fn tick(
         &mut self,
         open: bool,
-        t: crate::ui::machine::Tick,
-        present: &mut crate::ui::machine::PresentHandle<'_>,
+        t: plx_machine::machine::Tick,
+        present: &mut plx_machine::machine::PresentHandle<'_>,
     ) {
         if self.resting(open) {
             return;
         }
         let target = if open { 1.0 } else { 0.0 };
-        crate::ui::motion::spring(
+        plx_machine::motion::spring(
             &mut self.progress.pos,
             &mut self.progress.vel,
             target,
@@ -1138,7 +1138,7 @@ mod tests {
     #[test]
     fn translated_consent_questions_keep_their_complete_titles() {
         struct QuestionMeasure;
-        impl crate::ui::machine::Measure for QuestionMeasure {
+        impl plx_machine::machine::Measure for QuestionMeasure {
             fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
                 text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
             }

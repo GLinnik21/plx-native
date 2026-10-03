@@ -20,7 +20,7 @@
 //!                                  automatic capture — only the `shot` token fires one)
 //!   PLXNATIVE_SHOT_SETTLE=<ms>     ALSO capture automatically once the screen has been at REST for
 //!                                  <ms>: no motion, no damage, no queued upload, no pending page
-//!                                  capture (`ui::idle`'s own change signal, which ignores the
+//!                                  capture (`plx_machine::idle`'s own change signal, which ignores the
 //!                                  keepalive and the bound video plane). The screenshot pipeline's
 //!                                  trigger: it waits on the app's state, never on a wall clock.
 //!   PLXNATIVE_SHOT_AFTER=<ms>      …and not before <ms> since the first frame (default 0), so a
@@ -123,7 +123,7 @@ pub(crate) fn tick(now: u32, busy: bool) {
         return;
     }
     let first = *FIRST_TICK.get_or_init(|| now);
-    let quiet = now.wrapping_sub(crate::ui::idle::last_change_ms());
+    let quiet = now.wrapping_sub(plx_machine::idle::last_change_ms());
     if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
         SETTLE_FIRED.store(true, Ordering::Relaxed);
         SETTLED.store(true, Ordering::Relaxed);
@@ -131,7 +131,7 @@ pub(crate) fn tick(now: u32, busy: bool) {
             "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
             now.wrapping_sub(first)
         ));
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 
@@ -143,11 +143,11 @@ pub(crate) fn tick(now: u32, busy: bool) {
 pub(crate) fn request() {
     ON_DEMAND.store(true, Ordering::Relaxed);
     // **Required, not defensive.** The capture happens on the way to a swap, and a settled screen
-    // does not swap: `ui::idle` skips `glViewport`…`SDL_GL_SwapWindow` wholesale once nothing is
+    // does not swap: `plx_machine::idle` skips `glViewport`…`SDL_GL_SwapWindow` wholesale once nothing is
     // moving. So a `shot` token sent to a UI that has come to rest — which is exactly when an
     // agent wants one, after driving and waiting — would set this flag and then wait forever for a
     // frame that never comes. Observed as a token that logged nothing at all.
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// `dir/stem-N.ext`, N counting up per on-demand shot within this process.

@@ -233,7 +233,7 @@ fn fetch_once(id: ServerId, c: &Client) {
 /// **This is an async LANDING, so it owes the present gate a poke.** It runs on a worker, seconds
 /// after boot or after a share is registered, and it changes what a SETTLED screen says: the stats
 /// panel's Server row, the detail hero's "hardware conversion needs \[PLEX PASS\]" note, and the
-/// failure read-out's capsule all read it. Without the [`crate::ui::idle::invalidate`] call the new
+/// failure read-out's capsule all read it. Without the [`plx_machine::idle::invalidate`] call the new
 /// fact arrives invisibly and the screen keeps stating the old one until the next keypress — bounded
 /// only by the 2 s keepalive, which is insurance and not pacing (that module's rule: *a new async
 /// landing that repaints must add a call there*). Unconditional rather than change-guarded: a
@@ -245,7 +245,7 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
     if let Ok(mut g) = VERSION.lock() {
         g[i] = version.to_owned();
     }
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Test-only: publish one server's answer without a round trip.
@@ -428,12 +428,12 @@ mod tests {
     /// worker seconds after boot — later still for a share registered while the user is reading a
     /// page — by which time the screen that reads it has settled and stopped presenting: the stats
     /// panel's Server row, the detail hero's "hardware conversion needs [PLEX PASS]" note, and the
-    /// failure read-out's capsule. Without the `ui::idle::invalidate` inside [`store`] the new fact
+    /// failure read-out's capsule. Without the `plx_machine::idle::invalidate` inside [`store`] the new fact
     /// reaches the panel only on the next keypress (bounded by the 2 s keepalive, which is
-    /// insurance and not pacing) — the "arrives invisibly" failure `ui::idle::invalidate`'s
+    /// insurance and not pacing) — the "arrives invisibly" failure `plx_machine::idle::invalidate`'s
     /// call-site list exists to prevent.
     ///
-    /// Takes `testlock::serial()`: the gate's flag is a crate global that `ui::idle`'s own
+    /// Takes `testlock::serial()`: the gate's flag is a crate global that `plx_machine::idle`'s own
     /// "a settled screen does not repaint" assertions read, so an unlocked test here would fail
     /// ANOTHER module's tests intermittently — `ui::xfade`'s test module states the same rule, and
     /// this borrows its isolation helper.
@@ -444,10 +444,10 @@ mod tests {
         // `should_present` TAKES-AND-CLEARS — so each call answers for exactly the frames since the
         // previous one, and nothing but the store below can be what answered.
         let asked = || {
-            crate::ui::idle::set_enabled(true); // a test that disabled the gate leaves it off
-            crate::ui::idle::frame_begin(1.0 / 60.0);
-            crate::ui::idle::note_present(0);
-            crate::ui::idle::should_present(0)
+            plx_machine::idle::set_enabled(true); // a test that disabled the gate leaves it off
+            plx_machine::idle::frame_begin(1.0 / 60.0);
+            plx_machine::idle::note_present(0);
+            plx_machine::idle::should_present(0)
         };
         asked(); // drain whatever the previous test left on the shared flag
         assert!(

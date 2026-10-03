@@ -7,7 +7,7 @@ use super::test_support::*;
 
 #[test]
 fn no_draw_delete_disclosure_scroll_replays_from_recorded_measurements_without_answering() {
-    use crate::ui::machine::Measure;
+    use plx_machine::machine::Measure;
     use crate::ui::rec::{Measurements, TableMeasure};
     // Deliberately large advances exercise future expanded disclosure text without changing any
     // production strings or injecting a draw-time extent into the alert.

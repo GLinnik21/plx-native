@@ -3,7 +3,7 @@
 //! persisted, and a stale request leaves rather than writing.
 use super::*;
 use super::super::tests::{drive, popped, preference_commands, tick, Account, context};
-use crate::ui::machine::{Source, Stamped, Tick};
+use plx_machine::machine::{Source, Stamped, Tick};
 
 fn save_reply(emitted: Vec<Stamped<InnerHost>>) -> mpsc::Sender<AccountPreferenceReply> {
     for e in emitted {
@@ -143,7 +143,7 @@ fn confirming_force_emits_a_preference_effect_without_executing_it() {
     let mut page = PickerPage::new(EntryId(0), PickerKind::DirectPlay);
     let forced = key_of(&page, &Value::DirectPlay(DirectPlayMode::Forced));
     drive(&mut page, ScreenEvent::Activate(forced), forced);
-    let emitted = drive(&mut page, ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), ALERT + 1);
+    let emitted = drive(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), ALERT + 1);
     assert!(page.state.io.busy);
     assert!(emitted.iter().any(|event| matches!(&event.fx,
         Fx::App(AppFx::Preferences(PreferenceCmd::DirectPlay { mode: DirectPlayMode::Forced, .. })))));
@@ -181,7 +181,7 @@ fn back_is_held_while_an_account_write_is_in_flight() {
     drive(&mut page, ScreenEvent::Activate(other), other);
     let back = ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::RemoteFifo,
         kind: InputKind::Key { key: Key::Back, edge: Edge::Down, sym: 0, wcode: 0, at_edge: false } });
-    let mut out = Vec::new(); let mut present = crate::ui::present::Present::new();
+    let mut out = Vec::new(); let mut present = plx_machine::present::Present::new();
     let handled = page.step(&back, &context(other), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
     assert_eq!(handled, Handled::Yes, "BACK is swallowed until the receipt lands");
 }

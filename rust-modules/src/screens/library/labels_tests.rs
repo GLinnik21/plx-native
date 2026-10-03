@@ -3,7 +3,7 @@ use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
 use crate::ui::fixture::FixtureMeasure;
-use crate::ui::machine::{EntryId, InstanceId};
+use plx_machine::machine::{EntryId, InstanceId};
 use crate::ui::{Painter, Rect};
 use std::os::raw::c_int;
 use crate::stores::browse::SecKind;

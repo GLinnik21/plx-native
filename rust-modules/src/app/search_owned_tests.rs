@@ -1,7 +1,7 @@
 //! Search as an owned page: lifecycle, retention and leave events.
 
 use super::*;
-use crate::ui::machine::Chrome;
+use plx_machine::machine::Chrome;
 use crate::ui::screen::ScreenArg;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -26,7 +26,7 @@ impl OwnedLeaveTrace {
 }
 
 impl crate::ui::dispatch::Tap<AppHost> for OwnedLeaveTrace {
-    fn effect(&mut self, _frame: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+    fn effect(&mut self, _frame: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
         let Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(event)) = &stamped.fx
             else { return };
         let name = match event {
@@ -36,8 +36,8 @@ impl crate::ui::dispatch::Tap<AppHost> for OwnedLeaveTrace {
             ScreenEvent::RestoreMemory(_) => "restore-memory",
             ScreenEvent::Cover => "cover",
             ScreenEvent::Uncover => "uncover",
-            ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper) => "will-leave-deeper",
-            ScreenEvent::WillLeave(crate::ui::machine::Leave::ForGood) => "will-leave-for-good",
+            ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper) => "will-leave-deeper",
+            ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood) => "will-leave-for-good",
             ScreenEvent::Unmount => "unmount",
             _ => return,
         };
@@ -224,7 +224,7 @@ fn owned_search_external_departure_never_submits_the_draft() {
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
     for event in [ScreenEvent::Suspend, ScreenEvent::Cover, ScreenEvent::Unmount,
-        ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper)] {
+        ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper)] {
         let mut screen = crate::screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
         let mut out = Vec::new();
         let mut present = Present::new();
@@ -431,7 +431,7 @@ fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let text = |s: &str, at| InputEvent { at, source: Source::Script,
-        kind: InputKind::Text(crate::ui::machine::TextEdit::Commit(s.into())) };
+        kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(s.into())) };
     let mut events = script_key(Key::Ok, tick(1));
     events.push(text("a", tick(1)));
     events.extend(script_key(Key::Left, tick(1)));
@@ -508,8 +508,8 @@ fn owned_search_unrelated_store_notice_cannot_ack_a_net_zero_edit_batch() {
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let target = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
     for kind in [InputKind::SystemKeyboard(true),
-        InputKind::Text(crate::ui::machine::TextEdit::Commit("a".into())),
-        InputKind::Text(crate::ui::machine::TextEdit::Backspace)] {
+        InputKind::Text(plx_machine::machine::TextEdit::Commit("a".into())),
+        InputKind::Text(plx_machine::machine::TextEdit::Backspace)] {
         d.emit(MachineId::Input, Fx::Deliver(target, Delivery::Screen(ScreenEvent::Input(InputEvent {
             at: tick(1), source: Source::Script, kind,
         }))));
@@ -537,7 +537,7 @@ fn owned_search_keeps_several_commits_while_the_frame_view_is_frozen() {
     let retained = rig.search.clone();
     let mut input = vec![InputEvent { at: tick(1), source: Source::Script, kind: InputKind::SystemKeyboard(true) }];
     input.extend(["s", "u", "m", "summer "].map(|text| InputEvent {
-        at: tick(1), source: Source::Script, kind: InputKind::Text(crate::ui::machine::TextEdit::Commit(text.into())),
+        at: tick(1), source: Source::Script, kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(text.into())),
     }));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), input);
     assert_eq!(rig.stores.search.query(), "summer ", "the real store received every committed edit");
@@ -694,7 +694,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
         let cx = parts.cx::<AppHost>(rig.views_with(crate::route::idle_session_for_test()), &rig.measure);
         let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut commands = Vec::new();
         let mut fx = Effects::new(&mut commands, MachineId::Instance(InstanceId(900)), &mut present);
         restored.step(&ScreenEvent::Mount, &cx, &mut fx);

@@ -10,7 +10,7 @@
 //! runs only on a miss, and drawing already only touches the lines the clip rect can see.
 
 use crate::ui::consts::K_SCROLL;
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets;
 use crate::ui::{theme, Painter, Rect, Spring};
@@ -139,7 +139,7 @@ impl DocumentReader {
 
     pub(crate) fn move_by(&mut self, delta: i32) {
         self.target = (self.target + delta as f32 * self.body_leading() * 6.0).clamp(0.0, self.max_scroll);
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 
     pub(crate) fn update(&mut self, dt: f32) {

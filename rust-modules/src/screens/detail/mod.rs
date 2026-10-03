@@ -33,11 +33,11 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::frame::Budget;
 use crate::ui::hero_logo::{HeroLogo, LogoRung};
 use crate::ui::label::HAlign;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     Leave, LogicalState, Machine, Tick,
 };
-use crate::ui::present::{PresentEvent, Provenance};
+use plx_machine::present::{PresentEvent, Provenance};
 use crate::ui::text_lift::{lifted, TextLift, TEXT_LIFT_SCALE, TOP_CENTRE};
 use crate::ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, Focusable,
@@ -141,7 +141,7 @@ pub(crate) struct DetailScreen {
     preview_base_scrim: f32,
     /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
     /// trailer plays in the background. A geometric transform, so it is a critically-damped
-    /// [`Spring`] rather than the linear [`ease`] the alpha scalars above use — `ui::idle` sees it
+    /// [`Spring`] rather than the linear [`ease`] the alpha scalars above use — `plx_machine::idle` sees it
     /// for free through `Spring::step`'s own `note_spring` call.
     preview_logo: Spring,
     /// The `preview_cache_rk()` this hero already autoplayed a trailer to COMPLETION for, this
@@ -225,7 +225,7 @@ pub(crate) struct DetailScreen {
     /// `advance`. Render-only, never hashed.
     spin_ms: f32,
     /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4).
-    spin_phase: crate::ui::motion::Phase,
+    spin_phase: plx_machine::motion::Phase,
     /// Vertical section geometry for this frame. Synopsis height and the episode strip's
     /// `block_h` are O(text) and used to be re-asked from every `place` in `record_stops`.
     /// Cleared at the start of `tick` so a present reuses one walk; missed when
@@ -427,7 +427,7 @@ impl DetailScreen {
             ground,
             selected,
             spin_ms: 0.0,
-            spin_phase: crate::ui::motion::Phase::default(),
+            spin_phase: plx_machine::motion::Phase::default(),
             layout: Cell::new(None),
             layout_pinned: Cell::new(false),
             spot_facts: SpotFacts::default(),
@@ -714,7 +714,7 @@ impl DetailScreen {
         self.selected.as_ref()
     }
 
-    fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> crate::ui::detail_layout::HeroChain {
+    fn hero_chain(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> crate::ui::detail_layout::HeroChain {
         if let Some(d) = self.detail(meta) {
             return self.ensure_layout(d, measure).chain;
         }
@@ -724,7 +724,7 @@ impl DetailScreen {
     fn compute_hero_chain(
         &self,
         d: Option<&Detail>,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) -> crate::ui::detail_layout::HeroChain {
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_h = crate::ui::hero_synopsis(&synopsis, &lead)
@@ -739,7 +739,7 @@ impl DetailScreen {
 
     /// Pin [`layout`](Self::layout) for one walk ([`LayoutPin`]). Validates first, so a pinned
     /// read can never serve geometry measured from an item the walk is not drawing.
-    fn pin_layout(&self, meta: crate::metadata::MetadataView<'_>, measure: &dyn crate::ui::machine::Measure) -> LayoutPin<'_> {
+    fn pin_layout(&self, meta: crate::metadata::MetadataView<'_>, measure: &dyn plx_machine::machine::Measure) -> LayoutPin<'_> {
         let was = self.layout_pinned.get();
         if !was {
             if let Some(d) = self.detail(meta) {
@@ -750,7 +750,7 @@ impl DetailScreen {
         LayoutPin { screen: self, was }
     }
 
-    fn ensure_layout(&self, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> LayoutCache {
+    fn ensure_layout(&self, d: &Detail, measure: &dyn plx_machine::machine::Measure) -> LayoutCache {
         if self.layout_pinned.get() {
             if let Some(c) = self.layout.get() {
                 return c;
@@ -775,7 +775,7 @@ impl DetailScreen {
     fn section_block_h(
         section: i32,
         d: &Detail,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) -> f32 {
         match section {
             1 => season::ROW_H,
@@ -835,7 +835,7 @@ impl DetailScreen {
     fn build_layout(
         &self,
         d: &Detail,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         stamp: LayoutStamp,
     ) -> LayoutCache {
         let chain = self.compute_hero_chain(Some(d), measure);
@@ -869,7 +869,7 @@ impl DetailScreen {
         }
     }
 
-    fn content_top(&self, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> f32 {
+    fn content_top(&self, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> f32 {
         if let Some(d) = self.detail(meta) {
             self.ensure_layout(d, measure).content_top
         } else {
@@ -913,7 +913,7 @@ impl DetailScreen {
 
     /// Where a section sits THIS FRAME — the settled flow plus whatever the shelves above it are
     /// still holding open.
-    fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn section_top(&self, section: i32, d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
         self.section_top_settled(section, d, measure) + self.band_lift(d, Some(section))
     }
 
@@ -925,7 +925,7 @@ impl DetailScreen {
         &self,
         section: i32,
         d: &Detail,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
@@ -942,7 +942,7 @@ impl DetailScreen {
         &self,
         section: i32,
         d: &Detail,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         at: At,
     ) -> f32 {
         match at {
@@ -951,7 +951,7 @@ impl DetailScreen {
         }
     }
 
-    fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn block_h(&self, section: i32, d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
         if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
@@ -2008,7 +2008,7 @@ impl DetailScreen {
 }
 
 impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for DetailScreen {
-    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         DetailScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str {
@@ -2282,7 +2282,7 @@ impl DetailScreen {
         &self,
         p: Painter,
         d: Option<&Detail>,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         preview: crate::player::preview::View,
         meta: crate::metadata::MetadataView<'_>,
     ) {
@@ -2438,7 +2438,7 @@ impl DetailScreen {
         );
     }
 
-    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| crate::ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -2500,7 +2500,7 @@ impl DetailScreen {
         p: Painter,
         d: &Detail,
         y: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
     ) {
         let (top, base) = crate::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
@@ -2622,7 +2622,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32, measure: &dyn plx_machine::machine::Measure) {
         if hero_visible >= 0.99 {
             return;
         }
@@ -3047,7 +3047,7 @@ impl LogicalState for DetailScreen {
 }
 
 impl DetailScreen {
-    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) {
+    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn plx_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) {
         if self.return_waiting(meta) { return; }
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
         let Some(detail) = self.detail(meta) else { return };
@@ -3407,7 +3407,7 @@ impl DetailScreen {
         // Collapsed to the top-left compact spot for the whole time a picture is up (background
         // AND full-trailer alike — full-trailer fades the logo's alpha via `chrome`, from wherever
         // this transform already left it, rather than animating it back toward the hero position
-        // while also fading). `Spring::step` reports its own motion to `ui::idle` — no `fx.note`
+        // while also fading). `Spring::step` reports its own motion to `plx_machine::idle` — no `fx.note`
         // needed here, unlike the linear `ease()` scalars above.
         self.preview_logo
             .step(f32::from(view.picture), crate::ui::consts::K_SCALE, dt);

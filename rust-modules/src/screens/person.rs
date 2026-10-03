@@ -24,11 +24,11 @@ use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::label::{Label, VAlign};
 use crate::ui::linked_heading::LinkedHeading;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, Leave,
     LogicalState, Machine, Measure, Tick,
 };
-use crate::ui::present::{PresentEvent, Provenance};
+use plx_machine::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent,
@@ -349,7 +349,7 @@ impl Column for Flow<'_> {
     fn focus_child(&self) -> Option<usize> {
         self.focus_child
     }
-    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn plx_machine::machine::Measure) {
         debug_assert!(
             !self.settled,
             "the settled flow is a measurement, never a draw"
@@ -422,7 +422,7 @@ impl<H: ContentLike> Focusable<H> for OffsetShelf<'_> {
     }
     fn neighbour(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         _cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -465,9 +465,9 @@ impl<H: ContentLike> Focusable<H> for OffsetShelf<'_> {
     }
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
+        want: plx_machine::machine::FocusKey<u32>,
         _cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         let i = self.col_of(want.elem).unwrap_or(0);
         shelf_key_from(self, i.min(self.keys.len().saturating_sub(1)))
     }
@@ -476,7 +476,7 @@ impl<H: ContentLike> Focusable<H> for OffsetShelf<'_> {
         _g: GroupId,
         from: Placed,
         _cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+    ) -> plx_machine::machine::FocusKey<u32> {
         let pitch = SHELF_STYLE.w + SHELF_STYLE.gap;
         let cx_ = from.rect.x + from.rect.w * 0.5;
         let guess = ((cx_ - SHELF_STYLE.margin_x + self.row.scroll_x()) / pitch).max(0.0) as usize;
@@ -494,8 +494,8 @@ impl<H: ContentLike> Focusable<H> for OffsetShelf<'_> {
     }
 }
 
-fn shelf_key_from(s: &OffsetShelf<'_>, col: usize) -> crate::ui::machine::FocusKey<u32> {
-    crate::ui::machine::FocusKey {
+fn shelf_key_from(s: &OffsetShelf<'_>, col: usize) -> plx_machine::machine::FocusKey<u32> {
+    plx_machine::machine::FocusKey {
         entry: s.entry,
         elem: s.keys.get(col).copied().unwrap_or(HEADER_ELEM),
     }
@@ -548,7 +548,7 @@ pub(crate) struct PersonScreen {
     /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4): reports
     /// `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be, with
     /// `fx.note(Motion)` a separate line further down `tick`.
-    spin_phase: crate::ui::motion::Phase,
+    spin_phase: plx_machine::motion::Phase,
 
     // ---- render cache: baked text runs + measured flow, rebuilt only when the store lands ----
     name_c: CString,
@@ -627,7 +627,7 @@ impl PersonScreen {
             amb: PageGround::new(),
             amb_seeded: false,
             spin_ms: 0.0,
-            spin_phase: crate::ui::motion::Phase::default(),
+            spin_phase: plx_machine::motion::Phase::default(),
             name_c: CString::default(),
             life_parts: Vec::new(),
             shelf_count_c: [CString::default(), CString::default()],
@@ -642,7 +642,7 @@ impl PersonScreen {
 
     /// Claim this Bridge's Person owner for this identity through the addressed store effect.
     fn request_store<H: ContentLike + PersonLike>(&mut self, fx: &mut Effects<'_, H>) {
-        fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+        fx.push(plx_machine::machine::Fx::App(AppFx::Store(
             crate::stores::StoreId::Person,
             crate::stores::StoreCmd::Person(PersonCmd::Open {
             sid: self.sid,
@@ -756,13 +756,13 @@ impl PersonScreen {
         None
     }
 
-    fn shelf_key(&self, p: &Person, kind: usize, col: usize) -> crate::ui::machine::FocusKey<u32> {
+    fn shelf_key(&self, p: &Person, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {
         let elem = p
             .shelf(kind)
             .get(col)
             .and_then(|m| self.elem_for(m))
             .unwrap_or(HEADER_ELEM);
-        crate::ui::machine::FocusKey {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem,
         }
@@ -841,7 +841,7 @@ impl PersonScreen {
 
     pub(crate) fn focused_item<'a, H: PersonLike>(
         &self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         cx: &Cx<'a, H>,
     ) -> Option<&'a PmsMovie> {
         let p = self.person(cx)?;
@@ -1004,7 +1004,7 @@ impl PersonScreen {
             // `MORE` mark is drawn, and both read `bio_more` — which depends on this
             // header's own column width. A surface asked to re-derive it would be how the mark and
             // the sheet came to disagree about whether there is more to read.
-            fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Panel(
+            fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Panel(
                 crate::screens::registry::ContentPanel::Bio,
             ))));
             fx.invalidate(Provenance::Input);
@@ -1047,7 +1047,7 @@ impl PersonScreen {
             return;
         };
         if has_entry(p) {
-            fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+            fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                 ContentReq::Present(ContentArg::Filmography {
                     sid: self.sid,
                     key: self.key.clone(),
@@ -1058,7 +1058,7 @@ impl PersonScreen {
 
     fn commit_card<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if let Some(m) = self.focused_item(cx.focus.current, cx) {
-            fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+            fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                 ContentReq::Push(ContentArg::Detail {
                     sid: m.sid,
                     rk: m.rk.clone(),
@@ -1069,7 +1069,7 @@ impl PersonScreen {
 
     pub(crate) fn focused_rect<H: ContentLike + PersonLike>(
         &self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
         cx: &Cx<'_, H>,
         at: At,
     ) -> Option<Rect> {
@@ -1083,7 +1083,7 @@ impl PersonScreen {
     pub(crate) fn redraw_focused<H: ContentLike + PersonLike>(
         &self,
         f: &mut DrawFrame<'_, '_, H>,
-        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        focus: Option<plx_machine::machine::FocusKey<u32>>,
     ) {
         let Some(key) = focus.filter(|k| k.entry == self.entry) else {
             return;
@@ -1125,7 +1125,7 @@ impl PersonScreen {
 
     // ---- draw ----
 
-    fn draw_header(&self, p: Painter, person: &Person, focus_elem: Option<u32>, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_header(&self, p: Painter, person: &Person, focus_elem: Option<u32>, measure: &dyn plx_machine::machine::Measure) {
         let flow = self.header;
         let d = flow.exp_d;
         let portrait = Rect::new(MARGIN_X, flow.portrait_y, d, d);
@@ -1235,7 +1235,7 @@ impl PersonScreen {
         }
     }
 
-    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, measure: &dyn plx_machine::machine::Measure) {
         let items = person.shelf(kind);
         let row = &self.shelves[kind];
         let cur_col = if focused { row.focus() } else { -1 };
@@ -1387,7 +1387,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
 
     fn neighbour(
         &self,
-        key: crate::ui::machine::FocusKey<u32>,
+        key: plx_machine::machine::FocusKey<u32>,
         dir: Dir,
         cx: &Cx<'_, H>,
     ) -> Step<u32> {
@@ -1438,10 +1438,10 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
     /// by making the engine element itself a stable item identity rather than storing a cursor.
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
+        want: plx_machine::machine::FocusKey<u32>,
         cx: &Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
-        let header_key = crate::ui::machine::FocusKey {
+    ) -> plx_machine::machine::FocusKey<u32> {
+        let header_key = plx_machine::machine::FocusKey {
             entry: self.entry,
             elem: HEADER_ELEM,
         };
@@ -1458,13 +1458,13 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
             };
         };
         match self.locate(p, want.elem) {
-            Some(Located::Header) => crate::ui::machine::FocusKey {
+            Some(Located::Header) => plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: HEADER_ELEM,
             },
             Some(Located::Entry) => {
                 if entry_reachable(p) {
-                    crate::ui::machine::FocusKey {
+                    plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: ENTRY_ELEM,
                     }
@@ -1472,7 +1472,7 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
                     self.fallback(p)
                 }
             }
-            Some(Located::Shelf(_, _)) => crate::ui::machine::FocusKey {
+            Some(Located::Shelf(_, _)) => plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: want.elem,
             },
@@ -1486,21 +1486,21 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
         }
     }
 
-    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         let Some(p) = self.person(cx) else {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: HEADER_ELEM,
             };
         };
         if g == HEADER_GROUP {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: HEADER_ELEM,
             };
         }
         if g == ENTRY_GROUP {
-            return crate::ui::machine::FocusKey {
+            return plx_machine::machine::FocusKey {
                 entry: self.entry,
                 elem: ENTRY_ELEM,
             };
@@ -1510,13 +1510,13 @@ impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
                 return self
                     .offset_shelf(p, kind)
                     .map(|s| Focusable::<H>::seat(&s, g, from, cx))
-                    .unwrap_or(crate::ui::machine::FocusKey {
+                    .unwrap_or(plx_machine::machine::FocusKey {
                         entry: self.entry,
                         elem: HEADER_ELEM,
                     });
             }
         }
-        crate::ui::machine::FocusKey {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem: HEADER_ELEM,
         }
@@ -1529,13 +1529,13 @@ impl PersonScreen {
     /// trace against `a_vanishing_entry_row_hands_its_focus_back`) — legacy's own comment claimed
     /// "the last shelf", which the code it sat above never actually did; this states what the code
     /// does, not what the comment said it did.
-    fn fallback(&self, p: &Person) -> crate::ui::machine::FocusKey<u32> {
+    fn fallback(&self, p: &Person) -> plx_machine::machine::FocusKey<u32> {
         for kind in 0..NSHELF {
             if !p.shelf(kind).is_empty() {
                 return self.shelf_key(p, kind, 0);
             }
         }
-        crate::ui::machine::FocusKey {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem: HEADER_ELEM,
         }
@@ -1605,7 +1605,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
             }
             ScreenEvent::PressHold(_) => {
                 if self.focused_item(cx.focus.current, cx).is_some() {
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                         ContentReq::ItemMenu,
                     )));
                     return Handled::Yes;
@@ -1625,7 +1625,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                     self.return_pending = false;
                 }
                 if *key == Key::Back {
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Content(
                         ContentReq::Back,
                     )));
                     return Handled::Yes;
@@ -1656,7 +1656,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 // though §3.4 delivers this arm twice and the queued command has not run yet.
                 if self.person(cx).is_some() && !self.teardown_closed {
                     self.teardown_closed = true;
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Store(
                         crate::stores::StoreId::Person,
                         crate::stores::StoreCmd::Person(PersonCmd::Close),
                     )));
@@ -1669,7 +1669,7 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
 }
 
 impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
-    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         PersonScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str {
@@ -1714,7 +1714,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn links(&self, out: &mut Vec<Link>) {
         out.extend(self.links_c.iter().copied());
     }
-    fn memory_at(&self, _focus: Option<crate::ui::machine::FocusKey<u32>>) -> PageMemory {
+    fn memory_at(&self, _focus: Option<plx_machine::machine::FocusKey<u32>>) -> PageMemory {
         PageMemory::Person(self.memory())
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1741,7 +1741,7 @@ impl PersonScreen {
         f.stop(
             hp,
             Stop {
-                key: crate::ui::machine::FocusKey {
+                key: plx_machine::machine::FocusKey {
                     entry: self.entry,
                     elem: HEADER_ELEM,
                 },
@@ -1763,7 +1763,7 @@ impl PersonScreen {
                 f.stop(
                     hp,
                     Stop {
-                        key: crate::ui::machine::FocusKey {
+                        key: plx_machine::machine::FocusKey {
                             entry: self.entry,
                             elem,
                         },
@@ -1782,7 +1782,7 @@ impl PersonScreen {
                 self.entry_heading().stop(
                     f,
                     r,
-                    crate::ui::machine::FocusKey { entry: self.entry, elem: ENTRY_ELEM },
+                    plx_machine::machine::FocusKey { entry: self.entry, elem: ENTRY_ELEM },
                 );
             }
         }
@@ -1794,7 +1794,7 @@ impl PersonScreen {
 mod tests {
     use super::*;
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
 
     struct PersonHost;
 
@@ -1835,7 +1835,7 @@ mod tests {
         }
     }
 
-    fn cx_at<'a>(m: &'a FixtureMeasure, person: crate::person::PersonView<'a>, focus: crate::ui::machine::FocusKey<u32>) -> Cx<'a, PersonHost> {
+    fn cx_at<'a>(m: &'a FixtureMeasure, person: crate::person::PersonView<'a>, focus: plx_machine::machine::FocusKey<u32>) -> Cx<'a, PersonHost> {
         Cx {
             focus: FocusRead {
                 current: Some(focus),
@@ -1874,7 +1874,7 @@ mod tests {
         (store, s)
     }
 
-    fn focus_of(s: &PersonScreen, store: &crate::stores::person::PersonStore, kind: usize, col: usize) -> crate::ui::machine::FocusKey<u32> {
+    fn focus_of(s: &PersonScreen, store: &crate::stores::person::PersonStore, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {
         s.shelf_key(store.view().current().unwrap(), kind, col)
     }
 
@@ -1941,13 +1941,13 @@ mod tests {
         );
         let m = FixtureMeasure;
         let cxv = cx(&m, store.view());
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let _ = present.take(0);
-        let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
+        let mut buf: Vec<plx_machine::machine::Stamped<PersonHost>> = Vec::new();
         for ms in [16, 32, 48] {
             let mut fx = Effects::new(
                 &mut buf,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
             let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
@@ -1966,17 +1966,17 @@ mod tests {
             EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
             "Person Name".into(), "thumb".into());
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         {
             let context = cx(&measure, crate::person::PersonView::default());
-            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
-                crate::ui::machine::InstanceId(0)), &mut present);
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
+                plx_machine::machine::InstanceId(0)), &mut present);
             Machine::<PersonHost>::step(
                 &mut screen, &ScreenEvent::Enter(Enter::Restored), &context, &mut fx);
         }
         assert!(matches!(&out[0].fx,
-            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
                 crate::stores::StoreCmd::Person(PersonCmd::Open { sid, key, guid, name, thumb })))
                 if *sid == ServerId::from_raw(2) && key == "161" && guid == "person-guid"
                     && name == "Person Name" && thumb == "thumb"));
@@ -1987,13 +1987,13 @@ mod tests {
         out.clear();
         {
             let context = cx(&measure, store.view());
-            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
-                crate::ui::machine::InstanceId(0)), &mut present);
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
+                plx_machine::machine::InstanceId(0)), &mut present);
             Machine::<PersonHost>::step(
                 &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
         }
         assert!(matches!(&out[0].fx,
-            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
                 crate::stores::StoreCmd::Person(PersonCmd::Close)))));
         assert!(store.view().current().is_some(),
             "the screen emits; only the addressed Bridge is allowed to apply the command");
@@ -2013,12 +2013,12 @@ mod tests {
         let mut store = crate::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let context = cx(&measure, store.view());
         {
-            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
-                crate::ui::machine::InstanceId(0)), &mut present);
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
+                plx_machine::machine::InstanceId(0)), &mut present);
             Machine::<PersonHost>::step(
                 &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
             // The queued Close has not been applied to `store` yet — it is still populated when
@@ -2027,7 +2027,7 @@ mod tests {
                 &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
         }
         let closes = out.iter().filter(|s| matches!(&s.fx,
-            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
                 crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
         assert_eq!(closes, 1,
             "WillLeave(ForGood) then Unmount must close the Person store exactly once, not twice");
@@ -2044,17 +2044,17 @@ mod tests {
         let mut store = crate::stores::person::PersonStore::default();
         store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let context = cx(&measure, store.view());
         {
-            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
-                crate::ui::machine::InstanceId(0)), &mut present);
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
+                plx_machine::machine::InstanceId(0)), &mut present);
             Machine::<PersonHost>::step(
                 &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
         }
         let closes = out.iter().filter(|s| matches!(&s.fx,
-            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+            plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
                 crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
         assert_eq!(closes, 1, "a bare Unmount must close the Person store exactly once");
     }
@@ -2085,7 +2085,7 @@ mod tests {
             "credited=true (install_for_test) with zero total: settled and empty"
         );
         let m = FixtureMeasure;
-        let want = crate::ui::machine::FocusKey {
+        let want = plx_machine::machine::FocusKey {
             entry: EntryId(0),
             elem: ENTRY_ELEM,
         };
@@ -2107,13 +2107,13 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(2, 0);
         assert!(s
-            .focused_item(Some(crate::ui::machine::FocusKey {
+            .focused_item(Some(plx_machine::machine::FocusKey {
                 entry: s.entry,
                 elem: HEADER_ELEM
             }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
-            .focused_item(Some(crate::ui::machine::FocusKey {
+            .focused_item(Some(plx_machine::machine::FocusKey {
                 entry: s.entry,
                 elem: ENTRY_ELEM
             }), &cx(&FixtureMeasure, store.view()))
@@ -2391,19 +2391,19 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let (mut store, s) = seed(0, 0);
         assert!(s
-            .focused_item(Some(crate::ui::machine::FocusKey {
+            .focused_item(Some(plx_machine::machine::FocusKey {
                 entry: s.entry,
                 elem: HEADER_ELEM
             }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
-            .focused_item(Some(crate::ui::machine::FocusKey {
+            .focused_item(Some(plx_machine::machine::FocusKey {
                 entry: s.entry,
                 elem: ENTRY_ELEM
             }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
-            .focused_item(Some(crate::ui::machine::FocusKey {
+            .focused_item(Some(plx_machine::machine::FocusKey {
                 entry: s.entry,
                 elem: FIRST_CARD_ELEM
             }), &cx(&FixtureMeasure, store.view()))
@@ -2419,12 +2419,12 @@ mod tests {
         let (mut store, mut s) = seed(2, 0);
         let m = FixtureMeasure;
         let cxv = cx(&m, store.view());
-        let mut present = crate::ui::present::Present::new();
-        let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut buf: Vec<plx_machine::machine::Stamped<PersonHost>> = Vec::new();
         {
             let mut fx = Effects::new(
                 &mut buf,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
             s.commit_card(&cxv, &mut fx);
@@ -2444,14 +2444,14 @@ mod tests {
         {
             let mut fx = Effects::new(
                 &mut buf,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
             s.commit_card(&cxv2, &mut fx);
         }
         assert!(buf.iter().any(|st| matches!(
             &st.fx,
-            crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { sid, rk })))
+            plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { sid, rk })))
                 if *sid == ServerId::UNSET && rk == "m0"
         )));
         store.run(PersonCmd::Close);
@@ -2464,17 +2464,17 @@ mod tests {
     fn focus_moved_marks_the_header_only_on_an_explicit_arrival() {
         let _serial = plx_base::testlock::serial();
         let (mut store, mut s) = seed(1, 0);
-        let header_key = crate::ui::machine::FocusKey {
+        let header_key = plx_machine::machine::FocusKey {
             entry: EntryId(0),
             elem: HEADER_ELEM,
         };
         let m = FixtureMeasure;
         let cxv = cx(&m, store.view());
-        let mut present = crate::ui::present::Present::new();
-        let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut buf: Vec<plx_machine::machine::Stamped<PersonHost>> = Vec::new();
         let mut fx = Effects::new(
             &mut buf,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         assert!(!s.header_marked);
@@ -2624,7 +2624,7 @@ mod tests {
     ) -> (
         crate::stores::person::PersonStore,
         PersonScreen,
-        crate::ui::machine::FocusKey<u32>,
+        plx_machine::machine::FocusKey<u32>,
         ServerId,
         ServerId,
     ) {
@@ -2664,11 +2664,11 @@ mod tests {
             String::new(),
         );
         returned.restore(&memory);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         Machine::<PersonHost>::step(
@@ -2710,16 +2710,16 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         let right = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
-            source: crate::ui::machine::Source::Replay,
+            source: plx_machine::machine::Source::Replay,
             kind: InputKind::Key {
                 key: Key::Right,
                 sym: 0,
@@ -2754,16 +2754,16 @@ mod tests {
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
         let available = focus_of(&returned, &store, 0, 0);
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         let click = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
-            source: crate::ui::machine::Source::Replay,
+            source: plx_machine::machine::Source::Replay,
             kind: InputKind::Click {
                 x: 0.0,
                 y: 0.0,
@@ -2790,11 +2790,11 @@ mod tests {
         let measure = FixtureMeasure;
         let (mut store, mut returned, old_focus, _origin, share) = pending_share_return(&measure);
         store.install_source_for_test(share, Vec::new(), Vec::new());
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         Machine::<PersonHost>::step(
@@ -2871,11 +2871,11 @@ mod tests {
         assert!(first.person(&cx(&FixtureMeasure, store.view())).is_none(), "Person B displaced Person A");
 
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         Machine::<PersonHost>::step(
@@ -3014,11 +3014,11 @@ mod tests {
         remounted.restore(&memory);
 
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         Machine::<PersonHost>::step(
@@ -3086,11 +3086,11 @@ mod tests {
         assert!(first.person(&cx(&FixtureMeasure, store.view())).is_none());
 
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
             &mut present,
         );
         Machine::<PersonHost>::step(
@@ -3127,12 +3127,12 @@ mod tests {
         let (mut store, mut s) = seed(1, 0);
         store.install_credits_for_test(&[("Actor", 7)]);
         let measure = FixtureMeasure;
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
 
         let mut run = |screen: &mut PersonScreen,
                        event: ScreenEvent<PersonHost>,
-                       focus: Option<crate::ui::machine::FocusKey<u32>>| {
+                       focus: Option<plx_machine::machine::FocusKey<u32>>| {
             let context = Cx {
                 views: store.view(),
                 tick: Tick::default(),
@@ -3143,7 +3143,7 @@ mod tests {
             };
             let mut fx = Effects::new(
                 &mut out,
-                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)),
                 &mut present,
             );
             Machine::<PersonHost>::step(screen, &event, &context, &mut fx)
@@ -3157,14 +3157,14 @@ mod tests {
         assert_eq!(
             run(
                 &mut s,
-                ScreenEvent::PressHold(crate::ui::machine::PressId(2)),
+                ScreenEvent::PressHold(plx_machine::machine::PressId(2)),
                 Some(card)
             ),
             Handled::Yes
         );
         let back = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
-            source: crate::ui::machine::Source::Replay,
+            source: plx_machine::machine::Source::Replay,
             kind: InputKind::Key {
                 key: Key::Back,
                 sym: 0,
@@ -3178,17 +3178,17 @@ mod tests {
 
         assert!(out.iter().any(|st| matches!(
             &st.fx,
-            crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Present(
+            plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Present(
                 ContentArg::Filmography { sid, key }
             ))) if *sid == ServerId::UNSET && key == "161"
         )));
         assert!(out.iter().any(|st| matches!(
             &st.fx,
-            crate::ui::machine::Fx::App(AppFx::Content(ContentReq::ItemMenu))
+            plx_machine::machine::Fx::App(AppFx::Content(ContentReq::ItemMenu))
         )));
         assert!(out.iter().any(|st| matches!(
             &st.fx,
-            crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Back))
+            plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Back))
         )));
         store.run(PersonCmd::Close);
     }

@@ -266,12 +266,12 @@ enum AboutSource {
 /// (`registry::ContentPanel::About`), dismissed by BACK or OK — and, with no layout change, the
 /// Collection page's summary behind its `MORE` (`registry::ContentPanel::CollectionAbout`).
 pub(crate) struct AboutPanelScreen {
-    entry: crate::ui::machine::EntryId,
+    entry: plx_machine::machine::EntryId,
     source: AboutSource,
 }
 
 impl AboutPanelScreen {
-    pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
+    pub(crate) fn new(entry: plx_machine::machine::EntryId) -> Self {
         Self {
             entry,
             source: AboutSource::Detail,
@@ -280,7 +280,7 @@ impl AboutPanelScreen {
 
     /// The Collection page's summary, read in full: the same sheet over the collection store's
     /// current collection. A collection has no tagline, so that block is absent.
-    pub(crate) fn collection(entry: crate::ui::machine::EntryId) -> Self {
+    pub(crate) fn collection(entry: plx_machine::machine::EntryId) -> Self {
         Self {
             entry,
             source: AboutSource::Collection,
@@ -297,7 +297,7 @@ impl AboutPanelScreen {
         summary: &str,
         tagline: &str,
         appear: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         field: Option<&crate::ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
@@ -373,15 +373,15 @@ impl AboutPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for AboutPanelScreen {
+impl<H: crate::screens::registry::AppLike> plx_machine::machine::Machine<H> for AboutPanelScreen {
     type Ev = crate::ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-        fx: &mut crate::ui::machine::Effects<'_, H>,
-    ) -> crate::ui::machine::Handled {
-        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        _cx: &plx_machine::machine::Cx<'_, H>,
+        fx: &mut plx_machine::machine::Effects<'_, H>,
+    ) -> plx_machine::machine::Handled {
+        use plx_machine::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
         use crate::ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Input(input) => match input.kind {
@@ -432,48 +432,48 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Ab
 /// swallows every key and click itself (BACK/OK dismiss, everything else is eaten), unchanged by
 /// which source the container reads.
 impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for AboutPanelScreen {
-    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+    fn groups(&self, _cx: &plx_machine::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_machine::machine::GroupId> {
         None
     }
     fn neighbour(
         &self,
-        _key: crate::ui::machine::FocusKey<u32>,
+        _key: plx_machine::machine::FocusKey<u32>,
         _dir: crate::ui::screen::Dir,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
     ) -> crate::ui::screen::Step<u32> {
         crate::ui::screen::Step::Edge
     }
     fn place(
         &self,
         _key: &u32,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
         _at: crate::ui::screen::At,
     ) -> Option<crate::ui::screen::Placed> {
         None
     }
     fn reconcile(
         &self,
-        want: crate::ui::machine::FocusKey<u32>,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
+        want: plx_machine::machine::FocusKey<u32>,
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
         want
     }
     fn seat(
         &self,
-        _g: crate::ui::machine::GroupId,
+        _g: plx_machine::machine::GroupId,
         _from: crate::ui::screen::Placed,
-        _cx: &crate::ui::machine::Cx<'_, H>,
-    ) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey {
+        _cx: &plx_machine::machine::Cx<'_, H>,
+    ) -> plx_machine::machine::FocusKey<u32> {
+        plx_machine::machine::FocusKey {
             entry: self.entry,
             elem: 0,
         }
     }
 }
 
-impl crate::ui::machine::LogicalState for AboutPanelScreen {
-    fn write(&self, _c: &mut crate::ui::machine::Canon) {}
+impl plx_machine::machine::LogicalState for AboutPanelScreen {
+    fn write(&self, _c: &mut plx_machine::machine::Canon) {}
     fn probe(&self, out: &mut String) {
         out.push_str("about");
     }
@@ -483,13 +483,13 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn name(&self) -> &'static str {
         "about"
     }
-    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+    fn state(&self) -> &dyn plx_machine::machine::LogicalState {
         self
     }
-    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+    fn crumb(&self, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn.
     ///
     /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
@@ -759,12 +759,12 @@ mod tests {
     // is the sibling dependency the layer gate exists to refuse.
 
     use crate::screens::registry::{AppFx, AppMsg};
-    use crate::ui::machine::{
+    use plx_machine::machine::{
         Canon, Chrome, Cx, Edge, Effects, EntryId, FocusRead, Fx, Handled, Host, InputEvent,
         InputKind, InputOwner, Key, LogicalState, Machine, NavOp, PressRead, ScreenId,
         Source, Stamped, Tick,
     };
-    use crate::ui::present::Present;
+    use plx_machine::present::Present;
     use crate::ui::screen::{ScreenArg, ScreenEvent};
 
     #[derive(Clone, PartialEq, Eq)]
@@ -847,7 +847,7 @@ mod tests {
         let measure = crate::ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
         let (mut out, mut present) = (Vec::new(), Present::new());
-        let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Nav, &mut present);
+        let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Nav, &mut present);
         let mut panel = AboutPanelScreen::new(ENTRY);
         let handled = panel.step(
             &ScreenEvent::Input(InputEvent {
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
         use crate::ui::focus::{FocusEngine, Outcome};
-        use crate::ui::machine::GroupId;
+        use plx_machine::machine::GroupId;
         use crate::ui::screen::FocusTarget;
 
         let measure = crate::ui::fixture::FixtureMeasure;

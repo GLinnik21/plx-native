@@ -29,7 +29,7 @@ fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
 use super::transition::PageDip;
 use crate::ui::dispatch::{Dispatcher, NoTap};
 use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig, QUIESCENCE_PAGE};
-use crate::ui::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
+use plx_machine::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
 
 fn open_modal(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, style: Style, ms: u32) -> EntryId {
     d.nav.next_style = style;
@@ -683,7 +683,7 @@ fn the_dispatchers_prepare_notes_the_envelope_only_after_the_page_has_rested() {
     // One PRESENTING frame (prepare runs only on those), then the presenting side's preload
     // unless the test wants the note left standing.
     let mut rested = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, preload: bool| {
-        use crate::ui::present::{PresentEvent, Provenance};
+        use plx_machine::present::{PresentEvent, Provenance};
         ms += 16;
         d.present.note(PresentEvent::Damage(Provenance::Input));
         assert!(d.frame(rig, tick(ms), vec![], vec![], &mut NoTap).presented);
@@ -853,7 +853,7 @@ fn modal_mut(d: &mut Dispatcher<FixtureHost>, id: EntryId) -> &mut crate::ui::fi
 
 #[test]
 fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
-    use crate::ui::machine::GroupId;
+    use plx_machine::machine::GroupId;
     let (mut d, mut rig, _) = booted();
     let home = d.nav.top_page().unwrap().id;
     d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(GroupId(71)));
@@ -879,7 +879,7 @@ fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade()
 
 #[test]
 fn filmography_detail_back_restores_the_same_modal_instance_and_cursor() {
-    use crate::ui::machine::GroupId;
+    use plx_machine::machine::GroupId;
     let (mut d, mut rig, _) = booted();
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(1)));
     d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
@@ -940,7 +940,7 @@ fn scoped_surface_bodies_are_bounded_and_remount_after_their_owner_data_lands() 
     assert_eq!(d.nav.pending_surface(), Some(child));
     assert!(d.nav.entry(child).unwrap().inst.is_none(), "remount waits for owner data, not just owner body");
     rig.store.view.items.push(7);
-    d.store_changed(crate::ui::machine::StoreOrd(0), 1);
+    d.store_changed(plx_machine::machine::StoreOrd(0), 1);
     ms += 16;
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(child)));
@@ -1186,12 +1186,12 @@ fn an_evicted_entry_keeps_its_focus_identity_on_remount() {
     // The original test only inspected the saved key. The stronger engine assertion below
     // needs slot 5 to exist, so reconciliation cannot legitimately clamp it on remount.
     rig.store.view.items.resize(6, 0);
-    d.store_changed(crate::ui::machine::StoreOrd(0), 1);
+    d.store_changed(plx_machine::machine::StoreOrd(0), 1);
     d.frame(&mut rig, tick(1), vec![], vec![], &mut NoTap);
     let home = d.nav.top_page().unwrap().id;
-    d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(crate::ui::machine::GroupId(71)));
-    d.set_focus_in(Some(FocusKey { entry: home, elem: 4 }), Some(crate::ui::machine::GroupId(72)));
-    d.set_focus_in(Some(FocusKey { entry: home, elem: 5 }), Some(crate::ui::machine::GroupId(1)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(plx_machine::machine::GroupId(71)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 4 }), Some(plx_machine::machine::GroupId(72)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 5 }), Some(plx_machine::machine::GroupId(1)));
     let remembered = d.return_state().remembered;
     let mut evicted_at = None;
     for i in 0..(CAP as u32 + 2) {
@@ -1259,7 +1259,7 @@ fn the_render_set_is_checked_over_the_whole_frame() {
     use crate::ui::frame::{RenderBreach, RenderReport, RenderSet, FRAME_CACHE_BYTES, RENDER_BYTES_MAX};
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    d.present.note(plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
     assert!(r.presented);
     assert_eq!(r.render_set.pages, 1);
@@ -1276,7 +1276,7 @@ fn the_render_set_is_checked_over_the_whole_frame() {
     // bytes reach the sum. A literal cannot do this and a `{ 0 }` default cannot do the second.
     let own = RenderReport::one(400, 400);
     modal_mut(&mut d, id).render = own;
-    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    d.present.note(plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     let r = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
     assert!(r.presented);
     assert_eq!(r.render_set.surfaces, vec![(id, 1)], "one render of its own");
@@ -1325,7 +1325,7 @@ fn a_surface_holding_two_renders_breaches_the_frames_render_set() {
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
     modal_mut(&mut d, id).render = crate::ui::frame::RenderReport { textures: 2, bytes: 0 };
-    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    d.present.note(plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
 }
 
@@ -1340,14 +1340,14 @@ fn a_modal_foreground_spring_does_not_invalidate_the_host_snapshot() {
     assert!(!r.underlay_moving, "…none of it attributed to the page");
 }
 
-/// §4.4, the same claim in `ui::idle`'s vocabulary rather than the container gate's: the
+/// §4.4, the same claim in `plx_machine::idle`'s vocabulary rather than the container gate's: the
 /// dispatcher opens ONE motion scope per surface — around its `ModalStack::tick`, its body's step
 /// and its draw — and NONE around the page's, so `idle::page_moving()` answers "did the HOST move"
 /// on a frame that stepped both.
 ///
 /// The other test above grades `FrameReport::underlay_moving`, which a screen reaches only by
 /// calling `fx.note(Motion)`. This one grades the channel an owned screen actually animates
-/// through — `gfx::spring` — which reaches `ui::idle` and nothing else, and which had no
+/// through — `gfx::spring` — which reaches `plx_machine::idle` and nothing else, and which had no
 /// per-surface attribution at all until phase 10: every spring a surface stepped read as the page
 /// moving, and `app/bridge.rs` compensated by scoping the WHOLE dispatcher frame, which lost the
 /// page's own motion in exchange (`a_host_page_spring_under_an_open_panel_is_host_motion`).
@@ -1361,41 +1361,41 @@ fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
 
     // the page alone: its spring is the HOST's motion
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     ms += 16;
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
-    assert!(crate::ui::idle::present_moving(), "the animated page steps a spring");
-    assert!(crate::ui::idle::page_moving(), "…and it is the page's own");
+    assert!(plx_machine::idle::present_moving(), "the animated page steps a spring");
+    assert!(plx_machine::idle::page_moving(), "…and it is the page's own");
 
     // a Compact surface leaves its host LIVE (`surface_policy`), so this frame steps BOTH bodies
     let _menu = open_modal(&mut d, &mut rig, Style::Compact, ms + 16);
     ms += 32;
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
-    assert!(crate::ui::idle::present_moving(), "both bodies are still in flight");
+    assert!(plx_machine::idle::present_moving(), "both bodies are still in flight");
     assert!(
-        crate::ui::idle::page_moving(),
+        plx_machine::idle::page_moving(),
         "the page under a Compact panel is still the page: its spring is host motion"
     );
 
     // …and once the page has settled, the surface's own spring is NOT host motion. `open_modal`
     // mounted a fresh surface, so its pop window is still open here.
     for _ in 0..60 {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         ms += 16;
         d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
     }
-    assert!(!crate::ui::idle::page_moving(), "everything settled");
+    assert!(!plx_machine::idle::page_moving(), "everything settled");
     let surface = d.nav.modals.top().expect("the panel is up").entry.id;
     d.nav.modals.surface_mut(surface).unwrap().entry.inst.as_mut().unwrap()
         .screen.as_any_mut().and_then(|s| s.downcast_mut::<crate::ui::fixture::FixtureModal>())
         .expect("the fixture surface").pop = 0.0;
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     ms += 16;
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
-    assert!(crate::ui::idle::present_moving(), "the surface's own spring is in flight");
+    assert!(plx_machine::idle::present_moving(), "the surface's own spring is in flight");
     assert!(
-        !crate::ui::idle::page_moving(),
+        !plx_machine::idle::page_moving(),
         "…and none of it is attributed to the page underneath"
     );
 }
@@ -1870,7 +1870,7 @@ impl super::transition::PageSnapshot for CountingSnapshot {
 fn frozen_fixture() -> (Dispatcher<FixtureHost>, FixtureRig) {
     // Product opens this ledger once per loop before dispatch. Keep the isolated fixture from
     // inheriting another serialized spring test's last `page_moving` bit.
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     let (mut d, rig, _) = booted();
     d.page_snapshot = Box::<CountingSnapshot>::default();
     d.nav.tabs.stack.transition = Box::new(PageDip::new());
@@ -1938,7 +1938,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     let mut floor_capture_draw = None;
     for i in 1..=29u32 {
         let ms = i * 16;
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         // Motion ends at 400 ms; a late first-frame resource keeps the hold through 464 ms.
         d.budget.note_queued((400..480).contains(&ms));
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
@@ -1954,7 +1954,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     assert!(!d.nav.tabs.stack.transition.in_flight(), "the 140 ms dip itself has ended");
     let held = floor_capture_draw.expect("destination captured at the floor");
 
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     d.budget.note_queued(false);
     d.frame_with(&mut rig, tick(480), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true); // the one off-screen settled replacement capture
@@ -1962,7 +1962,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     assert_eq!(begins.get(), 3, "outgoing, incoming floor, and exactly one settled replacement");
 
     let replacement = page_draw_order(&d);
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     d.frame_with(&mut rig, tick(496), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true);
     assert!(page_draw_order(&d) > replacement, "live begins only after the matching image frame");
@@ -1988,7 +1988,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     while d.top_arg() != Some(&FixtureArg::Page(7)) {
         ms += 16;
         assert!(ms < 400, "the push reaches its floor");
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         d.draw(&mut rig, true);
     }
@@ -2004,7 +2004,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     let (floor_draw, recorded) = screen(&d);
     let floor_begins = begins.get();
     ms += 16;
-    crate::ui::idle::frame_begin(1.0 / 60.0);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
     d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true);
     assert_eq!(screen(&d).0, floor_draw, "premise: an image stands in for the page");
@@ -2021,13 +2021,13 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     // them keeps the image. Without the gate the page settles and is captured inside this window.
     while d.nav.tabs.stack.transition.in_flight() {
         ms += 16;
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         d.draw(&mut rig, true);
     }
     for _ in 0..10 {
         ms += 16;
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         crate::text::queue_prewarm(c"late string".as_ptr(), 24, 0);
         d.draw(&mut rig, true);
@@ -2037,7 +2037,7 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     while begins.get() == floor_begins {
         ms += 16;
         assert!(ms < settled_at + 200, "the drained page is captured promptly");
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
         d.draw(&mut rig, true);
     }
@@ -2076,7 +2076,7 @@ fn every_dip_frame_gives_the_bar_glass_the_page_it_shows_at_its_alpha() {
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
     let mut dip_frames = 0;
     for i in 0..40u32 {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         d.frame_with(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap, false);
         let in_flight = d.nav.tabs.stack.transition.in_flight();
         let composite = d.backdrop_layers(1.0).into_iter()

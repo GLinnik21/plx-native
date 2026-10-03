@@ -970,7 +970,7 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
 impl PersonState {
-    pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
+    pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate) -> bool {
         let mut session_changed = false;
         if !crate::stores::tape::active() && self.session_watch.changed() {
             if let Some(session) = crate::plex::session::peek_settled() {
@@ -1000,7 +1000,7 @@ impl PersonState {
                 adapter.fetch[i].release();
                 // Every landing repaints, failures included: a shelf or stopped spinner must not
                 // wait for the next keypress to become visible.
-                crate::ui::idle::invalidate();
+                plx_machine::idle::invalidate();
                 if reply.gen == self.generation {
                     changed |= apply_landing(self, i, reply.what);
                 }
@@ -1020,7 +1020,7 @@ impl PersonState {
 
     #[cfg(test)]
     pub(crate) fn pump(&mut self, adapter: &Arc<PersonAdapter>) -> bool {
-        self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate())
+        self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
 }
 
@@ -1164,7 +1164,7 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter) -> bool {
     p.landed = false;
     p.roster_gen = gen;
     resettle(p);
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
     true
 }
 

@@ -97,7 +97,7 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 
 // --- the integrators, reporting through the present handle ---------------------------------------
 
-/// The rest test (`ui::idle`'s, verbatim): magnitude-relative, capped under a quarter pixel, the
+/// The rest test (`plx_machine::idle`'s, verbatim): magnitude-relative, capped under a quarter pixel, the
 /// velocity judged as the travel this frame.
 const REST_REL: f32 = 1e-3;
 const REST_CAP: f32 = 0.25;
@@ -254,7 +254,7 @@ thread_local! {
 /// Hold every [`Phase`] clock at `ms` — the screenshot pipeline's pin on free-running animation
 /// (spinner angle, stall timers). `None` releases it. Dev builds only.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn hold_phase_clocks(ms: Option<u32>) {
+pub fn hold_phase_clocks(ms: Option<u32>) {
     HELD_PHASE_MS.with(|h| h.set(ms.map_or(u32::MAX, |ms| ms.min(u32::MAX - 1))));
 }
 
@@ -267,7 +267,7 @@ fn held_phase_ms() -> Option<u32> {
 /// not a `Phase` but must hold with them (the Up Next countdown). Always `None` without
 /// `devtriggers`.
 #[inline]
-pub(crate) fn held_clock_ms() -> Option<u32> {
+pub fn held_clock_ms() -> Option<u32> {
     #[cfg(feature = "devtriggers")]
     {
         held_phase_ms()
@@ -282,7 +282,7 @@ pub(crate) fn held_clock_ms() -> Option<u32> {
 /// awake on its own (`widgets::Spinner` reports from its draw) asks this, so a held picture really
 /// is still. Always `false` without `devtriggers`.
 #[inline]
-pub(crate) fn phase_clocks_held() -> bool {
+pub fn phase_clocks_held() -> bool {
     #[cfg(feature = "devtriggers")]
     {
         held_phase_ms().is_some()
@@ -358,7 +358,7 @@ pub const DIFFERENTIAL_HASH_HOST: u64 = 0x65a8_e905_a259_246d;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::present::Present;
+    use crate::present::Present;
 
     #[test]
     fn exp_and_sin_cos_are_close_to_libm_over_the_spring_domain() {

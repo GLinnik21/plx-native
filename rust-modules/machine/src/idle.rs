@@ -111,7 +111,7 @@ const KEEPALIVE_MS: u32 = 2000;
 /// this gate reaches none of those paths, so it must sleep here or a settled screen becomes a 100%
 /// CPU spinner. One frame period keeps input polling near the normal presented-frame cadence; the
 /// saving being chased is the GPU and compositor.
-pub(crate) const IDLE_POLL_MS: u32 = 16;
+pub const IDLE_POLL_MS: u32 = 16;
 
 thread_local! {
     /// Some spring moved during this frame's update phase. Cleared by [`frame_begin`].
@@ -198,7 +198,7 @@ static LAST_CHANGE: AtomicU32 = AtomicU32::new(0);
 /// panel is one `rm` from being ruled out as this feature's fault.
 static ENABLED: AtomicBool = AtomicBool::new(true);
 /// **Is the hardware video plane bound to our sink?** The gate's only non-damage INPUT (spec §4.4,
-/// [`crate::ui::present::PresentEvent::VideoPlane`]). While it is set every frame presents,
+/// [`crate::present::PresentEvent::VideoPlane`]). While it is set every frame presents,
 /// unconditionally: the plane is *slaved* to this wayland surface (`system::clear_opaque_region`),
 /// and "we stop presenting while a plane is slaved to it" is a claim about this compositor that
 /// reading cannot settle.
@@ -235,7 +235,7 @@ static PAGE_FROZEN: AtomicBool = AtomicBool::new(false);
 /// inside the page pass instead of ending it — the page draw that follows the popover (another
 /// panel, another scrim) is still frozen.
 #[inline]
-pub(crate) fn set_page_frozen(on: bool) -> bool {
+pub fn set_page_frozen(on: bool) -> bool {
     PAGE_FROZEN.swap(on, Relaxed)
 }
 
@@ -245,34 +245,34 @@ pub(crate) fn set_page_frozen(on: bool) -> bool {
 /// a draw which produced no pixels (a marquee, a spinner) must not keep re-dirtying the snapshot it
 /// is standing in.
 #[inline]
-pub(crate) fn page_frozen() -> bool {
+pub fn page_frozen() -> bool {
     PAGE_FROZEN.load(Relaxed)
 }
 
 /// Turn the gate off for this boot. Read once at startup from `/tmp/plxnative-noidle`.
-pub(crate) fn set_enabled(on: bool) {
+pub fn set_enabled(on: bool) {
     ENABLED.store(on, Relaxed);
 }
 
-pub(crate) fn enabled() -> bool {
+pub fn enabled() -> bool {
     ENABLED.load(Relaxed)
 }
 
-/// **The typed input to the LIVE gate** (spec §4.4). `ui::present::Present` is the machine this
+/// **The typed input to the LIVE gate** (spec §4.4). `plx_machine::present::Present` is the machine this
 /// module becomes; until it is swapped in, the two share one vocabulary so they cannot drift, and
 /// a caller says WHAT happened rather than poking a bool.
 ///
 /// The mapping onto this module's older doors, in full:
 /// * `VideoPlane(b)` — the one input with state of its own; see [`VIDEO_PLANE`].
-/// * `Damage(_)` / `Fault(_)` — [`invalidate`]. The provenance is dropped: `ui::idle` has no
+/// * `Damage(_)` / `Fault(_)` — [`invalidate`]. The provenance is dropped: `plx_machine::idle` has no
 ///   ledger to record it on (`Present::why` is the machine's, and the recorder reads that one).
 /// * `Motion` — [`invalidate`] as well, deliberately NOT the `MOVING` thread-local. `MOVING` is
 ///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`], and
 ///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted. A caller who
 ///   only knows "something moved" cannot answer that, so it gets one frame — never a claim about
 ///   which springs were in flight.
-pub(crate) fn note(ev: crate::ui::present::PresentEvent) {
-    use crate::ui::present::PresentEvent;
+pub fn note(ev: crate::present::PresentEvent) {
+    use crate::present::PresentEvent;
     match ev {
         PresentEvent::VideoPlane(bound) => VIDEO_PLANE.store(bound, Relaxed),
         PresentEvent::Damage(_) | PresentEvent::Fault(_) | PresentEvent::Motion => invalidate(),
@@ -282,7 +282,7 @@ pub(crate) fn note(ev: crate::ui::present::PresentEvent) {
 /// The gate's current video-plane input. Read by the frame algorithm's step 8/9 consumers — the
 /// opaque-region call and the capture skip — so all of them see ONE value.
 #[inline]
-pub(crate) fn video_plane_bound() -> bool {
+pub fn video_plane_bound() -> bool {
     VIDEO_PLANE.load(Relaxed)
 }
 
@@ -292,7 +292,7 @@ pub(crate) fn video_plane_bound() -> bool {
 /// Takes the post-step state by value: at rest the analytic form lands `pos` bit-identically on
 /// `target` with `vel` decayed to zero, so a settled screen does not even reach the store.
 #[inline]
-pub(crate) fn note_spring(pos: f32, target: f32, vel: f32) {
+pub fn note_spring(pos: f32, target: f32, vel: f32) {
     if !settled(pos, target, vel) {
         MOVING.with(|m| m.set(true));
         if SCOPE_DEPTH.with(|d| d.get()) == 0 {
@@ -313,7 +313,7 @@ pub(crate) fn note_spring(pos: f32, target: f32, vel: f32) {
 /// the card grid must not be able to hold that snapshot for the whole
 /// `PAGE_QUIESCENCE_HOLD_MAX_MS` cap. Declare it here rather than special-casing a screen in the
 /// transition code. Does not nest with [`MotionScope`] semantics: it is independent of them.
-pub(crate) fn decorative<T>(f: impl FnOnce() -> T) -> T {
+pub fn decorative<T>(f: impl FnOnce() -> T) -> T {
     struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
@@ -329,7 +329,7 @@ pub(crate) fn decorative<T>(f: impl FnOnce() -> T) -> T {
 /// [`note_spring`] applies, exported so an animator can snap a settled spring onto its target
 /// (`Spring::jump`) and hand the compositor an exactly-resting final frame.
 #[inline]
-pub(crate) fn settled(pos: f32, target: f32, vel: f32) -> bool {
+pub fn settled(pos: f32, target: f32, vel: f32) -> bool {
     let t = (REST_REL * (1.0 + pos.abs().max(target.abs()))).min(REST_CAP);
     // `vel * dt` is the travel this frame — the only form in which a velocity is comparable to a
     // distance, and the whole reason the tail of every scroll used to keep the panel awake.
@@ -343,7 +343,7 @@ pub(crate) fn settled(pos: f32, target: f32, vel: f32) -> bool {
 /// motion report would be wiped before the gate ever read it. A jump is a discrete change and
 /// belongs on the sticky flag.
 #[inline]
-pub(crate) fn note_jump(changed: bool) {
+pub fn note_jump(changed: bool) {
     if changed {
         invalidate();
     }
@@ -387,7 +387,7 @@ pub(crate) fn note_jump(changed: bool) {
 /// page draw, and every real landing (server data, a poster texture, input) reports from the update
 /// phase or from a worker, with the freeze off.
 #[inline]
-pub(crate) fn invalidate() {
+pub fn invalidate() {
     if page_frozen() {
         return;
     }
@@ -396,11 +396,11 @@ pub(crate) fn invalidate() {
     if OWN_SCOPE.with(|d| d.get()) > 0 {
         OWN_DAMAGE_N.fetch_add(1, Relaxed);
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     LOCAL_DAMAGE.with(|c| c.set(c.get() + 1));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// How many times THIS thread has raised discrete damage — the test-only half of `DIRTY`.
     /// `DIRTY` and `DAMAGE_GEN` are process-wide on purpose (a worker thread's landing must wake
@@ -412,15 +412,15 @@ thread_local! {
 }
 
 /// Discrete damage raised on this thread since the last call. See [`LOCAL_DAMAGE`].
-#[cfg(test)]
-pub(crate) fn take_local_damage() -> u32 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_local_damage() -> u32 {
     LOCAL_DAMAGE.with(|c| c.replace(0))
 }
 
 /// Drain leftover gate state so another module's spring test can assert a quiet frame.
 /// Callers still take [`plx_base::testlock::serial`] first — this is not the lock.
-#[cfg(test)]
-pub(crate) fn reset_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_for_test() {
     set_enabled(true);
     frame_begin(1.0 / 60.0);
     DIRTY.store(false, Relaxed);
@@ -458,10 +458,10 @@ static TAKEN_GEN: AtomicU32 = AtomicU32::new(0);
 /// PAGE UNDERNEATH CHANGE — with no per-frame bit or explicit claim for a handler to get wrong.
 /// Nests; drop closes it.
 #[must_use = "damage is attributed only for this guard's lifetime"]
-pub(crate) struct OwnScope(());
+pub struct OwnScope(());
 
 impl OwnScope {
-    pub(crate) fn open() -> Self {
+    pub fn open() -> Self {
         OWN_SCOPE.with(|d| d.set(d.get() + 1));
         OwnScope(())
     }
@@ -482,7 +482,7 @@ impl Drop for OwnScope {
 /// or during the popover's own motion, is still seen: with one merged bit either of those was
 /// consumed unseen and the snapshot kept the un-landed page for as long as the panel stayed open
 /// (Codex review, 2026-09-04).
-pub(crate) fn take_page_damage() -> bool {
+pub fn take_page_damage() -> bool {
     let gen = DAMAGE_GEN.load(Relaxed);
     let bumps = gen.wrapping_sub(TAKEN_GEN.swap(gen, Relaxed));
     page_damage(bumps, OWN_DAMAGE_N.swap(0, Relaxed))
@@ -497,7 +497,7 @@ fn page_damage(bumps: u32, own: u32) -> bool {
 /// Buy a frame without claiming that UI pixels changed. Reports raised during a draw survive just
 /// like [`invalidate`], but [`present_dirty`] stays false on the frame this schedules.
 #[inline]
-pub(crate) fn wake() {
+pub fn wake() {
     WAKE.store(true, Relaxed);
 }
 
@@ -506,7 +506,7 @@ pub(crate) fn wake() {
 /// the exact whole-microsecond conversion of `dt`, not a summed `f32`, for the same reason
 /// `search.rs`'s debounce and `anim.rs`'s probe clock do it that way.
 #[inline]
-pub(crate) fn frame_begin(dt: f32) {
+pub fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
     PAGE_LAYOUT_MOVING.with(|m| m.set(false));
@@ -528,14 +528,14 @@ pub(crate) fn frame_begin(dt: f32) {
 /// the `check-deps.sh` `dt` gate's whole complaint and the reason this replaced a `dt()` accessor
 /// callers used to sum themselves.
 #[inline]
-pub(crate) fn now_ms() -> u32 {
+pub fn now_ms() -> u32 {
     MS_CLOCK_US.with(|c| (c.get() / 1000) as u32)
 }
 
 /// Run one host page's update with an isolated view of spring motion, then merge its result back
 /// into the frame-wide motion bit. This is not dirty-rectangle tracking: it only prevents a modal's
 /// foreground springs from masquerading as movement in the page captured behind that modal.
-pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
+pub fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
     let scope = MotionScope::open();
     let value = f();
     (value, scope.close())
@@ -553,14 +553,14 @@ pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
 /// the frame: every later spring in the app would then report as a popover's, and nothing would
 /// fail — the gate would simply stop seeing the page move. `close` still consumes the guard and
 /// returns the verdict; the `Drop` that follows it is a no-op.
-pub(crate) struct MotionScope {
+pub struct MotionScope {
     before: bool,
     /// Still raising [`SCOPE_DEPTH`] — false once [`close`](Self::close) has merged it back.
     open: bool,
 }
 
 impl MotionScope {
-    pub(crate) fn open() -> Self {
+    pub fn open() -> Self {
         SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
         Self {
             before: MOVING.with(|m| m.replace(false)),
@@ -569,7 +569,7 @@ impl MotionScope {
     }
 
     /// Merge the scope back into the frame-wide bit and report whether anything inside it moved.
-    pub(crate) fn close(mut self) -> bool {
+    pub fn close(mut self) -> bool {
         self.merge()
     }
 
@@ -619,7 +619,7 @@ impl Drop for MotionScope {
 /// settle, and the idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is
 /// drawn again on page damage or, under a fading panel, on page motion —
 /// `popover::host::begin_frame`'s rule — and never by this frame.)
-pub(crate) fn should_present(now: u32) -> bool {
+pub fn should_present(now: u32) -> bool {
     let damage_gen = DAMAGE_GEN.load(Relaxed);
     let new_damage = PRESENT_DAMAGE_GEN.with(|seen| {
         let changed = seen.get() != damage_gen;
@@ -665,34 +665,34 @@ pub(crate) fn should_present(now: u32) -> bool {
 /// Did new discrete damage (input, async data, a texture landing) select this present? Unlike
 /// [`present_changed`], this excludes every spring outside the host's own [`scoped_motion`] result.
 #[inline]
-pub(crate) fn present_dirty() -> bool {
+pub fn present_dirty() -> bool {
     PRESENT_DIRTY.with(|c| c.get())
 }
 
 /// Did any spring move during this update phase? A full-page glass host may combine this with
 /// [`present_dirty`]; a modal host should prefer its own [`scoped_motion`] result.
 #[inline]
-pub(crate) fn present_moving() -> bool {
+pub fn present_moving() -> bool {
     MOVING.with(|m| m.get())
 }
 
 /// Did a spring OUTSIDE every [`MotionScope`] report motion this frame — i.e. the page's own, not a
 /// popover's? `popover::host::begin_frame`'s question for a page under a fading panel.
 #[inline]
-pub(crate) fn page_moving() -> bool {
+pub fn page_moving() -> bool {
     PAGE_MOVING.with(|m| m.get())
 }
 
 /// Did a page spring OUTSIDE every [`MotionScope`] AND outside every [`decorative`] region report
 /// motion this frame? The page-freeze's "is the page quiescent" question.
 #[inline]
-pub(crate) fn page_layout_moving() -> bool {
+pub fn page_layout_moving() -> bool {
     PAGE_LAYOUT_MOVING.with(|m| m.get())
 }
 
 /// `now` of the last frame that had something to change — see [`LAST_CHANGE`]. Simulator only.
 #[cfg(feature = "hostsim")]
-pub(crate) fn last_change_ms() -> u32 {
+pub fn last_change_ms() -> u32 {
     LAST_CHANGE.load(Relaxed)
 }
 
@@ -704,7 +704,7 @@ pub(crate) fn last_change_ms() -> u32 {
 /// loop's own call site, on the line after this one (`app::run`): this module is the machine layer
 /// and names nothing in `ui` but its own siblings.
 #[inline]
-pub(crate) fn note_present(now: u32) {
+pub fn note_present(now: u32) {
     LAST_PRESENT.store(now, Relaxed);
     PRESENTS.fetch_add(1, Relaxed);
 }
@@ -716,7 +716,7 @@ pub(crate) fn note_present(now: u32) {
 /// `tests/run.py` anchors `pos=` to it, so it must not read 0 on a screen that is merely idle.
 /// `fps=` is the number this module actually moves, and `fps=0` beside a healthy `loop=` is this
 /// module working, not a fault.
-pub(crate) fn take_presents() -> u32 {
+pub fn take_presents() -> u32 {
     PRESENTS.swap(0, Relaxed)
 }
 
@@ -748,7 +748,7 @@ mod tests {
     ///    itself adds no term for it (a second formula term feeding the gate is what risk 10 names).
     #[test]
     fn the_present_gate_answers_true_only_while_the_plane_bit_is_set() {
-        use crate::ui::present::PresentEvent;
+        use crate::present::PresentEvent;
         let _g = fresh();
         assert!(!video_plane_bound(), "a fresh gate has no plane");
 

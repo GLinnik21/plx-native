@@ -201,7 +201,7 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
     assert!(b.y < 880.0, "…and above the low one, which has no room below");
 
     // the canonical form carries it: two anchors, two states, no float equality anywhere
-    let canon = |arg: AltSourcesArg| crate::ui::machine::LogicalState::hash(&arg);
+    let canon = |arg: AltSourcesArg| plx_machine::machine::LogicalState::hash(&arg);
     assert_ne!(canon(arg(320.0, 200.0)), canon(arg(700.0, 880.0)));
     assert_eq!(
         canon(arg(320.0, 200.0)),

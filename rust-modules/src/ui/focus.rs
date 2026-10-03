@@ -24,10 +24,10 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
-use super::machine::{Canon, EntryId, FocusKey, GroupId, Host, InputOwner};
+use plx_machine::machine::{Canon, EntryId, FocusKey, GroupId, Host, InputOwner};
 use super::screen::{At, By, Dir, EdgeRule, ElemKind, Focusable, FocusTarget, GroupKind, GroupSpec, Link, Placed, Seat, Step};
 use super::Rect;
-use super::machine::Cx;
+use plx_machine::machine::Cx;
 
 #[cfg(test)]
 #[path = "focus_snapshot_tests.rs"]
@@ -83,8 +83,8 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     }
 
     /// Read-only context for exactly this input scope. System ownership exposes no page history.
-    pub fn read(&self, owner: InputOwner) -> super::machine::FocusRead<K> {
-        super::machine::FocusRead {
+    pub fn read(&self, owner: InputOwner) -> plx_machine::machine::FocusRead<K> {
+        plx_machine::machine::FocusRead {
             current: self.current(owner),
             remembered: match owner {
                 InputOwner::Entry(entry) => self.remembered_snapshot(entry),
@@ -542,7 +542,7 @@ pub(crate) mod tree {
     //! tables. Elements are `group * 1000 + index`; every group's elements are rects.
     use super::*;
     use crate::ui::fixture::FixtureHost;
-    use crate::ui::machine::Cx;
+    use plx_machine::machine::Cx;
     use crate::ui::screen::{AxisMask, GroupKind};
 
     pub struct Group {
@@ -786,7 +786,7 @@ mod tests {
     use super::tree::{key, split, Tree};
     use super::*;
     use crate::ui::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
-    use crate::ui::machine::{Cx, FocusRead, PressRead, Tick};
+    use plx_machine::machine::{Cx, FocusRead, PressRead, Tick};
     use crate::ui::screen::{AxisMask, GroupKind};
 
     const E: EntryId = EntryId(1);

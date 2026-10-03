@@ -354,7 +354,7 @@ fn worker() {
             changed
         };
         if changed {
-            crate::ui::present::wake_from_worker();
+            plx_machine::present::wake_from_worker();
         }
     }
 }

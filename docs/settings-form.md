@@ -45,7 +45,7 @@ true of the tree any more.
 ## Model (`rust-modules/src/ui/form.rs`)
 
 - `RowKey(u32)` — a row's stable focus key (NOT `FocusKey`, which already means
-  `{entry, elem}` in ui/machine.rs:245). Hand-assigned per page by `Id::key()`; never enum
+  `{entry, elem}` in rust-modules/machine/src/machine.rs:245). Hand-assigned per page by `Id::key()`; never enum
   discriminant/layout/hash. The `< BAND` check lives in the screens layer (ui/ cannot name
   `screens::registry::BAND`); ui/form.rs takes the ceiling as a parameter or const generic-free
   argument and debug-asserts against it.
@@ -73,7 +73,7 @@ true of the tree any more.
 - `dim`/busy is visual only; callers keep their busy guards.
 - Dynamic rows (per-server plaintext switches): identity = the server's machine id
   (`ServerMachineId(String)` newtype — `MachineId` already names a UI machine,
-  ui/machine.rs:555); focus key = a fixed per-page base + position within the dynamic section.
+  rust-modules/machine/src/machine.rs:555); focus key = a fixed per-page base + position within the dynamic section.
   Deterministic from replayed inputs, so no interner and nothing to restore. Selection restore
   across rebuilds uses the Id (machine id), not the key.
 - Cost: one Vec per rebuild; picker lists can exceed 100 rows (language), lookup stays linear;

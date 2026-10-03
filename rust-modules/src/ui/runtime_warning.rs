@@ -12,7 +12,7 @@ pub(crate) fn update(controlled: bool) {
     let visible = plx_base::task::runtime_check::warning().is_some();
     let previous = WAS_VISIBLE.with(|v| v.replace(visible));
     // Keep presenting through the linger and clear the final painted warning on expiry.
-    if visible || previous { super::idle::invalidate(); }
+    if visible || previous { plx_machine::idle::invalidate(); }
 }
 pub(crate) fn draw(controlled: bool) {
     draw_with(controlled, paint);
@@ -38,10 +38,10 @@ mod tests {
     fn a_controlled_boot_warning_neither_invalidates_nor_draws() {
         let _serial = plx_base::testlock::serial();
         plx_base::task::runtime_check::with_warning_for_test(|| {
-            super::super::idle::reset_for_test();
+            plx_machine::idle::reset_for_test();
             WAS_VISIBLE.with(|v| v.set(false));
             update(true);
-            let damage = super::super::idle::take_local_damage();
+            let damage = plx_machine::idle::take_local_damage();
             let mut paints = 0;
             draw_with(true, |_| paints += 1);
             assert_eq!((damage, paints), (0, 0), "controlled boots must exclude real-time warning presentation");
@@ -52,16 +52,16 @@ mod tests {
     fn live_warnings_still_present_and_controlled_mode_clears_no_pixels() {
         let _serial = plx_base::testlock::serial();
         plx_base::task::runtime_check::with_warning_for_test(|| {
-            super::super::idle::reset_for_test();
+            plx_machine::idle::reset_for_test();
             WAS_VISIBLE.with(|v| v.set(false));
             update(false);
-            assert!(super::super::idle::take_local_damage() > 0);
+            assert!(plx_machine::idle::take_local_damage() > 0);
             let mut paints = 0;
             draw_with(false, |_| paints += 1);
             assert_eq!(paints, 1);
             update(true);
             draw_with(true, |_| paints += 1);
-            assert_eq!(super::super::idle::take_local_damage(), 0, "even a stale visible flag must not force a controlled present");
+            assert_eq!(plx_machine::idle::take_local_damage(), 0, "even a stale visible flag must not force a controlled present");
             assert_eq!(paints, 1);
         });
     }

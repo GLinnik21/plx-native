@@ -5228,6 +5228,10 @@ class DepGates(unittest.TestCase):
     TREE_INPUTS = (
         "ci",
         "rust-modules/src",
+        # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE` and
+        # `SRC_MACHINE`, so a copy without them grades a different tree than the checkout.
+        "rust-modules/base/src",
+        "rust-modules/machine/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/storage/Cargo.toml",
@@ -5704,7 +5708,7 @@ impl PersonOwnerGateFixture {
         r = self._plant(
             "_check_deps_selftest_textmeasure_impl.rs",
             "struct SelftestMeasure;\n\n"
-            "impl crate::ui::machine::Measure for SelftestMeasure {\n"
+            "impl plx_machine::machine::Measure for SelftestMeasure {\n"
             "    fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {\n"
             "        crate::text::text_width(s.as_ptr(), sz, bold as i32)\n"
             "    }\n"
@@ -5716,7 +5720,7 @@ impl PersonOwnerGateFixture {
 
     def test_dt_gate_catches_a_raw_accumulator(self):
         """Phase 12, D4: `dt` went from a 12-file allowlist to zero-tolerance everywhere but
-        `ui/motion.rs`. RED: a `self.t += dt;`-shaped accumulator in a new file must fail — this
+        `machine/src/motion.rs`. RED: a `self.t += dt;`-shaped accumulator in a new file must fail — this
         is the exact pattern (a clock-driven animator summing a raw per-frame delta instead of
         reading `Tick.ms` through `motion::Ramp`/`motion::Phase`) the frozen-animator regression
         class comes from."""
@@ -5731,12 +5735,12 @@ impl PersonOwnerGateFixture {
         self.assertIn("_check_deps_selftest_dt_accum.rs", out)
 
     def test_dt_gate_catches_idle_dt_by_name(self):
-        """`idle::dt()` is deleted from `ui/idle.rs` — the accessor callers used to sum themselves.
+        """`idle::dt()` is deleted from `machine/src/idle.rs` — the accessor callers used to sum themselves.
         RED: a call spelled `idle::dt()` anywhere must fail even with no `+=`/`-=` beside it, since
         the function no longer exists to call."""
         r = self._plant(
             "_check_deps_selftest_dt_fn.rs",
-            "pub fn read_it() -> f32 {\n    crate::ui::idle::dt()\n}\n",
+            "pub fn read_it() -> f32 {\n    plx_machine::idle::dt()\n}\n",
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
@@ -5785,7 +5789,7 @@ impl PersonOwnerGateFixture {
     # `crate::text::(text_width|elide|cap_h)` call site now either threads a real `Measure`
     # capability down from its caller or sits inside the BODY of an `impl … Measure for …` block
     # (`check-deps.sh`'s `textmeasure` gate detects that structurally, not by allowlisted path),
-    # and `idle::dt()` is deleted from `ui/idle.rs` outright — every clock-driven animator that
+    # and `idle::dt()` is deleted from `machine/src/idle.rs` outright — every clock-driven animator that
     # used to accumulate a raw per-frame `dt` now advances through `motion::Ramp`/`motion::Phase`
     # off a real `Tick`, or (`ui/xfade.rs`, `ui/containers/transition.rs`, whose ramps are HASHED
     # replay state and already reported motion correctly through another mechanism) is spelled to

@@ -206,9 +206,9 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 1. **Open the FIFO read-write.** `printf x > $D/plxnative-remote` blocks forever in `open(2)` if
    the app is not running — there is no reader, and the shell hangs with no output. Always
    `exec 3<> fifo` and write to `&3`.
-2. **A settled screen stops presenting.** `ui::idle` skips the whole swap once nothing moves, so
+2. **A settled screen stops presenting.** `plx_machine::idle` skips the whole swap once nothing moves, so
    anything depending on a frame must invalidate first. The `shot` token does this for you; if you
-   add another such path, call `ui::idle::invalidate()` or it will wait for a frame that never
+   add another such path, call `plx_machine::idle::invalidate()` or it will wait for a frame that never
    comes.
 3. **Give the app time before driving.** Posters and hub data arrive asynchronously; a shot at 2 s
    catches a half-built screen and looks like a layout bug.

@@ -8,7 +8,7 @@ use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
 use crate::ui::icons::Icon;
-use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Part, Placed, Seat, Step, Stop,
@@ -119,7 +119,7 @@ impl InfoPanelState {
         &mut self,
         ps: &crate::route::PlaybackSession,
         appear: f32,
-        measure: &dyn crate::ui::machine::Measure,
+        measure: &dyn plx_machine::machine::Measure,
         meta: metadata::MetadataView<'_>,
     ) {
         let np = meta.now_playing();
@@ -624,7 +624,7 @@ fn card_geometry() -> (Rect, f32) {
 /// The `i`-th action button's rect, widened for the longest translated action label. The same
 /// measured formula [`InfoPanelPart::place`] answers the focus engine with, so a stop built from it lands
 /// on the pixel the button was drawn at.
-fn button_rect(i: usize, measure: &dyn crate::ui::machine::Measure) -> Rect {
+fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
     let labels = [
         crate::i18n::msg::widgets_info_from_beginning_c(),
@@ -660,7 +660,7 @@ fn meta_badge(
     x: f32,
     cy: f32,
     text: &str,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
     badge(
         p,
@@ -1001,7 +1001,7 @@ mod tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     // TEST ONLY: a thread-confined store, so `set_current_for_test`/`apply` and the `view()`
     // this test's `on_ok`/`is_episode` calls read from are the SAME owner, not two disconnected

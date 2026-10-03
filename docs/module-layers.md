@@ -8,8 +8,9 @@ L14, which a split hides from them, and the gate does not check impl coherence. 
 off behind a port, so that another TV OS can be a second port. L15 is **gate-complete**: its 44
 entries are gone, and the gate fails on any reference from outside the port to a member of it. It
 is not done in the sense of its own goal. L15b, the OS-neutral port, is open (below). Neither holds
-up the split. **The split has started: `base` is its own crate, `plx_base`** (`rust-modules/base/`,
-"Split 1: base" below); the other thirteen layers are still modules of `plxnative-modules`.
+up the split. **The split has started: `base` and `machine` are their own crates, `plx_base` and
+`plx_machine`** (`rust-modules/base/` and `rust-modules/machine/`, "Split 1: base" and "Split 2:
+machine" below); the other twelve layers are still modules of `plxnative-modules`.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
@@ -365,16 +366,17 @@ on. Each extraction:
   (`#[cfg(any(test, feature = "test-support"))]`) that the layers above enable in
   `[dev-dependencies]`, or the test that names it moves down. They are not only `testlock` and
   `testnet`: `storage_worker::drain_for_test` (67 references), `net::with_h2_reset_failure` (from
-  `plex::account`'s tests), `ui::machine::{BareArg, BareMeasure}` (from `auth::owner`),
+  `plex::account`'s tests), `machine::{BareArg, BareMeasure}` (from `auth::owner`; `ui::machine`
+  before Split 2),
   `gfx::backdrop::commit` (from `ui/frame/backdrop_tests.rs`), and `plex::session`'s `TempSession`,
   `with_io_for_test`, `invalidate_for_test` and `reads_for_test` (from
   `app/plex_session_app_tests.rs`) among them. A `#[cfg(test)]` trait impl is a hazard `--report`
-  cannot see, because trait dispatch names nothing: `ui::machine`'s `impl Measure for
+  cannot see, because trait dispatch names nothing: `machine`'s `impl Measure for
   fontcov::advances::ShippedMeasure`, which `auth::owner`'s and the `ui`/`appkit`/`screens` fit
   tests measure through, needs the same feature;
 - checks impl coherence by hand. An impl written in a third layer, of one layer's trait for another
   layer's type, is legal in one crate and E0117 (the orphan rule) after the split. `app/recorder.rs`
-  had `impl pms::initial::Sink for ui::machine::Canon`; the impl now lives beside the trait in
+  had `impl pms::initial::Sink for machine::Canon`; the impl now lives beside the trait in
   `pms/initial.rs`, since `data` may name `machine`. Before extracting a layer, look for
   `impl … for …` in the layers above whose trait and self type both live in other crates;
 - watches `#[macro_export]`. `dynlib!` and the `focusable_via_*!` macros keep working through
@@ -411,8 +413,8 @@ What the extraction taught, beyond what the recipe above predicted:
   `../src` (it would otherwise have stopped reading the application, silently, and still passed:
   every later layer must be added to its root list); `paths` and `fontcov` climb one more `..`.
 - **No orphan-rule hazard appeared**: no `impl` in the application has both its trait and its type
-  in `plx_base` (`ShippedMeasure`'s impl is `ui::machine`'s trait on a `plx_base` type, which is
-  legal in the application crate and will be legal in the `machine` crate).
+  in `plx_base` (`ShippedMeasure`'s impl is `machine`'s trait on a `plx_base` type, which is
+  legal in the application crate and is legal in the `plx_machine` crate; Split 2 below).
 - **The tooling that knew the tree's shape**: `ci/module_graph.py` reads every sibling
   `rust-modules/<layer>/` package named `plx_*` as part of the same module tree (so the layer gate
   and `check-module-cycle` keep one graph and `base uses nothing` is still enforced; the cycle
@@ -421,7 +423,8 @@ What the extraction taught, beyond what the recipe above predicted:
   would run the application's tests only), `ci/check-deps.sh` and `ci/check-build-budgets.py`
   scan `base/src` as well, `tools/cargo-seed.py` keys on the layer's manifest, and
   `ci/test_no_host_staticlib.py` holds the layer to `rlib`. The remaining layers each need the
-  same list walked again; `SRC_BASE` in `ci/check-deps.sh` is where a second crate is added.
+  same list walked again; `SRC_BASE` in `ci/check-deps.sh` is where a second crate is added, and
+  Split 2 below says what that list turned out to miss.
 
 Measured effect (`make build-bench`, same machine, 3 interleaved runs, median; the baseline runs
 logged a host load above the core count, the later ones did not, so read single seconds as noise):
@@ -431,6 +434,77 @@ then the application behind it), the hub edit 35.5 s to 34.2 s, and the unit sui
 with the same 5603 tests. That is the expected size: `base` is 6.7k of 450k lines, so the split
 buys about the 2-3 s that crate cost per edit. The leverage is in the layers above it, which are
 the other crates' worth of lines an edit stops recompiling.
+
+### Split 2: machine
+
+`machine` was extracted second: `rust-modules/machine/` is the workspace member `plx_machine` (an
+`rlib`, `uses = base`), holding what was `ui::machine`, `ui::present`, `ui::idle`, `ui::landgate`,
+`ui::landing` and `ui::motion`. They are top-level modules of that crate, so a path
+`crate::ui::machine::Host` is `plx_machine::machine::Host`; `ci/module-layers.ini` lists them as
+`machine present idle landgate landing motion`, and `ci/module_graph.py` read the new crate with no
+change (it picks up every sibling `plx_*` package). The module-cycle baseline did not move: none of
+the six was on the cycle. There is no re-export in `ui`: the 234 files that named the modules were
+rewritten by a script (`crate::ui::<m>` to `plx_machine::<m>`, `use` groups split so the machine
+items get their own `use plx_machine::{..}`), and the two things it could not resolve were
+`super::super::machine`/`::idle` in a nested test module (`ui/dispatch.rs`, `ui/runtime_warning.rs`)
+and the `$crate::ui::machine` inside `focusable_via_*!`, which became `plx_machine::…` (a macro body
+that names another crate's path expands in the caller, which depends on `plx_machine` anyway).
+`pub(crate)` and `pub(super)` became `pub` across the moved files; `machine` has one
+`macro_rules!`, `newtype!`, used only inside `machine.rs`. Features: `devtriggers` and `hostsim`
+are forwarded (`motion`'s held phase clock, `idle`'s simulator settle clock) and `test-support`
+is new. What it taught beyond the recipe:
+
+- **`--report` listed 11 items, and the first thing it missed was behaviour.** `Present::new()`
+  hands every gate a *private* wake door under `cfg(test)`, so that parallel tests cannot wake each
+  other's dispatcher, and `idle::invalidate` bumps a per-thread `LOCAL_DAMAGE` counter that
+  `take_local_damage` reads. A dependent's tests build `plx_machine` without `cfg(test)`, so every
+  gate in the `ui`, `screens` and `app` tests would have shared the one global door and every
+  quiet-frame assertion would have read a counter nothing incremented: no compile error, just
+  tests that pass or fail at random. Both are `cfg(any(test, feature = "test-support"))` now, as
+  are the 11 named items (`landgate`'s fixture gate and its free-function wrappers, `Armed`,
+  `idle::{take_local_damage, reset_for_test}`, `BareArg`, `BareMeasure`). The private
+  `landgate::phase` wrapper and `Present::global` stay `cfg(test)`: only this crate's tests call
+  them, and under `test-support` alone they would be dead code.
+- **The `Measure` impl for `fontcov::advances::ShippedMeasure` lives in `plx_machine`.** The trait
+  is the machine crate's and the type is `plx_base`'s, so the impl may sit in either crate; it
+  cannot sit in a third (E0117), which is why it could not stay in `ui` for the layers above.
+  The machine crate is the lowest one that names both. It is `test-support` only, and
+  `plx_machine/test-support` enables `plx_base/test-support`, because `fontcov::advances` is
+  itself behind that feature. No other orphan-rule hazard appeared (the compiler is the checker:
+  an `impl` of a `plx_machine` trait for a `plx_base` type in the application would be the next
+  one, and there is none).
+- **Moving a trait to another crate changes dead-code analysis.** `app/recorder.rs`'s
+  `RecordedInit` is constructed only by the `cfg(test)` header builder; with `LogicalState` local,
+  rustc counted its `impl LogicalState` as a use, and with the trait in another crate it does not
+  (`never constructed`, an error under `warnings = "deny"`). It is `cfg(test)` now, which is what
+  its only constructor already was. Expect the same in the next layer for any type that exists
+  only for a moved trait.
+- **Gates scoped to `ui/` stopped seeing the moved files.** `ci/check-deps.sh` rules that read
+  `$SRC/ui` (wall clock, mutators, `session::load`, `storage` from `ui`, the focus ladder) and the
+  ones that named `ui/motion.rs`, `ui/present.rs` as files (the libm and `dt` exemptions, the
+  one-door gate for `present`) are pointed at `SRC_MACHINE` too, and `wholly_test_files` classifies
+  the crate's `landing/stream_tests.rs` as test code. Without that the move would have removed six
+  files from six gates and every gate would have stayed green.
+- **Tooling that knows the tree's shape**: the `-p` lists (`-p plxnative-modules -p plx_base -p
+  plx_machine`) in the Makefile, the workflow, `tools/build-bench.py` and the tests that pin them;
+  `--src rust-modules/machine/src` for the line budget; `RUST_INPUTS`; `tools/cargo-seed.py` keys on
+  the new manifest; the eventlog scrub test's root list gained `../machine/src`;
+  `ci/test_no_host_staticlib.py` holds the crate to `rlib`; the release-configuration hook treats
+  an edit in `machine/src` as a shipping-feature risk; and `make build-bench` has a `machine`
+  scenario ("Edit leaf (plx_machine landgate.rs)").
+
+Measured effect (`make build-bench`, same machine, 3 interleaved runs, median; the
+host was loaded unevenly, a few runs of both sets took twice as long as their siblings, so the
+medians below are noisy and the minimum is the better guide). Before, on `b1bfa1f2`: an edit in
+`plx_base` 37.4 s (min 35.4), an edit of the application crate 38.1 s (min 36.9), the hub edit
+45.8 s (min 33.6), the unit suite 60.8 s. After: an edit in `plx_base` 37.9 s (min 31.9), an edit
+in `plx_machine` 53.3 s (min 34.6, it rebuilds the machine crate and the application behind it),
+an edit of the application crate 47.2 s (min 31.2, `plx_base` and `plx_machine` fresh), the hub
+edit 39.0 s (min 33.4), and the unit suite 60.9 s with the same 5603 tests (157 + 66 + 5380).
+That is the expected size, and it is small: `machine` is 4.1k of 450k lines, so the split buys the
+couple of seconds that crate cost per edit to everything above it. The gain is in the minima (the
+application edit is 5.7 s faster), not in the noisy medians; the crates that carry the line count
+(`gfx`, `plex`, `ui`, `screens`) are still inside the application crate.
 
 ## Limits of the analysis
 

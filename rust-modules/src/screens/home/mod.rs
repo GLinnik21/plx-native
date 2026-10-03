@@ -26,11 +26,11 @@ use crate::ui::landing_hero::{
     base_scrim_ramp, stack_top as hero_stack_top, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,
 };
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
     InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, Tick,
 };
-use crate::ui::present::{PresentEvent, Provenance};
+use plx_machine::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
     Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable,
     GroupKind, GroupSpec, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step,
@@ -250,7 +250,7 @@ impl Backdrop {
     ) {
         self.bind(hero, outgoing, selected, snap);
         // decorative hero-art reveal dissolve (same reason as the wash below)
-        crate::ui::idle::decorative(|| {
+        plx_machine::idle::decorative(|| {
             if self.tex.0 != 0 {
                 self.art.step(1.0, AmbientWash::K, dt);
             }
@@ -262,7 +262,7 @@ impl Backdrop {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
         // decorative colour dissolve under the page — must not hold the page-freeze snapshot
-        crate::ui::idle::decorative(|| {
+        plx_machine::idle::decorative(|| {
             self.wash.step(
                 wash_corners(hero.map(|h| h.item), self.grid_target, snap),
                 AmbientWash::K,
@@ -873,7 +873,7 @@ impl HomeScreen {
             // It reports NO `Motion`, deliberately. Nothing draws `hero_auto`: it is a TIMER, not
             // an animator (the `Timer` class of `docs/retui-invalidation-design.md`, not its
             // `Ramp`), and the dispatcher delivers `Tick` to the page every loop iteration whether or not the
-            // frame presents (`ui::idle`, "What this module does NOT do"), so the countdown runs
+            // frame presents (`plx_machine::idle`, "What this module does NOT do"), so the countdown runs
             // on a closed gate while the page is uncovered and the flip it ends in is what wakes
             // it — `outgoing` is set, and `moving` below reports the slide. Noting `Motion` on
             // every countdown tick made a still billboard present at the full frame rate forever:
@@ -907,13 +907,13 @@ impl HomeScreen {
         };
         // decorative: an in-place scale of the focused control, no layout — must not hold the
         // page-freeze snapshot (`idle::decorative`)
-        crate::ui::idle::decorative(|| self.hero_pop.step(hero_focus, dt));
+        plx_machine::idle::decorative(|| self.hero_pop.step(hero_focus, dt));
         let visible_cx: Cx<'_, H> = Cx {
             views: cx.views,
             tick: cx.tick,
             measure: cx.measure,
             press: cx.press,
-            focus: crate::ui::machine::FocusRead {
+            focus: plx_machine::machine::FocusRead {
                 current: visible_focus,
             ..Default::default() },
             owner: cx.owner,
@@ -2248,7 +2248,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
 }
 
 impl<H: HomeLike> Screen<H> for HomeScreen {
-    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         HomeScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str {

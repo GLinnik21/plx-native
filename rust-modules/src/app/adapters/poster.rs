@@ -48,7 +48,7 @@ mod trace;
 
 use crate::img;
 use crate::plex::ServerId;
-use crate::ui::machine::PosterKey;
+use plx_machine::machine::PosterKey;
 use crate::ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
 use std::os::raw::{c_int, c_uchar, c_uint};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -344,7 +344,7 @@ fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
         due = true;
     }
     if due {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 
@@ -363,7 +363,7 @@ fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) {
         due = true;
     }
     if due {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
 }
 
@@ -373,7 +373,7 @@ fn park_retry(s: &mut Pslot) {
     s.retry_at = None;
     s.retry_wake_sent = false;
     s.state = P_RETRY;
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 /// Does a failed fetch's outcome deserve another try? Transport failure and the statuses whose
@@ -1371,13 +1371,13 @@ impl Uploader for GfxUploader {
 /// statement to the phase-2 `Present` machine.
 pub(crate) fn prepare(
     b: &mut crate::ui::frame::Budget,
-    present: &mut crate::ui::machine::PresentHandle<'_>,
+    present: &mut plx_machine::machine::PresentHandle<'_>,
     now_us: impl Fn() -> u64,
 ) -> usize {
     let n = tex::prepare(b, &mut GfxUploader, present, now_us);
     if n > 0 {
         CV.notify_all();
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     }
     n
 }
@@ -2326,8 +2326,8 @@ mod tests {
         tex::accept(decoded(PosterKey(0)));
         let mut budget = crate::ui::frame::Budget::new();
         budget.begin_frame(0);
-        let mut present = crate::ui::present::Present::new();
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present = plx_machine::present::Present::new();
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         let mut uploader = StubUp { next: 0 };
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 0),
@@ -2341,7 +2341,7 @@ mod tests {
         // Without this idle frame the very next `prepare` would refuse to evict a texture the
         // prior frame just drew, exactly the "arrivals lose" rule the fix added.
         budget.begin_frame(10_000);
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 10_000),
             0,
@@ -2350,7 +2350,7 @@ mod tests {
 
         tex::accept(decoded(PosterKey(1)));
         budget.begin_frame(20_000);
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 20_000),
             1,
@@ -2395,7 +2395,7 @@ mod tests {
 
         drain_decoded();
         budget.begin_frame(40_000);
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 40_000),
             1
@@ -2467,7 +2467,7 @@ mod tests {
             result: Ok(Decoded { w: 2, h: 2, rgba: vec![0; BYTES].into_boxed_slice() }),
         };
         let mut budget = crate::ui::frame::Budget::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut uploader = StubUp { next: 0 };
         let (lost0, _) = residency_counts_for_test();
         let refused0 = residency_refused_for_test();
@@ -2475,7 +2475,7 @@ mod tests {
         // Key 0 arrives, uploads, and is drawn — resident AND on screen this frame.
         tex::accept(decoded(PosterKey(0)));
         budget.begin_frame(0);
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         assert_eq!(tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 0), 1);
         assert_ne!(tex::resolve_on(srv.raw(), SRC0, 2, 2, false), 0, "key 0 is resident and drawn");
 
@@ -2484,7 +2484,7 @@ mod tests {
         // flipping key 0 off screen.
         tex::accept(decoded(PosterKey(1)));
         budget.begin_frame(10_000);
-        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut present_handle = plx_machine::machine::PresentHandle::of(&mut present);
         assert_eq!(
             tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 10_000),
             0,
@@ -2565,8 +2565,8 @@ mod tests {
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
             crate::ui::card_motion::begin_frame(frame * 16);
-            crate::ui::idle::frame_begin(0.016);
-            crate::ui::idle::take_local_damage();
+            plx_machine::idle::frame_begin(0.016);
+            plx_machine::idle::take_local_damage();
             let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
             let facts = crate::screens::registry::tile_facts::of(&item);
             for art in [crate::ui::widgets::Art::Poster(Some(facts)), crate::ui::widgets::Art::Still(Some(facts)),
@@ -2576,7 +2576,7 @@ mod tests {
             }
             if frame < 2 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
-                assert!(crate::ui::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
+                assert!(plx_machine::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
             } else {
                 assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
             }
@@ -2602,14 +2602,14 @@ mod tests {
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
         let motion = crate::ui::card_motion::Scope::moving_for_test();
-        crate::ui::idle::take_local_damage();
+        plx_machine::idle::take_local_damage();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "the future retry must match its existing slot, not take the fresh-miss gate");
-        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
         store().slots[0].retry_at = Some(0);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "motion must defer the known due retry");
-        assert!(crate::ui::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
+        assert!(plx_machine::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
         assert_eq!(store().slots[0].state, P_RETRY);
         drop(motion);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
@@ -3153,7 +3153,7 @@ mod tests {
     #[test]
     fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
         let _g = plx_base::testlock::serial();
-        crate::ui::idle::reset_for_test();
+        plx_machine::idle::reset_for_test();
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_EVICTED,
@@ -3168,21 +3168,21 @@ mod tests {
 
         invalidate_due_evictions(&mut slots, 1_999);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             0,
             "a cooling slot must leave the screen settled before its deadline"
         );
 
         invalidate_due_evictions(&mut slots, 2_000);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             1,
             "the deadline must wake exactly one draw that can probe the slot again"
         );
 
         invalidate_due_evictions(&mut slots, 2_001);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             0,
             "an off-screen expired slot must not hold the present gate awake - the latch makes \
              this ONE redraw request, not a request every frame"
@@ -3390,7 +3390,7 @@ mod tests {
     #[test]
     fn a_due_parked_retry_invalidates_the_frame_gate() {
         let _g = plx_base::testlock::serial();
-        crate::ui::idle::reset_for_test();
+        plx_machine::idle::reset_for_test();
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_RETRY,
@@ -3405,21 +3405,21 @@ mod tests {
 
         invalidate_due_retries(&mut slots, 1_999);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             0,
             "a parked retry must leave the screen settled before its deadline"
         );
 
         invalidate_due_retries(&mut slots, 2_000);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             1,
             "the deadline must wake a draw that can re-queue the retry"
         );
 
         invalidate_due_retries(&mut slots, 2_001);
         assert_eq!(
-            crate::ui::idle::take_local_damage(),
+            plx_machine::idle::take_local_damage(),
             0,
             "an off-screen due slot must not hold the present gate awake"
         );
@@ -3431,7 +3431,7 @@ mod tests {
     #[test]
     fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
         let _g = plx_base::testlock::serial();
-        crate::ui::idle::reset_for_test();
+        plx_machine::idle::reset_for_test();
         let mut s = Pslot {
             state: P_LOADING,
             attempts: 2,
@@ -3443,7 +3443,7 @@ mod tests {
         assert_eq!(s.state, P_RETRY);
         assert_eq!(s.attempts, 3);
         assert_eq!(s.retry_at, None, "only a draw may read the loop clock and schedule");
-        assert_eq!(crate::ui::idle::take_local_damage(), 1);
+        assert_eq!(plx_machine::idle::take_local_damage(), 1);
     }
 
     /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp

@@ -170,7 +170,7 @@ fn select_with_fetch(
                 st.failed = Some((selection, why, Instant::now()));
             }
         }
-        crate::ui::present::wake_from_worker();
+        plx_machine::present::wake_from_worker();
     });
     if !spawned {
         let mut st = state();

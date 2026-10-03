@@ -69,10 +69,10 @@
 #
 # USE IT FOR the measurement tiers — ABR, transaction cost, anything read out of the event log —
 # where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
-# `shot`, or the capture stream: `ui::idle` gates presents and the panel is the thing those
+# `shot`, or the capture stream: `plx_machine::idle` gates presents and the panel is the thing those
 # measure, so a dark screen makes them either meaningless or silently wrong.
 # The one exception is a scene on the PLAYER route: the bound video plane forces presents
-# (`ui::idle`'s VIDEO_PLANE gate), so its frame times are real with the panel off
+# (`plx_machine::idle`'s VIDEO_PLANE gate), so its frame times are real with the panel off
 # (docs/player-submenus.md, "Device frame-time check").
 #
 # SOUND is the television's own mute, separate from the panel above and from playback: it silences

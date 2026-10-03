@@ -81,7 +81,7 @@ fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<St
         true
     });
     if changed || retry_drain { submit(); }
-    if changed { crate::ui::idle::invalidate(); }
+    if changed { plx_machine::idle::invalidate(); }
     changed
 }
 

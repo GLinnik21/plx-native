@@ -12,8 +12,8 @@ pub(crate) enum ContentArg {
     Collection(crate::plex::collections::CollectionRef),
 }
 
-impl crate::ui::machine::LogicalState for ContentArg {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
+impl plx_machine::machine::LogicalState for ContentArg {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
         match self {
             Self::Detail { sid, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(rk); }
             Self::Person { sid, key, guid, name, thumb } => { c.u32(1).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(thumb); }

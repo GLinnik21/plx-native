@@ -26,7 +26,7 @@ use crate::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
 use crate::plex::session::PlaintextChoice;
 use crate::plex::ServerId;
 use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
-use crate::ui::machine::{
+use plx_machine::machine::{
     Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent,
     InputKind, Key, MachineId,
 };

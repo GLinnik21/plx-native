@@ -10,7 +10,7 @@
 //! that implements it.
 
 use crate::ui::form::{Activation, FormTable, RowKey};
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
 };
 use crate::ui::screen::ScreenArg;
@@ -234,7 +234,7 @@ impl Host for InnerHost {
     type Elem = u32;
     type Views<'a> = crate::stores::browse::DirectoryView<'a>;
     type Init = NoInit;
-    // No family page remembers anything on its own `ReturnState` today (`ui/machine.rs`'s
+    // No family page remembers anything on its own `ReturnState` today (`machine/src/machine.rs`'s
     // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
     // focus alone.
     type Memory = ();

@@ -16,7 +16,7 @@
 
 #![allow(dead_code)] // phase 3a: the screens compose through these from 3b (the engine) and 5b on
 
-use super::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::{card_row, Rect};
 
@@ -401,7 +401,7 @@ where
 mod tests {
     use super::*;
     use crate::ui::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
-    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     fn cx<'a>(m: &'a FixtureMeasure, v: &'a FixtureView) -> Cx<'a, FixtureHost> {
         Cx {

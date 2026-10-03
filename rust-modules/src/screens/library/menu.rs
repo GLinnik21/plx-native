@@ -4,7 +4,7 @@ use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, Libra
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
 use crate::stores::{StoreCmd, StoreId};
 use crate::ui::frame::Budget;
-use crate::ui::machine::{
+use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, MachineId, NavOp,
 };
@@ -395,7 +395,7 @@ impl LibraryMenu {
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width`]), hung off the
     /// anchor's left edge and pulled back so the right edge stays inside the keep-out.
-    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let width = self.form.table.menu_panel_width(measure);
@@ -553,7 +553,7 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                 // engine owner. Never mutate the table selection as a script shortcut.
                 for edge in [Edge::Down, Edge::Up] {
                     fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Input(
-                        crate::ui::machine::InputEvent { at: cx.tick, source: crate::ui::machine::Source::Script,
+                        plx_machine::machine::InputEvent { at: cx.tick, source: plx_machine::machine::Source::Script,
                             kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false } },
                     ))));
                 }
@@ -762,7 +762,7 @@ mod tests {
     use crate::browse::{SecKind, SourceState};
     use crate::plex::ServerId;
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
+    use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
     use crate::ui::screen::ScreenArg;
 
     /// A draft as a table lays it out — the drawn sections, and every focusable row as
@@ -796,11 +796,11 @@ mod tests {
         fn probe(&self, _: &mut String) {}
     }
     impl ScreenArg for Arg {
-        fn chrome(&self) -> crate::ui::machine::Chrome {
-            crate::ui::machine::Chrome::None
+        fn chrome(&self) -> plx_machine::machine::Chrome {
+            plx_machine::machine::Chrome::None
         }
-        fn id(&self) -> crate::ui::machine::ScreenId {
-            crate::ui::machine::ScreenId(1)
+        fn id(&self) -> plx_machine::machine::ScreenId {
+            plx_machine::machine::ScreenId(1)
         }
         fn title(&self) -> Option<&str> {
             None
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn canonical_menu_state_distinguishes_actions_and_row_order_with_the_same_identity_registry() {
         let mut menu = LibraryMenu::new(EntryId(7), LibraryMenuArg {
-            host: crate::ui::machine::InstanceId(8),
+            host: plx_machine::machine::InstanceId(8),
             target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
             kind: LibraryMenuKind::Sort, anchor: [0; 4],
         });
@@ -1075,7 +1075,7 @@ mod tests {
         let mut menu = LibraryMenu::new(
             EntryId(7),
             LibraryMenuArg {
-                host: crate::ui::machine::InstanceId(8),
+                host: plx_machine::machine::InstanceId(8),
                 target: SectionAddress {
                     epoch: 11,
                     sid: ServerId::from_raw(1),
@@ -1092,10 +1092,10 @@ mod tests {
                 .expect("recheck remains placed after the separator"));
         assert_eq!(placed.index, Some(3));
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(
             &mut output,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(8)),
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
             &mut present,
         );
         with_cx(|cx| menu.activate(recheck, cx, &mut fx));
@@ -1154,7 +1154,7 @@ mod tests {
         let mut menu = LibraryMenu::new(
             EntryId(7),
             LibraryMenuArg {
-                host: crate::ui::machine::InstanceId(8),
+                host: plx_machine::machine::InstanceId(8),
                 target: SectionAddress {
                     epoch: 11,
                     sid: ServerId::from_raw(1),

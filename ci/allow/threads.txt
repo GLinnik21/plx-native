@@ -5,7 +5,7 @@
 # P8-H) and EVERY ONE already spawns its real worker through `task::spawn`/`task::spawn_small`
 # (task.rs) — confirmed by grep in ff.rs, auth.rs, route/decision.rs, browse/mod.rs, player/mod.rs,
 # with the remaining named files (aq.rs, stream.rs, imgcache.rs, http.rs, plex/client.rs,
-# plex/transcoder.rs, ui/present.rs, ui/landgate.rs) driven from a caller thread that itself
+# plex/transcoder.rs, machine/src/present.rs, machine/src/landgate.rs) driven from a caller thread that itself
 # already went through task::spawn. The ONLY `thread::spawn` call sites outside task.rs left in
 # the tree are test code — mock TCP/HTTP servers and concurrency probes. The scanner skips
 # inline `#[cfg(test)] mod` blocks and derives separate test files from their parents cfg(test)

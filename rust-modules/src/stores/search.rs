@@ -115,7 +115,7 @@ impl SearchStore {
         &mut self,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
-        gate: &crate::ui::landgate::Gate,
+        gate: &plx_machine::landgate::Gate,
     ) -> bool {
         let changed = self.state.pump_with_directory_and_gate(&self.adapter, dt, directory, gate);
         if changed {

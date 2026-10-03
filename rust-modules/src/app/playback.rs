@@ -163,7 +163,7 @@ pub(crate) fn retry_failed_playback(
         .max(0);
     crate::player::stop_bufferfeed(ps, pa);
     if crate::route::retry_current_play(ps, meta, resume_ns, direct_play) {
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
         true
     } else {
         log("playback retry: current source cannot be resolved again");
@@ -190,7 +190,7 @@ pub(crate) fn play_automatically(
         if !crate::route::set_direct_play_mode(DirectPlayMode::Auto) {
             log("play automatically: the Direct Play preference was not saved");
         }
-        crate::ui::idle::invalidate();
+        plx_machine::idle::invalidate();
     });
     retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto))
 }
@@ -561,7 +561,7 @@ pub(crate) fn player_requests(
                 if ps.jail_load_blocked {
                     pa.repair_sandbox(repair, crate::tv::sandbox::blocks_native_video());
                     ps.repair_status = repair.state();
-                    crate::ui::idle::invalidate();
+                    plx_machine::idle::invalidate();
                 }
             }
             PlayerReq::ExtendHud(ms) => {
@@ -1339,7 +1339,7 @@ mod player_return_tests {
             self.d.top_arg().cloned().expect("a page is on top")
         }
 
-        fn top_entry(&self) -> crate::ui::machine::EntryId {
+        fn top_entry(&self) -> plx_machine::machine::EntryId {
             self.d.nav.top_page().expect("a page is on top").id
         }
 
@@ -1353,7 +1353,7 @@ mod player_return_tests {
         }
 
         /// One real key press, through the app's own frame.
-        fn press(&mut self, key: crate::ui::machine::Key) {
+        fn press(&mut self, key: plx_machine::machine::Key) {
             self.t += 16;
             let at = tick(self.t);
             bridge::frame(&mut self.d, &mut self.rig, at, vec![crate::ui::fixture::key(key, at)]);
@@ -1361,7 +1361,7 @@ mod player_return_tests {
         }
 
         /// The `Spot` an entry's return memory is holding.
-        fn spot_of(&self, entry: crate::ui::machine::EntryId) -> crate::metadata::Spot {
+        fn spot_of(&self, entry: plx_machine::machine::EntryId) -> crate::metadata::Spot {
             match &self.d.nav.entry(entry).expect("the entry is on the stack").ret.memory {
                 PageMemory::Detail(memory) => memory.spot.clone(),
                 other => panic!("a detail entry remembers a detail page, not {other:?}"),
@@ -1461,7 +1461,7 @@ mod player_return_tests {
         p.stand_on(AppArg::Home);
         p.stand_on(detail(A, "7"));
         let page = p.top_entry();
-        p.press(crate::ui::machine::Key::Right);
+        p.press(plx_machine::machine::Key::Right);
         let left_on = p.d.focus().expect("the detail page holds the cursor");
         p.play(Origin::Here);
         let spot = p.spot_of(page);

@@ -565,7 +565,7 @@ impl TableView {
 
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
-    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+    pub(crate) fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
         let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
@@ -749,7 +749,7 @@ impl TableView {
 
     /// The title band's own run, upper-cased, and the x offset it starts at from the content's
     /// left edge: past the back glyph and the check-column→label [`GAP`].
-    fn title_run(&self, measure: &dyn crate::ui::machine::Measure) -> Option<(String, f32)> {
+    fn title_run(&self, measure: &dyn plx_machine::machine::Measure) -> Option<(String, f32)> {
         let title = self.title.as_ref()?;
         let glyph = measure.width_str(TITLE_BACK_GLYPH, theme::size::CAPTION, false);
         Some((title.to_uppercase(), glyph + GAP))
@@ -859,7 +859,7 @@ impl TableView {
     /// those two layouts and is built from the same pieces (`row_runs`, [`Self::trailing_width`],
     /// [`ROW_VALUE_GAP`], [`ACCESSORY_GAP`], the hug margin), so a panel of exactly this width can
     /// never elide a run the layout would have kept. Action menus size their panel with it.
-    pub(crate) fn measured_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub(crate) fn measured_width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let h = fit::HEADROOM;
         let mut width: f32 = 0.0;
         if let Some((title, x0)) = self.title_run(measure) {
@@ -902,14 +902,14 @@ impl TableView {
     /// [`MENU_MAX_W`] is a localization CATCH, not a silent ellipsis: each menu's fit test grades
     /// its shipped languages at the cap, and [`Self::menu_cap_failure`] flags any draft whose
     /// `measured_width` exceeds it.
-    pub(crate) fn menu_panel_width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub(crate) fn menu_panel_width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
         self.measured_width(measure).clamp(self.min_panel_w.min(MENU_MAX_W), MENU_MAX_W)
     }
 
     /// Test-side half of the cap: `Err` names the offending width when this table would need a
     /// panel wider than [`MENU_MAX_W`] (`what` = language tag + menu/row context).
     #[cfg(test)]
-    pub(crate) fn menu_cap_failure(&self, measure: &dyn crate::ui::machine::Measure, what: &str) -> Option<String> {
+    pub(crate) fn menu_cap_failure(&self, measure: &dyn plx_machine::machine::Measure, what: &str) -> Option<String> {
         let w = self.measured_width(measure);
         (w > MENU_MAX_W).then(|| format!("{what}: measured_width {w} > MENU_MAX_W {MENU_MAX_W}"))
     }
@@ -926,7 +926,7 @@ impl TableView {
     /// running wider than the measure predicts, the primary still claiming its share first) and
     /// report the secondary only if its own inflated width no longer fits.
     #[cfg(test)]
-    pub(crate) fn fit_report(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> Vec<FitIssue> {
+    pub(crate) fn fit_report(&self, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> Vec<FitIssue> {
         let (size, bold) = self.label_style();
         let mut out = Vec::new();
         self.fit_notes(frame_w, measure);
@@ -1038,7 +1038,7 @@ impl TableView {
     /// count [`Row::height_in`] reads back. `Row::height_in` has no measure, so this is the one
     /// place a note's height is decided; [`Self::draw`] runs it before it walks, and an owner that
     /// sizes its panel from [`Self::measured_height`] (the track menu) runs it first. Idempotent.
-    pub(crate) fn fit_notes(&self, frame_w: f32, measure: &dyn crate::ui::machine::Measure) {
+    pub(crate) fn fit_notes(&self, frame_w: f32, measure: &dyn plx_machine::machine::Measure) {
         let w = Self::note_column_w(frame_w);
         for row in self.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| r.is_note()) {
             let lines = crate::ui::text_view::TextView::new(&row.label, theme::size::CAPTION, theme::TEXT_TERTIARY)
@@ -1052,7 +1052,7 @@ impl TableView {
         if self.compact { (theme::size::BODY, false) } else { (theme::size::HEADLINE, true) }
     }
 
-    fn trailing_width(&self, row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn trailing_width(&self, row: &Row, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let mut width = row.ticon.map_or(0.0, ticon_slot_w);
         if !row.badges.is_empty() {
             width += row.badges.iter().map(|badge| crate::ui::widgets::badge_w(badge.text(), None, measure)).sum::<f32>()
@@ -1065,7 +1065,7 @@ impl TableView {
     }
 
     /// The same label budget used by rendering and intrinsic-width checks.
-    pub(crate) fn label_width(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pub(crate) fn label_width(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
         self.row_columns(row, frame_w, measure).label_w
     }
 
@@ -1076,14 +1076,14 @@ impl TableView {
     /// every pixel left. When they do not, the LABEL is the primary read: it keeps its natural
     /// width up to [`fit::ROW_PRIMARY_SHARE`] of the row's text span and the value gives way first,
     /// elided to what is left (see [`fit::two_runs`]).
-    pub(crate) fn row_columns(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure) -> RowColumns {
+    pub(crate) fn row_columns(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure) -> RowColumns {
         self.row_columns_under(row, frame_w, measure, 1.0)
     }
 
     /// [`Self::row_columns`] with both natural widths divided by `headroom` — `1.0` renders, and
     /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
     /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
-    fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> RowColumns {
+    fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> RowColumns {
         let fixed = self.trailing_width(row, measure) - Self::value_slot(row, measure);
         let span = (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - fixed).max(0.0);
         let (label, value) = self.row_runs(row, measure);
@@ -1101,7 +1101,7 @@ impl TableView {
     /// A row's two runs at their natural widths, exactly as [`Self::row_columns_under`] feeds them
     /// to [`fit::two_runs`] at headroom `1.0` and [`Self::measured_width`] sums them: the label
     /// hugged with [`fit::HUG_MARGIN`] (whole pixels), and the trailing value if it has one.
-    fn row_runs(&self, row: &Row, measure: &dyn crate::ui::machine::Measure) -> (f32, Option<f32>) {
+    fn row_runs(&self, row: &Row, measure: &dyn plx_machine::machine::Measure) -> (f32, Option<f32>) {
         let (size, bold) = self.label_style();
         (
             (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil(),
@@ -1110,14 +1110,14 @@ impl TableView {
     }
 
     /// The trailing value's natural slot (run + its gap), `0` for a row without one.
-    fn value_slot(row: &Row, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn value_slot(row: &Row, measure: &dyn plx_machine::machine::Measure) -> f32 {
         row.readout().map_or(0.0, |v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP)
     }
 
     /// The width a server-header section guarantees its app-owned accessory text (hugged like a
     /// row label), `0` when the header is not a server one yielding to app text. Shared by
     /// [`Self::header_columns`] and [`Self::measured_width`].
-    fn accessory_floor(section: &Section, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn accessory_floor(section: &Section, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let app_text = if !section.accessory_app_prefix.is_empty() {
             Some(section.accessory_app_prefix.as_str())
         } else if section.accessory_origin == Origin::App {
@@ -1141,7 +1141,7 @@ impl TableView {
     /// [`Section::accessory_app_prefix`]), the roles swap: the accessory is the primary, guaranteed
     /// at least that app text's width (hugged, like a row label), and the server header elides
     /// first. The accessory then elides only its server tail.
-    fn header_columns(section: &Section, frame_w: f32, measure: &dyn crate::ui::machine::Measure, headroom: f32) -> (f32, f32) {
+    fn header_columns(section: &Section, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> (f32, f32) {
         let span = (frame_w - 2.0 * CONTENT_X).max(0.0);
         if section.accessory.is_empty() {
             return (span, 0.0);
@@ -1336,7 +1336,7 @@ impl TableView {
         self.scroll.pos
     }
 
-    pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn crate::ui::machine::Measure) {
+    pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
                 crate::i18n::msg::widgets_tracks_empty_c().as_ptr(),
@@ -1799,7 +1799,7 @@ mod tests {
     #[test]
     fn table_motion_canonical_state_covers_hidden_spring_velocity_and_layout_flags() {
         fn hash(table: &super::TableView) -> u64 {
-            let mut c = crate::ui::machine::Canon::new();
+            let mut c = plx_machine::machine::Canon::new();
             table.write_motion(&mut c);
             c.finish()
         }
@@ -2076,7 +2076,7 @@ mod tests {
     #[test]
     fn row_columns_still_elides_an_unshortened_long_value() {
         use plx_base::fontcov::advances::ShippedMeasure as M;
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         use crate::ui::route_screen::RouteLayout;
         let frame_w = RouteLayout::screen().sectioned_table().w;
         // Too long to fit beside its label.
@@ -2123,7 +2123,7 @@ mod tests {
     #[test]
     fn a_sections_values_share_a_right_edge_and_the_hugged_panel_elides_nothing() {
         use plx_base::fontcov::advances::ShippedMeasure as M;
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         let mut table = TableView::new();
         table.compact = false;
         let section = Section::new("")

@@ -107,7 +107,7 @@
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
 use crate::ui::label::Label;
-use crate::ui::machine::Measure;
+use plx_machine::machine::Measure;
 use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
@@ -223,13 +223,13 @@ pub(crate) fn close() {
 }
 
 /// A discrete change: the whole-frame present gate has no spring to watch here, so without this
-/// the panel would not appear until something else happened to repaint (see `ui::idle`).
+/// the panel would not appear until something else happened to repaint (see `plx_machine::idle`).
 ///
 /// It used to also force the next sample by writing a static. It does not need to: `Diagnostics`
 /// watches [`ON`]'s rising edge itself, which is the same behaviour without a handle the three
 /// callers of `toggle`/`open`/`close` do not all have.
 fn kick() {
-    crate::ui::idle::invalidate();
+    plx_machine::idle::invalidate();
 }
 
 // ---- the snapshot -----------------------------------------------------------------------------
@@ -445,8 +445,8 @@ impl Diagnostics {
             now,
         );
         self.chart_values = chart_values(&self.history);
-        // a re-sample changes what is on screen, and no spring is involved — see `ui::idle`
-        crate::ui::idle::invalidate();
+        // a re-sample changes what is on screen, and no spring is involved — see `plx_machine::idle`
+        plx_machine::idle::invalidate();
     }
 }
 

@@ -3270,7 +3270,7 @@ mod cache_timing_tests {
     // serial fixture: a later test's time zero would otherwise wrap the keepalive arithmetic.
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { crate::ui::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
     }
 
     /// What a frame thread's landing step reads of the cache: whether the visible generation moved
@@ -3308,7 +3308,7 @@ mod cache_timing_tests {
             let _ = held.recv_timeout(std::time::Duration::from_secs(5));
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
-        crate::ui::idle::reset_for_test();
+        plx_machine::idle::reset_for_test();
         let start = std::time::Instant::now();
         for _ in 0..30 { assert!(peek().client_id.is_empty()); }
         CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
@@ -3317,8 +3317,8 @@ mod cache_timing_tests {
         assert_eq!(READS.load(Ordering::SeqCst), 1);
         release.send(()).unwrap();
         plx_base::storage_worker::drain_for_test();
-        assert!(!crate::ui::idle::should_present(0), "the worker only publishes data");
-        assert_eq!(crate::ui::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
+        assert!(!plx_machine::idle::should_present(0), "the worker only publishes data");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
         let _frame = plx_base::task::FrameScope::enter();
         assert!(frame_step.lands(), "the frame step observes the published session");
         assert_eq!(peek().client_id, "cid-1");
@@ -3443,9 +3443,9 @@ mod cache_timing_tests {
             *FINISHED.lock().unwrap() = Some(std::time::Instant::now());
             ReadState::Blocked
         })));
-        crate::ui::idle::reset_for_test();
-        crate::ui::idle::note_present(10_000);
-        assert!(!crate::ui::idle::should_present(10_001));
+        plx_machine::idle::reset_for_test();
+        plx_machine::idle::note_present(10_000);
+        assert!(!plx_machine::idle::should_present(10_001));
         let started = std::time::Instant::now();
         for _ in 0..30 { assert!(peek().client_id.is_empty()); }
         assert!(started.elapsed() < std::time::Duration::from_millis(200),
@@ -3455,7 +3455,7 @@ mod cache_timing_tests {
         let finished = FINISHED.lock().unwrap().unwrap();
         assert!(cached_at(finished + LOCKED_RETRY / 2).is_some(),
             "a background timeout gets a full retry window after completion");
-        assert!(!crate::ui::idle::should_present(10_001), "an unchanged landing must leave the UI settled");
+        assert!(!plx_machine::idle::should_present(10_001), "an unchanged landing must leave the UI settled");
     }
 
     #[test]
@@ -3481,19 +3481,19 @@ mod cache_timing_tests {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: true, retry_canonical: false,
             }) as fn() -> ReadState, false),
         ] {
-            crate::ui::idle::reset_for_test();
-            crate::ui::idle::note_present(10_000);
+            plx_machine::idle::reset_for_test();
+            plx_machine::idle::note_present(10_000);
             CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
             schedule_refresh(std::time::Instant::now(),
                 CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
             CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
             plx_base::storage_worker::drain_for_test();
-            assert!(!crate::ui::idle::should_present(10_001), "workers cannot wake the UI");
-            assert_eq!(crate::ui::idle::take_local_damage(), 0);
+            assert!(!plx_machine::idle::should_present(10_001), "workers cannot wake the UI");
+            assert_eq!(plx_machine::idle::take_local_damage(), 0);
             let _frame = plx_base::task::FrameScope::enter();
             assert_eq!(frame_step.lands(), landed);
             assert!(!frame_step.lands(), "one landing per change");
-            assert_eq!(crate::ui::idle::take_local_damage(), 0, "landing the cache raises no frame damage of its own");
+            assert_eq!(plx_machine::idle::take_local_damage(), 0, "landing the cache raises no frame damage of its own");
         }
     }
 

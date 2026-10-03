@@ -1,6 +1,6 @@
 fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
     LibraryMenuArg {
-        host: crate::ui::machine::InstanceId(8),
+        host: plx_machine::machine::InstanceId(8),
         target: SectionAddress {
             epoch: 11,
             sid: ServerId::from_raw(1),
@@ -53,12 +53,12 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let new_anchor = [760.0f32.to_bits(), 260.0f32.to_bits(), 240.0f32.to_bits(), 60.0f32.to_bits()];
     let mut old = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, old_anchor));
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let cx_first = source_cx(&listing, &first, &hubs, &measure, Tick { ms: 1, dt_us: 16_000 });
     old.step(
         &ScreenEvent::Tick(Tick { ms: 1, dt_us: 16_000 }),
         &cx_first,
-        &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+        &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
     );
 
     let mut old_groups = Vec::new();
@@ -76,7 +76,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     old.step(
         &ScreenEvent::Tick(Tick { ms: 2, dt_us: 16_000 }),
         &cx_changed,
-        &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+        &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
     );
     let mut old_after_host_move = Vec::new();
     old.groups(&cx_changed, &mut old_after_host_move);
@@ -86,7 +86,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     fresh.step(
         &ScreenEvent::Tick(Tick { ms: 3, dt_us: 16_000 }),
         &cx_changed,
-        &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(8)), &mut present),
+        &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present),
     );
     let mut fresh_groups = Vec::new();
     fresh.groups(&cx_changed, &mut fresh_groups);
@@ -121,11 +121,11 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
         assert!(<LibraryMenu as Focusable<HostFixture>>::place(&sources, &source_key, cx, At::Drawn).is_some());
 
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         sort.step(
             &ScreenEvent::Activate(sort_key),
             cx,
-            &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
@@ -142,7 +142,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
         filter.step(
             &ScreenEvent::Activate(filter_key),
             cx,
-            &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
@@ -158,7 +158,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
         sources.step(
             &ScreenEvent::Activate(source_key),
             cx,
-            &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
@@ -190,12 +190,12 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
         assert_eq!(engine.current(owner), Some(before));
 
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         assert_eq!(
             menu.step(
-                &ScreenEvent::Input(crate::ui::machine::InputEvent {
+                &ScreenEvent::Input(plx_machine::machine::InputEvent {
                     at: Tick::default(),
-                    source: crate::ui::machine::Source::Script,
+                    source: plx_machine::machine::Source::Script,
                     kind: InputKind::Key {
                         key: Key::Left,
                         sym: 0,
@@ -205,7 +205,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
                     },
                 }),
                 cx,
-                &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+                &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
             ),
             Handled::No
         );
@@ -230,12 +230,12 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
     assert_eq!(first.view().current(), Some(0), "the added Movie row must affect the menu's current kind");
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let mut effects = |menu: &mut LibraryMenu, cx: &Cx<'_, HostFixture>| {
         menu.step(
             &ScreenEvent::Tick(Tick { ms: 1, dt_us: 16_000 }),
             cx,
-            &mut Effects::new(&mut output, MachineId::Instance(crate::ui::machine::InstanceId(7)), &mut present),
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
     };
 

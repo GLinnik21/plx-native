@@ -12,7 +12,7 @@
 //! The root is the EMPTY stack, not a value of `P`.
 use crate::ui::form::{FormTable, RowKey};
 use crate::ui::geom::IndexElem;
-use crate::ui::machine::{Canon, EntryId, FocusKey, GroupId, Host, Measure};
+use plx_machine::machine::{Canon, EntryId, FocusKey, GroupId, Host, Measure};
 use crate::ui::panel_motion::PanelMotion;
 use crate::ui::screen::{
     Activate, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed,

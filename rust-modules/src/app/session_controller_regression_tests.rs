@@ -291,8 +291,8 @@ mod tests {
         let mut records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 1);
         let record = records.pop().unwrap();
-        assert_eq!(record.addr, crate::ui::machine::Addr {
-            to: MachineId::Session, req: crate::ui::machine::RequestId(req),
+        assert_eq!(record.addr, plx_machine::machine::Addr {
+            to: MachineId::Session, req: plx_machine::machine::RequestId(req),
         });
         assert_eq!(record.key.epoch, epoch);
         assert!(record.key.op == SessionOp::Endpoint(15));
@@ -389,8 +389,8 @@ mod tests {
     mod active_worker_reservation {
         use crate::app::adapters::session::SessionAdapter;
         use crate::auth::owner::{SessionOp, SessionWorkKey, SESSION_TOTAL_RESERVATIONS};
-        use crate::ui::landing::AdmissionError;
-        use crate::ui::machine::RequestId;
+        use plx_machine::landing::AdmissionError;
+        use plx_machine::machine::RequestId;
         use std::sync::mpsc::{sync_channel, SyncSender};
         use std::time::Duration;
 
@@ -541,8 +541,8 @@ mod tests {
             let records = rig.session_adapter.take_results();
             assert_eq!(records.len(), 4);
             for record in &records {
-                assert_eq!(record.addr, crate::ui::machine::Addr {
-                    to: MachineId::Session, req: crate::ui::machine::RequestId(req),
+                assert_eq!(record.addr, plx_machine::machine::Addr {
+                    to: MachineId::Session, req: plx_machine::machine::RequestId(req),
                 });
                 assert_eq!(record.key.epoch, epoch);
                 assert!(epoch > u64::from(u32::MAX));

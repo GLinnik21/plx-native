@@ -19,8 +19,8 @@ impl TextBuffer {
     pub(crate) fn into_text(self) -> String { self.text }
 
     /// Apply a normalized keyboard event without consulting a store publication.
-    pub(crate) fn edit(&mut self, edit: &super::machine::TextEdit) {
-        use super::machine::TextEdit;
+    pub(crate) fn edit(&mut self, edit: &plx_machine::machine::TextEdit) {
+        use plx_machine::machine::TextEdit;
         match edit {
             TextEdit::Commit(text) => self.commit(text),
             TextEdit::Backspace => self.backspace(),

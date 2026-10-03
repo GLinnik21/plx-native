@@ -3,7 +3,7 @@ use super::*;
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::hit::{HitMap, PointerKind};
-use crate::ui::machine::{
+use plx_machine::machine::{
     Chrome, FocusRead, Host, InputOwner, PressRead, ScreenId, Source, Stamped, Tick,
 };
 use crate::ui::screen::{ScreenArg, ScreenEvent};
@@ -78,11 +78,11 @@ fn step(
 ) -> (Handled, Vec<Stamped<TestHost>>, bool) {
     let context = cx(view, focus);
     let mut out = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     let handled = {
         let mut fx = Effects::new(
             &mut out,
-            crate::ui::machine::MachineId::Instance(InstanceId(9)),
+            plx_machine::machine::MachineId::Instance(InstanceId(9)),
             &mut present,
         );
         Machine::<TestHost>::step(s, event, &context, &mut fx)
@@ -1502,7 +1502,7 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     hero_picture.snap.jump(0.49);
     grid_picture.snap.jump(0.51);
     let card = first_card(&hero_picture);
-    let event = ScreenEvent::PressCommit(crate::ui::machine::PressId(1));
+    let event = ScreenEvent::PressCommit(plx_machine::machine::PressId(1));
     let (_, a, _) = step(&mut hero_picture, snapshot.view(), Some(card), &event);
     let (_, b, _) = step(&mut grid_picture, snapshot.view(), Some(card), &event);
     assert!(has_home(&a, |r| matches!(r, HomeReq::Play { rk, .. } if rk == "2")));
@@ -1676,7 +1676,7 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
         &mut s,
         snapshot.view(),
         Some(card),
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
     );
     assert!(has_home(
         &play,
@@ -1690,7 +1690,7 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
         &mut s,
         snapshot.view(),
         Some(card),
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(2)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(2)),
     );
     assert!(has_home(
         &detail,
@@ -1713,7 +1713,7 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
         &mut s,
         snapshot.view(),
         Some(card),
-        &ScreenEvent::PressHold(crate::ui::machine::PressId(1)),
+        &ScreenEvent::PressHold(plx_machine::machine::PressId(1)),
     );
     assert!(has_home(
         &out,
@@ -1805,7 +1805,7 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
         &mut s,
         snapshot.view(),
         Some(card),
-        &ScreenEvent::PressCommit(crate::ui::machine::PressId(7)),
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(7)),
     );
     assert!(has_home(
         &out,
@@ -2101,7 +2101,7 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
     let mut s = screen(view);
     let context = cx(view, None);
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     // `take` at tick_ms 0 throughout keeps the keepalive term out: this counts only what the
     // screen itself asked for. The first take drains the fresh gate's first-frame `dirty`.
     present.take(0);
@@ -2113,7 +2113,7 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
         {
             let mut fx = Effects::new(
                 &mut out,
-                crate::ui::machine::MachineId::Instance(InstanceId(9)),
+                plx_machine::machine::MachineId::Instance(InstanceId(9)),
                 &mut present,
             );
             let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
@@ -2271,7 +2271,7 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
         "seated on Not now");
 
     let connect = Some(FocusKey { entry, elem: PLAINTEXT_CONNECT_ELEM });
-    let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)));
+    let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
     let answers: Vec<_> = answered.iter().filter_map(|st| match &st.fx {
         Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
             if machine_id == "lan-machine" => Some(*choice),
@@ -2567,27 +2567,27 @@ struct HeroArtState {
 /// A poster source that answers READY only for what the test delivered, and records the rest.
 struct HeroArtSpy;
 impl crate::ui::tex::Source for HeroArtSpy {
-    fn probe(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> Option<crate::ui::machine::PosterKey> {
+    fn probe(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> Option<plx_machine::machine::PosterKey> {
         HERO_ART.with(|a| {
             let mut a = a.borrow_mut();
             a.probed.push(path.into());
             a.delivered
                 .iter()
                 .position(|p| p == path)
-                .map(|i| crate::ui::machine::PosterKey(i as u32))
+                .map(|i| plx_machine::machine::PosterKey(i as u32))
         })
     }
     fn warm(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> crate::ui::tex::Warm {
         HERO_ART.with(|a| a.borrow_mut().warmed.push(path.into()));
         crate::ui::tex::Warm::Claimed
     }
-    fn logo(&self, _: u16, _: &str) -> Option<crate::ui::machine::PosterKey> {
+    fn logo(&self, _: u16, _: &str) -> Option<plx_machine::machine::PosterKey> {
         None
     }
     fn logo_warm(&self, _: u16, _: &str) -> crate::ui::tex::Warm {
         crate::ui::tex::Warm::Known
     }
-    fn unresident(&self, _: crate::ui::machine::PosterKey, _: bool) {}
+    fn unresident(&self, _: plx_machine::machine::PosterKey, _: bool) {}
     fn idle(&self) -> bool {
         HERO_ART.with(|a| !a.borrow().busy)
     }
@@ -2627,13 +2627,13 @@ fn deliver_hero_art(path: &str) {
         a.delivered.len() - 1
     });
     crate::ui::tex::accept(crate::ui::tex::PosterReady {
-        key: crate::ui::machine::PosterKey(key as u32),
+        key: plx_machine::machine::PosterKey(key as u32),
         result: Ok(crate::ui::tex::Decoded { w: 16, h: 9, rgba: vec![0; 16 * 9 * 4].into_boxed_slice() }),
     });
     let mut budget = crate::ui::frame::Budget::new();
     budget.begin_frame(0);
-    let mut present = crate::ui::present::Present::new();
-    let mut handle = crate::ui::machine::PresentHandle::of(&mut present);
+    let mut present = plx_machine::present::Present::new();
+    let mut handle = plx_machine::machine::PresentHandle::of(&mut present);
     let mut up = StubUp(key as u32 * 10);
     crate::ui::tex::prepare(&mut budget, &mut up, &mut handle, || 0);
 }
@@ -2848,10 +2848,10 @@ fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
     let mut saw_decor = false;
     let mut layout_moving_frames = 0;
     for i in 1..40u32 {
-        crate::ui::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
         step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }));
-        saw_decor |= crate::ui::idle::page_moving();
-        layout_moving_frames += usize::from(crate::ui::idle::page_layout_moving());
+        saw_decor |= plx_machine::idle::page_moving();
+        layout_moving_frames += usize::from(plx_machine::idle::page_layout_moving());
     }
     assert!(saw_decor, "the hero pop / wash dissolve must still report visible page motion");
     assert_eq!(layout_moving_frames, 0, "decorative springs must not count as page layout motion");

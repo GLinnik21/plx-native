@@ -11,9 +11,9 @@ use crate::stores::collection::CollectionCmd;
 use crate::ui::card_row::{self, TileLabel};
 use crate::ui::consts::*;
 use crate::ui::label::{Label, VAlign};
-use crate::ui::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
+use plx_machine::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
     InputKind, Key, Leave, LogicalState, Machine, Tick};
-use crate::ui::present::{PresentEvent, Provenance};
+use plx_machine::present::{PresentEvent, Provenance};
 use crate::ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind,
     FocusSource, Focusable, GroupKind, GroupSpec, HitSource, Hover, Link, Placed,
     RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop};
@@ -68,7 +68,7 @@ const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Located { Header, Retry, Card(usize) }
 
-fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measure) -> TextView<'a> {
+fn summary_view<'a>(summary: &'a str, measure: &'a dyn plx_machine::machine::Measure) -> TextView<'a> {
     TextView::new(summary, theme::size::BODY, theme::TEXT_READING)
         .with_measure(measure)
         .leading(SUMMARY_LEAD)
@@ -207,7 +207,7 @@ impl CollectionScreen {
     }
 
     fn request_store<H: ContentLike + CollectionLike>(&mut self, want: usize, fx: &mut Effects<'_, H>) {
-        fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+        fx.push(plx_machine::machine::Fx::App(AppFx::Store(
             crate::stores::StoreId::Collection,
             crate::stores::StoreCmd::Collection(CollectionCmd::Open { target: self.target(want) }),
         )));
@@ -217,7 +217,7 @@ impl CollectionScreen {
         H::collection(cx).current().filter(|c| c.id.same_collection(&self.id))
     }
 
-    fn sync(&mut self, collection: &Collection, measure: &dyn crate::ui::machine::Measure) {
+    fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
         self.synced = Some((collection.items.len(), collection.summary.len()));
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         self.elems = self.cards.intern_all(
@@ -284,8 +284,8 @@ impl CollectionScreen {
         self.item_index(collection, elem).map(Located::Card)
     }
 
-    fn key_at(&self, collection: &Collection, index: usize) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey { entry: self.entry,
+    fn key_at(&self, collection: &Collection, index: usize) -> plx_machine::machine::FocusKey<u32> {
+        plx_machine::machine::FocusKey { entry: self.entry,
             elem: self.elem_at(collection, index).unwrap_or(HEADER_ELEM) }
     }
 
@@ -312,7 +312,7 @@ impl CollectionScreen {
     /// The header text column's two anchors — the meta line's and the summary's cap tops — shared
     /// by [`Self::draw_header`] and [`Self::header_text_bottom`] so the read-out's glyph ceiling
     /// is the drawn header, not a copy of its arithmetic.
-    fn header_ys(_measure: &dyn crate::ui::machine::Measure) -> (f32, f32) {
+    fn header_ys(_measure: &dyn plx_machine::machine::Measure) -> (f32, f32) {
         (HEADER_TOP + META_DY, HEADER_TOP + SUMMARY_DY)
     }
 
@@ -325,7 +325,7 @@ impl CollectionScreen {
     /// The lowest y the header's text column paints — the meta line, or the summary block under
     /// it. A failed page keeps its header live above the read-out, as the Library keeps its tab
     /// strip, so this is the read-out's `glyph_ceiling`.
-    fn header_text_bottom(collection: &Collection, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    fn header_text_bottom(collection: &Collection, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let (meta_y, summary_y) = Self::header_ys(measure);
         if collection.summary.is_empty() { return meta_y + measure.line_h(theme::size::LABEL); }
         summary_y + summary_view(&collection.summary, measure).measure_h(TEXT_W)
@@ -339,7 +339,7 @@ impl CollectionScreen {
     /// `ui/CLAUDE.md` rule 4) — Home's and the Library's untyped "can't reach" verdict, so their
     /// glyph too — with its glyph shrunk under the live header rather than drawn over it.
     fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
-        measure: &dyn crate::ui::machine::Measure) -> StatusOverlay<'a> {
+        measure: &dyn plx_machine::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
             CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
             CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), crate::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
@@ -363,7 +363,7 @@ impl CollectionScreen {
     fn activate_header<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.header_marked = true;
         if self.collection(cx).is_some() && self.summary_more {
-            fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Panel(
+            fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Panel(
                 ContentPanel::CollectionAbout))));
             fx.invalidate(Provenance::Input);
         }
@@ -408,7 +408,7 @@ impl CollectionScreen {
     }
 
     pub(crate) fn focused_item<'a, H: CollectionLike>(&self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a PmsMovie> {
+        focus: Option<plx_machine::machine::FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a PmsMovie> {
         let collection = self.collection(cx)?;
         let index = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem))?;
@@ -416,13 +416,13 @@ impl CollectionScreen {
     }
 
     pub(crate) fn focused_rect<H: ContentLike + CollectionLike>(&self,
-        focus: Option<crate::ui::machine::FocusKey<u32>>, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
+        focus: Option<plx_machine::machine::FocusKey<u32>>, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
         let key = focus.filter(|key| key.entry == self.entry)?;
         Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
     }
 
     pub(crate) fn redraw_focused<H: ContentLike + CollectionLike>(&self,
-        f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         let Some(collection) = self.collection(f.cx) else { return };
         let Some(index) = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) else { return };
@@ -443,7 +443,7 @@ impl CollectionScreen {
     }
 
     fn draw_header(&self, p: Painter, collection: &Collection, focused: bool,
-        measure: &dyn crate::ui::machine::Measure) {
+        measure: &dyn plx_machine::machine::Measure) {
         let dy = -self.scroll.pos;
         let alpha = head_alpha(self.scroll.pos);
         if alpha <= 0.0 { return; }
@@ -502,7 +502,7 @@ impl CollectionScreen {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_card(&self, p: Painter, item: &PmsMovie, persistent: &str, index: usize, focused: bool,
-        press: f32, measure: &dyn crate::ui::machine::Measure) {
+        press: f32, measure: &dyn plx_machine::machine::Measure) {
         let rect = self.card_rect(index, focused, press);
         let scale = rect.w / CARD_W;
         if !card_row::paint_visible(p, rect, scale, focused) { return; }
@@ -553,7 +553,7 @@ impl CollectionScreen {
             let Some(elem) = self.elem_at(collection, index) else { continue };
             let focused = current == Some(index);
             let rect = self.card_rect(index, focused, if focused { f.press.scale } else { 1.0 });
-            f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem },
+            f.stop(f.painter, Stop { key: plx_machine::machine::FocusKey { entry: self.entry, elem },
                 rect, rest_rect: self.cell(index),
                 clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Press });
         }
@@ -591,7 +591,7 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
         }
     }
 
-    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let Some(collection) = self.collection(cx) else { return Step::Edge };
         let Some(index) = self.item_index(collection, key.elem) else { return Step::Edge };
         let next = crate::ui::poster_grid::neighbour(index, collection.items.len(),
@@ -618,24 +618,24 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
         }
     }
 
-    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         let Some(collection) = self.collection(cx) else {
             return if self.return_pending && self.cards.get(want.elem).is_some() { want }
-                else { crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
+                else { plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
         };
-        if self.locate(collection, want.elem).is_some() { return crate::ui::machine::FocusKey { entry: self.entry, elem: want.elem }; }
+        if self.locate(collection, want.elem).is_some() { return plx_machine::machine::FocusKey { entry: self.entry, elem: want.elem }; }
         if self.awaiting_restore(collection, want.elem) { return want; }
         if !collection.items.is_empty() { return self.key_at(collection, 0); }
         if collection.status == CollectionStatus::Failed {
-            return crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM };
+            return plx_machine::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM };
         }
-        crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }
+        plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }
     }
 
-    fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
-        let Some(collection) = self.collection(cx) else { return crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
-        if group == HEADER_GROUP { return crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }; }
-        if group == STATUS_GROUP { return crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM }; }
+    fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
+        let Some(collection) = self.collection(cx) else { return plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
+        if group == HEADER_GROUP { return plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }; }
+        if group == STATUS_GROUP { return plx_machine::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM }; }
         let col = (0..crate::ui::poster_grid::COLS).min_by(|&a, &b| {
             let d = |c: usize| (self.cell(c).cx() - from.rect.cx()).abs();
             d(a).total_cmp(&d(b))
@@ -673,19 +673,19 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             }
             ScreenEvent::PressCommit(_) => {
                 if let Some(item) = self.focused_item(cx.focus.current, cx) {
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Push(
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Push(
                         ContentArg::Detail { sid: item.sid, rk: item.rk.clone() }))));
                 }
                 Handled::Yes
             }
             ScreenEvent::PressHold(_) => {
                 if self.focused_item(cx.focus.current, cx).is_some() {
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::ItemMenu)));
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::ItemMenu)));
                     Handled::Yes
                 } else { Handled::No }
             }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) => {
-                fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Back))); Handled::Yes
+                fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Back))); Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key, edge: Edge::Down, .. }, .. })
                 if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) => {
@@ -706,7 +706,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 if self.collection(cx).is_some() && !self.teardown_closed {
                     self.teardown_closed = true;
-                    fx.push(crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Collection,
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Collection,
                         crate::stores::StoreCmd::Collection(CollectionCmd::Close))));
                 }
                 Handled::Yes
@@ -717,7 +717,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 }
 
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
-    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         CollectionScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
@@ -734,7 +734,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
             }
             if self.summary_more && Self::shows_head(collection) {
                 let rect = self.header_rect();
-                f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM },
+                f.stop(f.painter, Stop { key: plx_machine::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM },
                     rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus,
                     activate: Activate::Direct });
             }
@@ -744,7 +744,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
                     .focused(f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == RETRY_ELEM));
                 overlay.draw_measured(&Env::inert(), p, f.measure);
                 if let Some(rect) = overlay.action_frame_measured(f.measure) {
-                    f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM },
+                    f.stop(f.painter, Stop { key: plx_machine::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM },
                         rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Direct });
                 }
             }
@@ -756,7 +756,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
     fn hit_source(&self) -> HitSource { HitSource::Engine }
     fn links(&self, out: &mut Vec<Link>) { out.extend(self.links_c.iter().copied()); }
-    fn memory_at(&self, _focus: Option<crate::ui::machine::FocusKey<u32>>) -> PageMemory {
+    fn memory_at(&self, _focus: Option<plx_machine::machine::FocusKey<u32>>) -> PageMemory {
         PageMemory::Collection(self.memory())
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
@@ -767,7 +767,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
 mod tests {
     use super::*;
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead};
+    use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead};
 
     struct CollectionHost;
     impl Host for CollectionHost {
@@ -795,7 +795,7 @@ mod tests {
         screen.sync(store.view().current().unwrap(), &FixtureMeasure);
         (store, screen)
     }
-    fn cx<'a>(view: crate::collection::CollectionView<'a>, focus: Option<crate::ui::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
+    fn cx<'a>(view: crate::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
         Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(EntryId(9)) }
@@ -814,18 +814,18 @@ mod tests {
     }
 
     fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
-        cx: &Cx<'_, CollectionHost>) -> Vec<crate::ui::machine::Stamped<CollectionHost>> {
-        let mut present = crate::ui::present::Present::new();
+        cx: &Cx<'_, CollectionHost>) -> Vec<plx_machine::machine::Stamped<CollectionHost>> {
+        let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(&mut out,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(9)), &mut present);
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(9)), &mut present);
         Machine::<CollectionHost>::step(screen, &ev, cx, &mut fx);
         drop(fx);
         out
     }
 
-    fn opens_summary(out: &[crate::ui::machine::Stamped<CollectionHost>]) -> bool {
-        out.iter().any(|e| matches!(e.fx, crate::ui::machine::Fx::App(AppFx::Content(
+    fn opens_summary(out: &[plx_machine::machine::Stamped<CollectionHost>]) -> bool {
+        out.iter().any(|e| matches!(e.fx, plx_machine::machine::Fx::App(AppFx::Content(
             ContentReq::Panel(ContentPanel::CollectionAbout)))))
     }
 
@@ -852,7 +852,7 @@ mod tests {
         let out = step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir },
             &cx(store.view(), Some(key)));
         let want = out.iter().find_map(|e| match &e.fx {
-            crate::ui::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+            plx_machine::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
                 CollectionCmd::Open { target, .. }))) => Some(target.want),
             _ => None,
         });
@@ -861,7 +861,7 @@ mod tests {
         store.edit_for_test(|c| c.more = false);
         let out = step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir },
             &cx(store.view(), Some(key)));
-        assert!(!out.iter().any(|e| matches!(e.fx, crate::ui::machine::Fx::App(AppFx::Store(..)))),
+        assert!(!out.iter().any(|e| matches!(e.fx, plx_machine::machine::Fx::App(AppFx::Store(..)))),
             "a fully loaded collection asks for nothing");
     }
 
@@ -869,8 +869,8 @@ mod tests {
     fn a_member_ok_pushes_its_detail_page() {
         let (store, mut screen) = seeded();
         let key = screen.key_at(store.view().current().unwrap(), 1);
-        let out = step(&mut screen, ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &cx(store.view(), Some(key)));
-        assert!(out.iter().any(|e| matches!(&e.fx, crate::ui::machine::Fx::App(AppFx::Content(
+        let out = step(&mut screen, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), &cx(store.view(), Some(key)));
+        assert!(out.iter().any(|e| matches!(&e.fx, plx_machine::machine::Fx::App(AppFx::Content(
             ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "b")));
     }
 
@@ -999,7 +999,7 @@ mod tests {
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
         let out = step(&mut restored, ScreenEvent::Enter(crate::ui::screen::Enter::Restored), &cx(store.view(), None));
         let want = out.iter().find_map(|e| match &e.fx {
-            crate::ui::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+            plx_machine::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
                 CollectionCmd::Open { target, .. }))) => Some(target.want),
             _ => None,
         });
@@ -1037,7 +1037,7 @@ mod tests {
         use plx_base::fontcov::advances::ShippedMeasure;
         use crate::ui::fit::HEADROOM;
         use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
-        use crate::ui::machine::Measure;
+        use plx_machine::machine::Measure;
         let m = ShippedMeasure;
         let mark_budget = (CARD_W - 2.0 * 16.0) * HEADROOM;
         let mut out = Vec::new();

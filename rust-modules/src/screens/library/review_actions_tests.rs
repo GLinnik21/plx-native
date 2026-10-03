@@ -2,7 +2,7 @@ use super::super::*;
 use super::*;
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::focus::{FocusEngine, Outcome};
-use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
+use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
 use crate::ui::screen::ScreenArg;
 include!("query_tests.rs");
 
@@ -13,11 +13,11 @@ impl LogicalState for Arg {
     fn probe(&self, _: &mut String) {}
 }
 impl ScreenArg for Arg {
-    fn chrome(&self) -> crate::ui::machine::Chrome {
-        crate::ui::machine::Chrome::None
+    fn chrome(&self) -> plx_machine::machine::Chrome {
+        plx_machine::machine::Chrome::None
     }
-    fn id(&self) -> crate::ui::machine::ScreenId {
-        crate::ui::machine::ScreenId(1)
+    fn id(&self) -> plx_machine::machine::ScreenId {
+        plx_machine::machine::ScreenId(1)
     }
     fn title(&self) -> Option<&str> {
         None
@@ -170,7 +170,7 @@ fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_vis
         let mut page = fixture.screen();
         let mut engine = FocusEngine::new();
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         assert!(page.seed_cursor(
             &fixture.cx(None),
             &mut Effects::new(
@@ -246,9 +246,9 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
         let mut cx = fixture.cx(Some(grid));
         cx.focus = engine.read(OWNER);
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(
-            &ScreenEvent::WillLeave(crate::ui::machine::Leave::ForGood),
+            &ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood),
             &cx,
             &mut Effects::new(
                 &mut output,
@@ -284,7 +284,7 @@ fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() 
     let mut cx = fixture.cx(engine.current(OWNER));
     cx.focus = engine.read(OWNER);
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     assert!(page.seed_cursor(
         &cx,
         &mut Effects::new(
@@ -350,7 +350,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         fixture.directory = crate::stores::browse::DirectorySnapshot::fixture(1, 0, sections);
         let mut page = fixture.screen();
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(
             &ScreenEvent::Tick(Tick::default()),
             &fixture.cx(None),
@@ -400,7 +400,7 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
     let mut page = fixture.screen();
     let cx = fixture.cx(None);
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     page.command(
         LibraryCmd::SwitchStep(0),
         &cx,
@@ -472,7 +472,7 @@ fn rail_keyboard_ok_and_back_return_the_exact_engine_remembered_item() {
             panic!("enter rail")
         };
         let mut output = Vec::new();
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         page.step(
             &ScreenEvent::FocusMoved { from, to, by },
             &fixture.cx(Some(to)),
@@ -484,9 +484,9 @@ fn rail_keyboard_ok_and_back_return_the_exact_engine_remembered_item() {
         );
         assert!(output.iter().all(|e| !matches!(e.fx, Fx::Remember { .. })));
         output.clear();
-        let event = ScreenEvent::Input(crate::ui::machine::InputEvent {
+        let event = ScreenEvent::Input(plx_machine::machine::InputEvent {
             at: Tick::default(),
-            source: crate::ui::machine::Source::Script,
+            source: plx_machine::machine::Source::Script,
             kind: InputKind::Key {
                 key,
                 sym: 0,
@@ -547,7 +547,7 @@ fn rapid_filter_activations_invert_the_pending_desired_value() {
         .unwrap()
         .0;
     let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
+    let mut present = plx_machine::present::Present::new();
     for _ in 0..2 {
         menu.step(
             &ScreenEvent::Activate(elem),
@@ -590,7 +590,7 @@ fn rapid_filter_activations_invert_the_pending_desired_value() {
     }
     let mut commits = Vec::new();
     page.step(
-        &ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper),
+        &ScreenEvent::WillLeave(plx_machine::machine::Leave::Deeper),
         &cx,
         &mut Effects::new(
             &mut commits,

@@ -477,7 +477,7 @@ app you are already driving by hand. It has no baseline because it does not rest
 marks pacing invalid if a render-profiler trigger is armed.
 
 - **Three assertions, and picking the wrong one is how a frozen animation ships.** Since the present
-  gate (`ui::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
+  gate (`plx_machine::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
   anything reached the panel:
   - `loop_floor` grades `loop=`. It proves the **app is alive**. It cannot see a stopped animation,
     and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
@@ -485,7 +485,7 @@ marks pacing invalid if a render-profiler trigger is armed.
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
     the fix that note asks for. The remaining scenes graded only by `loop_floor` are `info-panel`, `chapters-panel` and
     `track-menu`, and they need no such note — the video plane stays **bound** throughout those
-    scenes, and the gate treats a bound plane as always-present (`ui/idle.rs`'s `VIDEO_PLANE`),
+    scenes, and the gate treats a bound plane as always-present (`machine/src/idle.rs`'s `VIDEO_PLANE`),
     so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".
     The median and not the 2nd-lowest, because a frame rate is now intermittent *by design*: on a
@@ -522,7 +522,7 @@ marks pacing invalid if a render-profiler trigger is armed.
   forever passes a floor. Two things to know before reading a result:
   - **Their `fps_floor` is the one number in this file that is not a device measurement.** They were
     written while the search screen was still being built, so `search-type` carries a floor picked
-    only to separate a frozen animator (~0.5/s, `ui::idle`'s keepalive) from a running one. Raise it
+    only to separate a frozen animator (~0.5/s, `plx_machine::idle`'s keepalive) from a running one. Raise it
     to a real median the first time it runs green on a television — the scene's own
     `_fps_floor_note` says so, and the neighbours all quote a date.
   - **`plxnative-search`'s value is a literal query, not a symbolic key.** `run.py` resolves `item`

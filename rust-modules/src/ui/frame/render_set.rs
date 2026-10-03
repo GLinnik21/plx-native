@@ -93,7 +93,7 @@ pub struct RenderSet {
     /// `(surface, renders)` per Active surface — the surface's OWN backing render textures
     /// ([`RenderReport::textures`]), which is zero for every surface served from the shared
     /// `FrameCache`.
-    pub surfaces: Vec<(crate::ui::machine::EntryId, u32)>,
+    pub surfaces: Vec<(plx_machine::machine::EntryId, u32)>,
     /// The sum of every drawn screen's own backing-texture bytes ([`RenderReport::bytes`]).
     pub bytes: usize,
     /// The one shared `FrameCache`, when a Cached host is being served from it.
@@ -112,7 +112,7 @@ pub enum RenderBreach {
     /// More than two page renders.
     Pages(u32),
     /// A surface holding more than one render.
-    Surface(crate::ui::machine::EntryId, u32),
+    Surface(plx_machine::machine::EntryId, u32),
     /// The sum of every render plus the `FrameCache` is over `RENDER_BYTES_MAX`.
     Bytes(usize),
 }
@@ -180,7 +180,7 @@ pub fn breach_line(breach: &RenderBreach, logged: &mut bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::machine::EntryId;
+    use plx_machine::machine::EntryId;
 
     /// The RELEASE half of the breach policy: one line, ever, however many frames breach — and it
     /// names which rule and by how much. In a release build `on_breach` is this function, the

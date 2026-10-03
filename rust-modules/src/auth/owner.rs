@@ -7,7 +7,7 @@ use crate::plex::session::{Session as PersistedSession, UserRef};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use crate::ui::machine::{Addr, Canon, LogicalState, MachineId};
+use plx_machine::machine::{Addr, Canon, LogicalState, MachineId};
 
 mod incident;
 use crate::telemetry::incident::{IncidentContext, InternalClass};
@@ -573,7 +573,7 @@ pub(crate) enum SessionFx {
     PlaintextAnswer { machine_id: String, choice: crate::plex::session::PlaintextChoice, account: String },
 }
 
-pub(crate) trait SessionHost: crate::ui::machine::Host {
+pub(crate) trait SessionHost: plx_machine::machine::Host {
     fn session_effect(effect: SessionFx) -> Self::Fx;
 }
 
@@ -2718,12 +2718,12 @@ impl SessionMachine {
     }
 }
 
-impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
+impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
     type Ev = SessionEvent;
 
-    fn step(&mut self, ev: &SessionEvent, _cx: &crate::ui::machine::Cx<'_, H>,
-        fx: &mut crate::ui::machine::Effects<'_, H>) -> crate::ui::machine::Handled {
-        use crate::ui::machine::{Fx, Handled};
+    fn step(&mut self, ev: &SessionEvent, _cx: &plx_machine::machine::Cx<'_, H>,
+        fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
+        use plx_machine::machine::{Fx, Handled};
         let before = self.publication();
         let mut emit = |effect| fx.push(Fx::App(H::session_effect(effect)));
         let handled = match ev {
@@ -2790,7 +2790,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             }
         };
         if !Arc::ptr_eq(&before, &self.publication) {
-            fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+            fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
         }
         self.refresh_subhash();
         if handled { Handled::Yes } else { Handled::No }
@@ -2819,7 +2819,7 @@ mod tests {
     // below `auth`) cannot name `SessionInit`.
     #[test]
     fn captured_language_changes_the_recorded_session_hash() {
-        use crate::ui::machine::LogicalState;
+        use plx_machine::machine::LogicalState;
         let a = SessionInit::captured(PersistedSession::default());
         let mut b = a.clone();
         b.persisted.language = crate::i18n::Preference::Be;
@@ -2866,8 +2866,8 @@ mod tests {
     }
 
     struct OwnerHost;
-    impl crate::ui::machine::Host for OwnerHost {
-        type Arg = crate::ui::machine::BareArg;
+    impl plx_machine::machine::Host for OwnerHost {
+        type Arg = plx_machine::machine::BareArg;
         type Fx = SessionFx;
         type Msg = SessionEvent;
         type Elem = u32;
@@ -2880,12 +2880,12 @@ mod tests {
     }
 
     fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
-        use crate::ui::machine::{Cx, Effects, Fx, InputOwner, EntryId, Machine, Tick};
+        use plx_machine::machine::{Cx, Effects, Fx, InputOwner, EntryId, Machine, Tick};
         let publication = owner.publication();
         let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
-            measure: &crate::ui::machine::BareMeasure, press: Default::default(),
+            measure: &plx_machine::machine::BareMeasure, press: Default::default(),
             focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
-        let mut present = crate::ui::present::Present::new();
+        let mut present = plx_machine::present::Present::new();
         let mut effects = Vec::new();
         owner.step(&event, &cx, &mut Effects::new(&mut effects, MachineId::Session, &mut present));
         effects.into_iter().map(|effect| match effect.fx {
@@ -3921,7 +3921,7 @@ mod tests {
             owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         }
         let make = |req, arrival| SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch: 1, op: SessionOp::ServerRoster }, arrival,
             admission: AdmissionId(req),
             terminal: false, lifecycle: None,
@@ -3962,7 +3962,7 @@ mod tests {
     fn qr_event(owner: &SessionMachine, req: u32, arrival: u64,
         progress: super::super::LoginProgress, terminal: bool) -> SessionEnvelope {
         SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: owner.state.pending[&req].key,
             admission: AdmissionId(req),
             arrival, terminal, lifecycle: None,
@@ -4220,7 +4220,7 @@ mod tests {
         let epoch = owner.state.epoch;
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
         let make = |arrival, terminal, outcome| SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch },
             admission: AdmissionId(req), arrival, terminal, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
@@ -4309,7 +4309,7 @@ mod tests {
 
     #[test]
     fn envelope_validation_keeps_full_epoch_and_exact_destination() {
-        use crate::ui::machine::RequestId;
+        use plx_machine::machine::RequestId;
         let mut init = captured_session();
         init.epoch = 0x1_0000_0001;
         let mut owner = SessionMachine::from_init(init);
@@ -4352,7 +4352,7 @@ mod tests {
         let probe = super::super::settled_probe_for_test(
             "insecure-mach", crate::plex::probe::Outcome::InsecureOnly, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
             admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
@@ -4428,7 +4428,7 @@ mod tests {
         let probe = super::super::settled_probe_for_test(
             "ours", crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
             admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
@@ -4468,7 +4468,7 @@ mod tests {
             super::super::settled_probe_for_test("b", crate::plex::probe::Outcome::Unreachable, None, None),
         ];
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
             admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -4527,7 +4527,7 @@ mod tests {
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
         let fresh = account_refresh_source();
         let activate = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
             admission: AdmissionId(req), arrival: 1, terminal: false, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Registry(
@@ -4559,7 +4559,7 @@ mod tests {
             ..Default::default()
         };
         let reconcile = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
             admission: AdmissionId(req), arrival: 2, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -4662,7 +4662,7 @@ mod tests {
         let mut tokenless_secondary = secondary.clone();
         tokenless_secondary.token.clear();
         let ready = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
             arrival: 1, terminal: false, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
@@ -4701,7 +4701,7 @@ mod tests {
                 access_token: secondary.token.clone(), ..Default::default() },
         ];
         let roster = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
             arrival: 2, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileRoster(
@@ -4798,7 +4798,7 @@ mod tests {
                 owned: true, access_token: admitted.token.clone(), ..Default::default() },
         ];
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
             arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -4859,7 +4859,7 @@ mod tests {
         let epoch = owner.state.epoch;
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
         let ready = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
             arrival: 1, terminal: false, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
@@ -4896,7 +4896,7 @@ mod tests {
             client_identifier: primary.machine_id.clone(), provides: "server".into(),
             owned: true, access_token: primary.token.clone(), ..Default::default() }];
         let roster = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
             arrival: 2, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileRoster(
@@ -4950,7 +4950,7 @@ mod tests {
             client_identifier: reached.machine_id.clone(), provides: "server".into(), owned: true,
             access_token: reached.token.clone(), ..Default::default() }];
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
             arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -5014,7 +5014,7 @@ mod tests {
             client_identifier: members_view.machine_id.clone(), provides: "server".into(), owned: false,
             access_token: members_view.token.clone(), ..Default::default() }];
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
             arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -5046,7 +5046,7 @@ mod tests {
         let epoch = owner.state.epoch;
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
         let activate = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
             admission: AdmissionId(req), arrival: 1, terminal: false, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Registry(
@@ -5100,7 +5100,7 @@ mod tests {
                 access_token: "fresh-secondary-token".into(), ..Default::default() },
         ];
         let envelope = SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
             arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
@@ -5139,7 +5139,7 @@ mod tests {
     /// frame would sit there until the keepalive redraw.
     #[test]
     fn landing_a_failed_roster_requests_the_frame_that_draws_the_readout() {
-        use crate::ui::machine::{Cx, Effects, InputOwner, EntryId, Machine, Tick};
+        use plx_machine::machine::{Cx, Effects, InputOwner, EntryId, Machine, Tick};
         let _g = plx_base::testlock::serial();
         for users in [None, Some(Vec::new())] {
             let mut owner = SessionMachine::from_init(local_session());
@@ -5153,9 +5153,9 @@ mod tests {
 
             let publication = owner.publication();
             let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
-                measure: &crate::ui::machine::BareMeasure, press: Default::default(),
+                measure: &plx_machine::machine::BareMeasure, press: Default::default(),
                 focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
-            let mut present = crate::ui::present::Present::new();
+            let mut present = plx_machine::present::Present::new();
             let _ = present.take(0); // the spinner's last frame has been presented
             assert!(!present.peek(0), "rig: nothing is owed before the result lands");
             let mut sink = Vec::new();
@@ -5198,7 +5198,7 @@ mod tests {
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
         SessionEnvelope {
-            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
             key, admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::HomeRoster(
                 super::super::HomeRosterProgress { epoch: key.epoch, expected, users }))),
