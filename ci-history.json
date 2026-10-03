@@ -1,4 +1,4 @@
-{"updated":"2026-10-03T17:13:02Z",
+{"updated":"2026-10-03T19:57:55Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -429,5 +429,6 @@
 {"id":36956913857,"at":"2026-10-02T02:43:06Z","sha":"70742716a","title":"Simplify the wrong-clock key fallback: one eligibility predicate, no placeholder attempt, shared test helpers","jobs":{"Windows launcher syntax":13,"Linux simulator build + launch":304,"macOS simulator build + launch":850},"pr":391},
 {"id":37007987985,"at":"2026-10-02T12:39:20Z","sha":"2c93bbb87","title":"Tell the viewer when a wrong clock puts a server in key mode: one system toast, and a reason on the failed read-out","jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":212,"macOS simulator build + launch":1037},"pr":392},
 {"id":37114701235,"at":"2026-10-03T09:56:01Z","sha":"56a839b9a","title":"Make the Rust module graph layered and acyclic, and fence the webOS port (module-layers L1-L15)","pr":397,"jobs":{"Linux simulator build + launch":212,"Windows launcher syntax":16,"macOS simulator build + launch":847}},
-{"id":37138698817,"at":"2026-10-03T16:56:36Z","sha":"b1bfa1f26","title":"Split: the base layer is its own crate (plx_base)","pr":398,"jobs":{"macOS simulator build + launch":970,"Windows launcher syntax":21,"Linux simulator build + launch":138}}
+{"id":37138698817,"at":"2026-10-03T16:56:36Z","sha":"b1bfa1f26","title":"Split: the base layer is its own crate (plx_base)","pr":398,"jobs":{"macOS simulator build + launch":970,"Windows launcher syntax":21,"Linux simulator build + launch":138}},
+{"id":37148757226,"at":"2026-10-03T19:40:49Z","sha":"b131c1810","title":"Split: the machine layer is its own crate (plx_machine)","pr":400,"jobs":{"macOS simulator build + launch":1010,"Windows launcher syntax":16,"Linux simulator build + launch":231}}
 ]}
