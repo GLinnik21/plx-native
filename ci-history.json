@@ -1,4 +1,4 @@
-{"updated":"2026-10-03T20:11:24Z",
+{"updated":"2026-10-03T20:17:55Z",
 "ci":[
 {"id":30931607501,"at":"2026-08-04T16:57:24Z","sha":"14764ec2f","title":"ci: pin the sort locale, so DT_NEEDED compares libraries and not collation","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null},
 {"id":30932002371,"at":"2026-08-04T17:02:14Z","sha":"5a607d8e5","title":"docs: four fixes before this directory is read by strangers","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":76},"pr":null},
@@ -270,7 +270,8 @@
 {"id":37013038318,"at":"2026-10-02T13:26:48Z","sha":"7086b7bd7","title":"CI chart: PR numbers on every marker, per-range marker numbering, tidy tiles","pr":394,"jobs":{"host python/shell/C gates":290,"host unit tests (default features)":331,"host unit tests (hostsim)":256,"host lint + type-checks":169,"cross-build (armv7) + artifact assertions":237,"host checks (NOT a device gate)":3}},
 {"id":37114701236,"at":"2026-10-03T09:56:01Z","sha":"56a839b9a","title":"Make the Rust module graph layered and acyclic, and fence the webOS port (module-layers L1-L15)","pr":397,"jobs":{"host unit tests (default features)":280,"host unit tests (hostsim)":242,"host python/shell/C gates":208,"host lint + type-checks":156,"cross-build (armv7) + artifact assertions":242,"host checks (NOT a device gate)":3}},
 {"id":37138698838,"at":"2026-10-03T16:56:36Z","sha":"b1bfa1f26","title":"Split: the base layer is its own crate (plx_base)","pr":398,"jobs":{"host lint + type-checks":202,"host python/shell/C gates":294,"host unit tests (hostsim)":255,"cross-build (armv7) + artifact assertions":234,"host unit tests (default features)":320,"host checks (NOT a device gate)":3}},
-{"id":37150295249,"at":"2026-10-03T20:05:44Z","sha":"3bb953140","title":"site: Ko-fi support links in the header, footer and install guide","pr":399,"jobs":{"host lint + type-checks":201,"host unit tests (hostsim)":312,"host unit tests (default features)":321,"cross-build (armv7) + artifact assertions":235,"host python/shell/C gates":301,"host checks (NOT a device gate)":4}}
+{"id":37150295249,"at":"2026-10-03T20:05:44Z","sha":"3bb953140","title":"site: Ko-fi support links in the header, footer and install guide","pr":399,"jobs":{"host lint + type-checks":201,"host unit tests (hostsim)":312,"host unit tests (default features)":321,"cross-build (armv7) + artifact assertions":235,"host python/shell/C gates":301,"host checks (NOT a device gate)":4}},
+{"id":37150708566,"at":"2026-10-03T20:12:30Z","sha":"b79840db8","title":"github: Sponsor button for GitHub Sponsors and Ko-fi","pr":401,"jobs":{"host python/shell/C gates":200,"host unit tests (hostsim)":207,"host unit tests (default features)":309,"host lint + type-checks":159,"cross-build (armv7) + artifact assertions":239,"host checks (NOT a device gate)":2}}
 ],
 "sim":[
 {"id":34841379409,"at":"2026-09-14T12:03:51Z","sha":"6073ae00c","title":"Add Windows WSLg and Linux simulator support","jobs":{"Linux simulator build + launch":126,"macOS simulator build + launch":161,"Windows launcher syntax":19},"pr":94},
