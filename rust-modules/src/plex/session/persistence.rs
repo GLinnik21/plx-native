@@ -445,7 +445,7 @@ fn commit_session(
         session,
         migration,
         authority,
-        crate::webos::info().major,
+        crate::tv::device::info().major,
         &mut client::NativeTransport,
     )
 }
@@ -703,7 +703,7 @@ fn helper_commit_with(
             helper: crate::storage::wire::failure::last().map(|failure| (failure, [None; 8])),
         },
         Ok(Response::Error { code }) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: storage helper rejected commit code={code:?}"
             ));
             CanonicalCommit::Failed(helper_rejection(code))
@@ -727,7 +727,7 @@ fn helper_commit_with(
                 Response::Error { .. } => "error",
                 Response::KeymanagerError { .. } => "keymanager_error",
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "session: storage helper returned incomplete response shape={shape}"
             ));
             CanonicalCommit::Failed(StoreError::InvalidSchema)
@@ -1393,7 +1393,7 @@ pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
         bootstrap_with(
             &mut HelperMigration {
                 transport: &mut client::NativeTransport,
-                major: crate::webos::info().major,
+                major: crate::tv::device::info().major,
             },
             opener,
             &candidates,

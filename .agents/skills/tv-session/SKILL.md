@@ -175,7 +175,7 @@ file is exempt from trigger detection and is replaced only when diagnostic statu
 **Two payloads do not carry the prefix, and that rewrite rule silently misses them:**
 `sample.h264` and `sample.h265`, the raw Annex-B samples the player feeds instead of streaming.
 They moved into the runtime root with everything else — `$(make -s print-rundir FLAVOR=…)/sample.h264`,
-not a shared `/tmp/sample.h264` — and they are read through `dev::read_sample`, which resolves via
+not a shared `/tmp/sample.h264` — and they are read through `devtrig::read_sample`, which resolves via
 `paths::in_runtime_dir` like every other dev read. A second consequence follows from the same
 missing prefix and is easy to want the other way round: `dev::any_trigger_present` matches on
 `plxnative-`, so **a sample does NOT mark the boot as automated** and does not suppress the
@@ -231,7 +231,7 @@ the remote FIFO (`tv-session.sh key` / `click`).
 can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground),
 `plxnative-gohome` (which leg of the root press to force — armed AFTER the screen you want has
 settled, because arming it before the launch also makes the boot count as automated and moves which
-screen you land on), and `plxnative-signinfail` (`dev::scenarios::signinfail_spec` is re-read on
+screen you land on), and `plxnative-signinfail` (`auth::scripted::signinfail_spec` is re-read on
 every sign-in code request and every poll, so *Try again* keeps failing the same way until the file
 is removed).
 
@@ -257,7 +257,7 @@ literals inside it are just where the stable install's root is.
 
 Two halves are needed and a single grep is the trap: a path literal now only ever appears in a
 COMMENT, and four triggers (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their
-`dev::flag`/`dev::read` call, so grepping paths alone silently under-reports the catalog.
+`devtrig::flag`/`devtrig::read` call, so grepping paths alone silently under-reports the catalog.
 
 Boot gate order, when you care which identity you land as: `plxnative-login` forces the QR
 screen → `plxnative-token` beats any stored session → a stored session (with the picker
@@ -398,7 +398,7 @@ the TV is signed in as whatever the automation chose.
   split separates the app directories and the runtime roots, and nothing else: one panel,
   one video plane, one capture service, one set of luna calls. Run `tv-session.sh down`
   (or just stop the streamer) first.
-- **`BACK` at a ROOT hands the screen to the LG launcher** (`webos::go_home`) — Home's root, the
+- **`BACK` at a ROOT hands the screen to the LG launcher** (`tv::home::go_home`) — Home's root, the
   who's-watching picker and the QR sign-in all do this since 2026-09-03, and none of them ends the
   session. The consequence for a driver: a stray `back` at a root puts the **LG launcher RIBBON
   over the still-running, still-drawing app** — on this webOS 4 set the launcher is an overlay, so

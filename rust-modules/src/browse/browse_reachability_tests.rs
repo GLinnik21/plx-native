@@ -77,7 +77,7 @@ fn not_probed_reads_as_reachable_and_only_a_failed_dial_dims_a_group() {
     assert!(!s.reachable(), "the ONLY state that dims a group");
 
     // Answered-but-refused is a token problem, not a network failure. The legacy reachability
-    // question therefore remains true, while `ui::source_list` matches Unauthorized directly
+    // question therefore remains true, while `appkit::source_list` matches Unauthorized directly
     // and dims/disables the group because there is nothing browsable behind that credential.
     s.state = SourceState::Unauthorized;
     s.set_reachable(false);

@@ -7,6 +7,7 @@ use std::os::raw::c_int;
 pub(crate) mod record;
 pub(crate) mod sub_layout;
 pub(crate) mod track_label;
+pub(crate) mod track_names;
 use std::panic::catch_unwind;
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
@@ -59,22 +60,22 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
         cached_playing(self.state, sid, rk)
     }
-    pub(crate) fn active_marker(&self, ps: &crate::route::PlaybackSession) -> Option<Marker> {
-        if !crate::player::is_playing(ps) {
+    pub(crate) fn active_marker(&self, head: Playhead) -> Option<Marker> {
+        if !head.playing {
             return None;
         }
-        let m = marker_at(self.playing_markers(), crate::player::playpos_ns() / 1_000_000)?;
+        let m = marker_at(self.playing_markers(), head.pos_ns / 1_000_000)?;
         (!self.state.skipped.contains(&(m.kind, m.start_ms))).then_some(m)
     }
-    pub(crate) fn synthesized_tail_marker(&self, ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
-        if !has_next || !crate::player::is_playing(ps) {
+    pub(crate) fn synthesized_tail_marker(&self, head: Playhead, has_next: bool) -> Option<Marker> {
+        if !has_next || !head.playing {
             return None;
         }
         if self.playing_markers().iter().any(|m| m.kind == MarkerKind::Credits) {
             return None;
         }
-        let dur_ms = crate::player::duration_ns() / 1_000_000;
-        let pos_ms = crate::player::playpos_ns() / 1_000_000;
+        let dur_ms = head.dur_ns / 1_000_000;
+        let pos_ms = head.pos_ns / 1_000_000;
         tail_marker(pos_ms, dur_ms)
     }
     pub(crate) fn alt_copies(&self, sid: crate::plex::ServerId, rk: &str) -> &'a [AltCopy] {
@@ -83,6 +84,21 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn alt_available(&self, sid: crate::plex::ServerId, rk: &str) -> bool {
         alt_available(self.state, sid, rk)
     }
+}
+
+/// The playhead facts [`MetadataView::active_marker`] and [`MetadataView::synthesized_tail_marker`]
+/// window the skip-segment and Up Next offers against. The data layer does not read the player: the
+/// caller samples `player::is_playing(ps)`, `player::playpos_ns()` and `player::duration_ns()` once
+/// per frame (the HUD's `slot`) and passes them in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Playhead {
+    /// The pipeline is presenting frames — not resolving, connecting, buffering or seeking
+    /// (`player::is_playing`).
+    pub(crate) playing: bool,
+    /// The playback position, nanoseconds (`player::playpos_ns`).
+    pub(crate) pos_ns: i64,
+    /// The media duration, nanoseconds (`player::duration_ns`).
+    pub(crate) dur_ns: i64,
 }
 
 /// One Metadata owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
@@ -370,7 +386,7 @@ pub(crate) struct Dovi {
     /// **Why not a `String`:** this struct is `Copy` and rides `route::Session`, whose `IDLE` is a
     /// `const`; more to the point `route::playback_preview_of` reads a `Dovi` **on the detail
     /// page's per-frame draw path**, so a `String` field would put a heap allocation in a hot
-    /// frame — the same cost `ui::info_panel` refuses when it declines to clone `route::url()`.
+    /// frame — the same cost `appkit::info_panel` refuses when it declines to clone `route::url()`.
     /// A DV version is dotted-numeric by specification, so the decomposition is lossless for every
     /// shape the field can take; anything unparseable lands as `(0, 0)` and draws no row at all.
     pub(crate) version: (i64, i64),
@@ -480,7 +496,7 @@ impl Dovi {
     ///
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
-    /// definite [`Supported`](crate::webos::caps::DvCapability::Supported), and
+    /// definite [`Supported`](crate::devcaps::dv::DvCapability::Supported), and
     /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
     /// payload's H265 guard silently discarded the node.
     ///
@@ -513,7 +529,7 @@ impl Dovi {
     pub(crate) fn presentation(
         &self,
         signal: bool,
-        capability: crate::webos::caps::DvCapability,
+        capability: crate::devcaps::dv::DvCapability,
         video_is_hevc: bool,
     ) -> DvPresentation {
         if !self.present {
@@ -525,7 +541,7 @@ impl Dovi {
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
-        let declare = capability == crate::webos::caps::DvCapability::Supported
+        let declare = capability == crate::devcaps::dv::DvCapability::Supported
             && video_is_hevc
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
@@ -552,13 +568,13 @@ impl Dovi {
     pub(crate) fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
-            crate::webos::caps::capability(),
+            crate::devcaps::dv::capability(),
             video_is_hevc,
         )
     }
 
     pub(crate) fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
-        let capability = crate::webos::caps::capability();
+        let capability = crate::devcaps::dv::capability();
         DvDecision {
             capability,
             presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
@@ -607,13 +623,13 @@ pub(crate) enum DvPresentation {
 /// copyable so reload, recovery and rollback preserve the installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct DvDecision {
-    pub(crate) capability: crate::webos::caps::DvCapability,
+    pub(crate) capability: crate::devcaps::dv::DvCapability,
     pub(crate) presentation: DvPresentation,
 }
 
 impl DvDecision {
     pub(crate) const NONE: Self = Self {
-        capability: crate::webos::caps::DvCapability::Unknown,
+        capability: crate::devcaps::dv::DvCapability::Unknown,
         presentation: DvPresentation::NotDv,
     };
 }
@@ -658,7 +674,7 @@ impl DvPresentation {
     }
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-dvnonode` — after a supported route has frozen `Declare`, keep its Dolby
     /// Vision **direct play** but send **no** `DolbyHdrInfo` node. Diagnostic only: it is the
     /// explicitly logged exception to gate/payload agreement.
@@ -678,7 +694,7 @@ crate::dev::latched_flag!(
     pub(crate) fn dv_node_suppressed = "dvnonode";
 );
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-nodv` — **withhold the Dolby Vision declaration**, for a bisect. The
     /// polarity is inverted from what it was, and the inversion is the point.
     ///
@@ -1914,13 +1930,13 @@ pub(crate) fn trailer_now_playing(
 /// this to `None` and the whole call to the registry read below it.
 #[cfg(not(test))]
 fn dev_source() -> Option<&'static str> {
-    if crate::app::bootstrap::stores::active() { return None; }
+    if crate::stores::tape::active() { return None; }
     // Function-local, not process-wide mutable state: one dev-trigger stat per process, kept off
-    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::dev::read`
+    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::devtrig::read`
     // is a `None`-returning stub, so a release build pays one cheap `get_or_init` for a value
     // that is always `None` — not worth a cfg to avoid.
     static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
+    SEEN.get_or_init(|| crate::devtrig::read("shared")).as_deref()
 }
 /// The host suite must not depend on what this dev Mac happens to have under `/tmp`: an armed
 /// `plxnative-shared` would outrank the registry and make every credit assertion here read the
@@ -2459,7 +2475,7 @@ fn retire_playing_item(state: &mut MetadataState) {
 fn install_playing(state: &mut MetadataState, pt: Option<PlayingItem>) {
     state.skipped.clear(); // a different leaf's markers, so a fresh slate
     if let Some(pt) = &pt {
-        crate::player::log(&format!(
+        crate::eventlog::log(&format!(
             "playing item: rk={} audio={} subs={} markers={} chapters={}",
             pt.rk,
             pt.audio.len(),
@@ -2800,7 +2816,7 @@ fn fetch_seasons(sid: crate::plex::ServerId, rk: &str) -> Vec<Season> {
             // time `fetch_full` prints `seasons=` the refusal and a show that genuinely has no
             // seasons are the same zero — so the refusal has to say so HERE, or the log records a
             // failed GET as a fact about the library.
-            crate::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
+            crate::eventlog::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
             return Vec::new();
         }
     };
@@ -2938,7 +2954,7 @@ fn fetch_extras_rows(sid: crate::plex::ServerId, rk: &str) -> Option<Vec<crate::
     match crate::plex::client_for(sid).and_then(|c| c.extras(rk)) {
         Some(mc) => Some(mc.metadata),
         None => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "detail: rk={rk} /extras did not answer — trying primaryExtraKey if the parent named one"
             ));
             None
@@ -3012,7 +3028,7 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> RelatedRows {
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
             // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "detail: rk={rk} /related did not answer — the related= below is that refusal"
             ));
             return RelatedRows::default();
@@ -3133,7 +3149,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
     let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
         ));
         return None;
@@ -3145,7 +3161,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
             // and Related still load, and there is no previous list here to protect. It is still
             // named, because the `eps=` below cannot tell it from a season with no episodes.
             d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
                     s0.rk));
                 Vec::new()
@@ -3214,11 +3230,11 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
-    // ordinary prose (`diag::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
+    // ordinary prose (`eventlog::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
     // so the only mechanism for viewing content is that no call site writes it. This one did,
     // from the day it was added until phase 11 — `'{}'` with `d.title` in it, on every detail
     // open, in a log the maintainer routinely pastes into a public issue.
-    crate::player::log(&format!(
+    crate::eventlog::log(&format!(
         "detail: sid={} rk={} show={} genres={} cast={} crew={} seasons={} eps={} related={} collection={} audio={} subs={} trailer={} extras={} ms={}",
         d.sid.raw(), d.rk, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
         d.related.len(), d.collection.as_ref().map_or(0, |c| c.members.len()), d.audio.len(), d.subs.len(), u8::from(d.trailer().is_some()), extras_src, t0.elapsed().as_millis()
@@ -3340,7 +3356,7 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, r
         // Rejected admission owns no queued terminal: settle this new generation synchronously.
         // clear() cancelled previous workers but kept their reservations until acknowledgement.
         adapter.detail_done.store(gen, Ordering::SeqCst);
-        crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", adapter.detail_landing_ref().inflight(addr.to)));
+        crate::eventlog::log(&format!("detail: request rk={rk} REFUSED — {} in flight", adapter.detail_landing_ref().inflight(addr.to)));
     }
     (gen, addr, admission)
 }
@@ -3355,7 +3371,7 @@ fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::S
     request_detail_with_spawn(adapter, sid, rk, |gen| {
         let rk = rk.to_string();
         let adapter = std::sync::Arc::clone(adapter);
-        crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
+        crate::stores::tape::admit(serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":rk,"gen":gen,
             "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || {
             // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
@@ -3463,9 +3479,9 @@ pub(crate) fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sy
     // Under a replay this drains on the frame the recording drained it on (§3.3 step 3,
     // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
     // supersede/install below, so a held frame leaves the record in the landing untouched.
-    let out = if crate::app::bootstrap::stores::active() {
+    let out = if crate::stores::tape::active() {
         crate::stores::take_landings(gate, crate::stores::StoreId::Metadata, || {
-            crate::app::bootstrap::stores::poll_apply("metadata", 0,
+            crate::stores::tape::poll_apply("metadata", 0,
                 || record::drain_live(adapter, &want), |replies| record::supply(adapter, replies, &want))
                 .into_iter().collect::<Vec<_>>()
         }).into_iter().flat_map(|drain| drain.landed).collect()
@@ -3815,9 +3831,9 @@ fn request_alt_sources(
         // exactly that reasoning, and the reasoning is incomplete: a Plex GUID names the WORK,
         // globally and stably, which is LG's "Content Viewing Information" and the one category
         // this app's Data Safety declaration answers "Not collected" to. It stays here because it
-        // is the only string that says WHICH lookup this was, and `diag::scrub::scrub_viewing`
+        // is the only string that says WHICH lookup this was, and `eventlog::scrub::scrub_viewing`
         // rewrites it to `plex://<guid>` before the line reaches the disk.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "altsrc: asked {n} source(s) for {guid} -> {} copy(ies)",
             list.len()
         ));
@@ -3947,7 +3963,7 @@ fn pump_alt_sources_with_library(
 
 // ---- the headless stand-in ---------------------------------------------------------------------
 //
-// Reached through `dev::read`, so the whole of it is absent from a `RELEASE=1` build at compile
+// Reached through `devtrig::read`, so the whole of it is absent from a `RELEASE=1` build at compile
 // time along with the rest of the `/tmp` surface. The trigger literal is
 // `/tmp/plxnative-shared`, spelled here for the catalog grep in `docs/agent-reference.md`.
 
@@ -3959,7 +3975,7 @@ fn pump_alt_sources_with_library(
 /// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
 /// title to build a copy of the item FROM.
 fn alt_pump_stand_in(state: &mut MetadataState, library: Option<&str>) -> bool {
-    if crate::app::bootstrap::stores::active() { return false; }
+    if crate::stores::tape::active() { return false; }
     let Some(d) = state.current.as_ref() else { return false };
     if d.rk == state.alt.stand_in_rk {
         return false; // this item has already had its chance — one string compare
@@ -4009,7 +4025,7 @@ fn alt_pump_stand_in(state: &mut MetadataState, library: Option<&str>) -> bool {
 /// armed-but-EMPTY file means the same, because a copy list has to be attributed to somebody.
 #[cfg(not(test))]
 fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
-    let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;
+    let handle = crate::devtrig::read("shared").filter(|h| !h.is_empty())?;
     // The application supplies the retained owner publication on every production pump. A
     // compatibility caller with no directory cannot honestly name the library, so it cannot arm
     // this visual stand-in.
@@ -4025,7 +4041,7 @@ fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
         here,
         theirs,
     );
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "altsources: stand-in for rk={} on slot {} (dev)",
         d.rk,
         theirs.raw()
@@ -4060,7 +4076,7 @@ fn alt_stand_in_slot() -> Option<crate::plex::ServerId> {
         return Some(id); // a real second server is already registered — use it
     }
     let c = crate::plex::client_opt()?;
-    let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
+    let token = crate::devtrig::read("token").filter(|t| !t.is_empty())?;
     // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
     // one that resolves to whatever happens to be current.
     Some(crate::plex::register(
@@ -4735,18 +4751,6 @@ mod rating_tests {
             got[0].value, 4.0,
             "wire order decides between two equally-ranked critic rows"
         );
-    }
-
-    /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
-    /// provider actually publishes, or a 9.1 tomato reads as a 9.1% score.
-    #[test]
-    fn a_score_is_formatted_in_its_provider_s_own_units() {
-        use crate::ui::fmt::rating_score;
-        assert_eq!(rating_score(RatingArt::TomatoFresh, 9.1), "91%");
-        assert_eq!(rating_score(RatingArt::PopcornSpilled, 4.05), "41%"); // rounded, not truncated
-        assert_eq!(rating_score(RatingArt::Tmdb, 7.8), "78%");
-        assert_eq!(rating_score(RatingArt::Imdb, 7.4), "7.4");
-        assert_eq!(rating_score(RatingArt::TomatoFresh, 10.0), "100%");
     }
 }
 

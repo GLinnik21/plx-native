@@ -123,8 +123,10 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn profile(&self) -> ProfileChipRead<'_> {
-        ProfileChipRead { thumb: &self.thumb, initial: &self.initial, name: &self.name,
-            name_w: self.name_w }
+        // The avatar is drawn against the BROWSED server, which is read where the chrome is
+        // published: the library does not ask which server is current.
+        ProfileChipRead { src: crate::plex::current_server().raw(), thumb: &self.thumb,
+            initial: &self.initial, name: &self.name, name_w: self.name_w }
     }
 
     pub(crate) fn read(&self, chip_expand: f32) -> ChromeRead<'_> {

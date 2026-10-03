@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 pub(crate) mod owner;
 pub(crate) mod observation;
+mod scripted; // the dev triggers that script the sign-in worker's outcomes (`readout`, `signinfail`)
 pub(crate) use owner::{SessionInit, SessionMachine, SessionRead};
 
 /// Resource executor entry. Every credential and network-policy input is captured by the
@@ -258,7 +259,7 @@ pub struct ReadyCreds {
 }
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
-use crate::log;
+use crate::eventlog::log;
 
 /// Does restarting this flow begin a NEW sign-in attempt, as the diagnostics count them?
 ///
@@ -713,7 +714,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
 fn retire_grant_on_https(machine_id: &str, origin: &Origin) {
     if origin.is_tls() && crate::plex::grant::granted_origin(machine_id).is_some() {
         crate::plex::grant::revoke(machine_id);
-        crate::log("security: server verified over HTTPS — plaintext upgrade complete");
+        crate::eventlog::log("security: server verified over HTTPS — plaintext upgrade complete");
     }
 }
 
@@ -761,7 +762,7 @@ pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &
 pub(crate) struct ProfileDelta {
     server: ServerRef,
     sources: Vec<SourceRef>,
-    user: UserRef,
+    pub(crate) user: UserRef,
     cache: Option<ProfileCreds>,
 }
 
@@ -779,9 +780,9 @@ pub(crate) enum ProfileSwitchOutcomeProgress {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileSwitchProgress {
-    epoch: u64,
+    pub(crate) epoch: u64,
     expected: SessionIdentity,
-    outcome: ProfileSwitchOutcomeProgress,
+    pub(crate) outcome: ProfileSwitchOutcomeProgress,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -950,7 +951,7 @@ fn output_failed_naming(output: &dyn owner::ObservationSink, epoch: u64, message
 ///
 /// The name is personal data and goes nowhere but [`LoginProgress::Failed::account`]: it is not
 /// logged here, and the measuring that fits it on a line happens on the screen's thread
-/// ([`signed_in_reason`]), where the font is.
+/// (`screens::login`'s `signed_in_reason`), where the font is.
 fn no_servers_account(d: &Discovery, ac: &AccountClient, output: &dyn owner::ObservationSink)
     -> Option<String> {
     no_servers_account_with(d, output,
@@ -964,53 +965,6 @@ fn no_servers_account_with(d: &Discovery, output: &dyn owner::ObservationSink,
         return None;
     }
     user_call()
-}
-
-/// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
-/// (`browse.auth.no_servers_signed_in_as`: "Signed in as {account}." over "This Plex account has
-/// no server yet."), the break between them a `\n` the read-out honours
-/// (`StatusOverlay::reason_segments`).
-///
-/// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
-/// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
-/// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
-/// at the name's end would sit against that period as four dots. `None` for a blank name, or when the sentence
-/// leaves the name no room at all — the caller says `browse.auth.no_servers` instead, which needs
-/// no name.
-///
-/// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
-/// no font to ask, which is why this takes the capability rather than reading one.
-pub(crate) fn signed_in_reason(account: &str, measure: &dyn crate::ui::machine::Measure) -> Option<String> {
-    use crate::ui::widgets::StatusOverlay;
-    // A name is one run of text: a control character or a stray line break in it would cut the
-    // first line short of its sentence.
-    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
-    if account.is_empty() {
-        return None;
-    }
-    let sz = crate::ui::theme::size::BODY;
-    let message = |name: &str| crate::i18n::msg::browse_auth_no_servers_signed_in_as(name);
-    let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
-    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
-    let full = message(&account);
-    if first_line_w(&full) <= column {
-        return Some(full);
-    }
-    // The room the name has is the column less the sentence around it; shave a pixel at a time if
-    // the sum of the parts under-reads the whole (kerning across the name's edges).
-    let mut room = column - first_line_w(&message(""));
-    loop {
-        // No room for any of the name: the plain caption says it better than a bare ellipsis.
-        if room <= 0.0 {
-            return None;
-        }
-        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
-        let out = message(&name);
-        if first_line_w(&out) <= column {
-            return Some(out);
-        }
-        room -= 1.0;
-    }
 }
 
 /// The caption and the incident for a discovery that found nothing usable. One table for the
@@ -1107,10 +1061,10 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
     // dev: `/tmp/plxnative-readout=<case>` (paired with `/tmp/plxnative-login`, which already
     // forces this screen with no session) — skip straight to the terminal failure a real run
     // would have reached, with no PIN minted and no call made. `readout_case` reads through
-    // `dev::read`, which is compile-time `None` without `devtriggers` — no cfg needed here, per
-    // this module's own doc. See `dev::scenarios::readout_case`'s doc for why this is the one seam
+    // `devtrig::read`, which is compile-time `None` without `devtriggers` — no cfg needed here, per
+    // this module's own doc. See `scripted::readout_case`'s doc for why this is the one seam
     // that can show every sign-in cause's glyph without a network call or an account.
-    if let Some(case) = crate::dev::scenarios::readout_case() {
+    if let Some(case) = scripted::readout_case() {
         let (message, incident) = case.canned_login_failure();
         return output_failed_naming(output, epoch, &message, incident, None, case.canned_account());
     }
@@ -1220,7 +1174,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
     }
     let mut clock = LiveRetryClock { output, started: Instant::now() };
     let created = retry_account_call(INTERACTIVE_ACCOUNT, &mut clock, |_, _, _| {},
-        |remaining| crate::dev::scenarios::signin_trouble_create()
+        |remaining| scripted::signin_trouble_create()
             .unwrap_or_else(|| ac.create_pin_with(account_timeouts(remaining))));
     let created = match created.result {
         AccountCallEnd::Answer(pin) => Ok(pin),
@@ -1618,7 +1572,7 @@ struct LivePin<'a> {
 
 impl PinWatch for LivePin<'_> {
     fn poll(&mut self) -> PinPoll {
-        crate::dev::scenarios::signin_trouble_poll().unwrap_or_else(|| self.ac.poll_pin(self.id))
+        scripted::signin_trouble_poll().unwrap_or_else(|| self.ac.poll_pin(self.id))
     }
     fn wait(&mut self, d: Duration) -> bool {
         // SLICED, so a cancel is noticed within a slice however far the backoff has grown. The
@@ -1825,7 +1779,7 @@ struct PlexTvFailure {
 /// cannot say two different things about the same verdict (plan §4).
 ///
 /// The English catalog preserves the approved wording; translations retain its remedy.
-fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
+pub(crate) fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
@@ -1862,7 +1816,7 @@ pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: Readou
 
 // Explicit locale keeps the entire verdict testable without changing the process locale.
 // Each catalog sentence owns the server/owner grammar and the named action.
-fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
+pub(crate) fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
     locale: &crate::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
     use crate::i18n::msg;
     use std::borrow::Cow;
@@ -3246,7 +3200,7 @@ fn resolved_without_roster(
 fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64, trigger: DiscoveryTrigger,
     ask: &PlaintextAsk, output: &dyn owner::ObservationSink) -> Discovery {
     discover_and_store_with_resources(ac, client_id, epoch, trigger, ask, output,
-        |account, remaining| crate::dev::scenarios::signin_trouble_resources()
+        |account, remaining| scripted::signin_trouble_resources()
             .unwrap_or_else(|| account.resources_with(account_timeouts(remaining))))
 }
 
@@ -4137,7 +4091,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
 }
 
 /// Both the live resource executor and preserved worker-policy tests enter this same body.
-fn profile_switch_worker_with_output(
+pub(crate) fn profile_switch_worker_with_output(
     epoch: u64,
     expected: SessionIdentity,
     stored: Session,
@@ -4453,7 +4407,7 @@ fn settle_signin(active: &mut bool) -> bool {
 
 #[cfg(test)]
 #[path = "auth_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "auth_discovery_tests.rs"]

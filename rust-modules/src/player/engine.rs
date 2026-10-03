@@ -11,7 +11,7 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `resume_at`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
-use super::{ffi, log, threads, ACB_OK, PTYPE, SHARED, TX};
+use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
 use crate::stream::HttpStream;
 use crate::task::MainThread;
@@ -372,10 +372,10 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
     // runtime evidence that this firmware followed the audited path. If any proof is missing, C
     // retains the constructed object forever and permanently refuses another Load. Leaking one
     // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    if unsafe { ffi::sf_ready(mt) } != 0 {
-        unsafe { ffi::sf_unload(mt) };
-        let callback_gate_proven = unsafe { ffi::sf_callback_gate_retire(mt) } != 0;
-        let callback_intercepts = unsafe { ffi::sf_callback_intercepts(mt) };
+    if unsafe { sink().ready(mt) } != 0 {
+        unsafe { sink().unload(mt) };
+        let callback_gate_proven = unsafe { sink().callback_gate_retire(mt) } != 0;
+        let callback_intercepts = unsafe { sink().callback_intercepts(mt) };
         let unload_completed = SHARED.native_unload_completed(epoch);
         let rust_epoch_retired = SHARED.retire_native_session(epoch);
         if !unload_completed {
@@ -394,16 +394,16 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
             ));
         }
         if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { ffi::acb_unload(mt) };
+            unsafe { sink().plane_unload(mt) };
         }
         match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
         {
             NativeObjectDisposition::Destroy => {
-                if unsafe { ffi::sf_destroy(mt) } == 0 {
+                if unsafe { sink().destroy(mt) } == 0 {
                     log("native lifecycle: C seam rejected D1 and quarantined the object");
                 }
             }
-            NativeObjectDisposition::Quarantine => unsafe { ffi::sf_quarantine(mt) },
+            NativeObjectDisposition::Quarantine => unsafe { sink().quarantine(mt) },
         }
     } else if !SHARED.retire_native_session(epoch) {
         log(&format!(
@@ -415,7 +415,7 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
     // because the window is created BEFORE Load — a session that failed between the two would
     // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
     // already no-ops in the other modes (see starfish.h).
-    unsafe { ffi::vp_destroy_window(mt) };
+    unsafe { sink().destroy_window(mt) };
 }
 
 /// Bind the decoded video sink to the display plane, whichever way this television does it.
@@ -430,13 +430,13 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
 ///   - `VP_EXPORTED` — nothing to do at boot. There is no handle, and no state mirroring:
 ///     webOS 5 deleted that sequence outright rather than replacing it.
 pub(crate) fn acb_init(mt: &MainThread) {
-    match ffi::vp_mode() {
-        ffi::VP_EXPORTED => {
+    match sink().window_mode() {
+        super::VP_EXPORTED => {
             log("vplane: exported window (webOS 5+) — created per session");
             // Nothing to bind later; the pump's ACB stages are skipped by ACB_OK staying false.
             ACB_OK.store(false, Ordering::Relaxed);
         }
-        ffi::VP_NONE => {
+        super::VP_NONE => {
             log(
                 "vplane: this device has NEITHER libAcbAPI nor SDL's exported window — audio \
                  will play and the picture will not appear. Please report your webOS version.",
@@ -449,7 +449,7 @@ pub(crate) fn acb_init(mt: &MainThread) {
 
 /// The webOS 4.x half of [`acb_init`].
 fn acb_init_acb(mt: &MainThread) {
-    if let Some(s) = crate::dev::read("ptype") {
+    if let Some(s) = crate::devtrig::read("ptype") {
         if let Ok(p) = s.parse::<c_int>() {
             PTYPE.store(p, Ordering::Relaxed);
         }
@@ -471,7 +471,7 @@ fn acb_init_acb(mt: &MainThread) {
     // independent witness for whether SAM sets it at all on this firmware.
     let app_c = std::ffi::CString::new(crate::paths::app_id()).ok();
     let app_ptr = app_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let acb = unsafe { ffi::acb_create(mt, app_ptr, pt) };
+    let acb = unsafe { sink().plane_create(mt, app_ptr, pt) };
     ACB_OK.store(acb != 0, Ordering::Relaxed);
     log(&format!("acb create={acb}"));
 }
@@ -620,7 +620,7 @@ fn fps_class(fps: f64) -> u32 {
 }
 
 fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkEnvelope {
-    if let Some(spec) = crate::dev::read("sinkmax") {
+    if let Some(spec) = crate::devtrig::read("sinkmax") {
         if let Some(env) = parse_sinkmax(&spec) {
             #[cfg(feature = "devtriggers")]
             log(&format!(
@@ -688,7 +688,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
     // misses regardless), and the pipeline timestamps by NEAREST-rounding on the 1001/24000 lattice
     // rather than passing ours through. This rational is the one input we hand it that could be
     // what it builds that lattice FROM, so it is the one remaining lever on our side.
-    if crate::dev::flag("nofps") {
+    if crate::devtrig::flag("nofps") {
         #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
     } else if let Some((num, den)) = fps_rational(crate::route::stream_fps(ps)) {
@@ -866,10 +866,10 @@ fn with_app_id(p: &str) -> String {
 /// variant here — via [`app_id_key`], so the anchor cannot drift from what `with_app_id` composed.
 /// A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
 fn with_window_id(mt: &MainThread, p: &str) -> String {
-    if ffi::vp_mode() != ffi::VP_EXPORTED {
+    if sink().window_mode() != super::VP_EXPORTED {
         return p.to_string();
     }
-    let id = unsafe { ffi::vp_create_window(mt) };
+    let id = unsafe { sink().create_window(mt) };
     if id.is_null() {
         log("windowId: no exported window — video will not bind");
         return p.to_string();
@@ -934,7 +934,7 @@ pub(crate) fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut 
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
-    if crate::webos::jail_blocks_native_video() {
+    if crate::tv::sandbox::blocks_native_video() {
         ps.jail_load_blocked = true;
         log("start_bufferfeed: refusing native video; affected chassis cannot read /dev/rtkmem");
         if let Some(ticket) = crate::route::begin_route_start() {
@@ -977,8 +977,8 @@ pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, p
 }
 
 /// Builds the "stream: <origin> path=<path>" diagnostic line for the freshly opened
-/// transcode/direct-stream URL. `crate::log()` runs every line through
-/// `diag::scrub::scrub_local()`, which already redacts `X-Plex-Token=` (and other
+/// transcode/direct-stream URL. `crate::eventlog::log()` runs every line through
+/// `eventlog::scrub::scrub_local()`, which already redacts `X-Plex-Token=` (and other
 /// credential query params) by value only, stopping at the next `&` — so the token,
 /// which `Client::with_token` always appends last, never reaches the log. Truncating
 /// `path` here on top of that is redundant, and for a burn transcode URL it cuts the
@@ -1040,7 +1040,7 @@ fn start_bufferfeed_inner(
         // through this same function and must re-apply it.
         //
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
-        match crate::dev::playurl() {
+        match crate::player::playurl::playurl() {
             Some(Ok(p)) => {
                 url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
@@ -1070,7 +1070,7 @@ fn start_bufferfeed_inner(
         }
     }
     if url.is_empty() {
-        if let Some(t) = crate::dev::read("url") {
+        if let Some(t) = crate::devtrig::read("url") {
             if !t.is_empty() {
                 url = t;
                 crate::route::set_url(ps, &url);
@@ -1080,7 +1080,7 @@ fn start_bufferfeed_inner(
     let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
-        if let Some(data) = crate::dev::read_sample("sample.h264") {
+        if let Some(data) = crate::devtrig::read_sample("sample.h264") {
             let au = bf_split(&data, 0x09);
             log(&format!(
                 "bf_split h264: {} AUs in {} bytes",
@@ -1096,7 +1096,7 @@ fn start_bufferfeed_inner(
                 next: 0,
                 loops: 0,
             }));
-        } else if let Some(data) = crate::dev::read_sample("sample.h265") {
+        } else if let Some(data) = crate::devtrig::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
             log(&format!(
@@ -1132,7 +1132,7 @@ fn start_bufferfeed_inner(
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-    let no_audio = crate::dev::flag("noaudio");
+    let no_audio = crate::devtrig::flag("noaudio");
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
@@ -1266,9 +1266,9 @@ fn start_bufferfeed_inner(
                                                       // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
                                                       // Rebuilding the origin from an address would put the refusal back in a subtler form: the
                                                       // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
-                                                      // behind it fails validation however well the packets flow (`plex/origin.rs`).
+                                                      // behind it fails validation however well the packets flow (`net/origin.rs`).
         if !crate::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
-            crate::log("stream: refused insecure credential transport");
+            crate::eventlog::log("stream: refused insecure credential transport");
             return Err(crate::route::RouteStartResult::StartFailed);
         }
         let path = su.path;
@@ -1414,7 +1414,7 @@ fn start_bufferfeed_inner(
     // very next seek dereferences whatever now lives there. The reload fallback is slower but is
     // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
     // somebody has re-derived the offsets on that firmware.
-    super::INPLACE_SEEK_OK.store(ffi::vp_mode() != ffi::VP_EXPORTED, Ordering::Relaxed);
+    super::INPLACE_SEEK_OK.store(sink().window_mode() != super::VP_EXPORTED, Ordering::Relaxed);
     pa.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -1431,7 +1431,7 @@ fn start_bufferfeed_inner(
 /// revisit this validation, so publishing first turns a one-time refusal into a retry bypass.
 fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
-    play: &crate::dev::PlayUrl,
+    play: &crate::player::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
     if !crate::route::set_stream_declaration(
         ps,
@@ -2173,8 +2173,8 @@ fn pts_nudge_ns() -> i64 {
         return v;
     }
     // Latched at the first feed rather than read per AU: this is the hottest path in the app and
-    // the trigger surface is a filesystem open. Same shape as every other `dev::` read here.
-    let v = crate::dev::read("ptsnudge")
+    // the trigger surface is a filesystem open. Same shape as every other `devtrig::` read here.
+    let v = crate::devtrig::read("ptsnudge")
         .and_then(|s| s.trim().parse::<i64>().ok())
         .unwrap_or(DEFAULT);
     NUDGE.store(v, Ordering::Relaxed);
@@ -2322,7 +2322,7 @@ pub(crate) fn try_prime(mt: &MainThread, eng: &mut Engine) {
         else {
             return;
         };
-        let played = unsafe { ffi::sf_play(mt) };
+        let played = unsafe { sink().play(mt) };
         match SHARED.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {
                 if resume_acb {
@@ -2402,7 +2402,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 // pipeline drains its last frames instead of hanging on them (Kodi keys EOS to the
                 // video drain). Keyed on the video lane only.
                 if eof != 0 && !eng.eos_pushed && eng.stage >= Stage::Streaming {
-                    unsafe { ffi::sf_push_eos(mt) };
+                    unsafe { sink().push_eos(mt) };
                     eng.eos_pushed = true;
                     log("EOS pushed at true EOF");
                 }
@@ -2446,17 +2446,17 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
                     // pts_shift=0 → playpos = presented real pts = content time.
                     SHARED.pts_shift.store(0, Ordering::Relaxed);
-                    let ok = unsafe { ffi::sf_set_time_to_decode(mt, pts) };
+                    let ok = unsafe { sink().set_time_to_decode(mt, pts) };
                     // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
                     // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
                     // re-anchors the decode position while Playing. Then always inject the fresh
                     // GStreamer SEGMENT so the sink re-bases instead of stalling.
                     let ci = if ok == 0 {
-                        unsafe { ffi::sf_set_content_info(mt, pts) }
+                        unsafe { sink().set_content_info(mt, pts) }
                     } else {
                         1
                     };
-                    let seg = unsafe { ffi::sf_send_segment(mt) };
+                    let seg = unsafe { sink().send_segment(mt) };
                     segment_installed = seg != 0;
                     log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
                     if seg == 0 {
@@ -2546,7 +2546,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         } else {
             false
         };
-        let r = crate::diag::spans::span("sfv", || unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) });
+        let r = crate::diag::spans::span("sfv", || unsafe { sink().feed(mt, data, len as u32, fp, es) });
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
@@ -2663,7 +2663,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         if slice.spent(fed, starved) {
             break;
         }
-        let r = crate::diag::spans::span("sfa", || unsafe { ffi::sf_feed(mt, data, len as u32, fp, es) });
+        let r = crate::diag::spans::span("sfa", || unsafe { sink().feed(mt, data, len as u32, fp, es) });
         // Accepted only — see the video lane's note.
         if (r as u8) == b'O' && fp > eng.max_fed_audio_pts {
             eng.max_fed_audio_pts = fp;
@@ -2707,7 +2707,7 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
         let off = s.au[s.next];
         let end = s.au[s.next + 1];
         let pts = (s.loops * (naus as i64 - 1) + s.next as i64) * 41708333;
-        let r = unsafe { ffi::sf_feed(mt, s.data[off..].as_ptr(), (end - off) as u32, pts, 1) };
+        let r = unsafe { sink().feed(mt, s.data[off..].as_ptr(), (end - off) as u32, pts, 1) };
         if (r as u8) != b'O' {
             break;
         }
@@ -2815,8 +2815,8 @@ mod native_lifecycle_host_seam_tests {
 
     impl Drop for FreshProcess {
         fn drop(&mut self) {
-            ffi::reset_native_lifecycle_for_test();
-            ffi::force_clocksink_for_test(false);
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
             SHARED.reset_session();
         }
     }
@@ -2824,37 +2824,37 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn host_seam_destroys_only_with_evidence_and_latches_quarantine() {
         let _serial = crate::testlock::serial();
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         SHARED.reset_session();
         let _fresh_process = FreshProcess;
         let mt = unsafe { MainThread::assume() };
 
         let first = SHARED.begin_native_session().expect("first native epoch");
-        assert_eq!(unsafe { ffi::sf_load(c"{}".as_ptr(), first) }, 1);
-        assert!(unsafe { ffi::sf_callback_intercepts(&mt) } > 0);
-        unsafe { ffi::sf_unload(&mt) };
+        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), first) }, 1);
+        assert!(unsafe { crate::player::sink().callback_intercepts(&mt) } > 0);
+        unsafe { crate::player::sink().unload(&mt) };
         assert!(SHARED.native_unload_completed(first));
-        assert_eq!(unsafe { ffi::sf_callback_gate_retire(&mt) }, 1);
+        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 1);
         assert!(SHARED.retire_native_session(first));
-        assert_eq!(unsafe { ffi::sf_destroy(&mt) }, 1);
-        assert_eq!(unsafe { ffi::sf_ready(&mt) }, 0);
+        assert_eq!(unsafe { crate::player::sink().destroy(&mt) }, 1);
+        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
 
         SHARED.reset_session();
         let unproven = SHARED
             .begin_native_session()
             .expect("unproven native epoch");
-        assert_eq!(unsafe { ffi::sf_load(c"{}".as_ptr(), unproven) }, 1);
-        ffi::force_callback_intercepts_for_test(0);
-        unsafe { ffi::sf_unload(&mt) };
-        assert_eq!(unsafe { ffi::sf_callback_gate_retire(&mt) }, 0);
+        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), unproven) }, 1);
+        crate::player::ffi_host::force_callback_intercepts_for_test(0);
+        unsafe { crate::player::sink().unload(&mt) };
+        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 0);
         assert!(SHARED.retire_native_session(unproven));
-        unsafe { ffi::sf_quarantine(&mt) };
+        unsafe { crate::player::sink().quarantine(&mt) };
 
         SHARED.reset_session();
         let refused = SHARED.begin_native_session().expect("refused native epoch");
         assert_eq!(
-            unsafe { ffi::sf_load(c"{}".as_ptr(), refused) },
+            unsafe { crate::player::sink().load(c"{}".as_ptr(), refused) },
             0,
             "quarantine must remain a process-long refusal",
         );
@@ -2897,7 +2897,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::webos::caps::DvCapability::Supported,
+            crate::devcaps::dv::DvCapability::Supported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -2915,7 +2915,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::webos::caps::DvCapability::Unsupported,
+            crate::devcaps::dv::DvCapability::Unsupported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -2936,11 +2936,11 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            crate::webos::caps::DvCapability::Unknown,
+            crate::devcaps::dv::DvCapability::Unknown,
         ));
         let fresh = p8().presentation(
             true,
-            crate::webos::caps::DvCapability::Supported,
+            crate::devcaps::dv::DvCapability::Supported,
             true,
         );
         assert!(fresh.declared().is_some(), "a subsequent decision sees Supported");
@@ -2960,12 +2960,12 @@ mod payload_tests {
     #[test]
     fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let play = crate::dev::PlayUrl {
+        let play = crate::player::playurl::PlayUrl {
             url: "http://192.0.2.1/refused-p5.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
             fps: 23.976,
-            dovi: crate::dev::PlayDovi {
+            dovi: crate::player::playurl::PlayDovi {
                 profile: 5,
                 bl_compat: 0,
                 el_present: false,
@@ -3072,7 +3072,7 @@ mod payload_tests {
         // what `build_av_payload` hands it: the AV template with the codec already set to H265,
         // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
-        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true));
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true));
         assert!(
             out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
             "{out}"
@@ -3109,9 +3109,9 @@ mod payload_tests {
             ..Dovi::NONE
         };
         for dv in [
-            Dovi::NONE.presentation(true, crate::webos::caps::DvCapability::Supported, true),
-            p7.presentation(true, crate::webos::caps::DvCapability::Supported, true),
-            p5().presentation(false, crate::webos::caps::DvCapability::Supported, true),
+            Dovi::NONE.presentation(true, crate::devcaps::dv::DvCapability::Supported, true),
+            p7.presentation(true, crate::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, crate::devcaps::dv::DvCapability::Supported, true),
         ] {
             assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
         }
@@ -3169,7 +3169,7 @@ mod payload_tests {
     fn dolby_vision_and_atmos_are_siblings_inside_contents() {
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
         let out = with_immersive(
-            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true)),
+            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true)),
             "AC3 PLUS",
             true,
         );
@@ -3194,7 +3194,7 @@ mod payload_tests {
     #[test]
     fn a_declaration_never_rides_a_non_hevc_payload() {
         assert_eq!(
-            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true)),
+            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, crate::devcaps::dv::DvCapability::Supported, true)),
             PAYLOAD_AV
         );
     }
@@ -3239,7 +3239,7 @@ mod stream_open_log_line_tests {
         );
     }
 
-    /// The un-truncated path still passes through `crate::log`'s `scrub_local` pass, which is
+    /// The un-truncated path still passes through `crate::eventlog::log`'s `scrub_local` pass, which is
     /// the ONLY place a token may be redacted — so leaving the full path in is safe precisely
     /// because `Client::with_token` always appends `X-Plex-Token=` last and `scrub_local` already
     /// redacts it by value. This is the end-to-end check that removing the truncation did not
@@ -3248,7 +3248,7 @@ mod stream_open_log_line_tests {
     fn full_path_still_has_its_token_redacted_by_the_existing_scrub_pass() {
         let path = format!("{}&X-Plex-Token=aBcD1234xyzQ", burn_path());
         let line = stream_open_log_line("plex.direct:32400", &path);
-        let scrubbed = crate::diag::scrub::scrub_local(&line);
+        let scrubbed = crate::eventlog::scrub::scrub_local(&line);
         assert!(
             !scrubbed.contains("aBcD1234xyzQ"),
             "token leaked into the event log: {scrubbed}"
@@ -3386,10 +3386,10 @@ mod prime_livelock_tests {
         struct DisarmSink;
         impl Drop for DisarmSink {
             fn drop(&mut self) {
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _disarm = DisarmSink;
 
         let mt = unsafe { crate::task::MainThread::assume() };
@@ -3444,7 +3444,7 @@ mod prime_livelock_tests {
     struct SlowFeed;
     impl SlowFeed {
         fn arm(step_us: u64) -> Self {
-            ffi::force_clocksink_for_test(true);
+            crate::player::ffi_host::force_clocksink_for_test(true);
             FEED_TEST_CLOCK_STEP_US.with(|s| s.set(step_us));
             SlowFeed
         }
@@ -3452,7 +3452,7 @@ mod prime_livelock_tests {
     impl Drop for SlowFeed {
         fn drop(&mut self) {
             FEED_TEST_CLOCK_STEP_US.with(|s| s.set(0));
-            ffi::force_clocksink_for_test(false);
+            crate::player::ffi_host::force_clocksink_for_test(false);
         }
     }
 
@@ -3591,10 +3591,10 @@ mod prime_livelock_tests {
                 SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let old = SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed);
         let _restore = Restore { runway: old };
         SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
@@ -3637,10 +3637,10 @@ mod prime_livelock_tests {
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
                 SHARED.finish_hls_recovery();
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let restore = Restore {
             runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             rebuffering: SHARED.hls_rebuffering.swap(false, Ordering::Relaxed),
@@ -3696,11 +3696,11 @@ mod prime_livelock_tests {
                 SHARED
                     .hls_trial_reserve_ms
                     .store(self.trial_reserve, Ordering::Relaxed);
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
             runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             trial_reserve: SHARED.hls_trial_reserve_ms.swap(500, Ordering::Relaxed),
@@ -3780,11 +3780,11 @@ mod prime_livelock_tests {
                 SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
                 TX.commit_paused(self.paused);
                 SHARED.finish_hls_recovery();
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let old_paused = TX.paused.load(Ordering::Acquire);
         TX.commit_paused(false);
         let stable_generation = SHARED.hls_candidate_generation.load(Ordering::Acquire);
@@ -3893,10 +3893,10 @@ mod prime_livelock_tests {
                 SHARED.seeking.store(self.seeking, Ordering::Relaxed);
                 TX.paused.store(self.paused, Ordering::Relaxed);
                 SHARED.finish_hls_recovery();
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
             runway: SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
             rebuffering: SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
@@ -3961,11 +3961,11 @@ mod prime_livelock_tests {
                 SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
                 TX.commit_paused(self.paused);
                 SHARED.reset_hls_clock_for_test();
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_clocksink_for_test(true);
         SHARED.reset_hls_clock_for_test();
         let base = 10_000_000_000;
         let _restore = Restore {
@@ -4001,10 +4001,10 @@ mod prime_livelock_tests {
         arm_live_clock_prime(&mut eng);
         assert_eq!(eng.seek_base_pts, base);
         push_segment_at(&mut eng, base);
-        let before = ffi::play_calls_for_test();
+        let before = crate::player::ffi_host::play_calls_for_test();
         try_prime(&mt, &mut eng);
         assert_eq!(
-            ffi::play_calls_for_test(),
+            crate::player::ffi_host::play_calls_for_test(),
             before,
             "Resume intent itself issued Play before feeding reopened",
         );
@@ -4019,7 +4019,7 @@ mod prime_livelock_tests {
             accepted_video < 3_000_000_000 && accepted_audio < 3_000_000_000,
             "the fixture must leave part of the measured runway in the application queues",
         );
-        assert_eq!(ffi::play_calls_for_test(), before + 1);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before + 1);
         assert!(
             !eng.prime_play,
             "balanced accepted A/V plus validated queued runway did not release ResumePrime",
@@ -4045,13 +4045,13 @@ mod prime_livelock_tests {
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
                 SHARED.finish_hls_recovery();
-                ffi::force_play_result_for_test(None);
-                ffi::force_clocksink_for_test(false);
+                crate::player::ffi_host::force_play_result_for_test(None);
+                crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        ffi::force_clocksink_for_test(true);
-        ffi::force_play_result_for_test(Some(0));
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_play_result_for_test(Some(0));
         let _restore = Restore {
             runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             rebuffering: SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
@@ -4110,7 +4110,8 @@ mod lifecycle_clock_tests {
 /// `start_bufferfeed_tracked` asks the reducer for a start owner directly. So the phase a
 /// completed stop leaves behind is the whole contract between the two halves.
 /// Gated on `hostsim` for the same reason [`lifecycle_clock_tests`] is: `stop_bufferfeed` reaches
-/// the Starfish/ACB seam, whose symbols exist only in the host build.
+/// the video sink, and only the simulator's (`ffi_host::HostSink`) keeps the state this asserts;
+/// the default build's `NoSink` answers every verb with nothing.
 #[cfg(all(test, feature = "hostsim"))]
 mod replay_after_stop_tests {
     use super::*;
@@ -4171,9 +4172,9 @@ mod load_in_flight_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            ffi::reset_native_lifecycle_for_test();
-            ffi::force_clocksink_for_test(false);
-            ffi::set_load_in_flight_for_test(false);
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            crate::player::ffi_host::set_load_in_flight_for_test(false);
             SHARED.test_force_native_idle();
             SHARED.reset_session();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -4207,7 +4208,7 @@ mod load_in_flight_tests {
     /// separate from the real assertion below.
     fn wait_for_load_in_flight() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !ffi::load_in_flight_for_test() {
+        while !crate::player::ffi_host::load_in_flight_for_test() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "PRECONDITION FAILED: sf_load never entered its in-flight window (loadCompleted \
@@ -4227,8 +4228,8 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4266,7 +4267,7 @@ mod load_in_flight_tests {
             }
         }
 
-        ffi::hold_load_for_test();
+        crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -4281,13 +4282,13 @@ mod load_in_flight_tests {
             crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         }
         assert_eq!(
-            ffi::in_flight_calls_for_test(), 0,
+            crate::player::ffi_host::in_flight_calls_for_test(), 0,
             "the pump reached the Starfish/ACB seam ({:?}) while StarfishMediaAPIs::Load was \
              still executing on the load thread. In issue #74 that window is where the app died: \
              a SIGSEGV in libc with a null first argument on the priming path, and a \
              Play-vs-LoadCommon deadlock ending in an OMX_VideoComp abort on the immediate-Play \
              path.",
-            ffi::in_flight_verb_for_test()
+            crate::player::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             !SHARED.native_load_returned(epoch),
@@ -4299,7 +4300,7 @@ mod load_in_flight_tests {
         );
 
         // Release the held Load and let it actually return.
-        ffi::release_load_for_test();
+        crate::player::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
 
         // The positive half: the gate isn't just permanently closed. A few more ticks must now
@@ -4321,7 +4322,7 @@ mod load_in_flight_tests {
             "the gate opening must let the pump leave Stage::Loading"
         );
         assert!(
-            ffi::play_calls_for_test() > 0,
+            crate::player::ffi_host::play_calls_for_test() > 0,
             "once Load has genuinely returned, Play must eventually be reached — the gate must \
              not simply stay closed forever"
         );
@@ -4341,8 +4342,8 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4355,7 +4356,7 @@ mod load_in_flight_tests {
         // is even reached — pump.rs's own `sf_ready == 0 => Connecting` early return sits ahead
         // of it — so this needs the same real held-Load rig as
         // `nothing_reaches_the_seam_while_load_is_still_in_flight`, not a bare phase flip.
-        ffi::hold_load_for_test();
+        crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -4395,7 +4396,7 @@ mod load_in_flight_tests {
         );
 
         // Unblock and join the held load thread so the process doesn't leak it into later tests.
-        ffi::release_load_for_test();
+        crate::player::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
     }
 
@@ -4414,8 +4415,8 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4424,7 +4425,7 @@ mod load_in_flight_tests {
         let epoch = SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
-        ffi::hold_load_for_test();
+        crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -4460,7 +4461,7 @@ mod load_in_flight_tests {
         );
 
         // Unblock and join the held load thread so the process doesn't leak it into later tests.
-        ffi::release_load_for_test();
+        crate::player::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
     }
 
@@ -4482,9 +4483,9 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
-        ffi::force_object_ready_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4507,13 +4508,13 @@ mod load_in_flight_tests {
             "PRECONDITION FAILED: loadCompleted must genuinely never have arrived"
         );
         assert_ne!(
-            unsafe { ffi::sf_ready(pa.mt()) },
+            unsafe { crate::player::sink().ready(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_ready() must read true (force_object_ready_for_test), or \
              pump() bails out at its own sf_ready wait before ever reaching the arm under test"
         );
         assert_eq!(
-            unsafe { ffi::sf_is_load_completed(pa.mt()) },
+            unsafe { crate::player::sink().is_load_completed(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_is_load_completed() must read false — if it reads true, the \
              OTHER arm (loadCompleted arrived) fires instead and this test proves nothing about \
@@ -4561,8 +4562,8 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4574,18 +4575,18 @@ mod load_in_flight_tests {
         // Get the host seam's OBJECT_READY (so `sf_ready(mt)` reads true and the pump reaches
         // the loadCompleted arm at all) without arming HOLD_LOAD — this call returns at once.
         let payload = std::ffi::CString::new("{}").unwrap();
-        assert_eq!(unsafe { ffi::sf_load(payload.as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::sink().load(payload.as_ptr(), epoch) }, 1);
         // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
         // path — simulating "Load has not returned" without a real second thread.
-        ffi::set_load_in_flight_for_test(true);
+        crate::player::ffi_host::set_load_in_flight_for_test(true);
         super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
-            ffi::in_flight_calls_for_test(), 0,
+            crate::player::ffi_host::in_flight_calls_for_test(), 0,
             "loadCompleted alone, with the Rust-side gate not yet marked Returned for this \
              epoch, must not let any seam verb dispatch ({:?})",
-            ffi::in_flight_verb_for_test()
+            crate::player::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             pa.engine().is_some_and(|e| e.stage == Stage::Loading),
@@ -4609,16 +4610,16 @@ mod load_in_flight_tests {
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
-            ffi::in_flight_calls_for_test(), 0,
+            crate::player::ffi_host::in_flight_calls_for_test(), 0,
             "the pump must still defer after a differently-epoched mark ({:?})",
-            ffi::in_flight_verb_for_test()
+            crate::player::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             pa.engine().is_some_and(|e| e.stage == Stage::Loading),
             "marking an epoch other than the pump's own must never open ITS gate"
         );
 
-        ffi::set_load_in_flight_for_test(false);
+        crate::player::ffi_host::set_load_in_flight_for_test(false);
     }
 
     #[test]
@@ -4626,14 +4627,14 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         let epoch = SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
-        assert_eq!(unsafe { ffi::sf_ready(pa.mt()) }, 0);
+        assert_eq!(unsafe { crate::player::sink().ready(pa.mt()) }, 0);
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
         assert!(!SHARED.load_failed.load(Ordering::Acquire));
         assert!(SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
@@ -4644,11 +4645,11 @@ mod load_in_flight_tests {
     fn native_source_correction_stale_load_refusal_cannot_fail_new_epoch() {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mt = unsafe { crate::task::MainThread::assume() };
-        unsafe { ffi::sf_quarantine(&mt); }
+        unsafe { crate::player::sink().quarantine(&mt); }
         let old = SHARED.begin_native_session().unwrap();
         assert!(SHARED.retire_native_session(old));
         let current = SHARED.begin_native_session().unwrap();
@@ -4664,9 +4665,9 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
-        ffi::force_object_ready_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        crate::player::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -4693,8 +4694,8 @@ mod load_in_flight_tests {
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
         crate::route::reset_player_control_for_test(&ps);
-        ffi::reset_native_lifecycle_for_test();
-        ffi::force_clocksink_for_test(true);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -4702,7 +4703,7 @@ mod load_in_flight_tests {
         });
         let epoch = SHARED.begin_native_session().expect("native session");
         let mut eng = engine_loading(epoch);
-        ffi::hold_load_for_test();
+        crate::player::ffi_host::hold_load_for_test();
         let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
         eng.load_th = Some(
             std::thread::Builder::new()
@@ -4736,7 +4737,7 @@ mod load_in_flight_tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 fired.store(true, Ordering::Release);
-                ffi::release_load_for_test();
+                crate::player::ffi_host::release_load_for_test();
             }).expect("spawn watchdog")
         };
 
@@ -4753,15 +4754,15 @@ mod load_in_flight_tests {
             fired.load(Ordering::Acquire)
         );
         assert_eq!(
-            ffi::in_flight_calls_for_test(),
+            crate::player::ffi_host::in_flight_calls_for_test(),
             0,
             "teardown reached the Starfish seam ({:?}) while Load was still in flight — the #74 race",
-            ffi::in_flight_verb_for_test()
+            crate::player::ffi_host::in_flight_verb_for_test()
         );
         assert!(!pa.is_live(), "the stop must still complete from the route's point of view");
         assert!(pa.has_abandoned_load(), "the in-flight Load must be parked, not dropped");
         assert_ne!(
-            unsafe { ffi::sf_ready(pa.mt()) },
+            unsafe { crate::player::sink().ready(pa.mt()) },
             0,
             "the object must be neither unloaded, destroyed nor quarantined while Load is in flight"
         );
@@ -4783,20 +4784,20 @@ mod load_in_flight_tests {
             "a later playback must not be handed the object an abandoned Load still owns"
         );
         let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
-        assert_eq!(ffi::in_flight_calls_for_test(), 0, "{:?}", ffi::in_flight_verb_for_test());
+        assert_eq!(crate::player::ffi_host::in_flight_calls_for_test(), 0, "{:?}", crate::player::ffi_host::in_flight_verb_for_test());
 
         // Now the Load returns. The next reap releases the object with full evidence (D1, not a
         // quarantine), and native sessions are available again.
-        ffi::release_load_for_test();
+        crate::player::ffi_host::release_load_for_test();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !reap_abandoned_load(&mut pa) {
             assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(!pa.has_abandoned_load());
-        assert_eq!(unsafe { ffi::sf_ready(pa.mt()) }, 0, "the released object must be gone");
+        assert_eq!(unsafe { crate::player::sink().ready(pa.mt()) }, 0, "the released object must be gone");
         assert!(
-            !ffi::lifecycle_blocked_for_test(),
+            !crate::player::ffi_host::lifecycle_blocked_for_test(),
             "the release must be a D1 with complete evidence, not a process-long quarantine"
         );
         let next = SHARED.begin_native_session().expect("native sessions resume after the release");

@@ -14,6 +14,7 @@
 //! `Option<usize>`, the item art is a [`Art`] the caller supplies.
 use crate::ui::consts::*;
 use crate::ui::theme;
+use crate::ui::tile::{TileFacts, TileKind};
 use crate::ui::widgets::{card, Art};
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::c_char;
@@ -886,23 +887,23 @@ pub(crate) fn strip<'a>(
 /// A grid poster card's label, for every kind but the episode each grid words its own way: a
 /// season names its show, and anything else is its title over its [`focused_caption`]. The
 /// Library grid and the Collection page share it, so one item reads the same on both.
-pub(crate) fn poster_label(item: &crate::pms::PmsMovie) -> TileLabel {
-    if item.kind == 2 && !item.show_title.is_empty() {
-        return TileLabel::titled(&item.title, &item.show_title);
+pub(crate) fn poster_label(item: &TileFacts<'_>) -> TileLabel {
+    if item.kind == TileKind::Season && !item.show_title.is_empty() {
+        return TileLabel::titled(item.title, item.show_title);
     }
-    let mut label = TileLabel::title(&item.title);
+    let mut label = TileLabel::title(item.title);
     label.caption = focused_caption(item, false);
     label
 }
 
-pub(crate) fn focused_caption(m: &crate::pms::PmsMovie, is_continue: bool) -> Option<std::ffi::CString> {
+pub(crate) fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi::CString> {
     if is_continue {
         return cw_caption(m);
     }
-    let s = if m.kind == crate::pms::KIND_COLLECTION {
+    let s = if m.kind == TileKind::Collection {
         // A collection is its size, never a year: the members span several, and PMS sends none.
         crate::ui::fmt::item_count(m.child_count)
-    } else if m.kind == 3 && m.ep_index > 0 {
+    } else if m.kind == TileKind::Episode && m.ep_index > 0 {
         if m.season_index > 0 {
             crate::i18n::msg::widgets_card_season_episode(m.ep_index as i64, m.season_index as i64)
         } else {
@@ -920,24 +921,25 @@ pub(crate) fn focused_caption(m: &crate::pms::PmsMovie, is_continue: bool) -> Op
 /// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
 ///
-/// "In progress" is [`PmsMovie::resume_frac`] — THE resume rule, and the same call `Grid::draw`
-/// makes for the BAR in the pass that asks for this caption. A hand-written
+/// "In progress" is `PmsMovie::resume_frac` — THE resume rule, which the caller applies when it
+/// fills [`TileFacts::resume`], and the same call `Grid::draw` makes for the BAR in the pass that
+/// asks for this caption. A hand-written
 /// `resume_ms > 0 && dur_ns > 0` here dropped that rule's end-guard, so a finished item whose
 /// server never cleared `viewOffset` drew NO bar (`resume_frac`'s answer) under a caption still
 /// promising "1 min left" — `fmt::time_left` floors at a minute, so it could not even read zero.
 /// One item, described two ways in one draw. Whether that tile also wore the watched TICK is a
 /// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
-fn cw_caption(m: &crate::pms::PmsMovie) -> Option<std::ffi::CString> {
-    let show = m.show_title.as_str();
-    let s = if m.resume_frac().is_some() {
-        let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
-        if m.kind == 3 && !show.is_empty() {
+fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
+    let show = m.show_title;
+    let s = if let Some(resume) = m.resume {
+        let left = crate::ui::fmt::time_left(resume.left_ms);
+        if m.kind == TileKind::Episode && !show.is_empty() {
             format!("{show} \u{00b7} {left}")
         } else {
             left // a resumed movie: time-remaining alone
         }
-    } else if m.kind == 3 {
+    } else if m.kind == TileKind::Episode {
         // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
         if show.is_empty() {
             crate::i18n::msg::widgets_card_new_episode().to_string()
@@ -1428,13 +1430,14 @@ mod tests {
     /// A collection's caption is its size — "1 item", "3 items" — never a year it does not have.
     #[test]
     fn a_collection_caption_counts_its_items() {
-        let caption = |child_count, year| super::focused_caption(&crate::pms::PmsMovie {
-            kind: crate::pms::KIND_COLLECTION, child_count, year, ..Default::default()
+        use crate::ui::tile::{TileFacts, TileKind};
+        let caption = |child_count, year| super::focused_caption(&TileFacts {
+            kind: TileKind::Collection, child_count, year, ..Default::default()
         }, false).map(|c| c.into_string().unwrap());
         assert_eq!(caption(3, 0).as_deref(), Some("3 items"));
         assert_eq!(caption(1, 1999).as_deref(), Some("1 item"));
         assert_eq!(caption(0, 0).as_deref(), Some("0 items"));
-        let film = crate::pms::PmsMovie { year: 1999, child_count: 3, ..Default::default() };
+        let film = TileFacts { year: 1999, child_count: 3, ..Default::default() };
         assert_eq!(super::focused_caption(&film, false).unwrap().to_str().unwrap(), "1999");
     }
 

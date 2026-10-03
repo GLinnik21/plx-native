@@ -998,7 +998,8 @@ impl TableView {
     /// fix; a caller that wants it too reads `fit_report` directly.
     #[cfg(test)]
     pub(crate) fn app_fit_failures(&self, frame_w: f32, tag: &str) -> Vec<String> {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
         self.fit_report(frame_w, &ShippedMeasure, HEADROOM)
             .iter()
             .filter(|i| i.origin == Origin::App)
@@ -2097,7 +2098,8 @@ mod tests {
     /// `fit_report` does not flag a short value that fits, and still flags one that does not.
     #[test]
     fn fit_report_does_not_flag_a_short_value_that_fits() {
-        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure as M;
+        use crate::ui::fit::HEADROOM;
         let frame_w = 700.0;
         let mut table = TableView::new();
         table.compact = false;
@@ -2196,7 +2198,8 @@ mod tests {
     /// column does not.
     #[test]
     fn fit_report_covers_note_rows() {
-        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure as M;
+        use crate::ui::fit::HEADROOM;
         let ok = note_table(ES_NOTE).fit_report(620.0, &M, HEADROOM);
         assert!(ok.iter().all(|i| i.role != FitRole::Note), "a wrappable note fits: {ok:?}");
         let word = "Superextraordinariamente".repeat(4);
@@ -2320,7 +2323,8 @@ mod tests {
     /// **The fit gate reports a title that cannot fit**, at the width the localized text needs.
     #[test]
     fn fit_report_covers_the_title_band() {
-        use crate::fontcov::advances::{ShippedMeasure as M, HEADROOM};
+        use crate::fontcov::advances::ShippedMeasure as M;
+        use crate::ui::fit::HEADROOM;
         let mut t = TableView::new();
         t.set_sections(vec![Section::new("").row(Row::new("a"))], 0, false);
         t.set_title(Some("Idioma de los subtitulos disponibles en otros idiomas".into()));

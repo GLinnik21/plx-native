@@ -28,7 +28,7 @@ looking at:
   on the shipped bytes rather than asserting it. A release binary that still carries any of it is a
   valid report, and a serious one.
 - **The event log.** `plxnative-events.log` is created 0600 and every line goes through
-  `diag::scrub::scrub_local` before the write. A line that reaches it carrying a credential, a Plex
+  `eventlog::scrub::scrub_local` before the write. A line that reaches it carrying a credential, a Plex
   token, a `plex.direct` hostname, a household name or anything about what is being watched is a
   valid report — see [PRIVACY.md](PRIVACY.md) for the contract that is meant to hold.
 - **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception: when

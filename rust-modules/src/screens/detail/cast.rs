@@ -124,12 +124,12 @@ pub(crate) fn draw(
         |i| {
             d.credit(i)
                 .map(|c| Art::Person {
-                    sid: d.sid,
+                    sid: d.sid.raw(),
                     key: c.thumb.as_str(),
                     res: (300, 300),
                 })
                 .unwrap_or(Art::Person {
-                    sid: d.sid,
+                    sid: d.sid.raw(),
                     key: "",
                     res: (300, 300),
                 })

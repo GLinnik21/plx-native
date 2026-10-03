@@ -594,7 +594,7 @@ fn toggle_on_from_direct_queues_retranscode_then_remux_params() {
 /// whichever thread called it — in production, the per-frame pump thread. `FrameScope` marks a
 /// thread as that frame thread; `assert_may_block`, wired into `http::request_with` (the one PMS
 /// dispatch chokepoint), panics the instant PMS I/O happens inside a `FrameScope` without an
-/// explicit `allow_blocking` escape (see `task::blocking::tests::a_helper_call_inside_a_frame_is_rejected`
+/// explicit `allow_blocking` escape (see `storage::client::tests::a_helper_call_inside_a_frame_is_rejected`
 /// for the same mechanism guarding a storage call). If this call still ran `put_selection`/
 /// `/decision` inline, the `execute_retranscode_claim` call below would panic with "main-thread
 /// block: PMS HTTP" instead of returning `Pending`.
@@ -953,10 +953,9 @@ fn eac3_joc_to_ac3_release_immersive_false() {
         can_normalize_loudness: true,
         ..Default::default()
     };
-    crate::app::playback::commit_track(
-        &mut ps,
-        crate::ui::track_menu::TrackCommit::Audio(CarriedAudio::from_stream(&stream, 3)),
-    );
+    // `app::playback::commit_track`'s `TrackCommit::Audio` arm is exactly this call (that arm only
+    // forwards the frozen snapshot); route tests cannot name the app or the track menu above it.
+    commit_audio_selection(&mut ps, CarriedAudio::from_stream(&stream, 3));
     assert!(toggle(&mut ps, NONE));
     let (_, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));

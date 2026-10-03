@@ -450,14 +450,10 @@ fn a_person_shelf_counts_people_and_everything_else_counts_results() {
     assert_eq!(Kind::Movie.count_label(1), "1 result");
     assert_eq!(Kind::Collection.count_label(0), "0 results");
 
-    assert_eq!(
-        (Kind::Collection.count_label(3), crate::ui::fmt::item_count(12)),
-        ("3 results".to_owned(), "12 items".to_owned())
-    );
-    assert_eq!(crate::ui::fmt::item_count(1), "1 item");
-    // Cardinal rules apply to the absolute value, including negative wire counts.
-    assert_eq!((crate::ui::fmt::item_count(0), crate::ui::fmt::item_count(-1)),
-        ("0 items".to_owned(), "-1 item".to_owned()));
+    // The OTHER count — a collection's members, "12 items", `ui::fmt::item_count` — is the UI's
+    // formatter, so its half of this contrast is graded beside the screen that draws both:
+    // `screens/search/tests.rs`, `a_collection_shelf_counts_results_and_its_tiles_count_items`.
+    assert_eq!(Kind::Collection.count_label(3), "3 results");
 }
 
 /// **`includeCollections=1` hands the Collections shelf full rows**, and those are KIND-4 cards
@@ -486,8 +482,8 @@ fn collection_rows_become_kind_four_hits_and_other_rows_stay_ordinary_cards() {
     assert_eq!((hit.tag, hit.item.child_count), (7, 12));
     assert_eq!(hit.item.thumb, "/library/collections/50007/composite/1700000000");
     assert_eq!(p[4][0].title(), "Aardman Shorts");
-    assert_eq!(hit.route(), Some(crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef {
-        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() })));
+    // (what `hit.route()` makes of these fields -- `ContentArg::Collection(..)`, the screen
+    // registry's -- is graded in `screens/search/tests.rs`, which may name the screens.)
     let Item::Media(film) = &p[0][0] else { panic!("a film stays an ordinary card") };
     assert_eq!((film.kind, film.rk.as_str()), (0, "1971"));
 }
@@ -514,8 +510,10 @@ fn a_tag_shaped_collection_hit_routes_by_section_and_tag_id() {
     assert_eq!(hit.item.kind, crate::pms::KIND_COLLECTION);
     assert_eq!((hit.item.rk.as_str(), hit.item.thumb.as_str(), hit.item.child_count), ("", "", 12));
     assert_eq!(p[4][0].title(), "Aardman Shorts");
-    assert_eq!(hit.route(), Some(crate::screens::registry::ContentArg::Collection(
-        crate::plex::collections::CollectionRef::by_tag(sid, 1, 7, "Aardman Shorts"))));
+    // the three fields the route is built from (its `ContentArg` is graded in
+    // `screens/search/tests.rs`, which may name the screens)
+    assert_eq!((hit.item.sid, hit.item.sec, hit.tag), (sid, 1, 7));
+    assert!(hit.route().is_some(), "a tag and a section are enough to route by");
     let no_section = crate::search::CollectionHit { item: PmsMovie { sec: 0, ..hit.item.clone() }, ..hit.clone() };
     assert!(no_section.route().is_none(), "no section");
     assert!(crate::search::CollectionHit { tag: 0, ..hit.clone() }.route().is_none(), "no tag id");

@@ -1,11 +1,11 @@
 //! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
-//! popover ([`crate::ui::more_menu`]) and, since 2026-08-29, from the account menu
+//! popover ([`crate::appkit::more_menu`]) and, since 2026-08-29, from the account menu
 //! ([`crate::screens::account_menu`]) on every other route.
 //!
 //! # Where this lives, and why it is not a screen (restructure phase 10)
 //!
 //! It was `ui/stats.rs` and nine `static mut`s. It is `app/` because of what it is WRITTEN FROM —
-//! `player::Diag`, `route`, `plex::identity`, `webos`, `devcaps`, `surface`: application facts, not
+//! `player::Diag`, `route`, `plex::identity`, `tv`, `devcaps`, `surface`: application facts, not
 //! a design-system vocabulary — and its state is now one `App` field, [`Diagnostics`]. `ui/` keeps
 //! what it always drew with (`widgets::FieldList` is still the list primitive).
 //!
@@ -112,7 +112,11 @@ use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+// The one bit that crosses a module boundary without an instance. It is owned by `player` (the
+// pump samples its diagnostics only while the panel is up, and `player` may not name `app`); this
+// module is its only writer.
+use crate::player::DIAG_READOUT_ON as ON;
 
 /// **The read-out's own state, as ONE `App` field** (`app.diagnostics`; spec §0 done-criterion 1).
 ///
@@ -188,8 +192,9 @@ impl Default for Diagnostics {
 /// how you tell a wedged seek from a wedged load. A BACK handler was tried and removed: it bought
 /// one convenience and cost a special case sniffed above every route arm, in a chain where
 /// `make lint` cannot see a narrower condition placed after a broader one.
-static ON: AtomicBool = AtomicBool::new(false);
-
+///
+/// The flag is [`ON`], i.e. `player::DIAG_READOUT_ON`: a static, and not an `App` field, because the
+/// player's pump reads it too.
 pub(crate) fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }
@@ -453,7 +458,7 @@ impl Diagnostics {
 /// firmware where the failure reason should have been. Both facts are now wrapped independently
 /// and drawn in full, so the array's length remains the semantic contract.
 fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
-    let w = crate::webos::info();
+    let w = crate::tv::device::info();
     let os = if w.major == 0 {
         crate::i18n::msg::browse_diagnostics_unknown_os().to_string()
     } else {
@@ -471,7 +476,7 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
             } else {
                 crate::i18n::msg::browse_diagnostics_build_release()
             },
-            crate::webos::caps::capability().compact_display(),
+            crate::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
             crate::plex::identity::PRODUCT,
@@ -546,14 +551,14 @@ fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bo
 /// say nothing about a household. `lab::snapshot`'s envelope has carried the same three fields
 /// since it was written; this is the same rule reaching the surface a stranger can actually use.
 fn device_rows() -> Vec<Field> {
-    let hw = crate::webos::device();
-    let i = crate::webos::info();
+    let hw = crate::tv::device::device();
+    let i = crate::tv::device::info();
     let c = crate::devcaps::caps();
     let mut v = Vec::with_capacity(6);
 
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
     // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
-    // plausible default, which is `webos::Hardware`'s own rule for the same reason.
+    // plausible default, which is `tv::device::Hardware`'s own rule for the same reason.
     let set = hw.set_line();
     let set_unknown = set.is_empty();
     v.push(
@@ -607,10 +612,10 @@ fn device_rows() -> Vec<Field> {
     );
     v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
 
-    let dv = crate::webos::caps::probe();
+    let dv = crate::devcaps::dv::probe();
     v.push(
         Field::new(crate::i18n::msg::browse_diagnostics_field_dolby_vision(), dv.full_state())
-            .fault(dv.capability == crate::webos::caps::DvCapability::Unknown),
+            .fault(dv.capability == crate::devcaps::dv::DvCapability::Unknown),
     );
 
     // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
@@ -1612,7 +1617,7 @@ pub(crate) fn panel_rect(&self) -> Rect {
 }
 
 /// The panel's frame WHEN IT IS ON SCREEN — the only question another module asks of this one
-/// (`lab_toast` sits immediately below it, and neither may cover the other). `None` when the
+/// (`lab::toast` sits immediately below it, and neither may cover the other). `None` when the
 /// read-out is off, so the caller cannot forget to ask [`enabled`] first.
 pub(crate) fn frame_if_shown(&self) -> Option<Rect> {
     enabled().then(|| self.panel_rect())
@@ -2007,7 +2012,7 @@ mod tests {
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
                 assert!(crate::ui::consts::inside_safe(frame));
-                assert!(frame.y + frame.h < crate::ui::player_hud::CTRL_Y);
+                assert!(frame.y + frame.h < crate::appkit::player_hud::CTRL_Y);
             }
         }
     }
@@ -2025,7 +2030,7 @@ mod tests {
         for panel in [&short, &long] {
             let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
             assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
-            assert!(panel.panel_rect().y + panel.panel_rect().h < crate::ui::player_hud::CTRL_Y);
+            assert!(panel.panel_rect().y + panel.panel_rect().h < crate::appkit::player_hud::CTRL_Y);
         }
         assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
     }
@@ -2375,7 +2380,7 @@ mod tests {
     }
 
     /// The device block obeys the same one-line rule as the pipeline block, and says what it does
-    /// NOT know rather than inventing it — `webos`/`devcaps` are unprobed under `cargo test`, so
+    /// NOT know rather than inventing it — `tv`/`devcaps` are unprobed under `cargo test`, so
     /// this runs in exactly the all-empty state a set whose nyx and codec table are unreadable
     /// would produce.
     #[test]
@@ -2487,9 +2492,9 @@ mod tests {
     fn the_panel_clears_the_transport() {
         let bottom = MARGIN + HEAD_H + FieldList::height(LEFT_ROWS) + PAD;
         assert!(
-            bottom < crate::ui::player_hud::CTRL_Y,
+            bottom < crate::appkit::player_hud::CTRL_Y,
             "panel bottom {bottom} overlaps the control row at {}",
-            crate::ui::player_hud::CTRL_Y
+            crate::appkit::player_hud::CTRL_Y
         );
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept
@@ -3132,7 +3137,7 @@ mod tests {
             23.976,
             dovi,
             false,
-            crate::webos::caps::DvCapability::Supported,
+            crate::devcaps::dv::DvCapability::Supported,
         ));
         let video = rows(&ps, &crate::player::Diag::default(), (0, 0, 0), 1_000)
             .into_iter()
@@ -3191,7 +3196,7 @@ mod tests {
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.
         let line = &head[0];
-        if crate::webos::info().major == 0 {
+        if crate::tv::device::info().major == 0 {
             assert!(line.contains("unknown"), "{line}");
         } else {
             assert!(line.contains("webOS "), "{line}");

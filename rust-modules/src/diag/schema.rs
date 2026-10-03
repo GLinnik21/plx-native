@@ -20,7 +20,7 @@
 //! # UNGATED, deliberately
 //!
 //! This module compiles in every build, including one with no telemetry feature at all, for the
-//! reason `diag::scrub` was moved out of `lab/`: **its tests are the guarantee, and tests behind a
+//! reason `eventlog::scrub` was moved out of `lab/`: **its tests are the guarantee, and tests behind a
 //! feature the default gate does not build are tests that never run.** That is not a hypothetical
 //! either — `scrub`'s 31 assertions sat unexecuted for as long as they existed. What IS gated is
 //! everything that would SEND one of these.
@@ -119,8 +119,8 @@ pub(crate) enum DiagEvent {
         /// How long from `requested` to a picture, as a class.
         startup: &'static str,
     },
-    /// This attempt failed, once. `kind` is `player::FailureKind`'s stable code — never the
-    /// on-screen wording, which is prose and will be re-worded.
+    /// This attempt failed, once. `kind` is `telemetry::classes::FailureClass`'s stable code —
+    /// never the on-screen wording, which is prose and will be re-worded.
     PlaybackFailed {
         playback_id: i64,
         mode: &'static str,
@@ -294,7 +294,7 @@ pub(crate) struct UsageContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_version: Option<String>,
     /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
-    /// SAME closed enum [`crate::webos::rtkmem_context`] reports, never a free-text probe result.
+    /// SAME closed enum [`crate::tv::sandbox::context`] reports, never a free-text probe result.
     /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
     /// than only discoverable from a single reported issue.
     #[serde(default = "rtkmem_default")]
@@ -332,7 +332,7 @@ impl Default for UsageContext {
 }
 
 impl UsageContext {
-    /// Read the already-probed platform inventory. `webos::probe` runs before telemetry boot and
+    /// Read the already-probed platform inventory. `tv::probe_device` runs before telemetry boot and
     /// before the first usage event; an unavailable field is reported honestly as `unknown`. This
     /// is the server-LESS form — a generic screen or app event has no one server when an account
     /// owns N of them, so it OMITS `server_connection`/`ip_version` entirely rather than
@@ -356,8 +356,8 @@ impl UsageContext {
     }
 
     fn build(connection: Option<(Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>)>) -> Self {
-        let os = crate::webos::info();
-        let hw = crate::webos::device();
+        let os = crate::tv::device::info();
+        let hw = crate::tv::device::device();
         let connection = connection.map(|(link, ip)| {
             let connection = match link {
                 Some(crate::plex::probe::Location::Local) => "local",
@@ -382,7 +382,7 @@ impl UsageContext {
             hardware_revision: dimension(&hw.hw_revision),
             server_connection: connection.map(|(c, _)| c.to_string()),
             ip_version: connection.map(|(_, ip)| ip.to_string()),
-            rtkmem: crate::webos::rtkmem_context().into(),
+            rtkmem: crate::tv::sandbox::context().into(),
             install: crate::paths::install_kind().into(),
         }
     }
@@ -1015,7 +1015,7 @@ mod tests {
     /// statement about the TYPE rather than about how careful the call sites are.
     ///
     /// Greps this file's own source, in the same spirit as
-    /// `diag::scrub`'s `no_log_call_site_interpolates_viewing_content`: the property is structural
+    /// `eventlog::scrub`'s `no_log_call_site_interpolates_viewing_content`: the property is structural
     /// and no unit test of behaviour can express it, because the failure is a variant that does
     /// not exist yet.
     #[test]
@@ -1099,20 +1099,20 @@ mod tests {
         );
     }
 
-    /// **`playback.failed`'s declared `kind` domain must name every `FailureKind` code.**
+    /// **`playback.failed`'s declared `kind` domain must name every `FailureClass` code.**
     ///
-    /// This is the check that was missing when `FailureKind::JailMissingRtkmem` shipped: nothing
+    /// This is the check that was missing when `FailureClass::JailMissingRtkmem` shipped: nothing
     /// tied the *documented* domain (this file's `EVENT_SPECS`, and through it `PRIVACY.md`, whose
     /// own test only compares the two against EACH OTHER) to the *actual* enum a `playback.failed`
-    /// event's `kind` field is built from — `player::FailureKind::code`. So a new variant reached
-    /// production PostHog rows with a value neither document ever named, which is exactly the
-    /// shape of drift the value would be filtered out by in any dashboard, insight or taxonomy
-    /// definition built from the documented list rather than from the enum itself. Add a
-    /// `FailureKind` variant, forget this list, and this test is what catches it — not a
-    /// dashboard going quiet on a code nobody recognises.
+    /// event's `kind` field is built from — `telemetry::classes::FailureClass::code`, which
+    /// `player::FailureKind::code` returns. So a new variant reached production PostHog rows with
+    /// a value neither document ever named, which is exactly the shape of drift the value would be
+    /// filtered out by in any dashboard, insight or taxonomy definition built from the documented
+    /// list rather than from the enum itself. Add a `FailureClass` variant, forget the domain, and
+    /// this test is what catches it — not a dashboard going quiet on a code nobody recognises.
     #[test]
     fn every_failure_kind_code_is_named_in_the_playback_failed_domain() {
-        use crate::player::FailureKind as F;
+        use crate::telemetry::classes::FailureClass as F;
         let spec = EVENT_SPECS
             .iter()
             .find(|s| s.name == "playback.failed")
@@ -1123,20 +1123,9 @@ mod tests {
             .find(|f| f.key == "kind")
             .expect("playback.failed declares a kind field")
             .domain;
-        // Every current variant, including the retained historical `original_rollback` code — see
-        // `FailureKind`'s own doc for why that one still exists with no live producer.
-        for kind in [
-            F::DecisionRefused,
-            F::NoVideoTranscodeTarget,
-            F::NoVideoTrack,
-            F::MediaSource,
-            F::PlaybackInterrupted,
-            F::TvPipeline,
-            F::OriginalRollback,
-            F::JailMissingRtkmem,
-            F::LoadTimeout,
-            F::Unspecified,
-        ] {
+        // Every variant, including the retained historical `original_rollback` code — see
+        // `FailureClass`'s own doc for why that one still exists with no live producer.
+        for kind in F::ALL {
             assert!(
                 domain.contains(kind.code()),
                 "playback.failed's declared kind domain omits {:?} ({}): {domain}",

@@ -34,38 +34,13 @@
 //! for service replies: [`caps`] uses `serde_json` and strict types because uncertainty there is a
 //! playback-safety decision. The capability query deliberately does not fill a missing webOS
 //! version; no public version key or anonymous permission for one is evidenced.
-use std::sync::OnceLock;
+use crate::tv::device::{Hardware, Info};
 
 pub(crate) mod jail_repair;
 pub(crate) mod caps;
 pub(crate) mod toast;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
-
-/// What the set said about itself. Owned strings rather than borrows into the file, because the
-/// file is read once and dropped; `OnceLock` because this is written exactly once, at boot, and
-/// read from the render thread every frame the diagnostics panel is up.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Info {
-    /// e.g. "4.10.2" — empty when unknown
-    pub release: String,
-    /// e.g. "goldilocks2-grampians" — webosbrew buckets firmware by this
-    pub codename: String,
-    /// e.g. "4.1.0"
-    pub api: String,
-    /// e.g. "webOS TV"
-    pub name: String,
-    /// leading component of `release`, or 0 when unknown
-    pub major: u32,
-}
-
-static INFO: OnceLock<Info> = OnceLock::new();
-
-/// What the set reported. All-empty with `major == 0` when the file could not be read — which is
-/// the honest answer and is what the panel prints.
-pub(crate) fn info() -> &'static Info {
-    INFO.get_or_init(Info::default)
-}
 
 /// Pull `"key": "value"` out of a flat JSON object. Returns None rather than erroring: nothing
 /// here is worth failing a boot over.
@@ -102,19 +77,19 @@ pub(crate) fn probe() {
     let info = match std::fs::read_to_string(OS_INFO) {
         Ok(s) => parse(&s),
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "webos: {OS_INFO} unreadable ({e}) — version unknown"
             ));
             Info::default()
         }
     };
     if info.major > 0 {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos: {} release={} codename={} api={} major={}",
             info.name, info.release, info.codename, info.api, info.major
         ));
     }
-    let _ = INFO.set(info);
+    crate::tv::device::publish_info(info);
     probe_hw();
     probe_jail();
 }
@@ -123,66 +98,6 @@ pub(crate) fn probe() {
 
 /// nyx's other file. Same directory, same flat shape, written by the same platform component.
 const DEVICE_INFO: &str = "/var/run/nyx/device_info.json";
-
-/// The hardware, for a report that comes from a television nobody here owns.
-///
-/// [`Info`] answers "which firmware"; this answers "which SET". They are different questions and
-/// the second one has been unanswerable: a webOS 6 playback failure on an OLED and on an LCD of
-/// the same firmware are two bugs, and nothing in a log said which had been seen. The **board** is
-/// the SoC generation (`k8hp`, `o22`, …) and is the field a decode or plane failure actually
-/// correlates with.
-///
-/// Every field is EMPTY when unknown, never a plausible default — same rule as [`Info`], for the
-/// same reason: a snapshot that invents a model is worse than one that admits it does not know.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Hardware {
-    /// e.g. "49SM9000PLA"
-    pub model: String,
-    /// e.g. "HE_DTV_W19H_AFAAABAA" or the SoC name — whichever key this firmware carries
-    pub board: String,
-    pub hw_revision: String,
-}
-
-impl Hardware {
-    /// The set as one line — `model · board · hw` with the empty parts left out, and an EMPTY
-    /// string when nothing answered (the caller decides what "unknown" reads as on its surface).
-    /// One definition for the two photographable surfaces that print it, the diagnostics panel's
-    /// "Set" row and the failure read-out's support line, so they cannot drift.
-    pub(crate) fn set_line(&self) -> String {
-        [
-            self.model.as_str(),
-            self.board.as_str(),
-            self.hw_revision.as_str(),
-        ]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
-    }
-}
-
-impl Info {
-    /// `webOS 4.10.2`, or the UI language's "webOS unknown" read-out when the file could not be
-    /// read — the release is the one field a stranger's report needs, and "unknown" is the honest
-    /// reading of an empty one rather than a plausible default.
-    pub(crate) fn release_line(&self) -> String {
-        if self.major == 0 {
-            crate::i18n::msg::browse_diagnostics_unknown_os().to_string()
-        } else {
-            format!("webOS {}", self.release)
-        }
-    }
-}
-
-static HW: OnceLock<Hardware> = OnceLock::new();
-
-/// What the set is. All-empty when the file could not be read.
-///
-/// Shared by the opt-in compatibility telemetry and the local lab snapshot. The values come from
-/// the same boot probe, so diagnostics never need to rediscover or reinterpret the device later.
-pub(crate) fn device() -> &'static Hardware {
-    HW.get_or_init(Hardware::default)
-}
 
 /// Pure, and tolerant of which spelling a firmware uses: nyx has carried both snake_case and
 /// camelCase for these keys across releases, and we have exactly one device to check against — so
@@ -206,19 +121,19 @@ fn probe_hw() {
     let hw = match std::fs::read_to_string(DEVICE_INFO) {
         Ok(s) => parse_hw(&s),
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"
             ));
             Hardware::default()
         }
     };
     if !hw.model.is_empty() || !hw.board.is_empty() {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "webos: model={} board={} hw={}",
             hw.model, hw.board, hw.hw_revision
         ));
     }
-    let _ = HW.set(hw);
+    crate::tv::device::publish_hardware(hw);
 }
 
 // ---- k5lp/k3lp jail pre-flight: does this jail have /dev/rtkmem? ------------------------------
@@ -248,19 +163,6 @@ pub(crate) fn is_realtek_k5lp_family(machine_name: &str) -> bool {
     machine_name.starts_with("k5lp") || machine_name.starts_with("k3lp")
 }
 
-/// The three outcomes of the boot-time probe, cached for the process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RtkmemProbe {
-    /// The SoC did not match the affected family — `/dev/rtkmem` was never probed.
-    NotApplicable,
-    /// The SoC matched and `/dev/rtkmem` is readable.
-    Ok,
-    /// The SoC matched and `/dev/rtkmem` is missing (or unreadable) from this jail.
-    Missing,
-}
-
-static RTKMEM: OnceLock<RtkmemProbe> = OnceLock::new();
-
 /// Read the machine name and, only on a matching SoC, probe `/dev/rtkmem` with `access(2)` —
 /// once per boot, from [`probe`]'s own boot slot, so it shares that call's ordering guarantee
 /// (before the first Load can be attempted). Logs UNCONDITIONALLY, beside the `webos:` line:
@@ -276,68 +178,15 @@ fn probe_jail() {
             .map(|path| unsafe { libc::access(path.as_ptr(), libc::R_OK) } == 0)
             .unwrap_or(false);
         if readable {
-            RtkmemProbe::Ok
+            crate::tv::sandbox::Verdict::Ok
         } else {
-            RtkmemProbe::Missing
+            crate::tv::sandbox::Verdict::Missing
         }
     } else {
-        RtkmemProbe::NotApplicable
+        crate::tv::sandbox::Verdict::NotApplicable
     };
-    let _ = RTKMEM.set(result);
-    crate::log(&format!("devjail: soc={name} rtkmem={}", rtkmem_context()));
-}
-
-/// TEST ONLY: force [`jail_blocks_native_video`] to report blocked, without touching the
-/// process-wide `RTKMEM` `OnceLock` — a real boot sets that exactly once via [`probe_jail`], and
-/// no test can re-init it to exercise the blocked path. Mirrors `ffi_host.rs`'s `FORCE_*`
-/// controls. There is no separate "release" call: `false` is the default, so a test that sets
-/// this to `true` must reset it to `false` before returning, under `crate::testlock::serial()`.
-#[cfg(test)]
-pub(crate) static FORCE_JAIL_BLOCKED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// True only when this session must not attempt a native video Load: the SoC matched the
-/// affected family AND `/dev/rtkmem` was missing from this jail. See the section doc above for
-/// the community-tier evidence this is built on. `player::mod` calls this before the first Load
-/// of every session.
-///
-/// Reads with a plain `get()` (never `get_or_init`) so a call that races ahead of [`probe_jail`]
-/// sees `NotApplicable` for itself but leaves the cell EMPTY — a later `probe_jail` can still
-/// `set()` the real verdict, and every subsequent call observes it. `get_or_init` would instead
-/// latch `NotApplicable` permanently on that first early call, silently discarding the real
-/// probe's `set()` and leaving the `devjail: … rtkmem=missing` log line contradicted by a gate
-/// that reports not-blocked forever.
-pub(crate) fn jail_blocks_native_video() -> bool {
-    #[cfg(test)]
-    if FORCE_JAIL_BLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
-        return true;
-    }
-    rtkmem_blocks(&RTKMEM)
-}
-
-/// PURE half of [`jail_blocks_native_video`]'s verdict, taking the cell as a parameter — so the
-/// early-read-vs-later-write race it exists to guard against can be tested against a throwaway
-/// local `OnceLock`, rather than by writing into the real process-wide `RTKMEM` (which a test can
-/// never un-set, and which every later test's `jail_blocks_native_video()` call also reads).
-fn rtkmem_blocks(cell: &OnceLock<RtkmemProbe>) -> bool {
-    matches!(
-        cell.get().copied().unwrap_or(RtkmemProbe::NotApplicable),
-        RtkmemProbe::Missing
-    )
-}
-
-/// The closed-enum sandbox fact for every telemetry event — `ok` / `missing` / `n/a` — read from
-/// the SAME cached [`probe_jail`] verdict [`jail_blocks_native_video`] gates playback on, never a
-/// second probe of `/dev/rtkmem`. An unset cell (a call racing ahead of boot's [`probe_jail`], the
-/// same race [`jail_blocks_native_video`]'s doc describes) reads as `n/a` — the same fallback that
-/// function uses, so a telemetry event and the gate it would have been diagnosing this attempt's
-/// failure against can never disagree about what this jail carries.
-pub(crate) fn rtkmem_context() -> &'static str {
-    match RTKMEM.get().copied().unwrap_or(RtkmemProbe::NotApplicable) {
-        RtkmemProbe::NotApplicable => "n/a",
-        RtkmemProbe::Ok => "ok",
-        RtkmemProbe::Missing => "missing",
-    }
+    crate::tv::sandbox::publish(result);
+    crate::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::sandbox::context()));
 }
 
 // ---- the ROOT press: give the screen back, without ending the process -------------------------
@@ -399,12 +248,11 @@ pub(crate) fn rtkmem_context() -> &'static str {
 /// `/tmp/plxnative-gohome=<sam|minimize>` forces one leg, so both can be exercised in one device
 /// session instead of only whichever happens to answer first. Compiled out under `RELEASE=1`.
 ///
-/// **Not rate-limited here** — [`take_root_press`] is, and `app.rs` claims the press through it
-/// before it does anything else, `auth::cancel` included. Call this only having claimed one.
+/// **Not rate-limited here** — [`crate::tv::home::take_root_press`] is, and `app.rs` claims the
+/// press through it before it does anything else, `auth::cancel` included. Call this only having
+/// claimed one.
 pub(crate) fn go_home() {
-    #[cfg(test)]
-    HOME_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let forced = crate::dev::read("gohome");
+    let forced = crate::devtrig::read("gohome");
     let forced = forced.as_deref().map(str::trim).unwrap_or("");
     let mode = match forced {
         "sam" | "minimize" | "probe" => forced,
@@ -413,7 +261,7 @@ pub(crate) fn go_home() {
     // The FIRST line of every root press, and the one that makes the rest of them readable: which
     // legs are even eligible. Without it a reader cannot tell a forced run from an ordinary one,
     // and the device evidence for this change is read by somebody who did not write it.
-    crate::log(&format!("gohome: request mode={mode}"));
+    crate::eventlog::log(&format!("gohome: request mode={mode}"));
     if mode == "minimize" { minimize(); return; }
     if HOME_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
     let probe = mode == "probe";
@@ -421,7 +269,7 @@ pub(crate) fn go_home() {
     if !crate::task::spawn_small("platform home", move || {
         if probe { ls2_probe(); }
         else if !launch_home() {
-            if sam_only { crate::log("gohome: no fallback — the trigger forced SAM only"); }
+            if sam_only { crate::eventlog::log("gohome: no fallback — the trigger forced SAM only"); }
             else { HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release); }
         }
         HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
@@ -439,54 +287,6 @@ pub(crate) fn poll_home() {
     if HOME_MINIMIZE.swap(false, std::sync::atomic::Ordering::AcqRel) { minimize(); }
 }
 
-/// How long one root press speaks for. Comfortably longer than [`ls2::BUDGET`], so a burst of taps
-/// cannot queue several full-budget stalls back to back, and short enough to be under the time it
-/// takes a person to notice nothing happened and press again.
-const COOLDOWN: std::time::Duration = std::time::Duration::from_millis(2000);
-
-/// When the last root press was claimed, and the whole of the latch. `Mutex` rather than an atomic
-/// clock because [`std::time::Instant`] is opaque: this is touched once per BACK press at a root,
-/// never on a frame path.
-static LAST_REQUEST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-
-/// **Claim the root press.** `true` when this one is live; `false` when a recent one still speaks
-/// for it, and then the WHOLE press must do nothing.
-///
-/// A HELD back never gets here — a hardware auto-repeat carries `state & 0x100` and goes to
-/// `app.rs`'s `on_auto_repeat`, which has no BACK action — but five separate taps are five separate
-/// fresh presses. Two things make that expensive: on the failing path each one spends
-/// [`ls2::BUDGET`] on the SDL main thread, and on the sign-in screen each one runs `auth::cancel`,
-/// which is destructive whatever it answers. So the claim is what `app.rs` takes FIRST, before
-/// either.
-pub(crate) fn take_root_press() -> bool {
-    take_root_press_at(std::time::Instant::now())
-}
-
-/// [`take_root_press`] with the clock passed in — the whole of the expiry rule, so the boundary is
-/// gradeable without sleeping through it.
-fn take_root_press_at(now: std::time::Instant) -> bool {
-    let mut last = LAST_REQUEST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(age) = last.map(|t| now.saturating_duration_since(t)) {
-        if age < COOLDOWN {
-            crate::log(&format!(
-                "gohome: a root press {} ms ago still speaks for this one — ignoring it",
-                age.as_millis()
-            ));
-            return false;
-        }
-    }
-    *last = Some(now);
-    true
-}
-
-/// **Hand a claim back**, for the press that turned out not to be a root press after all — the one
-/// on the sign-in screen or the picker that DID have somewhere to go inside the app. Without this
-/// the cooldown would swallow the real root BACK the user presses a moment later on the Home they
-/// were just returned to.
-pub(crate) fn release_root_press() {
-    *LAST_REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
 /// The Home launcher's app id.
 ///
 /// Community tier (webosbrew's commands cheatsheet and the widely copied
@@ -495,74 +295,9 @@ pub(crate) fn release_root_press() {
 /// minimize leg instead of leaving the user on a screen whose BACK did nothing.
 const HOME_APP_ID: &str = "com.webos.app.home";
 
-#[cfg(test)]
-static HOME_REQUESTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// How many root presses [`go_home`] has actually ACTED on, this process — a press swallowed by
-/// the cooldown does not count. **Test-only**, and the only way a host test can grade a call whose
-/// whole effect is on a television.
-#[cfg(test)]
-pub(crate) fn home_requests() -> u32 {
-    HOME_REQUESTS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[cfg(test)]
-mod go_home_tests {
-    use super::*;
-    use std::time::Instant;
-
-    /// **The expiry BOUNDARY, on a clock the test owns.** Driving it through [`take_root_press`]
-    /// alone could only ever prove the suppressing half: clearing the latch to simulate time
-    /// passing bypasses the elapsed-time branch entirely, so that test would pass with an
-    /// infinite `COOLDOWN`. This one never sleeps and still grades the comparison.
-    #[test]
-    fn a_claim_speaks_for_exactly_the_cooldown_and_not_a_moment_longer() {
-        let _g = crate::testlock::serial();
-        let base = Instant::now();
-        release_root_press();
-        assert!(take_root_press_at(base), "a cold latch admits the press");
-        assert!(
-            !take_root_press_at(base + COOLDOWN / 2),
-            "…and speaks for the whole cooldown"
-        );
-        release_root_press();
-        assert!(take_root_press_at(base));
-        assert!(
-            take_root_press_at(base + COOLDOWN),
-            "…but not past its end: a first attempt that achieved nothing stays retryable"
-        );
-        release_root_press();
-    }
-
-    /// The other half, through the real entry points: a burst of taps is ONE platform call, and a
-    /// press handed back leaves the next one live.
-    #[test]
-    fn a_burst_of_root_presses_is_one_platform_call_and_a_release_undoes_the_claim() {
-        let _g = crate::testlock::serial();
-        release_root_press();
-        let before = home_requests();
-        for _ in 0..5 {
-            if take_root_press() {
-                go_home();
-            }
-        }
-        assert_eq!(
-            home_requests(),
-            before + 1,
-            "five taps must not queue five platform calls"
-        );
-        release_root_press();
-        assert!(
-            take_root_press(),
-            "a handed-back claim must not swallow the next root press"
-        );
-        release_root_press();
-    }
-}
-
 #[cfg(any(feature = "hostsim", test))]
 fn launch_home() -> bool {
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
     ));
     true
@@ -573,7 +308,7 @@ fn minimize() {}
 
 #[cfg(any(feature = "hostsim", test))]
 fn ls2_probe() {
-    crate::log("gohome: no LS2 bus off-device — nothing to probe");
+    crate::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -620,6 +355,41 @@ pub(crate) fn activate_storage_helper(service: &str) -> crate::storage::wire::fa
     detail
 }
 
+/// Hosts and the simulator have no storage helper to wake: the same answer an absent port gives.
+#[cfg(all(
+    target_os = "linux",
+    not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))
+))]
+pub(crate) fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure::Detail {
+    use crate::storage::wire::failure::{Detail, Stage};
+    Detail::new(Stage::Unsupported, None)
+}
+
+/// What the platform's settings service says about the locale; `i18n` owns the parse and the log
+/// lines. The same 600 ms bus budget as a root press, and for the same reason: the caller is the
+/// main thread at boot.
+#[cfg(all(not(feature = "hostsim"), not(test)))]
+pub(crate) fn system_locale() -> crate::tv::LocaleReply {
+    let result = ls2::register()
+        .map_err(ls2::Fail::from)
+        .and_then(|client| {
+            client.call(
+                "luna://com.webos.settingsservice/getSystemSettings",
+                r#"{"keys":["localeInfo"]}"#,
+                std::time::Duration::from_millis(600),
+            )
+        });
+    match result {
+        Ok(raw) => crate::tv::LocaleReply::Reply(raw),
+        Err(_) => crate::tv::LocaleReply::Unavailable,
+    }
+}
+
+#[cfg(any(feature = "hostsim", test))]
+pub(crate) fn system_locale() -> crate::tv::LocaleReply {
+    crate::tv::LocaleReply::NoPlatform
+}
+
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 fn launch_home() -> bool {
     let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");
@@ -628,14 +398,14 @@ fn launch_home() -> bool {
     let ms = started.elapsed().as_millis();
     match outcome {
         // The whole reply, not a parse: it is one short platform-authored line, it names the
-        // refusal when there is one, and `diag::scrub` runs over it like every other log write. The
+        // refusal when there is one, and `eventlog::scrub` runs over it like every other log write. The
         // elapsed time is logged beside it because `ls2::BUDGET` was chosen without a measurement,
         // and this is the only place one can ever be taken.
         Ok(reply) => {
             let ok =
                 reply.contains("\"returnValue\":true") || reply.contains("\"returnValue\": true");
             let verdict = if ok { "accepted" } else { "rejected" };
-            crate::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
+            crate::eventlog::log(&format!("gohome: SAM {verdict} in {ms}ms → {reply}"));
             ok
         }
         // **Four different failures used to arrive as one sentence**, which is exactly the kind of
@@ -643,20 +413,20 @@ fn launch_home() -> bool {
         // refused this app a registration, the call was never submitted, or the reply really did
         // time out. They are three different bugs and only one of them is about SAM.
         Err(ls2::Fail::Setup { stage, detail, .. }) if detail.is_empty() => {
-            crate::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
+            crate::eventlog::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
             false
         }
         // The hub's own words, when it gave any. The register refusal that shipped with this
         // branch (`Can not find service "" permissions`) was legible ONLY in ls-hubd's log,
         // which nobody reading the app's evidence knew to open.
         Err(ls2::Fail::Setup { stage, detail, .. }) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "gohome: LS2 setup failed stage={stage} after {ms}ms — {detail}"
             ));
             false
         }
         Err(ls2::Fail::Timeout) => {
-            crate::log(&format!("gohome: SAM timed out in {ms}ms"));
+            crate::eventlog::log(&format!("gohome: SAM timed out in {ms}ms"));
             false
         }
     }
@@ -666,13 +436,13 @@ fn launch_home() -> bool {
 fn minimize() {
     let win = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     if win.is_null() {
-        crate::log("gohome: no window bound — cannot leave the foreground");
+        crate::eventlog::log("gohome: no window bound — cannot leave the foreground");
         return;
     }
     // Returns void: SDL has no way to say whether the driver implemented the hook, so this line
     // says what was ASKED and never that it worked. The screenshot is the evidence.
     unsafe { SDL_MinimizeWindow(win) };
-    crate::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
+    crate::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -740,8 +510,8 @@ pub(crate) mod ls2 {
     /// It is still the right shape, for two reasons. The press being served is a request to LEAVE,
     /// so the frames being missed are the last ones anybody looks at; and the healthy path does not
     /// spend this — `go_home` logs the measured round trip on every call precisely so the budget
-    /// stops being a guess. [`super::take_root_press`]'s cooldown is what bounds the failing
-    /// path.
+    /// stops being a guess. [`crate::tv::home::take_root_press`]'s cooldown is what bounds the
+    /// failing path.
     const BUDGET: Duration = Duration::from_millis(600);
 
     #[repr(C)]
@@ -928,7 +698,7 @@ pub(crate) mod ls2 {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
                 // teardown, against a use-after-free (Codex review, 2026-09-04).
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2: unregister refused — leaking its glib context ({})",
                     error_text(&error)
                 ));
@@ -1055,7 +825,7 @@ pub(crate) mod ls2 {
                 // into it — which is the registration's lifetime, so it is leaked (Codex review,
                 // 2026-09-04: dropping it regardless was a use-after-free on a retained handle).
                 if !unsafe { LSCallCancel(self.handle, token, &mut error) } {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "ls2: cancel refused after a timeout — leaking the reply slot ({})",
                         error_text(&error)
                     ));
@@ -1087,7 +857,7 @@ pub(crate) mod ls2 {
         let app_id = match app_id_cstring() {
             Ok(n) => n,
             Err(e) => {
-                crate::log(&format!("ls2probe: {e}"));
+                crate::eventlog::log(&format!("ls2probe: {e}"));
                 return;
             }
         };
@@ -1109,18 +879,18 @@ pub(crate) mod ls2 {
                 }
             };
             if !ok || handle.is_null() {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2probe: {label}: register REFUSED — {}",
                     error_text(&error)
                 ));
                 unsafe { LSErrorFree(&mut error) };
                 continue;
             }
-            crate::log(&format!("ls2probe: {label}: registered"));
+            crate::eventlog::log(&format!("ls2probe: {label}: registered"));
             reset(&mut error);
             let context = unsafe { g_main_context_new() };
             if context.is_null() {
-                crate::log(&format!("ls2probe: {label}: no glib context"));
+                crate::eventlog::log(&format!("ls2probe: {label}: no glib context"));
                 unsafe {
                     LSUnregister(handle, &mut error);
                     LSErrorFree(&mut error);
@@ -1132,16 +902,16 @@ pub(crate) mod ls2 {
                 let registration = Registration { handle, context };
                 let uri = "luna://com.webos.applicationManager/getForegroundAppInfo";
                 match registration.call(uri, "{}", BUDGET) {
-                    Ok(r) => crate::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
+                    Ok(r) => crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo → {r}")),
                     Err(Fail::Timeout) => {
-                        crate::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
+                        crate::eventlog::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
                     }
-                    Err(Fail::Setup { stage, detail, .. }) => crate::log(&format!(
+                    Err(Fail::Setup { stage, detail, .. }) => crate::eventlog::log(&format!(
                         "ls2probe: {label}: call failed stage={stage} ({detail})"
                     )),
                 }
             } else {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ls2probe: {label}: attach failed — {}",
                     error_text(&error)
                 ));
@@ -1281,24 +1051,6 @@ mod tests {
         assert_eq!(parse(r#"{"webos_release": "10.0.1"}"#).major, 10);
     }
 
-    #[test]
-    fn the_set_and_release_lines_omit_what_is_unknown_and_never_invent_a_set() {
-        let hw = Hardware {
-            model: "49SM9000PLA".into(),
-            board: "HE_DTV_W19H".into(),
-            hw_revision: String::new(),
-        };
-        assert_eq!(hw.set_line(), "49SM9000PLA · HE_DTV_W19H");
-        assert_eq!(Hardware::default().set_line(), "");
-        let i = Info {
-            release: "4.10.2".into(),
-            major: 4,
-            ..Default::default()
-        };
-        assert_eq!(i.release_line(), "webOS 4.10.2");
-        assert_eq!(Info::default().release_line(), crate::i18n::msg::browse_diagnostics_unknown_os());
-    }
-
     /// The predicate the jail pre-flight gates on. Exact-prefix, and nothing broader — see the
     /// function's own doc for why "contains" is deliberately excluded.
     #[test]
@@ -1314,29 +1066,5 @@ mod tests {
         assert!(!is_realtek_k5lp_family(""));
         assert!(!is_realtek_k5lp_family("prefix-k5lp"));
         assert!(!is_realtek_k5lp_family("K5LP"));
-    }
-
-    /// Regression for `rtkmem-verdict-defeated-by-get-or-init-default`: an early call to
-    /// `jail_blocks_native_video()` (before `probe_jail` has ever run) must NOT permanently latch
-    /// `NotApplicable` into the cell. With the old `get_or_init(|| NotApplicable)` reader this
-    /// first call would win the race and every later `RTKMEM.set(Missing)` from the real probe
-    /// would be silently dropped (`OnceLock::set` returns `Err` once already initialized) — the
-    /// gate would report "not blocked" forever while the boot log said `rtkmem=missing`.
-    ///
-    /// Exercised against a throwaway local cell via `rtkmem_blocks`, not the process-wide
-    /// `RTKMEM` static — that `OnceLock` can never be un-set, so writing into the real one here
-    /// would permanently latch `jail_blocks_native_video()` to `true` for every other test in
-    /// this process, un-serialized. See finding
-    /// `rtkmem-probe-test-permanently-sets-the-process-wide-oncelock`.
-    #[test]
-    fn early_read_does_not_defeat_a_later_missing_verdict() {
-        let cell: OnceLock<RtkmemProbe> = OnceLock::new();
-        assert!(!rtkmem_blocks(&cell), "cell must start empty/unset");
-        cell.set(RtkmemProbe::Missing)
-            .expect("cell was still empty, so this must be the first, winning set()");
-        assert!(
-            rtkmem_blocks(&cell),
-            "a verdict set after an earlier read must still take effect"
-        );
     }
 }

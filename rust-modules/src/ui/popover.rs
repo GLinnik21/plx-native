@@ -859,6 +859,20 @@ pub(crate) mod host {
         }
     }
 
+    /// [`crate::gfx::blur_invalidate`] **plus** the popover's GROUND stage — what every caller outside
+    /// `gfx` means by "retake the blur".
+    ///
+    /// A popover's ground snapshot contains that popover's frost, composited from the very snapshot
+    /// `gfx::blur_invalidate` drops. Keeping it would serve the old frost as a picture, on a still
+    /// page, with nothing to show that it had stopped following the blur. (The PAGE stage is
+    /// untouched — it is below all of this and cannot have changed.) `gfx` cannot reach the host's
+    /// cache — it sits below `ui` — so it drops its own snapshot and this drops the ground, in that
+    /// order, which is the order `gfx::blur_invalidate` itself used to run them in.
+    pub(crate) fn blur_invalidate() {
+        crate::gfx::blur_invalidate();
+        ground_invalidate();
+    }
+
     fn held() -> Held {
         unsafe { HELD }
     }

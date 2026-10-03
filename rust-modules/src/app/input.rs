@@ -269,18 +269,10 @@ pub(crate) unsafe fn menu_play_tick(
 /// call must return with the load still IN FLIGHT and the decision deferred to
 /// [`menu_play_tick`], never resolved on the press frame.
 ///
-/// **Integration fix (phase 12 wave-0):** gated on `hostsim` — `menu_play_tick`'s landed arm
-/// calls `start_playback`, which reaches `player::adapter`/`player::engine` and, through them,
-/// the real `player::ffi::sf_load`/`vp_mode`/`vp_create_window` `extern "C"` declarations. Those
-/// resolve only against the television's own `libplayerAPIs`/ACB seam (via the Makefile's C link)
-/// or against `player/ffi_host.rs`'s `hostsim` stand-ins; a bare `cargo test --lib` on macOS has
-/// neither, so an ungated module here made every `player::ffi` wrapper a hard undefined symbol in
-/// the DEFAULT feature pass the moment this test made that call chain reachable — a bare `make
-/// check` failed to link with `_sf_load`/`_vp_create_window`/`_vp_mode` undefined. This is the
-/// same reason `player::engine`'s own `native_lifecycle_host_seam_tests` (right beside its
-/// `MainThread`-driven `sf_*` calls) carries the identical gate: see AGENTS.md's testing section
-/// on `player/ffi_host.rs` existing "ONLY in the hostsim configuration".
-#[cfg(all(test, feature = "hostsim"))]
+/// Runs in the default feature set too: `menu_play_tick`'s landed arm reaches `start_playback` and
+/// the video sink, but `player::ffi` is not compiled in tests, so the sink a bare `cargo test
+/// --lib` meets is `tv::sink::NoSink` and answers every verb with nothing.
+#[cfg(test)]
 mod activate_card_tests {
     use super::*;
 
@@ -1385,8 +1377,8 @@ pub(crate) fn key_back(
 /// That is why the old `/tmp/plxnative-noexitconfirm` bypass went with the alert: it existed to let
 /// a headless caller quit by pressing BACK, and BACK is no longer a quit for anybody.
 pub(crate) fn back_at_root() {
-    if crate::webos::take_root_press() {
-        crate::webos::go_home();
+    if crate::tv::home::take_root_press() {
+        crate::tv::home::go_home();
     }
 }
 

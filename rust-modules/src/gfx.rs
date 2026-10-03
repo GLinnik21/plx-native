@@ -9,6 +9,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
 
+// What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
+// overdraw ledger and the machine runtime (module-layers step L5). `ui` re-exports each of them
+// at its old path (`ui::Rect`, `ui::frame::backdrop`, `ui::profile`, `ui::theme`).
+/// The live-backdrop walk: layer/damage algebra, the discovery pass and the retained glass sources.
+pub(crate) mod backdrop;
+mod geom;
+/// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
+/// published state.
+pub(crate) mod profile;
+/// The design tokens the renderer draws with: the app ground and scrim ink, the card shading
+/// constants its image shader mirrors, and the type-size ladder.
+pub(crate) mod tokens;
+pub use geom::{Crop, Rect};
+pub(crate) use geom::Zoom;
+
 // Per-frame counters for the frame-drop detector: how many card composites are actually issued
 // (`draw_tex_carded`), and how many of those are (partly) off-screen — to confirm the cull is tight.
 static CARD_CT: AtomicU32 = AtomicU32::new(0);
@@ -329,8 +344,8 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
 
 pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
-    crate::ui::frame::backdrop::clip(Some(crate::ui::Rect::new(x,y,w,h)));
-    if crate::ui::frame::backdrop::discovering() { return; }
+    backdrop::clip(Some(Rect::new(x,y,w,h)));
+    if backdrop::discovering() { return; }
     let x0 = x.max(0.0);
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
@@ -387,8 +402,8 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
 pub(crate) fn clip_clear() {
-    crate::ui::frame::backdrop::clip(None);
-    if crate::ui::frame::backdrop::discovering() { return; }
+    backdrop::clip(None);
+    if backdrop::discovering() { return; }
     set_clip(None);
     unsafe {
         match CLIP_TARGET {
@@ -431,19 +446,19 @@ pub(crate) fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
 }
 
 fn frame_clear_allowed() -> bool {
-    !page_frozen() && !crate::ui::frame::backdrop::suppressed() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
+    !page_frozen() && !backdrop::suppressed() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
 }
 
 fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
-    if crate::ui::frame::backdrop::discovering() {
+    if backdrop::discovering() {
         if SUPPRESS_FRAME_CLEAR.with(|v|v.get()) { return; }
-        crate::ui::frame::backdrop::paint(crate::ui::frame::backdrop::canvas(),
+        backdrop::paint(backdrop::canvas(),
             vec![0,r.to_bits() as u64,g.to_bits() as u64,b.to_bits() as u64,a.to_bits() as u64]);
         return;
     }
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
-    // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
+    // popover sitting on flat grey. See [`page_frozen`] — this is the one refusal that is not a
     // quad and so cannot ride on [`culled`].
     if !frame_clear_allowed() {
         return;
@@ -2309,7 +2324,7 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
 
 /// `u_focus`, the focused tile's lit-glass edge AND its risen shadow (see `fs_img.frag`'s FOCUS
 /// note): `(f, 1/gloss-gradient-length, shadow y-offset px)`. The gradient length is the card's own
-/// `w×h` box projected onto the 160deg CSS direction ([`crate::ui::theme::CARD_GLOSS_DIR`]) — the
+/// `w×h` box projected onto the 160deg CSS direction ([`tokens::CARD_GLOSS_DIR`]) — the
 /// one CPU-folded term the shader cannot derive from its already-packed `u_card`, since that only
 /// carries the HALF-size minus the radius. `dy` is the caller's own downward shadow shift (0 for
 /// every draw but a focused card's — [`crate::ui::Painter::tex_carded`] and its still specialization
@@ -2324,7 +2339,7 @@ fn image_focus_geometry(focus: f32, half_w: f32, half_h: f32, dy: f32) -> [f32; 
     if f <= 0.0 {
         return [0.0, 0.0, 0.0];
     }
-    use crate::ui::theme::CARD_GLOSS_DIR;
+    use crate::gfx::tokens::CARD_GLOSS_DIR;
     let grad_len = half_w * 2.0 * CARD_GLOSS_DIR[0] + half_h * 2.0 * CARD_GLOSS_DIR[1];
     [f, if grad_len > 0.0 { 1.0 / grad_len } else { 0.0 }, dy.max(0.0)]
 }
@@ -2690,7 +2705,7 @@ impl FrameCache {
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
     /// [`frame_cache_uv`] is the one orientation rule shared by every future owner.
     ///
-    /// **It lifts [`PAGE_FROZEN`] around its own quad.** This is the one draw in the app that
+    /// **It lifts [`page_frozen`] around its own quad.** This is the one draw in the app that
     /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
     /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
     /// that would show up as a blank screen with no error anywhere.
@@ -2704,7 +2719,7 @@ impl FrameCache {
         }
         let was = set_page_frozen(false);
         let uv = frame_cache_uv();
-        let tint = crate::ui::theme::with_a(CAP_TINT, alpha);
+        let tint = tokens::with_a(CAP_TINT, alpha);
         draw_tex_core(
             Class::Image,
             self.tex,
@@ -2871,7 +2886,7 @@ pub(crate) fn draw_tex_carded_still(
     true
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 // ============================== backdrop blur ================================
 // The frosted ground under a popover panel: a blurred snapshot of what the frame had drawn BEHIND
@@ -3011,17 +3026,17 @@ const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 fn blur_taps() -> [f32; 2] {
     static SEEN: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let Some(v) = crate::dev::read("blurtaps") else {
+        let Some(v) = crate::devtrig::read("blurtaps") else {
             return BLUR_TAPS;
         };
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
         match (it.next(), it.next()) {
             (Some(Ok(a)), Some(Ok(b))) if a > 0.0 && b > a => {
-                crate::log(&format!("glass: blur taps swept to {a},{b}"));
+                crate::eventlog::log(&format!("glass: blur taps swept to {a},{b}"));
                 [a, b]
             }
             _ => {
-                crate::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
+                crate::eventlog::log("glass: blurtaps ignored (want <a>,<b> with 0 < a < b)");
                 BLUR_TAPS
             }
         }
@@ -3181,19 +3196,19 @@ pub(crate) struct BackdropImage {
     alpha_invariant: bool,
 }
 impl BackdropImage {
-    pub(crate) fn covers(&self, r: crate::ui::Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
+    pub(crate) fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
     pub(crate) fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
 }
 struct BackdropTexture(c_uint);
 impl Drop for BackdropTexture {
     fn drop(&mut self) { delete_tex(self.0); }
 }
-pub(crate) fn retain_backdrop(z: crate::ui::frame::backdrop::Z) -> bool {
+pub(crate) fn retain_backdrop(z: backdrop::Z) -> bool {
     unsafe {
         if !BLUR_VALID { return false; }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
         let (w,h) = ((c.rw/2).max(1), (c.rh/2).max(1));
-        let previous = crate::ui::frame::backdrop::image(z);
+        let previous = backdrop::image(z);
         let texture = previous.as_ref().filter(|p| p.chain.mw == w && p.chain.mh == h)
             .map(|p| p.texture.clone()).unwrap_or_else(|| std::rc::Rc::new(BackdropTexture(cap_tex(w,h))));
         glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
@@ -3203,8 +3218,8 @@ pub(crate) fn retain_backdrop(z: crate::ui::frame::backdrop::Z) -> bool {
         if glGetError() != GL_NO_ERROR { return false; }
         let mut chain = c.clone();
         chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
-        let alpha_invariant = crate::ui::frame::backdrop::source_alpha(z).is_some();
-        crate::ui::frame::backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
+        let alpha_invariant = backdrop::source_alpha(z).is_some();
+        backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
         true
     }
 }
@@ -3291,8 +3306,8 @@ const STANDING_RIMCLEAR: f32 = 0.6;
 fn rimclear_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("rimclear")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: rim scrim shed swept to {v}"));
+        let v = crate::devtrig::read("rimclear")?.trim().parse::<f32>().ok()?;
+        crate::eventlog::log(&format!("glass: rim scrim shed swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3305,8 +3320,8 @@ fn rimclear_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("tracksharp")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: rim sharp source swept to {v}"));
+        let v = crate::devtrig::read("tracksharp")?.trim().parse::<f32>().ok()?;
+        crate::eventlog::log(&format!("glass: rim sharp source swept to {v}"));
         Some(v.clamp(0.0, 1.0))
     })
 }
@@ -3320,8 +3335,8 @@ fn sharp_sweep() -> Option<f32> {
 fn deep_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("paneldeep")?.trim().parse::<f32>().ok()?;
-        crate::log(&format!("glass: panel deep-sample radius swept to {v}"));
+        let v = crate::devtrig::read("paneldeep")?.trim().parse::<f32>().ok()?;
+        crate::eventlog::log(&format!("glass: panel deep-sample radius swept to {v}"));
         Some(v.max(0.0))
     })
 }
@@ -3522,7 +3537,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
     static SEEN: std::sync::OnceLock<Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)>> =
         std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let v = crate::dev::read("tracklens")?;
+        let v = crate::devtrig::read("tracklens")?;
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>().ok());
         let (b, l, w) = (it.next()??, it.next()??, it.next()??);
         // The chamfer's two weights are OPTIONAL: three fields is the geometry alone, five adds the
@@ -3538,7 +3553,7 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
             edge_a.map(|v| v.clamp(0.0, 1.0)),
             shade.map(|v| v.clamp(0.0, 1.0)),
         );
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "glass: track swept to bevel={} lens={} spec={} edge={:?} shade={:?}",
             out.0, out.1, w, out.3, out.4
         ));
@@ -3613,10 +3628,9 @@ static mut GL_SOURCE_GROUND: c_int = 0;
 pub(crate) fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
     // A popover's GROUND snapshot contains that popover's frost, composited from the very snapshot
-    // being dropped here. Keeping it would serve the old frost as a picture, on a still page, with
-    // nothing to show that it had stopped following the blur. The PAGE stage is untouched — it is
-    // below all of this and cannot have changed.
-    crate::ui::popover::host::ground_invalidate();
+    // being dropped here, and the host that owns it sits above this layer — so callers outside
+    // `gfx` go through `ui::popover::host::blur_invalidate`, which calls this and then drops the
+    // ground. The PAGE stage is untouched — it is below all of this and cannot have changed.
 }
 
 /// How far outside a panel's own rect the snapshot must actually contain pixels, in authored px.
@@ -4022,7 +4036,7 @@ fn blur_publish(
             rw as f32 / sx,
             rh as f32 / sy,
         ];
-        crate::ui::profile::note_blur_config(
+        profile::note_blur_config(
             live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, live_w, live_h,
         );
         c.reg = live;
@@ -4085,7 +4099,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
         // Split into exact phases for the asynchronous timer-query and serialized HWCNT diagnostic
         // modes. The candidates are a framebuffer copy/resolve and five render-target passes.
         // The phase wrapper is an inline passthrough in a release build.
-        use crate::ui::profile::phase;
+        use crate::gfx::profile::phase;
         // The region, in drawable px and 4-aligned, landing at the BOTTOM-LEFT of every target. Each
         // pass then draws a full quad into a viewport of the region's own size and samples the
         // matching corner of its source, so the whole chain is the same shape it always was, one
@@ -4302,7 +4316,7 @@ static mut BLUR_IN_PASS: bool = false;
 /// Is the page currently being drawn as a low-resolution blur source rather than for the panel?
 #[inline]
 pub(crate) fn blur_source_pass() -> bool {
-    unsafe { BLUR_IN_PASS || crate::ui::frame::backdrop::source_walk() }
+    unsafe { BLUR_IN_PASS || backdrop::source_walk() }
 }
 
 /// **Sample what is actually on the panel under `r`, at a low rate.**
@@ -4874,7 +4888,7 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
 /// Triangular rather than uniform, and the triangle is already in the tile ([`noise_tex`]), so this
 /// is the ONE place the TPDF form differs from the ±½ LSB uniform it replaced — a factor of two on
 /// a number, not a second channel on two million fragments.
-const DITHER_LSB: f32 = 2.0 / 255.0;
+pub(crate) const DITHER_LSB: f32 = 2.0 / 255.0;
 
 /// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
 /// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
@@ -4918,7 +4932,7 @@ const DITHER_LSB: f32 = 2.0 / 255.0;
 /// area test is the whole of it, and the answer above the threshold is always yes.
 /// Measured on the television, Settings over Home before this existed: a 700-row column through
 /// the ground spanned luma 55.7 to 59.1 in FOUR distinct levels, treads of 158, 157 and 146 rows.
-fn dither_for_field(w: f32, h: f32) -> f32 {
+pub(crate) fn dither_for_field(w: f32, h: f32) -> f32 {
     if w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
         return 0.0;
     }
@@ -4967,46 +4981,11 @@ unsafe fn dither_uniforms(prog: c_uint) -> c_int {
 /// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
-/// **Is the host page being served from [`FrameCache`] rather than rasterized?**
-///
-/// Armed for the length of the page draw underneath an open popover that holds a snapshot, and
-/// LIFTED around the popover's own drawing — [`crate::ui::popover::host`] owns both edges. While it
-/// is on, every primitive in this module refuses its quad, because the pixels it would produce are
-/// already on the framebuffer, one textured quad ago.
-///
-/// **It is a REFUSAL, not a skipped call tree**, and that is what makes it safe to apply to a page
-/// this module knows nothing about: the page's draw code still runs, so its layout is still
-/// measured, its pointer hit rects are still recorded and its poster textures are still uploaded.
-/// Only the FILL is removed — which on this GPU is the whole of the cost. A detail page under an
-/// open track panel measured `draw≈75 ms` per presented frame, entirely in fragments, against a
-/// `drawmask=all` floor of 17 ms.
-///
-/// Main-render-thread only, like every other piece of draw state here.
-static mut PAGE_FROZEN: bool = false;
-
-/// Arm or lift the page freeze, returning the state that was in force.
-///
-/// Callers restore what they were handed rather than storing `false`, so a popover's lift NESTS
-/// inside the page pass instead of ending it — the page draw that follows the popover (another
-/// panel, another scrim) is still frozen.
-#[inline]
-pub(crate) fn set_page_frozen(on: bool) -> bool {
-    unsafe {
-        let was = PAGE_FROZEN;
-        PAGE_FROZEN = on;
-        was
-    }
-}
-
-/// Is the host page frozen right now?
-///
-/// Read by the primitives below, and by [`crate::ui::idle::invalidate`]: a decoration that reports
-/// damage from inside a draw which produced no pixels (a marquee, a spinner) must not keep
-/// re-dirtying the snapshot it is standing in.
-#[inline]
-pub(crate) fn page_frozen() -> bool {
-    unsafe { PAGE_FROZEN }
-}
+// **Is the host page being served from [`FrameCache`] rather than rasterized?** The flag, its doc
+// and its two accessors live in `ui::idle`, the machine layer: `idle::invalidate` has to read it,
+// and this module may name that layer but not the reverse. Every primitive below consults it
+// through these two names exactly as it did when the flag was declared here.
+pub(crate) use crate::ui::idle::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -5063,7 +5042,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
     #[allow(unreachable_code)]
     {
         if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "videoplane: refused {what} — the plane is not in our framebuffer to sample"
             ));
         }
@@ -5073,7 +5052,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 
 /// Should this quad be skipped entirely?
 ///
-/// Two independent reasons. The frozen page ([`PAGE_FROZEN`]) is tested first because it is a
+/// Two independent reasons. The frozen page ([`page_frozen`]) is tested first because it is a
 /// whole-pass state rather than a per-quad geometric one.
 ///
 /// The scissor bounds what a source pass may WRITE, but on a tile-based GPU it does not stop the
@@ -5087,7 +5066,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
 pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
-    if unsafe { PAGE_FROZEN } || crate::ui::frame::backdrop::suppressed() {
+    if page_frozen() || backdrop::suppressed() {
         return true;
     }
     match unsafe { CULL_RECT } {
@@ -5233,7 +5212,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
 
         let vx = -rx / step;
         let vy = -(c.gh - ry - rh) / step;
-        use crate::ui::profile::phase;
+        use crate::gfx::profile::phase;
         phase("blur.scene", || {
             // Armed before anything else, and disarmed by `DirectPass::drop` however this exits.
             BLUR_IN_PASS = true;
@@ -5250,7 +5229,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             // is the tap chain's ping-pong target, so a scene that paints nothing under the
             // region (the dip's capture frames) would publish the previous source's blur as this
             // one's. Scissored and first in the pass: free on a tiler.
-            let (cr, cg, cb) = crate::ui::theme::CLEAR_RGB;
+            let (cr, cg, cb) = tokens::CLEAR_RGB;
             glClearColor(cr, cg, cb, 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
             // The same triple the viewport just took, so `Painter::clip` lands on the same pixels.
@@ -5393,7 +5372,7 @@ pub(crate) fn draw_blur_backdrop(
     face: GlassFace,
     deep: f32,
 ) -> bool {
-    let live = crate::ui::frame::backdrop::surface(crate::ui::Rect::new(x,y,w,h));
+    let live = backdrop::surface(Rect::new(x,y,w,h));
     if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
         // Direct jobs never intersect a lower glass: those bands capture the visible prefix
@@ -5414,7 +5393,7 @@ pub(crate) fn draw_blur_backdrop(
         // would run writes FBOs that `culled` cannot refuse — so it is turned away here, where the
         // whole surface is decided. The popover's own glass never reaches this branch: its draw is
         // wrapped in `popover::host::live`, which lifts the freeze.
-        if PAGE_FROZEN {
+        if page_frozen() {
             return false;
         }
         // DEV: a `drawmask=glass` leg removes the WHOLE surface — chain, composite and the region
@@ -5428,19 +5407,19 @@ pub(crate) fn draw_blur_backdrop(
         let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
         let retained;
         let c = if let Some(request) = live {
-            if !BLUR_IN_PASS && (request.refresh || crate::ui::frame::backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
+            if !BLUR_IN_PASS && (request.refresh || backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
                 // Activation and newly exposed geometry capture the framebuffer prefix HERE:
                 // the layer walker has reached, but has not drawn, this glass's z ceiling.
-                if !crate::ui::frame::backdrop::begin_inline_capture(request.z) { return false; }
+                if !backdrop::begin_inline_capture(request.z) { return false; }
                 BLUR_VALID=false;
-                let r = crate::ui::frame::backdrop::region(request.z).unwrap_or(crate::ui::Rect::new(x,y,w,h));
+                let r = backdrop::region(request.z).unwrap_or(Rect::new(x,y,w,h));
                 blur_snapshot(blur_region(r.x,r.y,r.w,r.h));
                 if !retain_backdrop(request.z) {
-                    crate::ui::frame::backdrop::capture_failed(request.z);
+                    backdrop::capture_failed(request.z);
                     return false;
                 }
             }
-            retained = crate::ui::frame::backdrop::image(request.z);
+            retained = backdrop::image(request.z);
             let Some(image) = retained.as_ref() else { return false; };
             &image.chain
         } else {
@@ -5479,9 +5458,9 @@ pub(crate) fn draw_blur_backdrop(
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
         let source_alpha = if retained.as_ref().is_some_and(|image| image.alpha_invariant) {
-            live.and_then(|request| crate::ui::frame::backdrop::source_alpha(request.z)).unwrap_or(1.0)
+            live.and_then(|request| backdrop::source_alpha(request.z)).unwrap_or(1.0)
         } else { 1.0 };
-        let ground = crate::ui::theme::CLEAR_RGB;
+        let ground = tokens::CLEAR_RGB;
         glUniform1f(GL_SOURCE_ALPHA, source_alpha);
         glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
@@ -5559,7 +5538,7 @@ pub(crate) fn draw_blur_backdrop(
             // exactly like the backdrop being flipped and is not that at all.
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.grab);
-            crate::ui::profile::phase("glass.sharp", || {
+            profile::phase("glass.sharp", || {
                 glCopyTexSubImage2D(
                     GL_TEXTURE_2D,
                     0,
@@ -5619,7 +5598,7 @@ pub(crate) fn draw_blur_backdrop(
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
         glUniform4f(GL_RECT, x, y, w, h);
-        crate::ui::profile::phase("glass.composite", || {
+        profile::phase("glass.composite", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
         true
@@ -6076,7 +6055,7 @@ fn field_run_finished(run: u32) -> bool {
 ///   gate, and it is why this returns `None` here rather than a photograph of the hole —
 ///   `RouteGround::draw_host` falls back to its corner envelope on exactly this `None` rather than
 ///   latch to black for the life of the ground.
-/// * **While the page is served from [`FrameCache`]** ([`PAGE_FROZEN`]) every primitive in this
+/// * **While the page is served from [`FrameCache`]** ([`page_frozen`]) every primitive in this
 ///   module refuses its quad, the reduction passes included, so the chain would reduce whatever
 ///   was last left in its targets. The pixels on the panel are right; the ones this would read are
 ///   not.
@@ -6089,7 +6068,7 @@ fn field_run_finished(run: u32) -> bool {
 /// never moves, and vertex state is untouched.
 pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
-        if blur_source_pass() || PAGE_FROZEN || masked(Class::Field) {
+        if blur_source_pass() || page_frozen() || masked(Class::Field) {
             return None;
         }
         if video_plane_refuses("gfx::field_kick") {
@@ -6847,13 +6826,13 @@ mod tests {
     }
 
     /// `fs_img.frag`'s FOCUS literals can't read a Rust `const` (GLSL has no such thing), so this
-    /// pins the shader's own numbers against `theme.rs`'s `CARD_GLOW_*`/`CARD_GLOSS_*` documentation
+    /// pins the shader's own numbers against `tokens.rs`'s `CARD_GLOW_*`/`CARD_GLOSS_*` documentation
     /// copies — the ones the shader keeps as plain distances/fractions rather than folding into an
     /// algebraic form (unlike `CARD_GLARE_EASE`, which the shader halves into `chh * 0.32` rather
     /// than `(2*chh) * 0.16`; that transform is checked numerically below instead of by text).
     #[test]
     fn image_focus_geometry_matches_the_shader_literals() {
-        use crate::ui::theme::{
+        use crate::gfx::tokens::{
             CARD_GLARE_A, CARD_GLARE_EASE, CARD_GLARE_PX, CARD_GLOSS_A, CARD_GLOSS_DIR,
             CARD_GLOSS_FADE, CARD_GLOW_A, CARD_GLOW_BAND_PX, CARD_GLOW_BOT_A, CARD_GLOW_BOT_PX,
             CARD_GLOW_TOP_A, CARD_GLOW_TOP_PX,
@@ -6889,7 +6868,7 @@ mod tests {
             format!("* {CARD_GLOSS_A}"),
             format!("/ {CARD_GLOSS_FADE}"),
         ] {
-            assert!(code.contains(&lit), "fs_img.frag is missing `{lit}` — it has drifted from theme.rs");
+            assert!(code.contains(&lit), "fs_img.frag is missing `{lit}` — it has drifted from gfx/tokens.rs");
         }
         // `chh * 0.32` is `(2*chh) * CARD_GLARE_EASE`: the shader folds the *2 into the one constant
         // it multiplies `chh` (the CPU-supplied half-height) by, rather than materializing the full
@@ -7033,7 +7012,7 @@ mod tests {
         let compositor = code.split("vec4 stillOver").nth(1).unwrap().split('}').next().unwrap();
         assert!(!compositor.contains('/') && !compositor.contains("if ("),
             "the specialized compositor must not carry a divide or alpha branch");
-        let ink = crate::ui::theme::SCRIM_INK;
+        let ink = tokens::SCRIM_INK;
         for coverage in [0.0f32, 0.000001, 0.00006, 0.05, 0.25, 0.5, 0.9, 1.0] {
             for tex_alpha in [0.0f32, 0.000001, 0.00006, 0.25, 0.8, 1.0] {
                 for shadow in [0.0f32, 0.1, 0.4] {
@@ -7140,7 +7119,7 @@ mod tests {
     #[test]
     fn discovery_does_not_advance_a_cached_control_ground_probe() {
         let _g = crate::testlock::serial();
-        use crate::ui::frame::backdrop::{self, Sources};
+        use crate::gfx::backdrop::{self, Sources};
         use std::{cell::RefCell, rc::Rc};
 
         let last = Some([0.25f32, 0.5, 0.75]);
@@ -7236,39 +7215,6 @@ mod tests {
             assert_eq!(texels.len(), px * px);
             assert!(texels.iter().all(|p| p[0] == i as u8), "box {i}: {texels:?}");
         }
-    }
-
-    #[test]
-    fn a_field_keeps_its_dither_through_every_motion() {
-        use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
-        use crate::ui::popover::host::begin_frame;
-        let _g = crate::testlock::serial();
-        frame_begin(1.0 / 60.0);
-        begin_frame(false);
-        assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "at rest, the field pays");
-
-        // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
-        // `Popover::update` steps every appear spring. The frame is in motion — and the page is not.
-        frame_begin(1.0 / 60.0);
-        let scope = MotionScope::open();
-        note_spring(0.0, 100.0, 0.0);
-        assert!(scope.close(), "the scope saw the spring");
-        assert!(present_moving() && !page_moving());
-        begin_frame(false);
-        assert_eq!(
-            dither_for_field(700.0, 700.0),
-            DITHER_LSB,
-            "a field still pays in motion — a focus spring on Settings must not strip its ground"
-        );
-
-        // The page's UNSCOPED springs (Detail updates outside `scoped_motion`) and the SCOPED
-        // verdict app.rs threads in (Home, the Library, Search, the press dip). Both are real page
-        // motion, and neither may reach this decision.
-        frame_begin(1.0 / 60.0);
-        note_spring(0.0, 100.0, 0.0);
-        assert!(page_moving());
-        begin_frame(true);
-        assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "page motion is not a field's business");
     }
 
     #[test]

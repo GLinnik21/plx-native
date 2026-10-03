@@ -1,0 +1,10 @@
+# count: 0
+# The module-layer gate's MIGRATION list (ci/check-module-layers.py, docs/module-layers.md): one
+# entry per (file, member) where a file names a module in a layer its own layer may not use, as
+# `path<TAB>named member<TAB>plan step`. Every entry is a reference that must move before the
+# crate can be split along ci/module-layers.ini; the plan step says how. It only shrinks: a fixed
+# entry fails the gate as stale until removed (`ci/check-module-layers.py --prune` does that), and
+# a new upward reference fails it until the code is fixed — not until a line is added here. Lines
+# are added only by a design change that re-layers modules, or declares a port, that other code
+# already names: as the change's own new step, in the same diff as the ini (step L15). The one
+# re-keying allowed: a renamed or split file takes its entries to its new path in the same diff.

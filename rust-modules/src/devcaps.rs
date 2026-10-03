@@ -41,10 +41,25 @@
 //! everything on a healthy 4K panel is as wrong as one that direct-plays HEVC to a SoC without it.
 use std::sync::OnceLock;
 
+pub(crate) mod dv;
+
+/// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
+/// two-sided test — what our demuxer/payload path can feed, before asking whether this
+/// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
+/// codec table), and the ONE-definition rule lives with it: the Normal routing uses
+/// `plex::is_dp_audio_track` for membership and channel bounds, shared with the device profile.
+/// Forced mode instead uses the implemented software feed formats and its separate profile,
+/// without conservative device bounds.
+///
+/// Defined here, not in `plex`, because this module is the one that intersects it with the
+/// device's own table and `plex` sits above the platform layer; `plex` re-exports it
+/// (`plex::DP_AUDIO_CODECS`) for the profile string and route's plan.
+pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
-/// reason as `webos::Info`: written exactly once, at boot, then read on every play decision.
+/// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the
@@ -76,7 +91,7 @@ pub(crate) struct Caps {
     /// whatever the panel decodes (route.rs's decode gate explains why), but a support log that
     /// names a codec the panel decodes and the app still transcodes answers its own question.
     pub vp9: bool,
-    /// The direct-playable AUDIO subset: `plex::DP_AUDIO_CODECS` (what the pipeline decodes)
+    /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
     /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
     /// as does its PMS profile. Forced mode uses the software feed set independently.
@@ -274,7 +289,7 @@ fn parse(s: &str) -> Option<Caps> {
         }
     }
     let table_audio: Vec<String> = t.audio_codecs.iter().map(|r| canon(&r.name)).collect();
-    let audio: Vec<&str> = crate::plex::DP_AUDIO_CODECS
+    let audio: Vec<&str> = DP_AUDIO_CODECS
         .split(',')
         .filter(|c| table_audio.iter().any(|t| t == c))
         .filter(|c| *c != "dts" || audio_channels.contains_key("dts"))
@@ -309,7 +324,7 @@ pub(crate) fn probe() {
         Ok(s) => match parse(&s) {
             Some(c) => {
                 measured = true;
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "devcaps: hevc={} {}x{} vp9={} audio={} rows: h264={}x{}@{} hevc={}x{}@{} (device table)",
                     c.hevc,
                     c.hevc_max.0,
@@ -326,14 +341,14 @@ pub(crate) fn probe() {
                 c
             }
             None => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "devcaps: {CAPS_TABLE} unparseable — assuming the 49SM9000PLA profile"
                 ));
                 Caps::assumed()
             }
         },
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "devcaps: {CAPS_TABLE} unreadable ({e}) — assuming the 49SM9000PLA profile"
             ));
             Caps::assumed()

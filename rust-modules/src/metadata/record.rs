@@ -63,7 +63,8 @@ fn tracker(adapter: &super::MetadataAdapter) -> std::sync::MutexGuard<'_, Tracke
 ///
 /// The one production caller is `crate::app::bridge::Bridge::controlled_home`, deciding `enabled`
 /// from `initial.content.is_some()` — exactly what the retired crate-global `record::reset` did
-/// (`bootstrap::stores::init`'s trailing call, deleted at `d067a796` with the `static` Stage B
+/// (`stores::tape::init`'s trailing call, then still `bootstrap::stores::init`, deleted at
+/// `d067a796` with the `static` Stage B
 /// (`0d466527`) replaced; nothing took its place until this function, so controlled-content
 /// recording of detail terminals was dead on the device between those two commits and this one).
 pub(crate) fn arm(adapter: &super::MetadataAdapter, enabled: bool) {
@@ -89,7 +90,7 @@ pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::
 /// visible here retire NOW, before another admission, while running workers retain their slots.
 /// Record that boundary in the synchronous effect stream, not in the next pump's result batch.
 pub(super) fn cancel_all(adapter: &super::MetadataAdapter) {
-    let replay = crate::app::bootstrap::stores::replaying();
+    let replay = crate::stores::tape::replaying();
     let mut tracker = tracker(adapter);
     if tracker.enabled {
         tracker.boundary += 1;
@@ -99,7 +100,7 @@ pub(super) fn cancel_all(adapter: &super::MetadataAdapter) {
         }
         let result = (|| {
             let observed = serde_json::to_value(&tracker.pending).map_err(|_| "invalid detail cancellation encoding")?;
-            let value = crate::app::bootstrap::stores::detail_cancellation(tracker.boundary, observed)?;
+            let value = crate::stores::tape::detail_cancellation(tracker.boundary, observed)?;
             let retired: Vec<Reply> = serde_json::from_value(value).map_err(|_| "invalid detail cancellation replies")?;
             if replay {
                 publish_replies(adapter, &mut tracker, &retired)?;
@@ -110,7 +111,7 @@ pub(super) fn cancel_all(adapter: &super::MetadataAdapter) {
         })();
         if let Err(reason) = result {
             tracker.failure = Some(reason);
-            crate::app::bootstrap::stores::fail(reason);
+            crate::stores::tape::fail(reason);
         }
     }
     adapter.detail_landing_ref().clear();
@@ -149,7 +150,7 @@ pub(super) fn put(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Ad
 }
 
 pub(super) fn refused(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr) {
-    let replay = crate::app::bootstrap::stores::replaying();
+    let replay = crate::stores::tape::replaying();
     let mut tracker = tracker(adapter);
     let result = adapter.detail_landing_ref().refused(addr);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false) {
@@ -226,7 +227,7 @@ pub(super) fn drain_live(adapter: &super::MetadataAdapter, want: &Option<DetailK
         tracker.failure = Some("detail drain did not match recorded completion");
     }
     for reply in &replies { tracker.active.remove(&reply.req); }
-    if let Some(reason) = tracker.failure.take() { crate::app::bootstrap::stores::fail(reason); }
+    if let Some(reason) = tracker.failure.take() { crate::stores::tape::fail(reason); }
     if replies.is_empty() && out.is_empty() { None } else { Some((replies, Drain { landed:out })) }
 }
 
@@ -294,7 +295,7 @@ pub(crate) struct Validator {
 impl Validator {
     pub(crate) fn admission(&mut self, value: &serde_json::Value) -> Result<(), &'static str> {
         if value["request"]["store"] == "metadata-cancel" {
-            crate::app::bootstrap::stores::validate_admission(value, 0)?;
+            crate::stores::tape::validate_admission(value, 0)?;
             let boundary = value["request"]["boundary"].as_u64().ok_or("invalid detail cancellation boundary")?;
             if boundary <= self.last_boundary { return Err("incoherent detail cancellation boundary"); }
             self.last_boundary = boundary;
@@ -368,12 +369,11 @@ mod tests {
     }
 
     fn controlled(replay: bool) {
-        crate::app::bootstrap::stores::reset_for_test();
+        crate::stores::tape::reset_for_test();
         super::super::clear(test_state(), test_adapter());
         test_adapter().detail_gen.store(0, std::sync::atomic::Ordering::SeqCst);
         test_adapter().detail_done.store(0, std::sync::atomic::Ordering::SeqCst);
-        let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
-        crate::app::bootstrap::stores::init(&initial, replay);
+        crate::stores::tape::init(None, replay);
         reset(true);
     }
 
@@ -381,7 +381,7 @@ mod tests {
         let mut req = 0;
         request_detail_with_spawn(test_adapter(), crate::plex::ServerId::from_raw(0), rk, |gen| {
             req = gen;
-            crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
+            crate::stores::tape::admit(serde_json::json!({"store":"metadata",
                 "sid":0,"rk":rk,"gen":gen,"client":1}), || {
                 assert!(!replay, "replay must not execute the resource closure");
                 launched
@@ -412,28 +412,28 @@ mod tests {
     #[test]
     fn p2_real_spawn_refusal_replays_exactly_once() {
         let _guard = crate::testlock::serial();
-        use crate::app::bootstrap::stores;
+        use crate::stores::tape;
         controlled(false);
         request("refused", false, false);
         assert!(!pump_detail(test_state(), test_adapter()));
         assert!(!detail_loading(test_adapter()));
-        let results = stores::take_results();
-        let (admissions, failure) = stores::finish();
+        let results = tape::take_results();
+        let (admissions, failure) = tape::finish();
         assert_eq!(failure, None);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["data"][0]["seq"], 1);
         controlled(true);
-        stores::begin(admissions.clone().into(), results.clone().into());
+        tape::begin(admissions.clone().into(), results.clone().into());
         let req = request("refused", false, true);
         let changed = pump_detail(test_state(), test_adapter());
         let loading = detail_loading(test_adapter());
-        let observed = stores::take_results();
-        let outcome = stores::finish();
+        let observed = tape::take_results();
+        let outcome = tape::finish();
         let pending = tracker(test_adapter()).pending.len();
         let seq = tracker(test_adapter()).seq;
         // Always retire a failed replay's locally queued refusal before asserting (shared globals).
         super::super::clear(test_state(), test_adapter());
-        stores::reset_for_test();
+        tape::reset_for_test();
         assert_eq!(outcome, (admissions, None));
         assert!(!changed);
         assert!(!loading);
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn p2_refusal_sequence_follows_worker_completion_and_cancel_consumes_once() {
         let _guard = crate::testlock::serial();
-        use crate::app::bootstrap::stores;
+        use crate::stores::tape;
         for cancelled in [false, true] {
             controlled(false);
             let old = request("old", true, false);
@@ -454,32 +454,32 @@ mod tests {
             land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "old", old, None);
             if cancelled { super::super::clear(test_state(), test_adapter()); }
             pump_detail(test_state(), test_adapter());
-            let results = stores::take_results();
-            let (admissions, failure) = stores::finish();
+            let results = tape::take_results();
+            let (admissions, failure) = tape::finish();
             assert_eq!(failure, None);
             let mut validator = Validator::default();
             for admission in &admissions { validator.admission(admission).unwrap(); }
             for result in &results { validator.completion(&result["data"]).unwrap(); }
             controlled(true);
-            stores::begin(admissions.clone().into(), results.clone().into());
+            tape::begin(admissions.clone().into(), results.clone().into());
             request("old", true, true);
             request("refused", false, true);
             if cancelled { super::super::clear(test_state(), test_adapter()); }
             pump_detail(test_state(), test_adapter());
-            let outcome = stores::finish();
+            let outcome = tape::finish();
             assert_eq!(outcome, (admissions, None));
-            assert_eq!(stores::take_results(), results);
+            assert_eq!(tape::take_results(), results);
             assert_eq!(tracker(test_adapter()).seq, 2);
             assert!(tracker(test_adapter()).pending.is_empty());
             assert_eq!(test_adapter().detail_landing.inflight(detail_addr(refused).to), 0);
-            stores::reset_for_test();
+            tape::reset_for_test();
         }
     }
 
     #[test]
     fn p2_cancellation_validator_handles_result_before_later_same_frame_effect() {
         let _guard = crate::testlock::serial();
-        use crate::app::bootstrap::stores;
+        use crate::stores::tape;
         controlled(false);
         let first = request("first", true, false);
         land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "first", first, None);
@@ -487,9 +487,9 @@ mod tests {
         let second = request("second", true, false);
         land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "second", second, None);
         super::super::clear(test_state(), test_adapter());
-        let (admissions, failure) = stores::finish();
-        let results = stores::take_results();
-        stores::reset_for_test();
+        let (admissions, failure) = tape::finish();
+        let results = tape::take_results();
+        tape::reset_for_test();
         assert_eq!(failure, None);
         // The recorder preflight enumerates effects before results within each frame.
         let mut validator = Validator::default();
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn p2_publication_before_cancel_frees_capacity_before_next_pump() {
         let _guard = crate::testlock::serial();
-        use crate::app::bootstrap::stores;
+        use crate::stores::tape;
         controlled(false);
         let mut workers = Vec::new();
         for n in 0..4 { workers.push(request(&format!("item-{n}"), true, false)); }
@@ -509,7 +509,7 @@ mod tests {
         land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "item-3", workers[3], None);
         let fifth = request("fifth", true, false);
         assert_ne!(fifth, 0, "recording admits the fifth without a pump");
-        let (admissions, failure) = stores::finish();
+        let (admissions, failure) = tape::finish();
         assert_eq!(failure, None);
         let recording_drops = test_adapter().detail_landing.dropped_count();
         // Finish all actual reservations before resetting the test environment.
@@ -519,15 +519,15 @@ mod tests {
         pump_detail(test_state(), test_adapter());
         controlled(true);
         let before = test_adapter().detail_landing.dropped_count();
-        stores::begin(admissions.clone().into(), Default::default());
+        tape::begin(admissions.clone().into(), Default::default());
         for n in 0..4 { request(&format!("item-{n}"), true, true); }
         let replay_fifth = request("fifth", true, true);
-        let outcome = stores::finish();
+        let outcome = tape::finish();
         let replay_drops = test_adapter().detail_landing.dropped_count() - before;
         // Cleanup works on RED too, when the fifth was capacity-rejected.
         for req in 1..=5 { let _ = test_adapter().detail_landing.dropped(detail_addr(req)); }
         test_adapter().detail_landing.clear();
-        stores::reset_for_test();
+        tape::reset_for_test();
         assert_eq!(replay_fifth, fifth, "cancellation must retire at the boundary before admission");
         assert_eq!(outcome, (admissions, None));
         assert!(recording_drops > 0);

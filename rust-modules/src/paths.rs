@@ -95,11 +95,12 @@ const LEGACY_APP_DIR: &str = "/media/developer/apps/usr/palm/applications/com.be
 /// in `target-sim/debug/` and the parent is named `debug` — falls through to the stable id instead
 /// of inventing an app called `debug`.
 ///
-/// **This function must never log, and nothing it calls may log.** `crate::log` resolves the event
+/// **This function must never log, and nothing it calls may log.** `crate::eventlog::log` resolves the event
 /// log's path through [`runtime_dir`], which resolves through here; a `log()` on this path
 /// re-enters a `OnceLock` it is already initializing and hangs the process before the first line
 /// of output exists to explain why. `runtime_dir`'s doc records that deadlock being hit for real.
-/// It is also why this reads `current_exe` itself rather than calling [`app_dir`], which logs.
+/// It reads `current_exe` itself rather than calling [`app_dir`] for the same reason it always
+/// has: this path must not depend on anything that might log.
 pub(crate) fn app_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
@@ -155,7 +156,37 @@ pub(crate) fn install_kind() -> &'static str {
 /// reasoning above is about — it just also answers on a host build, where the simulator's fonts sit
 /// next to the simulator binary rather than under a webOS install prefix.
 pub(crate) fn app_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    &app_dir_resolved().0
+}
+
+/// Which rule [`app_dir`] took — the provenance the boot preamble's `appdir:` line names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppDirSource {
+    Env,
+    MacosBundle,
+    CurrentExe,
+    Fallback,
+}
+
+/// The `appdir:` event-log line: the resolved directory and the rule that produced it.
+///
+/// `app::pre_boot_diagnostics` logs it right after the `install:` line. This module does not log
+/// it itself: the event log resolves its own path through this module ([`runtime_dir`]), so a log
+/// call here would make `paths` and `eventlog` name each other (docs/module-layers.md).
+pub(crate) fn app_dir_line() -> String {
+    let (dir, source) = app_dir_resolved();
+    match source {
+        AppDirSource::Env => format!("appdir: {} (PLXNATIVE_APP_DIR)", dir.display()),
+        AppDirSource::MacosBundle => format!("appdir: {} (macOS bundle)", dir.display()),
+        AppDirSource::CurrentExe => format!("appdir: {} (from current_exe)", dir.display()),
+        // Not expected on device — worth a line in the log if it ever happens, because everything
+        // that reads the payload from here on is reading a guess.
+        AppDirSource::Fallback => format!("appdir: current_exe unreadable, falling back to {LEGACY_APP_DIR}"),
+    }
+}
+
+fn app_dir_resolved() -> &'static (PathBuf, AppDirSource) {
+    static DIR: OnceLock<(PathBuf, AppDirSource)> = OnceLock::new();
     DIR.get_or_init(|| {
         // The simulator's binary lives in `target/<profile>/`, which is not where `appfont.ttf`
         // and the icons are — those ship in `pkg/`. Rather than copy assets around on every
@@ -165,8 +196,7 @@ pub(crate) fn app_dir() -> &'static Path {
             if let Some(d) = std::env::var_os("PLXNATIVE_APP_DIR") {
                 let p = PathBuf::from(d);
                 if !p.as_os_str().is_empty() {
-                    crate::log(&format!("appdir: {} (PLXNATIVE_APP_DIR)", p.display()));
-                    return p;
+                    return (p, AppDirSource::Env);
                 }
             }
         }
@@ -177,22 +207,15 @@ pub(crate) fn app_dir() -> &'static Path {
             // hop, and getting it wrong is the SILENT font failure this module's doc opens with:
             // `text.rs` would fall through to a system face and still log `ok=1`.
             if let Some(res) = macos_bundle_resources(&exe) {
-                crate::log(&format!("appdir: {} (macOS bundle)", res.display()));
-                return res;
+                return (res, AppDirSource::MacosBundle);
             }
             if let Some(parent) = exe.parent() {
                 if !parent.as_os_str().is_empty() {
-                    crate::log(&format!("appdir: {} (from current_exe)", parent.display()));
-                    return parent.to_path_buf();
+                    return (parent.to_path_buf(), AppDirSource::CurrentExe);
                 }
             }
         }
-        // Not expected on device — worth a line in the log if it ever happens, because everything
-        // below this point is a guess.
-        crate::log(&format!(
-            "appdir: current_exe unreadable, falling back to {LEGACY_APP_DIR}"
-        ));
-        PathBuf::from(LEGACY_APP_DIR)
+        (PathBuf::from(LEGACY_APP_DIR), AppDirSource::Fallback)
     })
 }
 
@@ -282,7 +305,7 @@ fn macos_app_support() -> Option<PathBuf> {
 /// The override is gated on [`ENV_STEERABLE`], so a television build of any feature set resolves
 /// to the literal `/tmp` at compile time and cannot be steered by the environment.
 ///
-/// **This function must never log, and nothing it calls may log.** `crate::log` resolves the event
+/// **This function must never log, and nothing it calls may log.** `crate::eventlog::log` resolves the event
 /// log's path through this very `OnceLock`, so a `log()` inside the initializer re-enters
 /// `get_or_init` on the lock it is already holding and deadlocks the process — before the first
 /// line of output exists to explain why. That is not hypothetical: it is what the first version of

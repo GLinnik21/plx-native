@@ -316,12 +316,13 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
 
 def source_paths(root: Path):
     src = root / 'rust-modules/src'
-    for folder in ('screens', 'ui'):
+    for folder in ('screens', 'ui', 'appkit'):
         for path in sorted((src / folder).rglob('*.rs')):
             if path.name not in FIXTURES and not any('test' in part for part in path.relative_to(src).parts): yield path
     for rel in ('app/chrome.rs', 'app/diagnostics.rs', 'app/playback.rs', 'auth/owner.rs',
                 'metadata.rs', 'person.rs', 'player/ass.rs', 'player/mod.rs', 'player/shared.rs',
-                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'webos.rs'):
+                'player/sidecar.rs', 'route/decision.rs', 'route/plan.rs', 'webos.rs', 'lab/toast.rs',
+                'tv/device.rs', 'devcaps/dv.rs'):
         yield src / rel
 
 

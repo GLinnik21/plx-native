@@ -33,6 +33,10 @@ use crate::ui::machine::{
 };
 use crate::ui::screen::{Mounter, ReturnState, Screen};
 
+/// The one conversion from a catalog row to the plain facts `ui` draws a tile from. It lives here
+/// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
+pub(crate) mod tile_facts;
+
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
     Session(crate::auth::SessionCmd),
@@ -160,9 +164,9 @@ pub(crate) enum PlayerReq {
     /// is a request rather than something `PlayerScreen` performs.
     CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
-    More(crate::ui::more_menu::Action),
+    More(crate::appkit::more_menu::Action),
     /// Apply the Info card's focused action.
-    Info(crate::ui::info_panel::InfoAction),
+    Info(crate::appkit::info_panel::InfoAction),
     /// The panel took a DOWN past its own bottom: drop the HUD's ring onto the tabs row.
     FocusTabs,
     /// Keep the transport alive while a panel is being read (`HUD_MENU_MS`), or hand it the
@@ -174,7 +178,7 @@ pub(crate) enum PlayerReq {
     /// The track menu picked a row. `route::commit_audio_selection`/`commit_subtitle_selection`
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
-    CommitTrack(crate::ui::track_menu::TrackCommit),
+    CommitTrack(crate::appkit::track_menu::TrackCommit),
     /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
     /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
     /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old
@@ -318,8 +322,8 @@ pub(crate) struct ItemMenuArg {
 /// Which of the three menus this is, and the data its row set is built from.
 ///
 /// No `Debug`, deliberately: `PmsMovie` is a wire DTO with none, and deriving one for it would put
-/// a household's viewing on the far end of any `{:?}` — which `diag::scrub` cannot make safe,
-/// because nothing distinguishes a title from an ordinary log word (`diag/scrub.rs`'s own rule, and
+/// a household's viewing on the far end of any `{:?}` — which `eventlog::scrub` cannot make safe,
+/// because nothing distinguishes a title from an ordinary log word (`eventlog/scrub.rs`'s own rule, and
 /// the tree-wide grep that enforces it).
 #[derive(Clone)]
 pub(crate) enum ItemMenuKind {
@@ -486,44 +490,10 @@ impl crate::ui::machine::LogicalState for LibraryViewport {
     fn probe(&self, _: &mut String) {}
 }
 
-/// An item's or person's identity travels with the navigation entry, never in a screen global.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ContentArg {
-    Detail { sid: crate::plex::ServerId, rk: String },
-    Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
-    Filmography { sid: crate::plex::ServerId, key: String },
-    Collection(crate::plex::collections::CollectionRef),
-}
-
-impl crate::ui::machine::LogicalState for ContentArg {
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
-        match self {
-            Self::Detail { sid, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(rk); }
-            Self::Person { sid, key, guid, name, thumb } => { c.u32(1).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(thumb); }
-            Self::Filmography { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
-            Self::Collection(id) => {
-                c.u32(3).u32(u32::from(id.sid.raw())).str(&id.rk).u64(id.sec as u64).u64(id.tag as u64).str(&id.name);
-            }
-        }
-    }
-    fn probe(&self, out: &mut String) { out.push_str("content_arg"); }
-}
-
-impl ContentArg {
-    pub(crate) fn same_item(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Detail { sid: a, rk: x }, Self::Detail { sid: b, rk: y }) =>
-                a == b && x == y,
-            (Self::Person { sid: a, key: x, guid: g, .. },
-             Self::Person { sid: b, key: y, guid: h, .. }) =>
-                if !g.is_empty() && !h.is_empty() { g == h } else { a == b && x == y },
-            (Self::Filmography { sid: a, key: x }, Self::Filmography { sid: b, key: y }) =>
-                a == b && x == y,
-            (Self::Collection(a), Self::Collection(b)) => a.same_collection(b),
-            _ => false,
-        }
-    }
-}
+// `ContentArg`: an item's or person's identity travels with the navigation entry, never in a
+// screen global. The type lives in `crate::stores` (the data layer's `search` hit names it as its
+// route); this is the screens' spelling of it.
+pub(crate) use crate::stores::ContentArg;
 
 /// Application payload on the container's return state. Focus itself remains engine-owned.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

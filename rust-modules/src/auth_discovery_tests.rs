@@ -4,7 +4,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::net::{ymd_from_now, TestCaGuard};
+use crate::net::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember, ymd_from_now, TestCaGuard};
 
 /// PLX-NATIVE-12: authorization has already succeeded, so a transient failure listing plex.tv
 /// resources must be retried in place instead of becoming the terminal silent verdict.
@@ -1182,7 +1182,7 @@ fn an_expired_leaf_is_logged_as_expired_not_as_a_stale_ca_store() {
     let _ca = TestCaGuard::install(&cert.pem, "expired-leaf");
     let port = crate::net::spawn_dual_protocol(std::sync::Arc::clone(&cert), identity_json("expired"));
 
-    let log = crate::events_log();
+    let log = crate::eventlog::events_log();
     let before = std::fs::metadata(&log).map_or(0, |m| m.len());
     let out = crate::net::request_result_evidence(
         &format!("https://127.0.0.1:{port}/identity"),
@@ -2727,179 +2727,6 @@ fn plx10_a_fresh_verdict_that_does_not_reach_the_granted_origin_revokes_the_gran
     crate::plex::reset_servers_for_test();
 }
 
-/// **Every insecure-only reason fits the read-out's two-line slot, and names its action.** The
-/// failed read-out's reason is drawn at `StatusOverlay::REASON_W` and never grows past two lines
-/// (`StatusOverlay::reason_view`); a longer one is cut, and the part cut is the tail — which is
-/// where every one of these says what to do. The host has no LG font, so the check is twofold: the
-/// fixture measurer's wrap at the real width and size, and a character budget
-/// ([`READOUT_REASON_BUDGET`]) that holds with room for the real face's wider glyphs. The shared
-/// forms are measured with a long owner name. The owner-approved
-/// `discovery_insecure_only_message()` predates the budget and is kept byte-identical; it is held to
-/// the measured wrap only.
-#[test]
-fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
-    use crate::ui::text_view::TextView;
-    use crate::ui::widgets::StatusOverlay;
-    const READOUT_REASON_BUDGET: usize = 125;
-    let fits = |text: &str| !TextView::new(text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
-        .max_lines(2)
-        .with_measure(&crate::ui::fixture::FixtureMeasure)
-        .truncates(StatusOverlay::REASON_W);
-    assert!(fits(discovery_insecure_only_message()));
-    let mut seen = 0;
-    for owner in ["", "a-longish-owner18"] {
-        for eligibility in [probe::PlaintextEligibility::Eligible, probe::PlaintextEligibility::NotLocal,
-            probe::PlaintextEligibility::NotPrivateAddress, probe::PlaintextEligibility::HttpsAnswered] {
-            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed, PlaintextChoice::Declined,
-                PlaintextChoice::Revoked] {
-                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
-                    let v = PlaintextVerdict {
-                        machine_id: "m".into(), name: "nas".into(), shared_by: owner.into(),
-                        eligibility, choice,
-                    };
-                    let copy = plaintext_copy(Some(&v), surface);
-                    if copy == discovery_insecure_only_message() { continue; }
-                    seen += 1;
-                    assert!(copy.chars().count() <= READOUT_REASON_BUDGET, "{} chars: {copy}", copy.chars().count());
-                    assert!(fits(&copy), "wraps past two lines: {copy}");
-                    if v.offers() {
-                        assert!(copy.contains("without encryption") && copy.contains("this network")
-                            || copy.contains("Settings \u{2192} Unencrypted connections")
-                            || copy.contains("Try again"), "{copy}");
-                        let action = match (choice, surface) {
-                            (PlaintextChoice::Undecided, _) => "Select Connect",
-                            (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => "Select Try again",
-                            (_, ReadoutSurface::SignedIn) => "Settings \u{2192} Unencrypted connections",
-                        };
-                        assert!(copy.contains(action), "{choice:?}/{surface:?}: {copy}");
-                    }
-                }
-            }
-        }
-    }
-    assert!(seen > 20);
-}
-
-#[test]
-fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action() {
-    use crate::i18n::{LocaleContext, Preference};
-    use crate::ui::text_view::TextView;
-    use crate::ui::widgets::StatusOverlay;
-    use std::ffi::CStr;
-    /// `FixtureMeasure`'s half-em advance per UNICODE SCALAR rather than per UTF-8 byte. Its byte
-    /// count doubles every Cyrillic letter, so it would grade Belarusian against a font no device
-    /// has; this grades every locale on exactly the advance the English copy is held to.
-    struct ScalarMeasure;
-    impl crate::ui::machine::Measure for ScalarMeasure {
-        fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
-            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.5
-        }
-        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
-        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
-    }
-    for (preference, connect, retry, settings_path) in [
-        (Preference::En, "Connect", "Try again", "Settings → Unencrypted connections"),
-        (Preference::Es, "Conectar", "Reintentar", "Ajustes → Conexiones sin cifrar"),
-        (Preference::Be, "Злучыцца", "Паспрабаваць зноў", "Налады → Злучэнні без шыфравання"),
-    ] {
-        let locale = LocaleContext::resolve(preference, None, None, None, None);
-        for owner in ["", "a-longish-owner18"] {
-            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed,
-                PlaintextChoice::Declined, PlaintextChoice::Revoked] {
-                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
-                    let verdict = PlaintextVerdict { machine_id: "fixture".into(), name: "fixture".into(),
-                        shared_by: owner.into(), eligibility: probe::PlaintextEligibility::Eligible, choice };
-                    let text = plaintext_copy_in(Some(&verdict), surface, &locale);
-                    let action = match (choice, surface) {
-                        (PlaintextChoice::Undecided, _) => connect,
-                        (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => retry,
-                        (_, ReadoutSurface::SignedIn) => settings_path,
-                    };
-                    assert!(text.contains(action), "{preference:?}/{choice:?}/{surface:?}: {text}");
-                    if !owner.is_empty() {
-                        assert_eq!(text.matches(owner).count(), 1, "the owner remains literal metadata");
-                        if preference != Preference::En {
-                            assert!(!text.contains("’s"), "English possessive grammar must not leak: {text}");
-                        }
-                    }
-                    assert!(text.chars().count() <= 125, "reason budget: {preference:?}: {text}");
-                    assert!(!TextView::new(&text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
-                        .max_lines(2).with_measure(&ScalarMeasure)
-                        .truncates(StatusOverlay::REASON_W), "complete action must fit: {text}");
-                }
-            }
-        }
-    }
-}
-
-/// **The "no server yet" reason keeps its two lines for every name.** Line 1 is always the
-/// sentence naming the account and fits the reason column (it never wraps); a short name is left
-/// alone; a long one is shortened with an ellipsis and the sentence keeps its final period; line 2
-/// is always the plain no-server sentence; a blank name has no line 1 at all, so the caller says
-/// `browse.auth.no_servers` instead. Graded in every shipped language with the device's advances.
-#[test]
-fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
-    use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-    use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
-    use crate::ui::machine::Measure;
-    use crate::ui::widgets::StatusOverlay;
-    let column = StatusOverlay::REASON_W * HEADROOM;
-    for language in [Preference::En, Preference::Es, Preference::Be] {
-        let _guard = language_on_this_thread_for_test(language);
-        let second = msg::browse_auth_no_servers();
-        for name in ["alexandra", "alexandra.konstantinopolskaya",
-            "alexandra.konstantinopolskaya.with.a.very.long.name.indeed",
-            "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА"] {
-            let reason = signed_in_reason(name, &ShippedMeasure).expect("a name gives a reason");
-            let (first, rest) = reason.split_once('\n').unwrap_or_else(|| panic!("{language:?} {name}: no break"));
-            assert_eq!(rest, second, "{language:?} {name}: line 2 is the plain sentence");
-            assert!(!rest.contains('\n') && !first.contains('\n'), "{language:?} {name}");
-            let width = ShippedMeasure.width_str(first, crate::ui::theme::size::BODY, false);
-            assert!(width <= column, "{language:?} {name}: line 1 is {width}px of {column}px: {first:?}");
-            assert!(first.ends_with('.'), "{language:?} {name}: the sentence keeps its period: {first:?}");
-            if name == "alexandra" {
-                assert_eq!(reason, msg::browse_auth_no_servers_signed_in_as(name), "a short name is untouched");
-            }
-            if first.contains('\u{2026}') {
-                assert!(!first.ends_with("\u{2026}."), "{language:?} {name}: the ellipsis sits against the period: {first:?}");
-                let at = first.find('\u{2026}').unwrap();
-                assert!(at > 3 && first[at + 3..].chars().count() > 3, "{language:?} {name}: not cut in the middle: {first:?}");
-                assert!(name.chars().count() > 20, "{language:?} {name}: shortened without need");
-                assert!(!first.contains(name), "{language:?}: the full name survived");
-            } else {
-                assert!(first.contains(name), "{language:?} {name}: {first:?}");
-            }
-        }
-        // the long name really was cut, in the language that says the most around it
-        let cut = signed_in_reason("alexandra.konstantinopolskaya.with.a.very.long.name.indeed", &ShippedMeasure).unwrap();
-        assert!(cut.lines().next().unwrap().contains('\u{2026}'), "{language:?}: {cut:?}");
-        // Cut from the middle, both ends of the name kept, the period left alone.
-        if language == Preference::En {
-            assert_eq!(signed_in_reason("Maximilian.Wolfgang.Kowalczyk.MMWWMMWWMMWWMMWWAB", &ShippedMeasure).as_deref(),
-                Some("Signed in as Maximilian.Wolfgang.\u{2026}.MMWWMMWWMMWWMMWWAB.\nThis Plex account has no server yet."),
-                "a 48-character name is cut in the middle, not before the sentence's period");
-        }
-        assert_eq!(signed_in_reason("", &ShippedMeasure), None);
-        assert_eq!(signed_in_reason("  \n\t ", &ShippedMeasure), None);
-        // whitespace inside a name cannot break the first line
-        let spaced = signed_in_reason("Alex\nandra  K", &ShippedMeasure).unwrap();
-        assert_eq!(spaced.matches('\n').count(), 1, "{spaced:?}");
-    }
-}
-
-/// **A column too narrow for even the bare sentence names nobody.** The reason is `None`, so the
-/// caller shows `browse.auth.no_servers`, rather than the full unshortened name overflowing.
-#[test]
-fn the_signed_in_reason_is_none_when_the_sentence_leaves_the_name_no_room() {
-    struct Wide;
-    impl crate::ui::machine::Measure for Wide {
-        fn width(&self, text: &std::ffi::CStr, _size: i32, _bold: bool) -> f32 { text.to_bytes().len() as f32 * 100.0 }
-        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
-        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
-    }
-    assert_eq!(signed_in_reason("alexandra", &Wide), None);
-}
-
 /// The user call is not made for a sink that is no longer live (the sign-in was cancelled).
 #[test]
 fn a_dead_sink_never_asks_for_the_account_name() {
@@ -2930,29 +2757,6 @@ fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules
             assert!(!text.contains("We tried"), "an English sentence fragment must never survive");
         }
     }
-}
-
-/// `request_result_evidence` against one loopback TLS answer, the way the identity probe makes it.
-fn identity_request(port: u16, scheme: &str, learn_pin: bool) -> Result<crate::net::Resp, crate::net::RequestFailure> {
-    crate::net::request_result_evidence(
-        &format!("{scheme}://127.0.0.1:{port}/identity"),
-        &[],
-        "GET",
-        None,
-        crate::net::API,
-        false,
-        None,
-        None,
-        learn_pin,
-    )
-}
-
-fn curl_ready() -> bool {
-    let ready = crate::net::global_init() && crate::net::available();
-    if !ready {
-        eprintln!("curl unavailable on this host; skipping");
-    }
-    ready
 }
 
 /// **Issue #380: a strictly verified TLS answer carries the pin of the served leaf, and only when
@@ -3217,29 +3021,12 @@ fn a_custom_host_with_its_own_certificate_never_overwrites_the_plex_direct_key()
 // `testlock::serial()` because the CA override they all use is process-global.
 // ---------------------------------------------------------------------------------------------
 
-fn expired_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
-    Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(-90), ymd_from_now(-30)))
-}
-
 fn not_yet_valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
     Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(30), ymd_from_now(90)))
 }
 
 fn valid_leaf(names: &[&str]) -> Arc<crate::net::TestCert> {
     Arc::new(crate::net::mint_ca_issued_cert(names, ymd_from_now(-30), ymd_from_now(30)))
-}
-
-/// Remember `cert`'s key for the loopback server on `port`, until the returned guard drops.
-fn remember(port: u16, cert: &crate::net::TestCert) -> crate::net::keypin::Scoped {
-    crate::net::keypin::Scoped::new(key_of_port(port), &leaf_pin(cert))
-}
-
-fn key_of_port(port: u16) -> String {
-    crate::net::keypin::key_of("127.0.0.1", i32::from(port))
-}
-
-fn leaf_pin(cert: &crate::net::TestCert) -> String {
-    crate::spki::pin_from_spki_der(&cert.spki_der)
 }
 
 /// A loopback server serving `cert`, trusted through the test CA override.
@@ -3465,82 +3252,10 @@ fn a_post_body_survives_the_retry_once_and_intact() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Issue #378, media plane: `curlio::CurlSource` opens, reopens and seeks the same way.
+// Issue #378, both planes: a fact is the host's latest strict outcome. The media plane's tests
+// (`curlio::CurlSource` opening, reopening and seeking in key mode) are `curlio_keymode_tests.rs`,
+// in the layer that may name `curlio`.
 // ---------------------------------------------------------------------------------------------
-
-fn media_body() -> Vec<u8> {
-    (0..5000u32).map(|i| (i % 253) as u8).collect()
-}
-
-fn media_url(port: u16) -> String {
-    format!("https://127.0.0.1:{port}/video.mkv")
-}
-
-fn read_n(src: &mut crate::curlio::CurlSource, n: usize) -> Vec<u8> {
-    let mut out = vec![0u8; n];
-    let mut got = 0;
-    while got < n {
-        let r = src.read(&mut out[got..]);
-        assert!(r > 0, "read returned {r} after {got} bytes");
-        got += r as usize;
-    }
-    out
-}
-
-#[test]
-fn a_media_open_on_an_expired_leaf_reads_bytes_when_its_remembered_key_is_known() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let _ca = TestCaGuard::install(&cert.pem, "clock-media-open");
-    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
-    let _key = remember(served.port, &cert);
-    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0)
-        .expect("the date alone must not refuse the server we know");
-    assert_eq!(src.status(), 200);
-    assert_eq!(read_n(&mut src, 64), media_body()[..64]);
-}
-
-#[test]
-fn a_media_open_whose_key_differs_from_the_remembered_one_fails_with_a_pin_mismatch() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let _ca = TestCaGuard::install(&cert.pem, "clock-media-mismatch");
-    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
-    let other = crate::net::mint_cert(&["127.0.0.1"]);
-    let key = key_of_port(served.port);
-    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&other));
-    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
-        .err()
-        .expect("a stranger's key is not the server's");
-    assert_eq!(err, crate::curlio::OpenErr::Transport(90));
-    assert!(!crate::net::keypin::is_latched(&key));
-    assert_eq!(
-        crate::net::keypin::fact_for(&key).blocked,
-        Some(crate::net::keypin::Blocked::KeyChanged),
-        "the media plane publishes the changed key too",
-    );
-}
-
-#[test]
-fn a_media_open_on_an_expired_leaf_with_no_remembered_key_is_refused_as_before() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let _ca = TestCaGuard::install(&cert.pem, "clock-media-nokey");
-    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
-    let _watched = crate::net::keypin::Scoped::watch(&key_of_port(served.port));
-    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0)
-        .err()
-        .expect("nothing to recognise it by");
-    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
-    assert_eq!(
-        crate::net::keypin::fact_for(&key_of_port(served.port)).blocked,
-        Some(crate::net::keypin::Blocked::NoKey),
-        "the media plane publishes a date failure with no key",
-    );
-}
 
 /// **A fact is the host's LATEST strict outcome** (both planes, the real handshake): a date failure
 /// with no key publishes NoKey; once the date is not what fails (here the CA is no longer trusted,
@@ -3560,129 +3275,4 @@ fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_control_plane(
     let failure = identity_request(port, "https", false).err().expect("the issuer is no longer trusted");
     assert_eq!(failure.curl_rc, Some(60));
     assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "the date is no longer what fails");
-}
-
-#[test]
-fn a_later_strict_failure_that_is_not_the_date_ends_no_key_on_the_media_plane() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let ca = TestCaGuard::install(&cert.pem, "clock-later-media");
-    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
-    let key = key_of_port(served.port);
-    let _watched = crate::net::keypin::Scoped::watch(&key);
-    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0).err().expect("nothing to recognise it by");
-    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
-    assert_eq!(crate::net::keypin::fact_for(&key).blocked, Some(crate::net::keypin::Blocked::NoKey));
-    drop(ca);
-    let err = crate::curlio::CurlSource::open(&media_url(served.port), 0).err().expect("the issuer is no longer trusted");
-    assert_eq!(err, crate::curlio::OpenErr::Transport(60));
-    assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "the date is no longer what fails");
-}
-
-/// Scenario A as the television has it: the date failure published NoKey, the clock was fixed, and
-/// the server is now simply unreachable (a refused connection, rc 7) — nothing about a certificate
-/// at all. Both planes end the fact.
-#[test]
-fn a_refused_connection_ends_no_key_on_both_planes() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let closed_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    for plane in ["control", "media"] {
-        let port = closed_port();
-        let key = key_of_port(port);
-        let _watched = crate::net::keypin::Scoped::watch(&key);
-        crate::net::keypin::strict_failure(&key, 60, Some(10));
-        assert_eq!(crate::net::keypin::fact_for(&key).blocked, Some(crate::net::keypin::Blocked::NoKey));
-        let rc = match plane {
-            "control" => identity_request(port, "https", false).err().expect("nothing listens").curl_rc,
-            _ => match crate::curlio::CurlSource::open(&media_url(port), 0).err().expect("nothing listens") {
-                crate::curlio::OpenErr::Transport(rc) => Some(rc),
-                other => panic!("{plane}: {other:?}"),
-            },
-        };
-        assert_eq!(rc, Some(7), "{plane}");
-        assert_eq!(crate::net::keypin::fact_for(&key).blocked, None, "{plane}: unreachable is not the clock");
-    }
-}
-
-#[test]
-fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let _ca = TestCaGuard::install(&cert.pem, "clock-media-latch");
-    let served = crate::net::spawn_observed(Arc::clone(&cert), media_body());
-    let key = key_of_port(served.port);
-    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
-
-    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0).expect("first open");
-    assert_eq!(served.accepted(), 2, "the failed strict handshake and the key-mode one");
-    assert!(crate::net::keypin::is_latched(&key));
-    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
-
-    assert!(src.seek(1000), "a seek in key mode");
-    assert_eq!(served.accepted(), 3, "exactly one handshake");
-    assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
-
-    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
-        .expect("a reopen in key mode");
-    assert_eq!(served.accepted(), 4, "exactly one handshake");
-    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
-
-    // The remembered key stops being the server's: the next seek fails closed with rc 90 and the
-    // host is out of key mode.
-    let other = crate::net::mint_cert(&["127.0.0.1"]);
-    crate::net::keypin::set_for_test(&key, &leaf_pin(&other));
-    assert!(!src.seek(2000), "the new pin is not the server's");
-    assert!(!crate::net::keypin::is_latched(&key));
-}
-
-/// **A key-mode transfer never rides a kept-alive connection.** The source keeps its multi and
-/// connection cache across attempts, and a handle that reused a cached connection would perform no
-/// handshake, so there would be no certificate to confirm and the open would be refused as a pin
-/// mismatch — which every HLS segment after the first and every seek after a read to EOF would hit.
-/// The `Connection: close` double used above cannot see that, so this one keeps connections alive.
-#[test]
-fn media_key_mode_never_reuses_a_kept_alive_connection() {
-    let _serial = crate::testlock::serial();
-    if !curl_ready() { return; }
-    let cert = expired_leaf(&["127.0.0.1"]);
-    let _ca = TestCaGuard::install(&cert.pem, "clock-media-keepalive");
-    let served = crate::net::spawn_observed_keepalive(Arc::clone(&cert), media_body());
-    let key = key_of_port(served.port);
-    let _key = crate::net::keypin::Scoped::new(key.clone(), &leaf_pin(&cert));
-
-    let mut src = crate::curlio::CurlSource::open(&media_url(served.port), 0).expect("first open");
-    assert_eq!(served.accepted(), 2, "the failed strict handshake and the key-mode one");
-    assert!(crate::net::keypin::is_latched(&key));
-
-    // Read to the end: the transfer completes cleanly, which is what leaves a connection in the
-    // cache for a following handle to find.
-    let mut all = Vec::new();
-    let mut buf = [0u8; 700];
-    loop {
-        let n = src.read(&mut buf);
-        assert!(n >= 0, "read failed with {n} after {} bytes", all.len());
-        if n == 0 {
-            break;
-        }
-        all.extend_from_slice(&buf[..n as usize]);
-    }
-    assert_eq!(all, media_body());
-
-    assert!(src.seek(1000), "a seek after a read to EOF must succeed in key mode");
-    assert_eq!(served.accepted(), 3, "its own handshake, not the cached connection");
-    assert_eq!(read_n(&mut src, 16), media_body()[1000..1016]);
-
-    src.reopen_until(&media_url(served.port), None, &mut crate::checkpoint::NoCheckpoint)
-        .expect("a reopen in key mode");
-    assert_eq!(served.accepted(), 4, "its own handshake, not the cached connection");
-    assert_eq!(read_n(&mut src, 16), media_body()[..16]);
-
-    assert!(
-        crate::net::keypin::is_latched(&key),
-        "no pin-mismatch outcome: the host is still served in key mode"
-    );
-    assert_eq!(crate::net::keypin::pin_for_test(&key).as_deref(), Some(leaf_pin(&cert).as_str()));
 }

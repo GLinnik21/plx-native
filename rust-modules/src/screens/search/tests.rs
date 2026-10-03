@@ -887,3 +887,78 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
     }
     crate::plex::reset_servers_for_test();
 }
+
+/// **A collection hit routes to the collection page, by ratingKey first and by section + tag id
+/// when it has no ratingKey.** `search::CollectionHit::route` builds `ContentArg::Collection`
+/// (`stores::content_arg`, re-exported as `registry::ContentArg`); this test grades what it builds.
+/// The store's own tests (`search_merge_ranking_tests`) grade the fields a hit is made of, from the
+/// wire row.
+#[test]
+fn a_collection_hit_routes_by_rating_key_or_by_section_and_tag_id() {
+    use crate::plex::collections::CollectionRef;
+    use crate::screens::registry::ContentArg;
+    use crate::search::{CollectionHit, TagHit};
+    let sid = crate::plex::ServerId::from_raw(3);
+
+    // a full `type=collection` row (`includeCollections=1`): both ids ride along
+    let row = crate::plex::Metadata {
+        kind: "collection".into(),
+        rating_key: "50007".into(),
+        title: "Aardman Shorts".into(),
+        index: 7,
+        child_count: 12,
+        library_section_id: 1,
+        thumb: "/library/collections/50007/composite/1700000000".into(),
+        ..Default::default()
+    };
+    let hit = CollectionHit::from_row(&row, sid);
+    assert_eq!(
+        hit.route(),
+        Some(ContentArg::Collection(CollectionRef {
+            sid,
+            rk: "50007".into(),
+            sec: 1,
+            tag: 7,
+            name: "Aardman Shorts".into(),
+        }))
+    );
+
+    // a tag-shaped row, from a server that ignored the flag: no ratingKey, so the section and the
+    // tag id are the whole identity
+    let tag = TagHit {
+        sid,
+        name: "Aardman Shorts".into(),
+        id: "7".into(),
+        sec: 1,
+        count: 12,
+        ..Default::default()
+    };
+    let hit = CollectionHit::from_tag(&tag);
+    assert_eq!(
+        hit.route(),
+        Some(ContentArg::Collection(CollectionRef::by_tag(sid, 1, 7, "Aardman Shorts")))
+    );
+    // with no section or no tag id there is nothing to resolve, so there is no route
+    let no_section = CollectionHit {
+        item: crate::pms::PmsMovie { sec: 0, ..hit.item.clone() },
+        ..hit.clone()
+    };
+    assert!(no_section.route().is_none(), "no section");
+    assert!(CollectionHit { tag: 0, ..hit.clone() }.route().is_none(), "no tag id");
+}
+
+/// The count read-out and the heading, the other half: the two counts are different questions and
+/// a Collections shelf answers both at once — three collections found ("3 results", the store's
+/// `Kind::count_label`), one of which holds twelve films ("12 items", `ui::fmt::item_count`, the
+/// UI's formatter shared with every collection tile and the collection page).
+#[test]
+fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
+    use crate::ui::fmt::item_count;
+    assert_eq!(
+        (crate::search::Kind::Collection.count_label(3), item_count(12)),
+        ("3 results".to_owned(), "12 items".to_owned())
+    );
+    assert_eq!(item_count(1), "1 item");
+    // Cardinal rules apply to the absolute value, including negative wire counts.
+    assert_eq!((item_count(0), item_count(-1)), ("0 items".to_owned(), "-1 item".to_owned()));
+}

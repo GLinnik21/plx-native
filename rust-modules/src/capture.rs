@@ -53,7 +53,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use crate::log;
+use crate::eventlog::log;
 
 /// The listener's port for the app users install. A flavoured install steps off it — see
 /// [`default_port`].
@@ -141,10 +141,10 @@ static CYC_N: AtomicU32 = AtomicU32::new(0);
 /// the crate's only listener, it binds `INADDR_ANY` and its hello handshake carries no credential
 /// of any kind, so anyone on the LAN who reached it would be served the app's own framebuffer —
 /// the signed-in profile name, the user's library. Arming it took nothing but the ability to
-/// create a file in a world-writable `/tmp`. The gate is `dev::read` below being compile-time
+/// create a file in a world-writable `/tmp`. The gate is `devtrig::read` below being compile-time
 /// `None` without the `devtriggers` feature, which makes the two `spawn`s unreachable.
 pub(crate) fn init() {
-    let Some(content) = crate::dev::read("capture") else {
+    let Some(content) = crate::devtrig::read("capture") else {
         return;
     };
     let port: u16 = content.parse().unwrap_or_else(|_| default_port());
@@ -560,8 +560,8 @@ impl TurboJpeg {
 
 // ----------------------------------------------------------------- capjpeg --
 
-/// Write every byte to `fd` (MSG_NOSIGNAL — SIGPIPE would kill the app). Shared with
-/// ff.rs's venc AVIO write callback so both halves have one partial-write policy.
+/// Write every byte to `fd` (MSG_NOSIGNAL — SIGPIPE would kill the app). Handed to
+/// `ff::Venc::open` as its AVIO write policy so both halves have one partial-write policy.
 pub(crate) fn send_all(fd: c_int, data: &[u8]) -> bool {
     let mut off = 0usize;
     while off < data.len() {
@@ -721,6 +721,7 @@ fn capenc() {
                             f.w,
                             f.h,
                             MPEG_RATE.load(Ordering::Relaxed) as i64,
+                            send_all,
                         );
                         if venc.is_none() {
                             // bring-up failed (encoder/muxer missing): latch off so we

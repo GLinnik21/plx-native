@@ -54,6 +54,7 @@ use super::account::{Connection, Resource};
 /// resolving for every caller that reads it as a ranking axis.
 pub use super::origin::Scheme;
 use super::origin::{url_host, CredentialPolicy, Origin};
+use crate::net::{RequestError, RequestFailure};
 use serde::{Deserialize, Serialize};
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
@@ -183,7 +184,7 @@ pub enum Outcome {
     Unreachable,
     /// The whole-server aggregate for [`crate::auth::Reach::InsecureOnly`] (issue #95, plan §4):
     /// verified, provably the right server, but only over a transport this build may not put a
-    /// credential on without a consented grant (`super::grant`). A single per-candidate probe never classifies to this — [`classify`] has no
+    /// credential on without a consented grant (`super::grant`). A single per-candidate probe never classifies to this — `auth::classify` has no
     /// arm that produces it — it exists for the coordinator's SETTLED, whole-server verdict, which
     /// is a different question from "what did this one response say". Kept apart from
     /// [`Self::Unreachable`] because the remedy and the words are both different: the server
@@ -192,21 +193,11 @@ pub enum Outcome {
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
-/// anything outside `1..=65535`.
-///
-/// **The narrowing is the point.** `port` arrives from plex.tv (and from the session file, and from
-/// the `plxnative-servers` trigger) as an `i64`, because PMS and plex.tv both string-encode numbers
-/// and every numeric field here goes through the lenient `de_i64` — so what lands in a `Candidate`
-/// is whatever the JSON said, not whatever a port can be. `port as i32` on that WRAPS: an answer of
-/// `4_294_999_696` becomes `32400` and the app dials a port nobody advertised, quietly and with a
-/// plausible-looking result. Every site that turns an advertised port into a connection goes
-/// through here.
-///
-/// Out of range drops the CANDIDATE, never the server: another of its addresses may still be
-/// dialable, and the same rule already applies to an address this transport cannot speak to.
-pub fn dial_port(p: i64) -> Option<i32> {
-    (1..=65535).contains(&p).then_some(p as i32)
-}
+/// anything outside `1..=65535`. The narrowing and its reasons are documented where it is defined,
+/// [`crate::net::origin::dial_port`]: it sits beside the `Origin` parsing that shares it, below
+/// the Plex layer (`docs/module-layers.md`, step L6). Re-exported so `probe::dial_port` keeps
+/// resolving for every caller that turns an advertised port into a connection.
+pub use crate::net::origin::dial_port;
 
 /// Is there anything here to dial at all? Only the mechanical half lives here: an address and a
 /// valid port. Rule 1 is applied while candidates are emitted, because it keeps a connection's
@@ -471,8 +462,80 @@ impl Candidate {
     }
 }
 
+/// What the most recent network call observed, coarsened into the class an incident report carries. An
+/// `Answered*` class carries the exact status (`IncidentContext::http_status`); `Dns`, `Tls`,
+/// `Timeout` and `TransportOther` carry the exact `CURLcode` (`IncidentContext::curl_rc`).
+/// `Unknown` is "no call yet" and "refused before libcurl ran" alike — neither has a code to name.
+///
+/// It is defined here, beneath the telemetry layer that reports it, because [`RouteOutcome`] grades
+/// a probe's transport failure in this same vocabulary (`telemetry::incident` re-exports it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum LinkClass {
+    Answered2xx,
+    Answered4xx,
+    Answered5xx,
+    AnsweredOther,
+    Dns,
+    Tls,
+    Timeout,
+    TransportOther,
+    Unknown,
+}
+
+impl LinkClass {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Answered2xx => "answered_2xx",
+            Self::Answered4xx => "answered_4xx",
+            Self::Answered5xx => "answered_5xx",
+            Self::AnsweredOther => "answered_other",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Timeout => "timeout",
+            Self::TransportOther => "transport_other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn answered(status: u16) -> (LinkClass, Option<u16>, Option<i32>) {
+    let class = match status {
+        200..=299 => LinkClass::Answered2xx,
+        400..=499 => LinkClass::Answered4xx,
+        500..=599 => LinkClass::Answered5xx,
+        _ => LinkClass::AnsweredOther,
+    };
+    (class, Some(status), None)
+}
+
+/// Coarsen the last call into its class plus the ONE number that class carries — the HTTP status
+/// or the `CURLcode`, never both. PURE.
+///
+/// `Ok(status)` is a response `net` returned; `Err` is its [`RequestFailure`]. A failure that kept
+/// a validated final status (`net::response_status`'s truncated-refusal evidence) is classed by
+/// that status: the server did answer, and a 401 whose body broke is still a 401.
+pub(crate) fn classify(last: Option<Result<u16, RequestFailure>>) -> (LinkClass, Option<u16>, Option<i32>) {
+    match last {
+        None => (LinkClass::Unknown, None, None),
+        Some(Ok(status)) => answered(status),
+        Some(Err(RequestFailure { status: Some(status), .. })) => answered(status),
+        Some(Err(RequestFailure { cause: RequestError::TimedOut, curl_rc, .. })) => {
+            // `net` only says TimedOut for CURLE_OPERATION_TIMEDOUT, so the code is 28 either way.
+            (LinkClass::Timeout, None, Some(curl_rc.unwrap_or(28)))
+        }
+        Some(Err(RequestFailure { curl_rc: None, .. })) => (LinkClass::Unknown, None, None),
+        Some(Err(RequestFailure { curl_rc: Some(6), .. })) => (LinkClass::Dns, None, Some(6)),
+        Some(Err(RequestFailure { curl_rc: Some(rc @ (35 | 60 | 77 | 90)), .. })) => {
+            (LinkClass::Tls, None, Some(rc))
+        }
+        Some(Err(RequestFailure { curl_rc: Some(rc), .. })) => {
+            (LinkClass::TransportOther, None, Some(rc))
+        }
+    }
+}
+
 /// How one probed route ended, in the incident report's link vocabulary
-/// (`telemetry::incident::LinkClass`) plus the three answers only an identity probe can give —
+/// ([`LinkClass`]) plus the three answers only an identity probe can give —
 /// and the two ways a route can have NO answer at all, which are the whole difference between
 /// "this server has no HTTPS" and "HTTPS failed from this television". Closed; never a status
 /// number, a code or anything the server said.
@@ -529,12 +592,11 @@ impl RouteOutcome {
         }
     }
 
-    /// A transport failure, through the incident report's own classifier so the two vocabularies
-    /// cannot drift: `None` is a failure no layer could attach evidence to. Connection refused is
+    /// A transport failure, through [`classify`] — the one classifier the incident report uses too,
+    /// so the two vocabularies cannot drift: `None` is a failure no layer could attach evidence to. Connection refused is
     /// split out of `transport_other` here only — the report's top-level `link` keeps its class,
     /// because Sentry fingerprints on it.
-    pub(crate) fn of_failure(failure: Option<crate::net::RequestFailure>) -> Self {
-        use crate::telemetry::incident::{classify, LinkClass};
+    pub(crate) fn of_failure(failure: Option<RequestFailure>) -> Self {
         let Some(failure) = failure else { return Self::Unknown };
         match classify(Some(Err(failure))) {
             (LinkClass::Answered2xx, ..) => Self::WrongServer, // a truncated 2xx verified nothing
@@ -1164,7 +1226,7 @@ mod tests {
     }
 
     /// A v6 candidate's origin is bare for the resolver and bracketed in its URL — the invariant
-    /// `origin.rs` documents, asserted where the v6 candidate is actually built.
+    /// `net/origin.rs` documents, asserted where the v6 candidate is actually built.
     #[test]
     fn a_v6_candidates_origin_is_bare_for_the_resolver() {
         let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
@@ -1656,5 +1718,67 @@ mod tests {
         let mut same_network = named;
         same_network.public_address_matches = true;
         assert_eq!(same_network.plaintext_eligibility(), PlaintextEligibility::NotPrivateAddress);
+    }
+
+    // The link classifier (`LinkClass`, `classify`) lived in `telemetry::incident` until `plex`
+    // had to grade a probe's transport failure with it; its tests came down with it.
+
+    fn failure(cause: RequestError, status: Option<u16>, curl_rc: Option<i32>) -> RequestFailure {
+        RequestFailure { cause, status, body_limit: None, curl_rc }
+    }
+
+    #[test]
+    fn classify_maps_every_request_outcome_to_its_link_class() {
+        use RequestError::{TimedOut, Transport};
+        assert_eq!(classify(None), (LinkClass::Unknown, None, None));
+        for (status, class) in [
+            (200, LinkClass::Answered2xx),
+            (299, LinkClass::Answered2xx),
+            (429, LinkClass::Answered4xx),
+            (503, LinkClass::Answered5xx),
+            (101, LinkClass::AnsweredOther),
+            (302, LinkClass::AnsweredOther),
+        ] {
+            assert_eq!(classify(Some(Ok(status))), (class, Some(status), None), "{status}");
+        }
+        // A truncated refusal keeps its validated status, and is classed by it.
+        assert_eq!(
+            classify(Some(Err(failure(Transport, Some(401), Some(18))))),
+            (LinkClass::Answered4xx, Some(401), None)
+        );
+        assert_eq!(
+            classify(Some(Err(failure(TimedOut, None, Some(28))))),
+            (LinkClass::Timeout, None, Some(28))
+        );
+        assert_eq!(
+            classify(Some(Err(failure(Transport, None, Some(6))))),
+            (LinkClass::Dns, None, Some(6))
+        );
+        for rc in [35, 60, 77, 90] {
+            assert_eq!(
+                classify(Some(Err(failure(Transport, None, Some(rc))))),
+                (LinkClass::Tls, None, Some(rc)),
+                "rc {rc}"
+            );
+        }
+        assert_eq!(
+            classify(Some(Err(failure(Transport, None, Some(7))))),
+            (LinkClass::TransportOther, None, Some(7))
+        );
+        assert_eq!(
+            classify(Some(Err(failure(Transport, None, None)))),
+            (LinkClass::Unknown, None, None),
+            "a request refused before libcurl ran has no code to report"
+        );
+    }
+
+    /// The real completion boundary: what `net` hands back for a curl failure carries the code
+    /// this classification reads.
+    #[test]
+    fn the_network_layer_reports_the_curl_code_the_classifier_reads() {
+        let dns = crate::net::test_response_failure(6, 0, 0, false).err().expect("a failure");
+        assert_eq!(classify(Some(Err(dns))), (LinkClass::Dns, None, Some(6)));
+        let timeout = crate::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
+        assert_eq!(classify(Some(Err(timeout))), (LinkClass::Timeout, None, Some(28)));
     }
 }

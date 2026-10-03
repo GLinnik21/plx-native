@@ -35,6 +35,15 @@
 //! the completion rate a measure of how often people scrub.
 
 use crate::diag::schema::DiagEvent;
+// The classification vocabulary is telemetry's wire schema (`telemetry::classes`); this module
+// classifies a live playback INTO it. Re-exported here so the player and the route layer keep
+// naming the closed domains where they report from.
+pub(crate) use crate::telemetry::classes::{
+    AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
+    LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
+    RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
+    TraceStep, VideoCodecClass,
+};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
 
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
@@ -96,471 +105,6 @@ static REQUESTED_MS: AtomicI64 = AtomicI64::new(0);
 /// are deliberately absent: one entry per segment would both drown the causal transitions and turn
 /// a long film into a larger report than a short one.
 pub(crate) const ERROR_TRACE_MAX: usize = 32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceAge {
-    Under1s,
-    S1To3,
-    S3To10,
-    S10To30,
-    S30To120,
-    Over2m,
-}
-
-impl TraceAge {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Under1s => "<1s",
-            Self::S1To3 => "1-3s",
-            Self::S3To10 => "3-10s",
-            Self::S10To30 => "10-30s",
-            Self::S30To120 => "30-120s",
-            Self::Over2m => "2m+",
-        }
-    }
-
-    fn from_ms(ms: i64) -> Self {
-        match ms.max(0) {
-            0..=999 => Self::Under1s,
-            1_000..=2_999 => Self::S1To3,
-            3_000..=9_999 => Self::S3To10,
-            10_000..=29_999 => Self::S10To30,
-            30_000..=119_999 => Self::S30To120,
-            _ => Self::Over2m,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeliveryClass {
-    /// No route was ever installed — the plan was refused (by the server at `/decision`, or by the
-    /// Direct Play setting) or never resolved — so there is no delivery to name. Honest unknown, not
-    /// a guess at which route the attempt would have taken.
-    Unknown,
-    Direct,
-    Remux,
-    Hls,
-    Transcode,
-}
-
-impl DeliveryClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Direct => "original_direct",
-            Self::Remux => "original_remux",
-            Self::Hls => "hls",
-            Self::Transcode => "progressive_transcode",
-        }
-    }
-}
-
-/// A `/decision` verdict number (`generalDecisionCode` / `transcodeDecisionCode`) as a CLOSED
-/// domain. The number is a server protocol constant, not a quotation, so it is the one part of a
-/// refusal a report may carry; the server's sentence beside it never is.
-///
-/// **Which codes exist is only partly documented, and this list claims no more than the evidence.**
-/// The vendored OpenAPI spec (`docs/plex-openapi.json`, `generalDecisionCode`) documents the CLASSES
-/// — "1xxx are playback can succeed, 2xxx are a general error (such as insufficient bandwidth),
-/// 3xxx are errors in direct play, and 4xxx are errors in transcodes. Same codes are used in all"
-/// — and no table of members. The exact numbers named here are the ones this repository has
-/// observed a PMS send on a refusal: `2000` (general, "Neither direct play nor conversion is
-/// available", the code `route::plan::refusal` fires on), `2003` (transcode lane, "File is
-/// unplayable. DoVi (Profile 5) color space is not supported.", `docs/pms-api.md`) and `4007`
-/// (transcode lane, "Cannot convert this item. Implementation for video encoder 'vp9' not found.",
-/// PMS 1.43.3). Every other number falls into its documented class bucket — a new `4xxx` reads
-/// `other_4xxx`, which still says "a transcode-lane error" without this list guessing its meaning —
-/// and a number outside 1000-4999 is `other`. The wire code of a named member IS its number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DecisionCodeClass {
-    /// The body carried no such code (never a defaulted 0).
-    Absent,
-    C2000,
-    C2003,
-    C4007,
-    Other1xxx,
-    Other2xxx,
-    Other3xxx,
-    Other4xxx,
-    Other,
-}
-
-impl DecisionCodeClass {
-    pub(crate) const ALL: [Self; 9] = [
-        Self::Absent,
-        Self::C2000,
-        Self::C2003,
-        Self::C4007,
-        Self::Other1xxx,
-        Self::Other2xxx,
-        Self::Other3xxx,
-        Self::Other4xxx,
-        Self::Other,
-    ];
-
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Absent => "absent",
-            Self::C2000 => "2000",
-            Self::C2003 => "2003",
-            Self::C4007 => "4007",
-            Self::Other1xxx => "other_1xxx",
-            Self::Other2xxx => "other_2xxx",
-            Self::Other3xxx => "other_3xxx",
-            Self::Other4xxx => "other_4xxx",
-            Self::Other => "other",
-        }
-    }
-
-    pub(crate) fn from_code(code: Option<i64>) -> Self {
-        match code {
-            None => Self::Absent,
-            Some(2000) => Self::C2000,
-            Some(2003) => Self::C2003,
-            Some(4007) => Self::C4007,
-            Some(1000..=1999) => Self::Other1xxx,
-            Some(2000..=2999) => Self::Other2xxx,
-            Some(3000..=3999) => Self::Other3xxx,
-            Some(4000..=4999) => Self::Other4xxx,
-            Some(_) => Self::Other,
-        }
-    }
-}
-
-/// What a `decision_refused` report adds to the common context — all closed domains, none of the
-/// server's sentence. Present only for a refusal the SERVER made at `/decision`; the app's own
-/// policy refusals (Direct Play off, Force Direct Play) carry no server codes and no attempted
-/// transcode, so they get none of it rather than a half-filled block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RefusalContext {
-    /// `generalDecisionCode` of the refusing `/decision`.
-    pub(crate) general: DecisionCodeClass,
-    /// `transcodeDecisionCode` of the same body — the lane that names the cause.
-    pub(crate) transcode: DecisionCodeClass,
-    /// The route the refused plan ASKED for. A separate field from `delivery`, which stays
-    /// `unknown` because no route was installed: the attempt is recorded, the delivery is not.
-    pub(crate) attempted: DeliveryClass,
-    /// The SOURCE file's codecs (not the transcode's output, which a refusal never produced).
-    pub(crate) source_video: VideoCodecClass,
-    pub(crate) source_audio: AudioCodecClass,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QualityClass {
-    Unknown,
-    Auto,
-    Original,
-    K320,
-    K720,
-    M2,
-    M4,
-    M6,
-    M8,
-    M10,
-    M12,
-    M14,
-    M16,
-    M18,
-    M20,
-    M22,
-}
-
-impl QualityClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Auto => "auto",
-            Self::Original => "original",
-            Self::K320 => "320k",
-            Self::K720 => "720k",
-            Self::M2 => "2m",
-            Self::M4 => "4m",
-            Self::M6 => "6m",
-            Self::M8 => "8m",
-            Self::M10 => "10m",
-            Self::M12 => "12m",
-            Self::M14 => "14m",
-            Self::M16 => "16m",
-            Self::M18 => "18m",
-            Self::M20 => "20m",
-            Self::M22 => "22m",
-        }
-    }
-
-    fn selected(q: crate::route::Quality) -> Self {
-        use crate::route::Quality as Q;
-        match q {
-            Q::Auto => Self::Auto,
-            Q::Original => Self::Original,
-            Q::P1080High => Self::M20,
-            Q::P1080 => Self::M8,
-            Q::P720 => Self::M4,
-            Q::P720Low => Self::M2,
-            Q::P480 => Self::K720,
-        }
-    }
-
-    pub(crate) fn from_rung(rung: crate::abr::Rung) -> Self {
-        Self::from_kbps(i64::from(rung.kbps()))
-    }
-
-    pub(crate) fn from_kbps(kbps: i64) -> Self {
-        match kbps {
-            320 => Self::K320,
-            720 => Self::K720,
-            2_000 => Self::M2,
-            4_000 => Self::M4,
-            6_000 => Self::M6,
-            8_000 => Self::M8,
-            10_000 => Self::M10,
-            12_000 => Self::M12,
-            14_000 => Self::M14,
-            16_000 => Self::M16,
-            18_000 => Self::M18,
-            20_000 => Self::M20,
-            22_000 => Self::M22,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-/// Privacy-preserving buckets for rates PMS actually declared or emitted. These are observations,
-/// not controller rungs: keeping the type separate prevents a 5.5 Mbit/s server response from being
-/// mislabeled as the 22 Mbit/s actuator that requested it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RateClass {
-    Unknown,
-    Under1m,
-    M1To3,
-    M3To6,
-    M6To12,
-    M12To20,
-    Over20m,
-}
-
-impl RateClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Under1m => "<1m",
-            Self::M1To3 => "1-3m",
-            Self::M3To6 => "3-6m",
-            Self::M6To12 => "6-12m",
-            Self::M12To20 => "12-20m",
-            Self::Over20m => "20m+",
-        }
-    }
-
-    fn from_kbps(kbps: i64) -> Self {
-        match kbps {
-            k if k <= 0 => Self::Unknown,
-            1..=999 => Self::Under1m,
-            1_000..=2_999 => Self::M1To3,
-            3_000..=5_999 => Self::M3To6,
-            6_000..=11_999 => Self::M6To12,
-            12_000..=19_999 => Self::M12To20,
-            _ => Self::Over20m,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RasterClass {
-    Unknown,
-    Sd,
-    Hd,
-    Fhd,
-    Uhd,
-}
-
-impl RasterClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Sd => "sd",
-            Self::Hd => "hd",
-            Self::Fhd => "fhd",
-            Self::Uhd => "uhd",
-        }
-    }
-
-    fn from_height(height: i32) -> Self {
-        match height {
-            h if h <= 0 => Self::Unknown,
-            h if h <= 576 => Self::Sd,
-            h if h <= 720 => Self::Hd,
-            h if h <= 1080 => Self::Fhd,
-            _ => Self::Uhd,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceDirection {
-    Up,
-    Down,
-    Refresh,
-}
-
-impl TraceDirection {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Refresh => "refresh",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeliveryReason {
-    LinkFallback,
-    OriginalRecovery,
-    OriginalOpenRollback,
-}
-
-impl DeliveryReason {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::LinkFallback => "link_fallback",
-            Self::OriginalRecovery => "original_recovery",
-            Self::OriginalOpenRollback => "original_open_rollback",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OriginalProbePhase {
-    // Retained stable wire vocabulary for events produced by builds before 2026-08-31. Current
-    // runtime emits SampleSource only; removing/reusing these strings would rewrite dashboards.
-    RetireHls,
-    SampleSource,
-    CloseSource,
-    RestoreHls,
-    OpenHls,
-    CommitHls,
-}
-
-impl OriginalProbePhase {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::RetireHls => "retire_hls",
-            Self::SampleSource => "sample_source",
-            Self::CloseSource => "close_source",
-            Self::RestoreHls => "restore_hls",
-            Self::OpenHls => "open_hls",
-            Self::CommitHls => "commit_hls",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceOutcome {
-    Started,
-    Succeeded,
-    NoBody,
-    Deadline,
-    Transport,
-    /// The app observed failure but the available signal does not distinguish a moved local
-    /// session, a missing client or another control-plane circumstance.
-    Inconclusive,
-    ServerState,
-    Refused,
-}
-
-impl TraceOutcome {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Started => "started",
-            Self::Succeeded => "succeeded",
-            Self::NoBody => "no_body",
-            Self::Deadline => "deadline",
-            Self::Transport => "transport",
-            Self::Inconclusive => "inconclusive",
-            Self::ServerState => "server_state",
-            Self::Refused => "refused",
-        }
-    }
-}
-
-/// **How long a native Load spent in flight, as a bucket — never the millisecond count.**
-///
-/// Recorded once per attempt, either when [`super::threads::load_thread`]'s Load-returned gate
-/// opens (the ordinary case) or when issue #74 D.1.4's [`super::pump::NATIVE_LOAD_BUDGET`] fires
-/// first (the k5lp hang this bucket exists to make visible on a dashboard rather than only in a
-/// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other
-/// fields refuse to carry verbatim — see the module's bucket rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoadElapsedClass {
-    Under1s,
-    S1To5,
-    S5To20,
-    Over20s,
-}
-
-impl LoadElapsedClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Under1s => "under_1s",
-            Self::S1To5 => "1_to_5s",
-            Self::S5To20 => "5_to_20s",
-            Self::Over20s => "over_20s",
-        }
-    }
-
-    pub(crate) fn from_ms(ms: i64) -> Self {
-        match ms.max(0) {
-            0..=999 => Self::Under1s,
-            1_000..=4_999 => Self::S1To5,
-            5_000..=19_999 => Self::S5To20,
-            _ => Self::Over20s,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TraceEvent {
-    Requested {
-        selected: QualityClass,
-    },
-    Presented {
-        delivery: DeliveryClass,
-        requested: QualityClass,
-        declared_rate: RateClass,
-        raster: RasterClass,
-    },
-    SeekRequested,
-    QualitySelected {
-        selected: QualityClass,
-    },
-    DeliveryRequested {
-        delivery: DeliveryClass,
-        requested: QualityClass,
-        reason: DeliveryReason,
-    },
-    HlsCommitted {
-        direction: TraceDirection,
-        requested: QualityClass,
-    },
-    OriginalProbe {
-        phase: OriginalProbePhase,
-        outcome: TraceOutcome,
-    },
-    /// The native Load-returned gate opened, or issue #74 D.1.4's budget fired first — see
-    /// [`LoadElapsedClass`].
-    LoadGateOpened {
-        elapsed: LoadElapsedClass,
-    },
-    Failed {
-        kind: super::FailureKind,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TraceStep {
-    pub(crate) age: TraceAge,
-    pub(crate) event: TraceEvent,
-}
 
 /// The current play attempt's in-memory, privacy-bounded history. It lives in [`super::SHARED`]
 /// because both the demux worker (ABR/probe) and main thread (request/seek/error) append to it.
@@ -655,113 +199,24 @@ impl PlaybackTrace {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PipelineClass {
-    Loading,
-    Playing,
-    Bound,
-    Streaming,
-}
-
-impl PipelineClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Loading => "loading",
-            Self::Playing => "playing",
-            Self::Bound => "bound",
-            Self::Streaming => "streaming",
-        }
-    }
-
-    fn from_stage(stage: u8) -> Self {
-        match stage {
-            1 => Self::Playing,
-            2 => Self::Bound,
-            3 => Self::Streaming,
-            _ => Self::Loading,
-        }
+/// The wire class of the quality the viewer picked. `QualityClass` is telemetry's closed domain and
+/// cannot name `route::Quality`, so the mapping lives with the producer.
+fn selected_quality_class(q: crate::route::Quality) -> QualityClass {
+    use crate::route::Quality as Q;
+    match q {
+        Q::Auto => QualityClass::Auto,
+        Q::Original => QualityClass::Original,
+        Q::P1080High => QualityClass::M20,
+        Q::P1080 => QualityClass::M8,
+        Q::P720 => QualityClass::M4,
+        Q::P720Low => QualityClass::M2,
+        Q::P480 => QualityClass::K720,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HttpClass {
-    None,
-    Success,
-    ClientError,
-    ServerError,
-    Other,
-}
-
-impl HttpClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Success => "2xx",
-            Self::ClientError => "4xx",
-            Self::ServerError => "5xx",
-            Self::Other => "other",
-        }
-    }
-
-    fn from_status(status: i32) -> Self {
-        match status {
-            0 => Self::None,
-            200..=299 => Self::Success,
-            400..=499 => Self::ClientError,
-            500..=599 => Self::ServerError,
-            _ => Self::Other,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BufferClass {
-    Unknown,
-    Empty,
-    Under3s,
-    S3To10,
-    S10To30,
-    Over30s,
-}
-
-impl BufferClass {
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Empty => "empty",
-            Self::Under3s => "<3s",
-            Self::S3To10 => "3-10s",
-            Self::S10To30 => "10-30s",
-            Self::Over30s => "30s+",
-        }
-    }
-
-    fn from_ms(ms: i64) -> Self {
-        match ms {
-            m if m < 0 => Self::Unknown,
-            0 => Self::Empty,
-            1..=2_999 => Self::Under3s,
-            3_000..=9_999 => Self::S3To10,
-            10_000..=29_999 => Self::S10To30,
-            _ => Self::Over30s,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaybackErrorContext {
-    pub(crate) delivery: DeliveryClass,
-    pub(crate) selected: QualityClass,
-    pub(crate) requested: QualityClass,
-    pub(crate) declared_rate: RateClass,
-    pub(crate) media_rate: RateClass,
-    pub(crate) raster: RasterClass,
-    pub(crate) pipeline: PipelineClass,
-    pub(crate) http: HttpClass,
-    pub(crate) buffer: BufferClass,
-    pub(crate) started: bool,
-    /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
-    pub(crate) refusal: Option<RefusalContext>,
+/// The wire class of an ABR controller rung, for the same reason as [`selected_quality_class`].
+pub(crate) fn rung_quality_class(rung: crate::abr::Rung) -> QualityClass {
+    QualityClass::from_kbps(i64::from(rung.kbps()))
 }
 
 /// The delivery of the route this playback INSTALLED. A refused or unresolved plan installs none
@@ -823,13 +278,27 @@ fn finish_trace(event: TraceEvent) -> Vec<TraceStep> {
     trace.finish(now_ms(), event)
 }
 
-/// Forget the in-memory error trace immediately when error reporting is withdrawn.
+/// Forget the in-memory error trace immediately when error reporting is withdrawn. Telemetry
+/// reaches this through the hook [`install_trace_eraser`] registers
+/// (`telemetry::playback::clear_error_trace`); the app's own call sites name it directly.
 pub(crate) fn clear_error_trace() {
     super::SHARED
         .playback_trace
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+}
+
+/// **Hand telemetry this trace's eraser.** Withdrawal and sign-out (`telemetry::transition`) and
+/// the boot load (`telemetry::activate_initial`) erase the trace through
+/// `telemetry::playback::clear_error_trace`, which cannot name the player and does nothing until
+/// this runs. `app::enter_application` runs it
+/// on every boot, before telemetry loads and before anything can play. Not from [`requested`]: a
+/// detail-page preview never passes it, yet a failed preview still seals a `Failed` step here
+/// ([`tick`] -> [`finish_trace`], whatever the generation), so an eraser installed by the first
+/// full attempt would leave that trace beyond a withdrawal's reach.
+pub(crate) fn install_trace_eraser() {
+    crate::telemetry::playback::install_error_trace_clear(clear_error_trace);
 }
 
 pub(crate) fn note_seek_for(generation: u32) {
@@ -840,7 +309,7 @@ pub(crate) fn note_quality_selected_for(generation: u32, q: crate::route::Qualit
     push_trace_for(
         generation,
         TraceEvent::QualitySelected {
-            selected: QualityClass::selected(q),
+            selected: selected_quality_class(q),
         },
     );
 }
@@ -879,7 +348,7 @@ pub(crate) fn note_hls_committed_for(
         generation,
         TraceEvent::HlsCommitted {
             direction,
-            requested: QualityClass::from_rung(rung),
+            requested: rung_quality_class(rung),
         },
     );
 }
@@ -913,7 +382,7 @@ fn requested_quality(delivery: DeliveryClass, selected: QualityClass) -> Quality
 
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let delivery = delivery_class(ps);
-    let selected = QualityClass::selected(crate::route::quality());
+    let selected = selected_quality_class(crate::route::quality());
     let requested = requested_quality(delivery, selected);
     PlaybackErrorContext {
         delivery,
@@ -959,7 +428,7 @@ fn refusal_context(ps: &crate::route::PlaybackSession) -> Option<RefusalContext>
 
 fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
     let delivery = delivery_class(ps);
-    let requested = requested_quality(delivery, QualityClass::selected(crate::route::quality()));
+    let requested = requested_quality(delivery, selected_quality_class(crate::route::quality()));
     TraceEvent::Presented {
         delivery,
         requested,
@@ -1021,7 +490,7 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
         trace.reset(
             generation,
             at,
-            QualityClass::selected(crate::route::quality()),
+            selected_quality_class(crate::route::quality()),
         );
     } else {
         trace.arm(generation);
@@ -1176,8 +645,9 @@ pub(crate) fn tick(ps: &crate::route::PlaybackSession) {
             SAW_FAIL.store(true, Relaxed);
             report_quality(ATTEMPT.load(Relaxed));
             let shape = super::error_now(ps);
-            let trace = finish_trace(TraceEvent::Failed { kind: shape.kind });
-            crate::telemetry::playback::report_error(shape.kind, error_context(ps), &trace);
+            let kind = shape.kind.class();
+            let trace = finish_trace(TraceEvent::Failed { kind });
+            crate::telemetry::playback::report_error(kind, error_context(ps), &trace);
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
@@ -1328,121 +798,6 @@ fn new_attempt_id() -> i64 {
         return 0; // no randomness: the funnel loses its join and nothing else
     }
     (i64::from_le_bytes(b) & i64::MAX) as i64
-}
-
-/// The video codec, as a CLOSED domain.
-///
-/// `route::stream_vcodec` hands back a `String` off the wire, and `diag::schema` has no arm that
-/// could carry one — deliberately, that being the property that makes "no runtime string reaches
-/// the wire" a fact about the type. So the mapping is here: a name the table does not know becomes
-/// `other`, which is a real answer (it means the server sent something this app did not expect) and
-/// cannot become a leak. ONE table serves the usage funnel's `playback.started` and the handled
-/// error report's source codecs, so the two cannot disagree about what "hevc" is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VideoCodecClass {
-    Unknown,
-    H264,
-    Hevc,
-    Av1,
-    Vp9,
-    Mpeg2,
-    Other,
-}
-
-impl VideoCodecClass {
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Unknown,
-        Self::H264,
-        Self::Hevc,
-        Self::Av1,
-        Self::Vp9,
-        Self::Mpeg2,
-        Self::Other,
-    ];
-
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::H264 => "h264",
-            Self::Hevc => "hevc",
-            Self::Av1 => "av1",
-            Self::Vp9 => "vp9",
-            Self::Mpeg2 => "mpeg2",
-            Self::Other => "other",
-        }
-    }
-
-    pub(crate) fn from_name(name: &str) -> Self {
-        match name.to_ascii_lowercase().as_str() {
-            "h264" | "avc" | "avc1" => Self::H264,
-            "hevc" | "h265" | "hvc1" => Self::Hevc,
-            "av1" => Self::Av1,
-            "vp9" => Self::Vp9,
-            "mpeg2video" | "mpeg2" => Self::Mpeg2,
-            "" => Self::Unknown,
-            _ => Self::Other,
-        }
-    }
-}
-
-/// The audio codec, as a closed domain, for [`VideoCodecClass`]'s reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioCodecClass {
-    Unknown,
-    Aac,
-    Ac3,
-    Eac3,
-    TrueHd,
-    Dts,
-    Flac,
-    Mp3,
-    Opus,
-    Other,
-}
-
-impl AudioCodecClass {
-    pub(crate) const ALL: [Self; 10] = [
-        Self::Unknown,
-        Self::Aac,
-        Self::Ac3,
-        Self::Eac3,
-        Self::TrueHd,
-        Self::Dts,
-        Self::Flac,
-        Self::Mp3,
-        Self::Opus,
-        Self::Other,
-    ];
-
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Aac => "aac",
-            Self::Ac3 => "ac3",
-            Self::Eac3 => "eac3",
-            Self::TrueHd => "truehd",
-            Self::Dts => "dts",
-            Self::Flac => "flac",
-            Self::Mp3 => "mp3",
-            Self::Opus => "opus",
-            Self::Other => "other",
-        }
-    }
-
-    pub(crate) fn from_name(name: &str) -> Self {
-        match name.to_ascii_lowercase().as_str() {
-            "aac" => Self::Aac,
-            "ac3" => Self::Ac3,
-            "eac3" | "ac3 plus" | "ec-3" => Self::Eac3,
-            "truehd" => Self::TrueHd,
-            "dts" | "dca" => Self::Dts,
-            "flac" => Self::Flac,
-            "mp3" => Self::Mp3,
-            "opus" => Self::Opus,
-            "" => Self::Unknown,
-            _ => Self::Other,
-        }
-    }
 }
 
 pub(crate) fn video_codec_class(name: &str) -> &'static str {
@@ -1678,7 +1033,7 @@ mod tests {
             assert_eq!(ctx.delivery.code(), "unknown", "{verdict:?}: delivery was inferred");
             assert_eq!(ctx.requested, QualityClass::Unknown, "{verdict:?}: requested was inferred");
             // The selected quality is the viewer's own setting, which is recorded and still true.
-            assert_eq!(ctx.selected, QualityClass::selected(crate::route::quality()));
+            assert_eq!(ctx.selected, selected_quality_class(crate::route::quality()));
         }
     }
 
@@ -1755,7 +1110,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            crate::player::FailureKind::DecisionRefused,
+            crate::telemetry::classes::FailureClass::DecisionRefused,
             ctx,
             &[],
         );
@@ -1970,7 +1325,7 @@ mod tests {
         let snapshot = trace.finish(
             (ERROR_TRACE_MAX as i64 + 9) * 1_000,
             TraceEvent::Failed {
-                kind: crate::player::FailureKind::OriginalRollback,
+                kind: crate::telemetry::classes::FailureClass::OriginalRollback,
             },
         );
         assert_eq!(trace.steps.len(), ERROR_TRACE_MAX);
@@ -1981,7 +1336,7 @@ mod tests {
         assert!(matches!(
             snapshot.last().map(|s| s.event),
             Some(TraceEvent::Failed {
-                kind: crate::player::FailureKind::OriginalRollback,
+                kind: crate::telemetry::classes::FailureClass::OriginalRollback,
             })
         ));
         assert!(
@@ -1993,6 +1348,41 @@ mod tests {
             trace.steps.is_empty(),
             "withdrawing consent must forget the trace in memory"
         );
+    }
+
+    /// **A preview's failure is erased by withdrawal too.** A detail-page preview never passes
+    /// [`requested`] (`trace_generation` stays 0), yet `tick` still seals its `Failed` step into
+    /// the shared trace whatever the generation. Telemetry erases that trace on withdrawal and
+    /// sign-out through `telemetry::playback::clear_error_trace`, a no-op while unset, so the
+    /// eraser cannot be installed by the first full attempt: a viewer whose only playback was a
+    /// failed preview would keep that trace past a withdrawal, and a later failure would send it.
+    /// [`install_trace_eraser`] is what `app::enter_application` runs at boot.
+    #[test]
+    fn a_failed_preview_trace_is_erased_through_telemetrys_hook() {
+        use crate::telemetry::consent::{self, Consent};
+        let _g = crate::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        clear_error_trace();
+
+        let sealed = finish_trace(TraceEvent::Failed {
+            kind: crate::telemetry::classes::FailureClass::OriginalRollback,
+        });
+        install_trace_eraser();
+        crate::telemetry::playback::clear_error_trace();
+        let left = super::super::SHARED
+            .playback_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .step_count_for_test();
+        clear_error_trace();
+        consent::install(previous.unwrap_or_default());
+
+        assert_eq!(sealed.len(), 1, "a preview's failure is traced with no attempt armed");
+        assert_eq!(left, 0, "withdrawal left a preview's failure trace in memory");
     }
 
     #[test]
@@ -2027,7 +1417,7 @@ mod tests {
             (Quality::P480, QualityClass::K720),
         ] {
             assert_eq!(
-                QualityClass::selected(quality),
+                selected_quality_class(quality),
                 want,
                 "selected {quality:?}"
             );
@@ -2047,7 +1437,7 @@ mod tests {
             (Rung::P1080High, QualityClass::M20),
             (Rung::Uhd, QualityClass::M22),
         ] {
-            assert_eq!(QualityClass::from_rung(rung), want, "rung {rung:?}");
+            assert_eq!(rung_quality_class(rung), want, "rung {rung:?}");
             assert_eq!(QualityClass::from_kbps(i64::from(rung.kbps())), want);
         }
         assert_eq!(QualityClass::from_kbps(5_500), QualityClass::Unknown);

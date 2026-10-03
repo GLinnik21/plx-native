@@ -73,7 +73,7 @@ const PARA_GAP: f32 = theme::space::XS;
 /// The body's measuring width — the panel minus its side padding, so a caller can measure without
 /// reaching into the layout.
 pub(crate) const BODY_W: f32 = PANEL_W - 2.0 * PAD_X;
-const BUTTON_W: f32 = 260.0;
+pub(crate) const BUTTON_W: f32 = 260.0;
 const BUTTON_GAP: f32 = 20.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -700,37 +700,5 @@ mod tests {
         assert_eq!(body_h(&[]), 0.0);
         assert_eq!(body_h(&[30.0]), 30.0);
         assert_eq!(body_h(&[30.0, 60.0]), 90.0 + PARA_GAP);
-    }
-
-    /// **Every answer fits its pill, in every shipped language.** The pill is [`BUTTON_W`] wide
-    /// whatever it says and `Button` centres its label without clipping, so a long translation
-    /// spills past both ends — Belarusian *Даслаць справаздачу* ran out of the sign-in report
-    /// question's panel. Measured with the device's whole-pixel advances.
-    #[test]
-    fn every_answer_fits_its_pill_in_every_language() {
-        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
-        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
-        let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
-            let _guard = language_on_this_thread_for_test(language);
-            let answers = [
-                msg::settings_cancel_c(),
-                msg::settings_delete_c(),
-                msg::settings_plaintext_not_now_c(),
-                msg::settings_login_send_report_c(),
-                msg::settings_login_close_c(),
-                msg::settings_playback_enable_force_c(),
-                msg::widgets_repair_action_c(),
-                crate::screens::plaintext_question::PlaintextQuestion::verbs().0,
-                crate::screens::plaintext_question::PlaintextQuestion::verbs().1,
-            ];
-            for label in answers {
-                let w = Button::pill_w_measured(label, theme::size::BODY, false, false, &ShippedMeasure);
-                if w > BUTTON_W * HEADROOM {
-                    out.push(format!("{}: {label:?} needs {w:.0}px of a {BUTTON_W}px pill", language.tag()));
-                }
-            }
-        }
-        assert!(out.is_empty(), "answers wider than their pill:\n  {}", out.join("\n  "));
     }
 }

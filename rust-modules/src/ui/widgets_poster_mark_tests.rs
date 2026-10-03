@@ -1,4 +1,10 @@
 //! The poster watch-state mark and its write-verb twin (`poster_mark` vs. `row_watch_state`).
+//!
+//! These grade the mark's CHOICE over plain [`TileFacts`]: the library names no application row.
+//! The half that needs a real catalog row — that its resume rule (an offset past the end is
+//! finished, a row with no runtime cannot be in progress) and the facts built from it agree with
+//! the bar the caller draws — is graded where the row is converted,
+//! `screens::registry::tile_facts`.
 
 use super::*;
 #[allow(unused_imports)]
@@ -7,56 +13,29 @@ use super::test_support::*;
 #[test]
 fn a_poster_nobody_has_started_wears_no_mark_at_all() {
     // the common case on any real server, and the whole reason the polarity inverted
-    assert_eq!(poster_mark(&row(false, 0)), PosterMark::None);
+    assert_eq!(poster_mark(&row(false, false)), PosterMark::None);
 }
 
 #[test]
 fn a_finished_poster_wears_the_watched_disc() {
-    assert_eq!(poster_mark(&row(true, 0)), PosterMark::Watched);
+    assert_eq!(poster_mark(&row(true, false)), PosterMark::Watched);
 }
 
 #[test]
 fn a_re_watch_in_flight_outranks_the_watched_flag() {
     // PMS reports BOTH on a finished-then-restarted item; the bar wins, so the tile never
     // wears two marks — and what it says is what the viewer is actually doing.
-    let m = row(true, 30 * 60 * 1000);
+    let m = row(true, true);
     assert_eq!(poster_mark(&m), PosterMark::InProgress);
     assert!(
-        m.resume_frac().is_some(),
+        m.resume.is_some(),
         "InProgress must be exactly when the caller draws the bar"
     );
 }
 
 #[test]
 fn a_part_watched_poster_that_was_never_finished_is_in_progress_too() {
-    assert_eq!(
-        poster_mark(&row(false, 30 * 60 * 1000)),
-        PosterMark::InProgress
-    );
-}
-
-#[test]
-fn an_offset_the_server_never_cleared_is_finished_not_in_progress() {
-    // resume AT or PAST the end: a full-width bar there read as a rendering bug, and it would
-    // now also hide the disc the item has earned. Both the mark and the bar must agree.
-    for resume in [100 * 60 * 1000, 200 * 60 * 1000] {
-        let m = row(true, resume);
-        assert_eq!(m.resume_frac(), None, "resume {resume} must not draw a bar");
-        assert_eq!(poster_mark(&m), PosterMark::Watched, "resume {resume}");
-    }
-}
-
-#[test]
-fn a_row_with_no_runtime_cannot_be_in_progress() {
-    // dur_ns == 0 (the server sent no duration): a fraction is undefined, so there is no bar to
-    // draw and the watched flag alone decides.
-    let mut m = row(true, 30 * 60 * 1000);
-    m.dur_ns = 0;
-    assert_eq!(m.resume_frac(), None);
-    assert_eq!(poster_mark(&m), PosterMark::Watched);
-    let mut m = row(false, 30 * 60 * 1000);
-    m.dur_ns = 0;
-    assert_eq!(poster_mark(&m), PosterMark::None);
+    assert_eq!(poster_mark(&row(false, true)), PosterMark::InProgress);
 }
 
 #[test]
@@ -65,8 +44,8 @@ fn a_show_three_episodes_in_is_not_a_watched_show() {
     // tile has an unseen episode by construction — had five posters wearing a watched disc,
     // because `!unwatched` is true for a container the moment ONE episode is played. A show is
     // marked only when it is DONE, so partly-watched sits with never-started under "no mark".
-    let mut m = PmsMovie::default();
-    m.kind = 1; // show
+    let mut m = TileFacts::default();
+    m.kind = TileKind::Show;
     m.unwatched = false; // some episode has been played…
     m.watched = false; // …but not all of them
     assert_eq!(poster_mark(&m), PosterMark::None);
@@ -88,8 +67,8 @@ fn a_show_three_episodes_in_is_not_a_watched_show() {
 /// reachable from a menu in BOTH directions, so it is `InProgress` here and gets both rows.
 #[test]
 fn a_container_mid_run_is_in_the_middle_for_a_menu_though_it_wears_no_mark() {
-    let mut m = PmsMovie::default();
-    m.kind = 1; // show
+    let mut m = TileFacts::default();
+    m.kind = TileKind::Show;
     m.unwatched = false; // some episode has been played…
     m.watched = false; // …but not all of them
     assert_eq!(
@@ -103,7 +82,7 @@ fn a_container_mid_run_is_in_the_middle_for_a_menu_though_it_wears_no_mark() {
         "…but both verbs are reachable"
     );
     // and a SEASON is a container on the same terms — the rule is the flag pair, not the kind
-    m.kind = 2;
+    m.kind = TileKind::Season;
     assert_eq!(row_watch_state(&m), PosterMark::InProgress);
 }
 
@@ -113,8 +92,8 @@ fn a_container_mid_run_is_in_the_middle_for_a_menu_though_it_wears_no_mark() {
 /// the shelf menu got wrong before, offering "Mark as Watched" on a show already done.
 #[test]
 fn the_two_ends_of_the_range_answer_the_same_either_way() {
-    let mut show = PmsMovie::default();
-    show.kind = 1;
+    let mut show = TileFacts::default();
+    show.kind = TileKind::Show;
     for (unwatched, watched, want) in [
         (true, false, PosterMark::None),
         (false, true, PosterMark::Watched),
@@ -130,18 +109,16 @@ fn the_two_ends_of_the_range_answer_the_same_either_way() {
     }
 }
 
-/// A LEAF is delegated whole, so every resume-point edge `poster_mark` keeps — an offset past
-/// the end is finished, a row with no runtime cannot be in progress — holds for the menu too
-/// without being restated. The flags are complements on a leaf, so the extra rule is unreachable
-/// there by construction.
+/// A LEAF is delegated whole, so every state `poster_mark` keeps holds for the menu too without
+/// being restated. The flags are complements on a leaf, so the extra rule is unreachable there by
+/// construction.
 #[test]
 fn a_leaf_asks_the_poster_and_gets_its_answer_unchanged() {
     for m in [
-        row(false, 0),
-        row(true, 0),
-        row(false, 30 * 60 * 1000),
-        row(true, 30 * 60 * 1000),
-        row(true, 200 * 60 * 1000),
+        row(false, false),
+        row(true, false),
+        row(false, true),
+        row(true, true),
     ] {
         assert_eq!(
             row_watch_state(&m),
@@ -155,13 +132,17 @@ fn a_leaf_asks_the_poster_and_gets_its_answer_unchanged() {
 /// composite or custom thumb is artwork and draws as an ordinary poster, as does every other kind.
 #[test]
 fn only_a_thumbless_collection_draws_the_neutral_tile() {
-    let collection = |thumb: &str| PmsMovie {
-        kind: crate::pms::KIND_COLLECTION, title: "Empty Collection".into(), thumb: thumb.into(),
-        ..Default::default()
-    };
+    fn collection(thumb: &str) -> TileFacts<'_> {
+        TileFacts {
+            kind: TileKind::Collection,
+            title: "Empty Collection",
+            thumb,
+            ..Default::default()
+        }
+    }
     assert_eq!(neutral_collection_name(Some(&collection(""))), Some("Empty Collection"));
     assert_eq!(neutral_collection_name(Some(&collection("/library/collections/50001/composite/1"))), None);
-    assert_eq!(neutral_collection_name(Some(&PmsMovie { title: "Film".into(), ..Default::default() })), None,
+    assert_eq!(neutral_collection_name(Some(&TileFacts { title: "Film", ..Default::default() })), None,
         "a film without art keeps the ordinary skeleton");
     assert_eq!(neutral_collection_name(None), None);
 }

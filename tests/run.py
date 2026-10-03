@@ -1058,7 +1058,7 @@ def triggers_for_case(case, url_base=None):
     than two functions that would drift apart at the first new operation.
     """
     if url_base is not None:
-        # JSON, whole-file — dev::PlayUrl. `separators` drops the spaces `json.dumps` would put
+        # JSON, whole-file — player::playurl::PlayUrl. `separators` drops the spaces `json.dumps` would put
         # after ':' and ',': they are legal JSON and the parser takes them, but this string is
         # about to be printed in the case header and pasted into issues, and short is legible.
         # Today's fields contain no apostrophe (a URL from `lan_ip()` plus codec names plus
@@ -1074,7 +1074,7 @@ def triggers_for_case(case, url_base=None):
             spec["auto_hls_base"] = f"{url_base}/__abr"
             # Enter HLS directly rather than by provoking a starvation. Declared per case: the one
             # case that GRADES the Original->HLS transition must not skip it. See
-            # `dev::PlayUrl::auto_start_hls` — the old entry relied on the starvation horizon
+            # `player::playurl::PlayUrl::auto_start_hls` — the old entry relied on the starvation horizon
             # firing while the reserve was filling, which stopped being possible on 2026-08-27.
             if auto.get("start_hls"):
                 spec["auto_start_hls"] = True
@@ -1148,7 +1148,7 @@ def triggers_for_case(case, url_base=None):
             #
             # This was briefly a pipeline-only arm, on the theory that making the server tier write
             # its target would swap an app code path. That theory was WRONG and the app says so:
-            # `dev::read` returns Some("") for an empty file, and app.rs splits on ',', drops empty
+            # `devtrig::read` returns Some("") for an empty file, and app.rs splits on ',', drops empty
             # tokens, then does `if steps.is_empty() { steps.push("140") }` — so an empty file and
             # the content "140" converge to a byte-identical `steps == ["140"]` before any seek
             # logic runs. There is no second path to preserve. The app's empty-file default
@@ -3223,7 +3223,7 @@ def a_replayed(lines, want):
         site). COUNTED, not merely found: a replay that fires more often than the case armed is a
         loop, and a loop satisfies every other assertion here while meaning the opposite.
       * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
-        `teardown` clears the URL, so a second line is what says `dev::playurl()` was re-read and
+        `teardown` clears the URL, so a second line is what says `player::playurl::playurl()` was re-read and
         the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
         never tore down.
       * the media position FELL and then climbed again. A replay that resumed where the first run
@@ -4304,7 +4304,7 @@ def check_install(lines, cfg):
     the only witness, which is why its absence is also a refusal (see require_install).
 
     The un-caught failure is what makes this worth an abort. A RELEASE build reads no triggers at
-    all — `devtriggers` is compiled out, so `dev::read` is None at COMPILE time — which means the
+    all — `devtriggers` is compiled out, so `devtrig::read` is None at COMPILE time — which means the
     injected PMS token is ignored, the app has no session, and it parks on the who's-watching
     picker having played nothing. Every assertion then fails as "the line has not appeared YET",
     which `failed_for_good` deliberately never settles, so every case burns its full run_secs and

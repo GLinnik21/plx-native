@@ -1,26 +1,18 @@
-//! **Typed usage events plus the log/lab diagnostics plumbing.**
+//! **Typed usage events plus the lab diagnostics plumbing.**
 //!
-//! Three pieces, lifted out of `lab/` on 2026-08-29 when a second consumer appeared. They were
-//! written for the Cloud Lab bridge, they were correct, and none of them was lab-shaped:
+//! Three pieces were lifted out of `lab/` on 2026-08-29 when a second consumer appeared. They were
+//! written for the Cloud Lab bridge, they were correct, and none of them was lab-shaped. Two of
+//! them, the redaction pass and the record ring, are the event log's own guards and now live
+//! under it as `crate::eventlog::{scrub, ring}` (docs/module-layers.md: the log is a leaf every
+//! module names, so it cannot name `diag`, which names the Plex layer). The third stays here:
 //!
-//! * [`scrub`] — the redaction pass. **Ungated**, because `crate::log` calls
-//!   [`scrub::scrub_local`] on every line in every build. See that module's doc for why there are
-//!   two exits and why only the remote one may drop a line.
-//! * [`ring`] — the bounded in-memory record ring, tapped one call below `redact_tokens`.
 //! * [`zlib`] — `dlopen`'d `compress2` plus a gzip envelope, in its own one-symbol table.
-//!
-//! **`ring` and `zlib` stay behind a feature, `scrub` does not.** A build with neither
-//! `lab-diagnostics` nor `telemetry` has nothing to put in a ring and nothing to compress, but it
-//! still writes a log file — and the whole point of moving `scrub` here was that its assertions
-//! run in the default `make check`, which `lab/`'s cfg had been quietly excluding them from.
 //!
 //! Logs and Cloud Lab diagnostics have ONE scrubber and take different exits from it. Native Sentry
 //! envelopes are deliberately different data: `telemetry::native` applies a fixed JSON field
 //! allowlist and path sanitizer before they enter the common consent-gated telemetry spool.
 
-pub(crate) mod scrub;
-
-// UNGATED for the same reason `scrub` is, and it is the same lesson: the guarantee this module
+// UNGATED for the same reason `eventlog::scrub` is, and it is the same lesson: the guarantee this module
 // provides is its TESTS — that action fields cannot carry runtime strings, that bounded context
 // fields stay within their allowlisted schema, and that `PRIVACY.md` lists every usage event — and
 // tests behind a feature the default gate does not build are tests that never run. `scrub`'s 31
@@ -115,7 +107,7 @@ fn now_ms() -> u64 {
 fn event_for_impl(e: schema::DiagEvent, server: ServerContext, stamp: Option<Stamp>) {
     // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
     // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
-    // is the shape `diag::scrub`'s identity list had to be rebuilt into after wiring it to
+    // is the shape `eventlog::scrub`'s identity list had to be rebuilt into after wiring it to
     // `session::peek()` put five file reads on every log line and deadlocked the `auth` tests.
     //
     // Every event declared today is a USAGE event. When error events arrive they ask the other
@@ -199,7 +191,7 @@ fn event_for_impl(e: schema::DiagEvent, server: ServerContext, stamp: Option<Sta
     // the NEXT sign-in's identifier at send time (`sender::wire_body` attaches the identifier
     // current at the send, not at the capture). The handled playback error already went this way.
     //
-    // Deliberately not logged. `crate::log` writes the event log, and an event stream duplicated
+    // Deliberately not logged. `crate::eventlog::log` writes the event log, and an event stream duplicated
     // into the primary debugging surface would double its volume to say nothing new — every one of
     // these is derived from a line already there.
     let record = crate::telemetry::queue::Record {
@@ -262,8 +254,8 @@ fn defer(e: schema::DiagEvent) {
     q.push_back(Deferred { event: e, stamp });
 }
 
-/// Drain and replay every deferred sign-in event through the normal gated path. Called from the
-/// consent adapter's `commit_live` right after the new decision is published — a "yes" lets these
+/// Drain and replay every deferred sign-in event through the normal gated path. Called from
+/// `telemetry::transition::commit` right after the new decision is published — a "yes" lets these
 /// through exactly as if consent had already been answered when they first happened; a "no" hits
 /// the same gate every other event does and is dropped, which is why this drains UNCONDITIONALLY
 /// rather than checking the answer itself: emptying the queue either way is what keeps a refused
@@ -289,7 +281,7 @@ pub(crate) fn deferred_len() -> usize {
 }
 
 /// Drop every deferred sign-in event with no replay. Called on sign-out/delete-local-data
-/// (`forget_live`) so a queued event from the departing account's attempt can never cross into
+/// (`telemetry::transition::forget`) so a queued event from the departing account's attempt can never cross into
 /// the next account's consent decision.
 pub(crate) fn clear_deferred() {
     DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -335,8 +327,6 @@ fn random_uuid_v4() -> Option<String> {
 // error, and that is the check doing the work here.
 pub(crate) mod heartbeat; // the frame's own instruments: the eight phase stamps, FRAMEDROP, worstframe=/worstprep=
 pub(crate) mod spans; // named sub-spans of one frame (results, update, draw), printed on its FRAMEDROP line
-#[cfg(feature = "lab-diagnostics")]
-pub(crate) mod ring;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod zlib;
 

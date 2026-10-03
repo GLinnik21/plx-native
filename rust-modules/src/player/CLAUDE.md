@@ -45,16 +45,18 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
   it belongs to; never smuggle it through a raw static.
 
-**The main-thread rule is compiler-enforced.** `ffi.rs`'s `extern "C"` declarations are private to
-that module, and every wrapper but one takes a `task::MainThread` — a `!Send` ZST `plex_run` mints
-once. Since phase 9 it mints exactly one and `boot` MOVES it into `player::adapter::PlayerAdapter`
-(`App.adapters.player`), which also owns the native session that was the `static mut ENGINE`: the
-seam is reached as `pa.mt()`, the session as `pa.engine()` / `pa.split()`, and a function that
+**The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `tv/sink.rs`
+(Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
+declarations are private to that module and only `StarfishSink` there implements the trait on the
+television; `ffi_host.rs`'s `HostSink` is the simulator's. Every method but three takes a
+`task::MainThread` — a `!Send` ZST the application mints once. Since phase 9 it mints exactly one
+and `boot` MOVES it into `player::adapter::PlayerAdapter` (`App.adapters.player`), which also owns
+the native session that was the `static mut ENGINE`: the seam is reached as `pa.mt()`, the session as `pa.engine()` / `pa.split()`, and a function that
 touches the session takes `pa: &mut PlayerAdapter` where it used to take `mt: &MainThread`. Moving
 any of it onto a thread stops compiling (the closure captures a `&MainThread`, which `task::spawn`
 rejects), and two live `&mut` to the session no longer needs a convention — it does not compile,
 which is what turned `pump`'s "reload REPLACES the ENGINE, so `eng` dangles" comment into a rule
-the borrow checker keeps. Two intentional holes, both worth knowing: `sf_load` takes **no** token
+the borrow checker keeps. Two intentional holes, both worth knowing: `load` takes **no** token
 because `load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an
 `unsafe` block inside a worker still defeats this. The rule for new code: take the token **iff**
 you reach the seam, the adapter **iff** you reach the session, so a signature keeps meaning
@@ -131,9 +133,9 @@ something.
   (the viewer's own `player::pause`, then `player::state()` answers `Buffering` so the HUD's
   existing transport spinner draws) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`app::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
-  While the hold's pause stands the viewer's transport reads see PLAYING (`lifecycle::viewer_paused`,
+  While the hold's pause stands the viewer's transport reads see PLAYING (`player::lifecycle::viewer_paused`,
   `claim_hold::owns_pause`): the OK toggle means Pause and a seek's `resume_if_paused` leaves the
   hold alone (its seek is carried past the reload by `pump::commit_or_carry_seek`, including a
   seek pressed mid-flight when none was pending at claim time). An engine failure during the
@@ -177,7 +179,7 @@ something.
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
-  is in its doc comment) and `player_hud::sub_screen_rect` scales the whole display set into the
+  is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
@@ -204,10 +206,11 @@ something.
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
   for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
-  busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
+  busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; details in the
-  `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
+  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
+  the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
   failure without repeating route preparation, and applies the saved clock only after `Started`.

@@ -1744,7 +1744,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             card_row::draw_tile(
                 p,
                 Art::Thumb {
-                    sid: crate::plex::current_server(),
+                    sid: crate::plex::current_server().raw(),
                     key: &u.thumb,
                     res: (300, 300),
                 },
@@ -1784,7 +1784,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             card_row::draw_focused(
                 p,
                 Art::Thumb {
-                    sid: crate::plex::current_server(),
+                    sid: crate::plex::current_server().raw(),
                     key: &u.thumb,
                     res: (300, 300),
                 },

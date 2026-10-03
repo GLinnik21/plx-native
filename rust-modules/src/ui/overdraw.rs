@@ -69,7 +69,7 @@ pub(crate) const NAMES: [&str; NCLASS] = [
 #[cfg(feature = "devtriggers")]
 mod imp {
     use super::{Class, NAMES, NCLASS};
-    use crate::log;
+    use crate::eventlog::log;
     use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
     use std::cell::Cell;
 

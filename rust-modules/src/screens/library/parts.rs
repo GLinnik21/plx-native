@@ -5,7 +5,7 @@ pub(super) use super::rail::RailPart;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use crate::screens::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use crate::screens::registry::{tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use crate::ui::card_row;
 use crate::ui::consts::{MARGIN_X, SCR_H};
 use crate::ui::frame::Budget;
@@ -28,7 +28,7 @@ pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
 const NO_HOLES: &[(usize, usize)] = &[];
 
 pub(super) fn grid_art(item: &crate::pms::PmsMovie) -> Art<'_> {
-    if item.kind == 3 { Art::Still(Some(item)) } else { Art::Poster(Some(item)) }
+    if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
 /// One label construction for the normal and modal-lifted focused grid card.
@@ -43,7 +43,7 @@ pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {
         else { card_row::TileLabel::titled(&name,
             &crate::ui::fmt::pretty_date(&item.aired, item.year as i64)) };
     }
-    card_row::poster_label(item)
+    card_row::poster_label(&tile_facts::of(item))
 }
 
 #[derive(Default)]
@@ -455,7 +455,7 @@ impl GridPart {
         // let go under the press, as a shelf's do (`RowMotion::scale` × `f.press.scale`)
         card_row::draw_focused(p, grid_art(item), rect, scale, &style, resume, &label, f.measure);
         if item.kind == 3 {
-            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), false, f.measure);
+            crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
         }
     }
 }
@@ -586,7 +586,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
             let resume = if item.kind == 3 { None } else { item.resume_frac() };
             card_row::draw_tile(p, grid_art(item), rect, scale, &style, resume);
             if item.kind == 3 {
-                crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), false, f.measure);
+                crate::ui::widgets::still_overlay(p, &tile_facts::of(item), rect, style.tile_radius(rect, scale), false, f.measure);
             }
         }
         self.draw_focused(f, focus);

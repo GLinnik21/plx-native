@@ -147,74 +147,11 @@ impl IncidentKind {
     }
 }
 
-/// What the most recent network call observed, coarsened into the class this report carries. An
-/// `Answered*` class carries the exact status ([`IncidentContext::http_status`]); `Dns`, `Tls`,
-/// `Timeout` and `TransportOther` carry the exact `CURLcode` ([`IncidentContext::curl_rc`]).
-/// `Unknown` is "no call yet" and "refused before libcurl ran" alike — neither has a code to name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum LinkClass {
-    Answered2xx,
-    Answered4xx,
-    Answered5xx,
-    AnsweredOther,
-    Dns,
-    Tls,
-    Timeout,
-    TransportOther,
-    Unknown,
-}
-
-impl LinkClass {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Answered2xx => "answered_2xx",
-            Self::Answered4xx => "answered_4xx",
-            Self::Answered5xx => "answered_5xx",
-            Self::AnsweredOther => "answered_other",
-            Self::Dns => "dns",
-            Self::Tls => "tls",
-            Self::Timeout => "timeout",
-            Self::TransportOther => "transport_other",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-fn answered(status: u16) -> (LinkClass, Option<u16>, Option<i32>) {
-    let class = match status {
-        200..=299 => LinkClass::Answered2xx,
-        400..=499 => LinkClass::Answered4xx,
-        500..=599 => LinkClass::Answered5xx,
-        _ => LinkClass::AnsweredOther,
-    };
-    (class, Some(status), None)
-}
-
-/// Coarsen the last call into its class plus the ONE number that class carries — the HTTP status
-/// or the `CURLcode`, never both. PURE.
-///
-/// `Ok(status)` is a response `net` returned; `Err` is its [`RequestFailure`]. A failure that kept
-/// a validated final status (`net::response_status`'s truncated-refusal evidence) is classed by
-/// that status: the server did answer, and a 401 whose body broke is still a 401.
-pub(crate) fn classify(last: Option<Result<u16, RequestFailure>>) -> (LinkClass, Option<u16>, Option<i32>) {
-    match last {
-        None => (LinkClass::Unknown, None, None),
-        Some(Ok(status)) => answered(status),
-        Some(Err(RequestFailure { status: Some(status), .. })) => answered(status),
-        Some(Err(RequestFailure { cause: RequestError::TimedOut, curl_rc, .. })) => {
-            // `net` only says TimedOut for CURLE_OPERATION_TIMEDOUT, so the code is 28 either way.
-            (LinkClass::Timeout, None, Some(curl_rc.unwrap_or(28)))
-        }
-        Some(Err(RequestFailure { curl_rc: None, .. })) => (LinkClass::Unknown, None, None),
-        Some(Err(RequestFailure { curl_rc: Some(6), .. })) => (LinkClass::Dns, None, Some(6)),
-        Some(Err(RequestFailure { curl_rc: Some(rc @ (35 | 60 | 77 | 90)), .. })) => {
-            (LinkClass::Tls, None, Some(rc))
-        }
-        Some(Err(RequestFailure { curl_rc: Some(rc), .. })) => {
-            (LinkClass::TransportOther, None, Some(rc))
-        }
-    }
-}
+// What the most recent network call observed, coarsened into the class this report carries
+// (`LinkClass`), and the pure `classify` that coarsens it, are defined in `plex::probe`: the probe
+// grades its own transport failures in the same vocabulary and `plex` sits beneath this layer.
+// Re-exported, so every incident producer and reader keeps naming them here.
+pub(crate) use crate::plex::probe::{classify, LinkClass};
 
 /// How many consecutive calls came back with no usable answer, bucketed — never the raw count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -470,6 +407,62 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// **The mark a failed sign-in read-out wears above its verdict** (spec "1A"): one per cause this
+/// schema can name, chosen by [`IncidentContext::readout_glyph`] from the SAME typed evidence the
+/// caption comes from, so the mark and the words cannot disagree. Telemetry owns which mark a cause
+/// earns; the screen owns what each mark looks like and maps it to an icon
+/// (`screens::login`), which is why this enum names no drawing code.
+///
+/// Twelve marks, one family: a BASE says what is involved (a server, plex.tv, an account, a
+/// sign-in's stored key, a profile roster, a wait's clock), a BADGE says what went wrong.
+/// `WifiSlash` stands alone — there is no server to blame when the TV itself has no link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadoutGlyph {
+    /// A clock, alert badge — a wait that ran out.
+    ClockBadgeAlert,
+    /// A cloud, alert badge — plex.tv answered with an error, or the app's own machinery failed.
+    CloudBadgeAlert,
+    /// A globe, minus badge — plex.tv did not answer and the failure is not DNS or TLS.
+    GlobeBadgeMinus,
+    /// A globe, question badge — plex.tv could not be found (DNS).
+    GlobeBadgeQuestion,
+    /// A key, alert badge — the sign-in could not be saved or read back.
+    KeyBadgeAlert,
+    /// A lock, alert badge — plex.tv could not be reached securely (TLS).
+    LockBadgeAlert,
+    /// A people roster, alert badge — the profile switch failed.
+    PeopleBadgeAlert,
+    /// A person, x badge — plex.tv refused the token.
+    PersonBadgeXmark,
+    /// A server, minus badge — the servers (or the first content load) did not answer.
+    ServerBadgeMinus,
+    /// A server, plus badge — the account has no server.
+    ServerBadgePlus,
+    /// A server, x badge — a server answered and refused.
+    ServerBadgeXmark,
+    /// A slashed Wi-Fi mark — the TV itself cannot get out.
+    WifiSlash,
+}
+
+impl ReadoutGlyph {
+    /// Every mark, so the screen's mapping can be held to one icon per mark.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 12] = [
+        Self::ClockBadgeAlert,
+        Self::CloudBadgeAlert,
+        Self::GlobeBadgeMinus,
+        Self::GlobeBadgeQuestion,
+        Self::KeyBadgeAlert,
+        Self::LockBadgeAlert,
+        Self::PeopleBadgeAlert,
+        Self::PersonBadgeXmark,
+        Self::ServerBadgeMinus,
+        Self::ServerBadgePlus,
+        Self::ServerBadgeXmark,
+        Self::WifiSlash,
+    ];
+}
+
 /// **The [`LinkClass`] outcomes a plex.tv-facing incident always reads the same way**, shared by
 /// [`IncidentKind::PinCreate`] (`mint_pin`, `auth.rs`) and the `Discovery(Silent)`/`PlexTv` arm of
 /// [`IncidentContext::readout_glyph`] — the one place both used to spell out the same three arms
@@ -479,15 +472,15 @@ fn now_ms() -> u64 {
 /// agree here. `None` for `Timeout`/`TransportOther`/`Unknown` — the two callers diverge only on
 /// that "nothing specific happened" fallback, each picking its own glyph, so this returns `None`
 /// rather than guessing one. Exhaustive on [`LinkClass`], no wildcard arm.
-fn plextv_link_glyph(link: LinkClass) -> Option<crate::ui::icons::Icon> {
-    use crate::ui::icons::Icon;
+fn plextv_link_glyph(link: LinkClass) -> Option<ReadoutGlyph> {
+    use ReadoutGlyph as Glyph;
     match link {
-        LinkClass::Dns => Some(Icon::GlobeBadgeQuestion),
-        LinkClass::Tls => Some(Icon::LockBadgeAlert),
+        LinkClass::Dns => Some(Glyph::GlobeBadgeQuestion),
+        LinkClass::Tls => Some(Glyph::LockBadgeAlert),
         LinkClass::Answered2xx
         | LinkClass::Answered4xx
         | LinkClass::Answered5xx
-        | LinkClass::AnsweredOther => Some(Icon::CloudBadgeAlert),
+        | LinkClass::AnsweredOther => Some(Glyph::CloudBadgeAlert),
         LinkClass::Timeout | LinkClass::TransportOther | LinkClass::Unknown => None,
     }
 }
@@ -657,26 +650,26 @@ impl IncidentContext {
     ///   failed rather than any named server or link, so this takes `CloudBadgeAlert`, the same
     ///   "something didn't work" mark an answered-but-broken plex.tv call wears, as the least
     ///   specific honest choice among the twelve.
-    pub(crate) fn readout_glyph(&self) -> crate::ui::icons::Icon {
-        use crate::ui::icons::Icon;
+    pub(crate) fn readout_glyph(&self) -> ReadoutGlyph {
+        use ReadoutGlyph as Glyph;
         match self.kind {
-            IncidentKind::PinExpired | IncidentKind::LinkStalled => Icon::ClockBadgeAlert,
-            IncidentKind::PinCreate => plextv_link_glyph(self.link).unwrap_or(Icon::WifiSlash),
-            IncidentKind::Authorization => Icon::PersonBadgeXmark,
-            IncidentKind::Discovery(DiscoveryClass::NoServers) => Icon::ServerBadgePlus,
-            IncidentKind::Discovery(DiscoveryClass::Refused) => Icon::ServerBadgeXmark,
-            IncidentKind::Discovery(DiscoveryClass::InsecureOnly) => Icon::ServerBadgeMinus,
+            IncidentKind::PinExpired | IncidentKind::LinkStalled => Glyph::ClockBadgeAlert,
+            IncidentKind::PinCreate => plextv_link_glyph(self.link).unwrap_or(Glyph::WifiSlash),
+            IncidentKind::Authorization => Glyph::PersonBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::NoServers) => Glyph::ServerBadgePlus,
+            IncidentKind::Discovery(DiscoveryClass::Refused) => Glyph::ServerBadgeXmark,
+            IncidentKind::Discovery(DiscoveryClass::InsecureOnly) => Glyph::ServerBadgeMinus,
             IncidentKind::Discovery(DiscoveryClass::Silent) => {
                 match self.discovery.and_then(|d| d.target) {
-                    Some(DiscoveryTarget::Servers) => Icon::ServerBadgeMinus,
+                    Some(DiscoveryTarget::Servers) => Glyph::ServerBadgeMinus,
                     Some(DiscoveryTarget::PlexTv) | None =>
-                        plextv_link_glyph(self.link).unwrap_or(Icon::GlobeBadgeMinus),
+                        plextv_link_glyph(self.link).unwrap_or(Glyph::GlobeBadgeMinus),
                 }
             }
-            IncidentKind::SaveFailed | IncidentKind::StoredLocked => Icon::KeyBadgeAlert,
-            IncidentKind::ProfileSwitch => Icon::PeopleBadgeAlert,
+            IncidentKind::SaveFailed | IncidentKind::StoredLocked => Glyph::KeyBadgeAlert,
+            IncidentKind::ProfileSwitch => Glyph::PeopleBadgeAlert,
             IncidentKind::ContentLoad(ContentSource::Home | ContentSource::Libraries) => {
-                Icon::ServerBadgeMinus
+                Glyph::ServerBadgeMinus
             }
             IncidentKind::Internal(
                 InternalClass::AdmissionRefused
@@ -685,7 +678,7 @@ impl IncidentContext {
                 | InternalClass::CommitRefused
                 | InternalClass::ClientIdUnavailable
                 | InternalClass::Exhausted,
-            ) => Icon::CloudBadgeAlert,
+            ) => Glyph::CloudBadgeAlert,
         }
     }
 }
@@ -693,7 +686,7 @@ impl IncidentContext {
 #[cfg(test)]
 mod readout_glyph_tests {
     use super::*;
-    use crate::ui::icons::Icon;
+    use super::ReadoutGlyph as Glyph;
 
     fn ctx(kind: IncidentKind) -> IncidentContext {
         IncidentContext::new(kind, None)
@@ -714,76 +707,76 @@ mod readout_glyph_tests {
     /// arm happened to be last.
     #[test]
     fn every_incident_kind_maps_to_the_owner_approved_glyph() {
-        assert_eq!(ctx(IncidentKind::PinExpired).readout_glyph(), Icon::ClockBadgeAlert);
-        assert_eq!(ctx(IncidentKind::LinkStalled).readout_glyph(), Icon::ClockBadgeAlert);
+        assert_eq!(ctx(IncidentKind::PinExpired).readout_glyph(), Glyph::ClockBadgeAlert);
+        assert_eq!(ctx(IncidentKind::LinkStalled).readout_glyph(), Glyph::ClockBadgeAlert);
         // `PinCreate` follows the SAME plex.tv `LinkClass` table as the Silent/PlexTv discovery
         // arm below — `mint_pin` (`auth.rs`) keeps its last response in `self.link` too, so an
         // HTTP error or a malformed 2xx from plex.tv must not read as "no connection" (`WifiSlash`)
         // — only its fallback (no specific link recorded) does.
-        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
-        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Dns).readout_glyph(), Glyph::GlobeBadgeQuestion);
+        assert_eq!(with_link(ctx(IncidentKind::PinCreate), LinkClass::Tls).readout_glyph(), Glyph::LockBadgeAlert);
         for answered in [
             LinkClass::Answered2xx,
             LinkClass::Answered4xx,
             LinkClass::Answered5xx,
             LinkClass::AnsweredOther,
         ] {
-            assert_eq!(with_link(ctx(IncidentKind::PinCreate), answered).readout_glyph(), Icon::CloudBadgeAlert,
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), answered).readout_glyph(), Glyph::CloudBadgeAlert,
                 "PinCreate with link={answered:?} must not read as no-connection");
         }
         for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
-            assert_eq!(with_link(ctx(IncidentKind::PinCreate), other).readout_glyph(), Icon::WifiSlash);
+            assert_eq!(with_link(ctx(IncidentKind::PinCreate), other).readout_glyph(), Glyph::WifiSlash);
         }
         // No link recorded at all (the context's own default) is the genuine "never got to ask" case.
-        assert_eq!(ctx(IncidentKind::PinCreate).readout_glyph(), Icon::WifiSlash);
-        assert_eq!(ctx(IncidentKind::Authorization).readout_glyph(), Icon::PersonBadgeXmark);
+        assert_eq!(ctx(IncidentKind::PinCreate).readout_glyph(), Glyph::WifiSlash);
+        assert_eq!(ctx(IncidentKind::Authorization).readout_glyph(), Glyph::PersonBadgeXmark);
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)).readout_glyph(),
-            Icon::ServerBadgePlus
+            Glyph::ServerBadgePlus
         );
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::Refused)).readout_glyph(),
-            Icon::ServerBadgeXmark
+            Glyph::ServerBadgeXmark
         );
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         assert_eq!(
             with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::Servers)
                 .readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         let plextv = with_target(ctx(IncidentKind::Discovery(DiscoveryClass::Silent)), DiscoveryTarget::PlexTv);
-        assert_eq!(with_link(plextv, LinkClass::Dns).readout_glyph(), Icon::GlobeBadgeQuestion);
-        assert_eq!(with_link(plextv, LinkClass::Tls).readout_glyph(), Icon::LockBadgeAlert);
+        assert_eq!(with_link(plextv, LinkClass::Dns).readout_glyph(), Glyph::GlobeBadgeQuestion);
+        assert_eq!(with_link(plextv, LinkClass::Tls).readout_glyph(), Glyph::LockBadgeAlert);
         for answered in [
             LinkClass::Answered2xx,
             LinkClass::Answered4xx,
             LinkClass::Answered5xx,
             LinkClass::AnsweredOther,
         ] {
-            assert_eq!(with_link(plextv, answered).readout_glyph(), Icon::CloudBadgeAlert);
+            assert_eq!(with_link(plextv, answered).readout_glyph(), Glyph::CloudBadgeAlert);
         }
         for other in [LinkClass::Timeout, LinkClass::TransportOther, LinkClass::Unknown] {
-            assert_eq!(with_link(plextv, other).readout_glyph(), Icon::GlobeBadgeMinus);
+            assert_eq!(with_link(plextv, other).readout_glyph(), Glyph::GlobeBadgeMinus);
         }
         // No discovery target recorded at all (defensive: the field is `Option`) reads the same
         // as `PlexTv` — the fallback branch above, exercised here with the default `Unknown` link.
         assert_eq!(
             ctx(IncidentKind::Discovery(DiscoveryClass::Silent)).readout_glyph(),
-            Icon::GlobeBadgeMinus
+            Glyph::GlobeBadgeMinus
         );
-        assert_eq!(ctx(IncidentKind::SaveFailed).readout_glyph(), Icon::KeyBadgeAlert);
-        assert_eq!(ctx(IncidentKind::StoredLocked).readout_glyph(), Icon::KeyBadgeAlert);
-        assert_eq!(ctx(IncidentKind::ProfileSwitch).readout_glyph(), Icon::PeopleBadgeAlert);
+        assert_eq!(ctx(IncidentKind::SaveFailed).readout_glyph(), Glyph::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::StoredLocked).readout_glyph(), Glyph::KeyBadgeAlert);
+        assert_eq!(ctx(IncidentKind::ProfileSwitch).readout_glyph(), Glyph::PeopleBadgeAlert);
         assert_eq!(
             ctx(IncidentKind::ContentLoad(ContentSource::Home)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         assert_eq!(
             ctx(IncidentKind::ContentLoad(ContentSource::Libraries)).readout_glyph(),
-            Icon::ServerBadgeMinus
+            Glyph::ServerBadgeMinus
         );
         for internal in [
             InternalClass::AdmissionRefused,
@@ -793,7 +786,7 @@ mod readout_glyph_tests {
             InternalClass::ClientIdUnavailable,
             InternalClass::Exhausted,
         ] {
-            assert_eq!(ctx(IncidentKind::Internal(internal)).readout_glyph(), Icon::CloudBadgeAlert);
+            assert_eq!(ctx(IncidentKind::Internal(internal)).readout_glyph(), Glyph::CloudBadgeAlert);
         }
     }
 }
@@ -960,7 +953,7 @@ pub(crate) fn report_standing(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — onboarding incident was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — onboarding incident was not queued");
         return None;
     };
     let body = event_body(
@@ -990,7 +983,7 @@ fn queue_standing(record: &super::queue::Record, allowed: impl FnOnce() -> bool)
     match super::spool::append_watched_if(record, tenure, allowed) {
         Some(true) => true,
         Some(false) => {
-            crate::log("telemetry: onboarding incident did not fit the durable spool");
+            crate::eventlog::log("telemetry: onboarding incident did not fit the durable spool");
             false
         }
         None => false, // consent/tenure changed, or no delivery watch could be admitted
@@ -1015,7 +1008,7 @@ pub(crate) fn send_one_off(ctx: IncidentContext) -> Option<String> {
         return None;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — one-off onboarding report was not queued");
         return None;
     };
     let body = event_body(&event_id, super::sentry::build_id(), None, ctx, ConsentKind::OneOff);
@@ -1083,61 +1076,6 @@ mod tests {
         for private in ["token", "hostname", "path", "nonce", "uid", "pid"] {
             assert!(!text.contains(private), "private slot: {private}");
         }
-    }
-
-    #[test]
-    fn classify_maps_every_request_outcome_to_its_link_class() {
-        use RequestError::{TimedOut, Transport};
-        assert_eq!(classify(None), (LinkClass::Unknown, None, None));
-        for (status, class) in [
-            (200, LinkClass::Answered2xx),
-            (299, LinkClass::Answered2xx),
-            (429, LinkClass::Answered4xx),
-            (503, LinkClass::Answered5xx),
-            (101, LinkClass::AnsweredOther),
-            (302, LinkClass::AnsweredOther),
-        ] {
-            assert_eq!(classify(Some(Ok(status))), (class, Some(status), None), "{status}");
-        }
-        // A truncated refusal keeps its validated status, and is classed by it.
-        assert_eq!(
-            classify(Some(Err(failure(Transport, Some(401), Some(18))))),
-            (LinkClass::Answered4xx, Some(401), None)
-        );
-        assert_eq!(
-            classify(Some(Err(failure(TimedOut, None, Some(28))))),
-            (LinkClass::Timeout, None, Some(28))
-        );
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, Some(6))))),
-            (LinkClass::Dns, None, Some(6))
-        );
-        for rc in [35, 60, 77, 90] {
-            assert_eq!(
-                classify(Some(Err(failure(Transport, None, Some(rc))))),
-                (LinkClass::Tls, None, Some(rc)),
-                "rc {rc}"
-            );
-        }
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, Some(7))))),
-            (LinkClass::TransportOther, None, Some(7))
-        );
-        assert_eq!(
-            classify(Some(Err(failure(Transport, None, None)))),
-            (LinkClass::Unknown, None, None),
-            "a request refused before libcurl ran has no code to report"
-        );
-    }
-
-    /// The real completion boundary: what `net` hands back for a curl failure carries the code
-    /// this classification reads.
-    #[test]
-    fn the_network_layer_reports_the_curl_code_the_classifier_reads() {
-        let dns = crate::net::test_response_failure(6, 0, 0, false).err().expect("a failure");
-        assert_eq!(classify(Some(Err(dns))), (LinkClass::Dns, None, Some(6)));
-        let timeout = crate::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
-        assert_eq!(classify(Some(Err(timeout))), (LinkClass::Timeout, None, Some(28)));
     }
 
     #[test]

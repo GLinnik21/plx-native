@@ -441,7 +441,7 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
 
 /// **Regression, end to end: OK on Settings' second row must not reopen Legal already seated on
 /// Legal's own second row.** Traced to every page in this family sharing the surface's outer
-/// `EntryId` and `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `screen.rs`): a
+/// `EntryId` and `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `machine.rs`): a
 /// push used to ask the engine for `FocusTarget::ContainerGroup`, whose `Seat::Remembered` policy
 /// read `remembered_in(entry, GroupId(0))` back regardless of which page was ASKING — so the row
 /// the Settings root's own table remembered (from the real DOWN press below) leaked straight into

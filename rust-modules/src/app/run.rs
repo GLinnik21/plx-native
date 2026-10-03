@@ -60,7 +60,7 @@ pub(super) fn recorder_end_frame(
 /// (`Frame::begin`); every field is written by exactly one phase and read by the ones after it.
 pub(crate) struct Frame {
     /// The HUD's control slot for this frame, sampled once before input is read.
-    pub(crate) ctrl: crate::ui::player_hud::ControlSlot,
+    pub(crate) ctrl: crate::appkit::player_hud::ControlSlot,
     /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(crate) now: u32,
     /// Seconds since the previous frame's `now`, clamped to 50 ms (the animation timestep).
@@ -80,7 +80,7 @@ pub(crate) struct Frame {
 impl Frame {
     fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
         Frame {
-            ctrl: crate::ui::player_hud::slot(ps, meta),
+            ctrl: crate::appkit::player_hud::slot(ps, meta),
             now: 0,
             dt: 0.0,
             underlay_moving: false,
@@ -105,7 +105,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         watchdog.advance();
         let _frame_scope = crate::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
-        let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
+        let wslg_frame_budget = app.wslg_frame_pacing.then(super::window_activity::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
         // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
         // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
@@ -134,8 +134,8 @@ pub(crate) unsafe fn run(app: &mut App) {
                 replay_inject(app, fr, &v);
             }
         }
-        crate::system::ls2_pump();
-        crate::webos::poll_home();
+        crate::tv::window::pump_bus();
+        crate::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
         ingest(app, fr);
@@ -201,13 +201,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
             Ok(results) => results,
             Err(reason) => {
-                crate::log(&format!("replay: REFUSED — {reason}"));
+                crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
                 app.running = false;
                 break;
             }
         };
         let tick = crate::ui::machine::Tick { ms: fr.now, dt_us: (fr.dt * 1_000_000.0) as u32 };
-        if first_controlled_frame { crate::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
+        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: pre-dispatch dt={} transition={:?} alpha={} flight={}",
             tick.dt_us, app.pages.nav.tabs.stack.transition.commit_point(),
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.prepare_resources(&mut app.bridge);
@@ -237,11 +237,11 @@ pub(crate) unsafe fn run(app: &mut App) {
             std::mem::take(&mut app.inputs),
             &mut app.rec,
         ) };
-        if first_controlled_frame { crate::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
+        if first_controlled_frame { crate::eventlog::log(&format!("bootstrap: post-dispatch alpha={} flight={}",
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.resource_requests(app.bridge.take_resource_requests());
         if let Some(reason) = app.rec.failure().or_else(|| app.bridge.controlled_failure()) {
-            crate::log(&format!("replay: REFUSED — {reason}"));
+            crate::eventlog::log(&format!("replay: REFUSED — {reason}"));
             app.running = false;
             break;
         }
@@ -290,7 +290,7 @@ pub(crate) unsafe fn run(app: &mut App) {
 /// a bare units-per-second.
 fn clock_and_press(app: &mut App, fr: &mut Frame) {
     if app.boot_initial.is_some() && app.prev == 0 {
-        crate::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
+        crate::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
     }
     fr.dt = {
         let mut d = if app.prev != 0 {
@@ -459,7 +459,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // there is nothing else in the loop that would carry it: a `return` above, or a term that
     // only ran on player frames, would leave the compositor believing our surface is still
     // opaque with an ordinary UI on it.
-    crate::system::opaque_route(app.player.video_plane_bound);
+    crate::tv::window::opaque_route(app.player.video_plane_bound);
     app.instr.mark(crate::diag::heartbeat::Phase::Prepare); // prepare
     // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
     // settled screen must never run untimed work at the loop rate (spec §8.3).
@@ -474,21 +474,21 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 /// syntactic unit, and that `impl Rig<AppHost> for Bridge` block carries two dozen other methods
 /// beside these three — so this is the "or just its three privileged methods" half of the D4
 /// move. `Bridge::opaque_route`/`Bridge::clear_opaque_region` call these instead of
-/// `crate::system::` directly, which is what keeps the OS-facing text — the thing the `frame`
+/// `crate::tv::window::` directly, which is what keeps the OS-facing text — the thing the `frame`
 /// gate greps for — in this ONE file rather than split across the loop and the bridge. Each is a
-/// pure pass-through: the loop's own per-frame call above (`crate::system::opaque_route`, from
+/// pure pass-through: the loop's own per-frame call above (`crate::tv::window::opaque_route`, from
 /// `fr`) and the dispatcher's `Rig` hook (from `Bridge`'s own copy of the same bit) are two
 /// independent callers of one primitive, not two implementations of it. `ls2_pump` needs no
 /// twin here — `Bridge::ls2_pump` is or stays a no-op, since the dispatcher does not yet run a
 /// phase this early in the frame.
 pub(crate) fn rig_opaque_route(video_plane_bound: bool) {
-    crate::system::opaque_route(video_plane_bound);
+    crate::tv::window::opaque_route(video_plane_bound);
 }
 
 /// See [`rig_opaque_route`]. The `if self.video_plane` guard stays on `Bridge`'s side — this is
-/// the OS call alone, exactly what `crate::system::clear_opaque_region` was before the move.
+/// the OS call alone, exactly what `crate::tv::window::clear_opaque_region` was before the move.
 pub(crate) fn rig_clear_opaque_region() {
-    crate::system::clear_opaque_region();
+    crate::tv::window::clear_opaque_region();
 }
 
 /// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
@@ -501,7 +501,7 @@ unsafe fn present_and_swap(
     app: &mut App,
     fr: &mut Frame,
     #[cfg(all(feature = "hostsim", target_os = "linux"))]
-    wslg_frame_budget: Option<crate::system::WslgFrameBudget>,
+    wslg_frame_budget: Option<super::window_activity::WslgFrameBudget>,
 ) {
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
@@ -542,7 +542,7 @@ unsafe fn present_and_swap(
             crate::surface::present_supersampled();
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
-            crate::system::frame_probe_request();
+            crate::tv::window::frame_probe_request();
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
@@ -572,6 +572,11 @@ unsafe fn present_and_swap(
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
         crate::gfx::ground_probes_frame_end();
         crate::ui::idle::note_present(fr.now);
+        // The poster-gate scenes' frame counter, at the same post-swap seam as the present count
+        // above. It was called from inside `note_present`; `ui::idle` is the machine layer and
+        // no longer names `ui`'s metrics.
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::presented(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
             budget.finish();
@@ -674,7 +679,7 @@ fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machin
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
-    ingest_sdl_event_with_window(app, fr, crate::system::sys_grab_wayland);
+    ingest_sdl_event_with_window(app, fr, crate::tv::window::grab);
 }
 
 /// The window reacquisition is a platform operation, supplied separately so the
@@ -790,7 +795,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         super::bridge::background(&mut app.pages);
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
-        crate::system::sys_release_wayland();
+        crate::tv::window::release();
         // A trailer preview is not parked: the OS taking the screen ends it, like any other way
         // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
         // left Abandoning, and a preview session is never parked for the foreground reload —
@@ -1577,7 +1582,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
                 player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
-            } else if crate::ui::player_hud::standin_left_the_ring(
+            } else if crate::appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,
                 player.hud.nav.focus == 1,
@@ -1620,7 +1625,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             let paused_now = paused();
             if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                 if player.up_next.armed() {
-                    if crate::ui::up_next::countdown_may_run(
+                    if crate::appkit::up_next::countdown_may_run(
                         bare,
                         player.hud.nav.focus == 1,
                         player.hud.nav.btn,
@@ -1869,7 +1874,7 @@ pub(super) fn finish_local_erasure(bridge: &super::bridge::Bridge,
         super::bridge::nav_root(pages, AppArg::Login);
     }
     super::bridge::dismiss_surfaces_now(pages);
-    crate::gfx::blur_invalidate();
+    crate::ui::popover::host::blur_invalidate();
 }
 
 /// The request-to-performer boundary for root navigation. The live loop and owned-screen
@@ -2158,7 +2163,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             // A host Load of 0 with the clock sink off is "no video path", not an
                             // admitted slot. Counting it spends the cycle and the later failure
                             // opens the breaker, so every later title is skipped.
-                            let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+                            let seam_absent = cfg!(feature = "hostsim") && !crate::devtrig::flag("clocksink");
                             if started && !seam_absent {
                                 crate::player::preview::note_admitted();
                             } else if crate::route::url(&app.player.session).is_empty() {
@@ -2271,7 +2276,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             crate::ui::profile::phase("frame.ui", || {
                 crate::ui::guard(|| {
                     if fr.player {
-                        // `crate::system::clear_opaque_region()` used to be called here. It is
+                        // `crate::tv::window::clear_opaque_region()` used to be called here. It is
                         // §3.3 step 10's privileged call and belongs at the container library's
                         // OWN draw entry, which `app.pages.draw` below reaches in this same frame:
                         // `Bridge::clear_opaque_region` performs it, keyed on the plane's bit
@@ -2282,9 +2287,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // wait for a free back buffer: spanned like every other route's `clear`.
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
                         // and, from the acquired buffer to the swap, over the commit phase.
-                        crate::system::frame_probe_waiting();
+                        crate::tv::window::frame_probe_waiting();
                         crate::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
-                        crate::system::frame_probe_acquired();
+                        crate::tv::window::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -2295,7 +2300,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // `transport` is the other per-frame fact the instance cannot resolve for
                         // itself: the transport's MIDDLE is hidden behind an open Info card or
                         // Chapters strip, and which panel is up is the container's answer.
-                        let busy = crate::ui::player_hud::busy(&app.player.session);
+                        let busy = crate::appkit::player_hud::busy(&app.player.session);
                         let bare_middle = !matches!(
                             super::bridge::player_overlay_kind(&app.pages),
                             Some(crate::screens::player::overlay::OverlayKind::Info)
@@ -2652,7 +2657,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages),
                     app.bridge.home_snap_pos(&app.pages),
-                    crate::system::frame_probe_fields()
+                    crate::tv::window::frame_probe_fields()
                 )
             }) {
                 log(&line);
@@ -2959,7 +2964,7 @@ mod lifecycle_regression_tests {
             fps_shown: Default::default(),
             play_prev: None,
             running: Default::default(),
-            window_activity: crate::system::WindowActivity::new(),
+            window_activity: crate::app::window_activity::WindowActivity::new(),
             #[cfg(feature = "devtools")]
             buffer_flip_count: Default::default(),
             down_sym: Default::default(),
@@ -3327,9 +3332,9 @@ mod lifecycle_regression_tests {
         // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
         use crate::ui::{machine::{FocusKey, Tick}, screen::{Activate, Hover, Stop}, Rect};
         use crate::screens::registry::PlayerReq;
-        let key = FocusKey { elem: crate::ui::player_hud::ELEM_SCRUB,
+        let key = FocusKey { elem: crate::appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
-        let rect = crate::ui::player_hud::scrub_hit_rect();
+        let rect = crate::appkit::player_hud::scrub_hit_rect();
         app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
             hover: Hover::Ignore, activate: Activate::Direct }]);
         app.pages.input.hit.swap();
@@ -3344,7 +3349,7 @@ mod lifecycle_regression_tests {
                 assert!(page.scrub.drag);
                 assert!(page.scrub.ns > 0);
             } else {
-                let expected = (crate::ui::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
+                let expected = (crate::appkit::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
                 assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
             }
         }
@@ -3639,7 +3644,7 @@ mod lifecycle_regression_tests {
             frame(&mut self.app, 16);
             let player = super::super::bridge::player_mut(&mut self.app.pages).unwrap();
             player.up_next.tick(
-                crate::ui::player_hud::ControlSlot::UpNext(crate::metadata::Marker {
+                crate::appkit::player_hud::ControlSlot::UpNext(crate::metadata::Marker {
                     kind: crate::metadata::MarkerKind::Credits,
                     start_ms: 0,
                     end_ms: 60_000,
@@ -3648,7 +3653,7 @@ mod lifecycle_regression_tests {
                 20,
             );
             let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
-            fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
+            fr.now = 20 + crate::appkit::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
         }
@@ -3876,7 +3881,7 @@ mod lifecycle_regression_tests {
         fr.now = 32;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load());
-        // The host test has no GL context for sys_grab_wayland. Drive the remaining production
+        // The host test has no GL context for `tv::window::grab`. Drive the remaining production
         // DID-foreground seams directly after granting the same WindowActivity permission.
         rig.app.window_activity.event(0x106);
         super::super::bridge::foreground(&mut rig.app.pages);
@@ -4173,7 +4178,7 @@ mod lifecycle_regression_tests {
         let mut t = playing_inside_final_credits(&mut rig);
         let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         assert!(fr.ctrl.is_discs(), "inside the credits the row keeps the discs");
-        t += crate::ui::up_next::COUNTDOWN_MS;
+        t += crate::appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         let player = super::super::bridge::player(&rig.app.pages).unwrap();
         assert!(!player.up_next.expired(t), "no countdown was armed for the credits");
@@ -4202,11 +4207,11 @@ mod lifecycle_regression_tests {
         let mut t = playing_inside_final_credits(&mut rig);
         let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         assert!(
-            matches!(fr.ctrl, crate::ui::player_hud::ControlSlot::UpNext(_)),
+            matches!(fr.ctrl, crate::appkit::player_hud::ControlSlot::UpNext(_)),
             "inside the credits the tile takes over",
         );
         assert!(!crate::route::play_pending(), "the countdown is still running");
-        t += crate::ui::up_next::COUNTDOWN_MS;
+        t += crate::appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         assert!(crate::route::play_pending(), "the countdown requests the successor");
     }
@@ -4237,5 +4242,129 @@ mod lifecycle_regression_tests {
             rig.app.route().id(),
         );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+}
+
+#[cfg(test)]
+mod video_plane_gate_tests {
+    //! **The present gate's plane term, end to end.** It began in `ui::idle`'s tests and lives here
+    //! because it needs three things no lower layer owns together: a `Player` (the bit's one
+    //! writer), the gate (`ui::idle`, the machine layer) and this file's own source (the loop is
+    //! the one consumer a unit test cannot drive). The gate-only half stayed beside the gate:
+    //! `ui::idle`'s `the_present_gate_answers_true_only_while_the_plane_bit_is_set`.
+    use crate::ui::idle::{
+        invalidate, reset_for_test, should_present, take_local_damage, video_plane_bound,
+    };
+
+    /// **Spec §9, §4.4, §16 risk 10 — the whole-frame gate is turned off by the PLANE'S BIT, not
+    /// by the player route, and both of its edges are carried.**
+    ///
+    /// Three separate claims, because three separate things were wrong before phase 9.
+    ///
+    /// 1. *Only while bound.* The term used to be `|| fr.player` at the call site, i.e. "the
+    ///    player SCREEN is up" — true through the whole pre-bind spinner and the whole post-unbind
+    ///    fade, when the compositor has an ordinary UI surface and nothing is slaved to it.
+    /// 2. *The false edge presents.* The frame the plane goes away on is very often one the gate
+    ///    would otherwise skip: the picture is gone and no spring is moving. If that frame is not
+    ///    presented, the surface keeps whatever the last video frame left and the opaque region is
+    ///    asserted for a plane that is no longer there (§3.3 step 9).
+    /// 3. *`opaque_route` is asked on every frame, from the bit.* Pinned from the loop's own source
+    ///    — this is the one consumer a unit test cannot drive, `run` needing a live SDL window.
+    ///
+    /// Observed RED (simulated — the fix changes the signatures the old code called, so the test
+    /// cannot be compiled against 88841d3e): restoring `idle::should_present`'s pre-phase-9 body by
+    /// deleting the `|| VIDEO_PLANE.load(Relaxed)` term fails claim 1 at
+    /// "while the plane is bound every frame presents"; deleting the `!bound` `invalidate()` in
+    /// `Player::set_video_plane_bound` fails claim 2 at "the unbind frame presents"; and putting
+    /// `fr.player` back as `opaque_route`'s argument fails claim 3.
+    #[test]
+    fn the_present_gate_answers_true_only_while_the_plane_is_bound() {
+        let _g = crate::testlock::serial();
+        reset_for_test();
+        let mut player = crate::player::machine::Player::new();
+        assert!(!video_plane_bound(), "a fresh machine has no plane");
+
+        invalidate();
+        assert!(should_present(0), "the damage just raised selects this frame");
+        assert!(!should_present(16), "settled, inside the keepalive: nothing to send");
+
+        // ---- the TRUE edge, and what it buys ----
+        player.set_video_plane_bound(true);
+        assert!(video_plane_bound(), "the machine's edge is the gate's only input");
+        for t in [32u32, 48, 64, 80] {
+            assert!(
+                should_present(t),
+                "while the plane is bound every frame presents, unconditionally — nothing about                  this frame moved",
+            );
+        }
+
+        // A LEVEL is not an edge. Writing the same value again must publish nothing: a second
+        // formula term feeding the gate is exactly what risk 10 names.
+        let _ = take_local_damage();
+        player.set_video_plane_bound(true);
+        assert_eq!(
+            take_local_damage(),
+            0,
+            "re-asserting the same bit raised damage — the bit is published on EDGES only",
+        );
+
+        // ---- the FALSE edge, on a frame that would otherwise not present ----
+        // Nothing else has happened: no input, no landing, no spring, and the keepalive is not due
+        // (LAST_PRESENT is 0 and KEEPALIVE_MS is 2000). Without the edge's own report this frame
+        // is skipped, and the last video frame stays on the panel behind a stale opaque region.
+        player.set_video_plane_bound(false);
+        assert!(!video_plane_bound());
+        assert!(
+            should_present(96),
+            "the unbind frame presents even though nothing else about it moved",
+        );
+        assert!(
+            !should_present(112),
+            "…and the frame after it is an ordinary idle frame again, which is the whole point",
+        );
+
+        // ---- claim 3: the loop asks the compositor on EVERY frame, from the bit ----
+        let whole = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        // The loop's own text — everything above this module — so the strings this pin searches
+        // for are not found in the pin itself.
+        let src = whole
+            .split("#[cfg(test)]\nmod video_plane_gate_tests")
+            .next()
+            .expect("the loop's source");
+        assert!(
+            !src.contains("crate::tv::window::opaque_route(fr.player)"),
+            "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
+        );
+        // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
+        // present decision — spec §3.3 step 9 puts it AFTER, and since phase 11 so does the loop,
+        // because the render cache's upload step now runs on the PRESENTING side of that decision
+        // and this call has to follow it. The claim is that the call is never nested inside an
+        // `if fr.present` block: the false edge after an unbind may land on a frame the gate does
+        // not present, and nothing else in the loop would carry it. This assertion used to be
+        // `call < gate`, which was a proxy for that and stopped being one when the upload moved.
+        //
+        // D1 extracted the prepare window into `prepare_window(app, fr)` to get `run` under its
+        // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
+        // `prepare_window`'s own body depth (four spaces, never inside that function's one
+        // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
+        const CALL: &str = "    crate::tv::window::opaque_route(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`opaque_route` must be called exactly once, unnested — inside `if fr.present` it is \
+             lost on exactly the frames it matters on",
+        );
+        assert!(
+            src.lines().any(|l| l == "        prepare_window(app, fr);"),
+            "…and the window that holds it runs on every iteration, at the loop body's own depth",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src
+            .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
+            .expect("the loop's draw");
+        assert!(call < draw, "the compositor is told before the frame is drawn");
     }
 }

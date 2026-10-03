@@ -33,7 +33,7 @@
 //!   dispatcher does not yet run a phase this early in the frame). `opaque_route` and
 //!   `clear_opaque_region` stopped being no-ops in phase 9 — the rig's hooks are real, but they
 //!   delegate to `app/run.rs::rig_opaque_route`/`rig_clear_opaque_region` rather than naming
-//!   `crate::system::` here, which is what keeps the OS-facing call text in one file (D4;
+//!   `crate::tv::window::` here, which is what keeps the OS-facing call text in one file (D4;
 //!   `ci/check-deps.sh`'s `frame` gate).
 
 use std::ffi::CStr;
@@ -263,7 +263,7 @@ impl ConsentMachine {
             (usage, next.usage, "usage analytics"),
         ] {
             if asked && !got {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "consent: no /dev/urandom — refusing {channel} rather than inventing an identifier"
                 ));
             }
@@ -408,7 +408,7 @@ impl Bridge {
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
-        // made at `bootstrap::stores::init` before Stage B moved the Tracker onto this per-owner
+        // made at `stores::tape::init` before Stage B moved the Tracker onto this per-owner
         // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
         // `Bridge` can admit any detail request.
         stores.metadata.arm_detail_tracker(initial.content.is_some());
@@ -1350,7 +1350,7 @@ impl Rig<AppHost> for Bridge {
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
             if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
-                crate::log(&line);
+                crate::eventlog::log(&line);
             }
             return handled;
         }
@@ -1364,7 +1364,7 @@ impl Rig<AppHost> for Bridge {
             return Handled::No;
         };
         if StoreId::from_ord(ord) != Some(store) {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "stores: a {} event was addressed to store ordinal {} — dropped",
                 store.name(),
                 ord.0
@@ -1476,7 +1476,7 @@ impl Rig<AppHost> for Bridge {
         self.app_effect(from, fx, out);
     }
     fn log(&mut self, line: &str) {
-        crate::log(line);
+        crate::eventlog::log(line);
     }
     fn system_keyboard(&mut self, up: bool) {
         #[cfg(test)]
@@ -1501,10 +1501,10 @@ impl Rig<AppHost> for Bridge {
     fn ls2_pump(&mut self) {}
     /// §3.3 step 9, every frame, presented or not. Real since phase 9: the argument is the
     /// dispatcher's `Present::video_plane()`, i.e. the Player machine's own bit arriving as
-    /// `PresentEvent::VideoPlane`, and `system::opaque_route` only sends a wayland request when
+    /// `PresentEvent::VideoPlane`, and `tv::window::opaque_route` only sends a wayland request when
     /// the answer CHANGES — so the loop's own call beside it (`app/run.rs`, from the same bit) is
     /// a `static` read and a return, not a second claim. Delegates to `run::rig_opaque_route`
-    /// (D4) rather than naming `crate::system::opaque_route` here directly — see that function's
+    /// (D4) rather than naming `crate::tv::window::opaque_route` here directly — see that function's
     /// doc for why.
     fn opaque_route(&mut self, video_plane_bound: bool) {
         super::run::rig_opaque_route(video_plane_bound);
@@ -2557,12 +2557,12 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
         if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
-            crate::log("login: server installed — asking which sources feed Home");
+            crate::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
             nav_root_if_unsettled(pages, AppArg::Onboard);
         } else {
-            crate::log("login: server installed — entering Home");
+            crate::eventlog::log("login: server installed — entering Home");
             nav_root_if_unsettled(pages, AppArg::Home);
         }
     } else if bridge.auth_read().0.persistence_warning.is_some() {
@@ -3266,6 +3266,10 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 }
 
 #[cfg(test)]
+#[path = "plex_session_app_tests.rs"]
+mod plex_session_app_tests;
+
+#[cfg(test)]
 #[path = "session_protocol_tests.rs"]
 mod session_protocol_tests;
 
@@ -3282,6 +3286,15 @@ mod recording_erasure_tests;
 #[cfg(test)]
 #[path = "consent_owner_tests.rs"]
 mod consent_owner_tests;
+#[cfg(test)]
+#[path = "session_worker_adapter_tests.rs"]
+mod session_worker_adapter_tests;
+#[cfg(test)]
+#[path = "session_erase_retry_tests.rs"]
+mod session_erase_retry_tests;
+#[cfg(test)]
+#[path = "session_roster_art_tests.rs"]
+mod session_roster_art_tests;
 
 #[cfg(test)]
 #[path = "session_controller_regression_tests.rs"]
@@ -3362,6 +3375,17 @@ mod detail_panel_tests;
 #[cfg(test)]
 #[path = "surface_navigation_tests.rs"]
 mod surface_navigation_tests;
+
+// Whole-app tests that moved up out of `ui` (docs/module-layers.md, step L13): the dispatcher's
+// bookmark capture, graded with `AppHost`'s own predicate, and the overscan audit over every
+// layer's outermost rects. (`app/mod.rs` may not declare test modules: `check-deps.sh` testmod.)
+#[cfg(test)]
+#[path = "dispatch_return_tests.rs"]
+mod dispatch_return_tests;
+
+#[cfg(test)]
+#[path = "overscan_audit_tests.rs"]
+mod overscan_audit_tests;
 
 #[cfg(test)]
 #[path = "viewstate_directory_policy_tests.rs"]

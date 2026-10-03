@@ -550,7 +550,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
             None => false,
         }
     } else if tok == "diag" || tok == "diagnostics" {
-        if crate::lab::menu_row_enabled() {
+        if crate::labcfg::menu_row_enabled() {
             crate::lab::request_upload("command", ps);
             true
         } else {
@@ -560,7 +560,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
         // `pat:flat:40` — swap the synthetic ground live for a one-session graded sweep.
         let ok = crate::ui::testpat::set(spec);
         if !ok {
-            crate::log(&format!("remote: unrecognised pattern {spec:?}"));
+            crate::eventlog::log(&format!("remote: unrecognised pattern {spec:?}"));
         }
         ok
     } else if let Some(text) = tok.strip_prefix("txt:") {

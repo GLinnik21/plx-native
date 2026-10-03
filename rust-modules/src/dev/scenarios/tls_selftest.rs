@@ -252,18 +252,18 @@ fn yes_no(b: bool) -> &'static str {
 /// earlier would let the projection wipe it under round 1's first handshake. A no-op without the
 /// trigger. The worker is detached and ends with its rounds.
 pub(crate) fn arm_at_boot() {
-    let Some(value) = crate::dev::read("tls-selftest") else { return };
+    let Some(value) = crate::devtrig::read("tls-selftest") else { return };
     let cfg = match parse(&value) {
         Ok(cfg) => cfg,
         Err(why) => {
-            crate::log(&format!("tls-selftest IGNORED — {why}"));
+            crate::eventlog::log(&format!("tls-selftest IGNORED — {why}"));
             return;
         }
     };
     let mut run = Selftest::new(cfg);
-    crate::log(&run.start_line());
+    crate::eventlog::log(&run.start_line());
     if crate::task::spawn("tls-selftest", move || drive(&mut run)).is_none() {
-        crate::log("tls-selftest IGNORED — the worker thread could not start");
+        crate::eventlog::log("tls-selftest IGNORED — the worker thread could not start");
     }
 }
 
@@ -271,7 +271,7 @@ fn drive(run: &mut Selftest) {
     let (mut ok, mut key) = ([0u32; 2], [0u32; 2]);
     for r in 1..=run.rounds() {
         for (i, plane) in run.round(r).into_iter().enumerate() {
-            crate::log(&plane.line);
+            crate::eventlog::log(&plane.line);
             ok[i] += u32::from(plane.ok);
             key[i] += u32::from(plane.key);
         }
@@ -279,7 +279,7 @@ fn drive(run: &mut Selftest) {
             std::thread::sleep(run.interval());
         }
     }
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "tls-selftest done rounds={} control_ok={} control_key={} media_ok={} media_key={}",
         run.rounds(), ok[0], key[0], ok[1], key[1]
     ));

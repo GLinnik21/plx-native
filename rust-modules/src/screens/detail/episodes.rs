@@ -282,7 +282,7 @@ fn draw_cell(
     widgets::draw_card_peaked(
         p,
         card,
-        d.sid,
+        d.sid.raw(),
         &ep.thumb,
         (640, 360),
         CARD_RADIUS,

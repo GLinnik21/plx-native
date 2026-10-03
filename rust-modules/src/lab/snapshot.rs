@@ -7,7 +7,7 @@
 //!
 //! # What may appear, and what may not
 //!
-//! The envelope is assembled from [`crate::player::Diag`], [`crate::webos`] and
+//! The envelope is assembled from [`crate::player::Diag`], [`crate::tv::device`] and
 //! [`crate::devcaps`], whose fields are numbers, bools, enums and short platform strings.
 //! `app::diagnostics`'s module doc states the rule those types already live under and the reasoning
 //! behind each clause; it applies here unchanged and for a stronger reason, since an upload
@@ -24,13 +24,13 @@
 //! # Defence in depth: [`scrub`]
 //!
 //! Ring records are ordinary log lines, and the log's own policy — *no call site formats a URL into
-//! a line* — has been violated before (`crate::redact_tokens`'s doc carries that history: one
+//! a line* — has been violated before (`crate::eventlog::redact_tokens`'s doc carries that history: one
 //! `-> {url}` in `route::retranscode`, reached by an ordinary audio-track switch, live for months).
 //! So every record passes a second, broader pass on the way out. It is deliberately not the same
 //! function as the log's: that one is a hot-path backstop for one parameter name, this one is a
 //! wider sweep that runs once per upload on a worker thread and can afford to be thorough.
-use crate::diag::ring::Rec;
-use crate::diag::scrub::{scrub, Scrubbed};
+use crate::eventlog::ring::Rec;
+use crate::eventlog::scrub::{scrub, Scrubbed};
 use serde::Serialize;
 
 // ---- the envelope -----------------------------------------------------------------------------
@@ -190,7 +190,7 @@ fn features() -> Vec<&'static str> {
 }
 
 /// Build the whole body. **Main thread**: `player::diag` is main-thread by contract, and the
-/// ring clone is a memcpy of at most [`crate::diag::ring::MAX_BYTES`].
+/// ring clone is a memcpy of at most [`crate::eventlog::ring::MAX_BYTES`].
 pub(crate) fn build(
     seq: u32,
     reason: &str,
@@ -199,7 +199,7 @@ pub(crate) fn build(
     ps: &crate::route::PlaybackSession,
 ) -> String {
     let d = crate::player::diag(ps);
-    let (recs, dropped) = crate::diag::ring::take();
+    let (recs, dropped) = crate::eventlog::ring::take();
     body(seq, reason, session, route, &d, recs, dropped)
 }
 
@@ -214,7 +214,7 @@ pub(crate) fn body(
     recs: Vec<Rec>,
     dropped: u64,
 ) -> String {
-    let now = crate::diag::ring::t_ms();
+    let now = crate::eventlog::ring::t_ms();
     let mut lines: Vec<String> = Vec::with_capacity(recs.len() + 1);
     let mut refused = 0u64;
     let mut kept: Vec<Line> = Vec::with_capacity(recs.len());
@@ -269,8 +269,8 @@ pub(crate) fn body(
 }
 
 fn device() -> Device {
-    let i = crate::webos::info();
-    let d = crate::webos::device();
+    let i = crate::tv::device::info();
+    let d = crate::tv::device::device();
     Device {
         webos_release: i.release.clone(),
         webos_codename: i.codename.clone(),
@@ -301,7 +301,7 @@ mod tests {
     /// drop is counted in the envelope so the document says a line is missing.
     ///
     /// Lives here rather than beside `scrub` because the assertion that matters is about the
-    /// DOCUMENT — `refused` and `records` in the envelope — not about the predicate. `diag::scrub`
+    /// DOCUMENT — `refused` and `records` in the envelope — not about the predicate. `eventlog::scrub`
     /// carries the twin proving the LOCAL exit keeps the same line.
     ///
     /// **The REMOTE exit only.** Gated with its function: the local exit is contractually forbidden

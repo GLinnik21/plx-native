@@ -1195,7 +1195,7 @@ mod tests {
             .0;
         let install = pre_boot.find("\"install: id=").expect("install line");
         let app_dir = pre_boot
-            .find("crate::paths::app_dir()")
+            .find("crate::paths::app_dir_line()")
             .expect("appdir line");
         assert!(install < app_dir);
         let body = source

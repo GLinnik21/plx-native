@@ -216,7 +216,7 @@ an ownership slice.
   This section predicted the Settings family would be the `Sys` result path's first consumer; it
   is not. `AppFx` (`screens/registry.rs`) has `Store`/`Consent`/`Loop` and no `Sys` variant, the
   Settings family's own boot-target trigger (`/tmp/plxnative-settings=privacy|home`) is read by
-  `dev::read` directly in `app/run.rs` before any screen mounts, and the pending test
+  `devtrig::read` directly in `app/run.rs` before any screen mounts, and the pending test
   (`ui/fixture.rs`'s `phase_2` module) is still `#[ignore]`d. No machine reads a dev flag yet.
 
 ## 5. How to add a mutation after this phase

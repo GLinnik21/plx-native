@@ -224,7 +224,7 @@ fn dv_declared_p8_usable_base_is_enhanced_remux_without_dv() {
             item.dovi = p8();
             item
         },
-        |env, _| env.dv_capability = Some(crate::webos::caps::DvCapability::Supported));
+        |env, _| env.dv_capability = Some(crate::devcaps::dv::DvCapability::Supported));
     assert!(
         r.plan.auto_original.as_ref().is_some_and(|c| c.dv_decision.presentation.declared().is_some()),
         "precondition: the P8 direct play would have declared DolbyHdrInfo",

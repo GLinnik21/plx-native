@@ -980,7 +980,7 @@ QUICK_SECS = 20
 #
 # `tests/serve_fixtures.py` serves a directory of these clips off the dev Mac, and
 # `/tmp/plxnative-playurl` hands the app one URL plus the Load payload DECLARATION to play
-# it with (`dev::PlayUrl` -> `route::set_stream_declaration`). Everything from the socket
+# it with (`player::playurl::PlayUrl` -> `route::set_stream_declaration`). Everything from the socket
 # down is then the same code a real playback runs — `stream.rs`' GET, `ff.rs`' AVIO and
 # demux, the `aq.rs` queues, the pump's `Feed()`, the ACB bind — with the server, the
 # `/decision`, the PlayQueue, the timeline and the watched state all absent. So this tier

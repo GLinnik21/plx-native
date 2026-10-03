@@ -11,13 +11,16 @@
 //! somebody who was never asked, or said Yes before it existed — as a one-off on an explicit press,
 //! whose bounded transport is [`oneoff`]. Either one's Report ID is watched in [`delivery`], which
 //! the flush, the spool and the one-off fallback all settle, so the screen can say "sent" only once
-//! a server accepted it.
+//! a server accepted it. [`classes`] is the closed vocabulary [`playback`] serialises, owned here so
+//! the player classifies INTO it rather than this layer naming the player; [`transition`] is what a
+//! consent change does to the resources this module keeps.
 //!
-//! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record: the
+//! **Ungated**, like `eventlog::scrub` and `diag::schema`, and for the reason both of those record: the
 //! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
 //! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
 //! was on the network is not erased by that flush's commit — and a test behind a feature the
 //! default gate does not build is a test that never runs.
+pub(crate) mod classes;
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod delivery;
@@ -32,6 +35,7 @@ pub(crate) mod queue;
 pub(crate) mod sender;
 pub(crate) mod sentry;
 pub(crate) mod spool;
+pub(crate) mod transition;
 
 use consent::Consent;
 
@@ -50,7 +54,7 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
     let presence = |id: &Option<String>| if id.is_some() { "yes" } else { "none" };
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "telemetry: answered={} errors={} usage={} id={} errors_id={}",
         c.answered(),
         c.errors,
@@ -60,14 +64,14 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     ));
     consent::install(c.clone());
     if !c.errors {
-        crate::player::report::clear_error_trace();
+        playback::clear_error_trace();
     }
     // **Which destinations this build can actually reach**, once, at boot. A decision of `usage=true`
     // in a build with no PostHog key sends nothing, and every other line in this log looks
     // identical either way — `diag::event` returns before the queue, correctly and silently. This
     // is the line that says whether telemetry is WIRED, as against merely consented to, and it
     // names no endpoint: which projects those are is a release-audit fact, not a per-boot one.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "telemetry: env={} sentry={} posthog={}",
         sender::ENVIRONMENT,
         if sender::has_sentry() { "yes" } else { "no" },
@@ -92,11 +96,11 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
 /// profile, so the answer cannot be a literal.
 ///
 /// `plxnative-consentstate` (dev builds) replaces what is stored, for the onboarding-report
-/// captures — see `dev::scenarios::consent_state_override`. Never under test: a stray trigger in
+/// captures — see `consent::state_override`. Never under test: a stray trigger in
 /// the shared runtime directory must not change what a test's redirected file says.
 pub(crate) fn capture_initial() -> Consent {
     #[cfg(not(test))]
-    if let Some(c) = crate::dev::scenarios::consent_state_override() {
+    if let Some(c) = consent::state_override() {
         return c;
     }
     load_from(&candidates())
@@ -158,19 +162,20 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
     persistence::load(candidates)
 }
 
-/// Compatibility for resource-focused telemetry and auth tests. Production code has one explicit
-/// commit seam: `app::adapters::consent::ConsentAdapter`.
+/// Compatibility for resource-focused telemetry and auth tests: the live side effects of a
+/// transition, exactly as `app::adapters::consent::ConsentAdapter` performs them — production
+/// code has that one explicit commit seam.
 #[cfg(test)]
 pub(crate) fn record(next: Consent) {
     let previous = consent::current().unwrap_or_default();
-    crate::app::adapters::consent::ConsentAdapter::live().commit(&previous, &next);
+    transition::commit(&previous, &next);
 }
 
 /// Test-only twin of [`record`].
 #[cfg(test)]
 pub(crate) fn forget() {
     let prior = consent::current().unwrap_or_default();
-    crate::app::adapters::consent::ConsentAdapter::live().forget(&prior);
+    transition::forget(&prior);
 }
 
 /// Called after the shared account tombstone (`plex::session::clear`'s canonical commit) is
@@ -278,14 +283,14 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
     );
     retired.extend(newly_retired);
     if let Some(s) = retry {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: holding {} records, ~{s}s",
             all.len() - retired.len()
         ));
     }
     if !retired.is_empty() {
         spool::commit_retiring(&retired);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: flushed {} of {} record(s)",
             retired.len(),
             all.len()
@@ -518,8 +523,8 @@ mod tests {
     /// **Ending the tenure leaves neither identifier in the snapshot and no file on disk.** The
     /// snapshot is the half a producer on the render thread reads, so a report queued after the
     /// sign-out must find nothing to attach; the file is the half the next boot reads.
-    /// `auth::tests::signing_out_leaves_no_consent_and_no_identifier_for_the_next_account` grades
-    /// the same thing through the real sign-out tail.
+    /// `app::session_worker_adapter_tests::signing_out_leaves_no_consent_and_no_identifier_for_the_next_account`
+    /// grades the same thing through the real sign-out tail.
     #[test]
     fn forgetting_the_tenure_clears_both_identifiers_and_the_file() {
         /// The redirects and the snapshot, handed back on drop, so a failed assertion cannot leave

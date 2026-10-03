@@ -181,7 +181,7 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
         state.samples_since_log = 0;
     });
     ON.store(true, Ordering::Relaxed);
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "PROFILE GPU timer on: phase={selected} bits={bits} queries={QUERY_COUNT} raw={}",
         path.display()
     ));
@@ -376,9 +376,9 @@ pub(crate) fn frame_end() {
         (messages, disjoint != 0)
     });
     if disjoint_message {
-        crate::log("PROFILE timer: GPU disjoint; pending timer results discarded");
+        crate::eventlog::log("PROFILE timer: GPU disjoint; pending timer results discarded");
     }
     for message in messages {
-        crate::log(&message);
+        crate::eventlog::log(&message);
     }
 }

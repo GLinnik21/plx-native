@@ -73,7 +73,7 @@ pub enum Icon {
     Pause,
     /// The transport pair — two filled triangles, pointing back and forward. Worn by ONE surface:
     /// the player HUD's transport state read-out beside the elapsed clock (`player_hud::draw_hud`,
-    /// via [`crate::ui::player_hud::transport_mark`]), where `Rewind` marks the playhead travelling
+    /// via [`crate::appkit::player_hud::transport_mark`]), where `Rewind` marks the playhead travelling
     /// BACKWARDS and `FastForward` marks it travelling forwards — a scrub, a chapter/marker hop and
     /// a rapid-seek burst alike. They are a read-out, never a control: there is no rewind BUTTON in
     /// this app and the design system forbids adding one.
@@ -143,7 +143,7 @@ pub enum Icon {
     /// An X — "remove this" (the item menu's Remove from Continue Watching row).
     Close,
     /// A horizontal ellipsis — "more options". The player transport's third control disc, which
-    /// opens the overflow popover (`ui/more_menu.rs`). Overflow, so it sits at the END of the row.
+    /// opens the overflow popover (`appkit/more_menu.rs`). Overflow, so it sits at the END of the row.
     More,
     /// The magnifier — the only pill in the shared top strip that is a MARK instead of a word
     /// (`ui_kits/tv-app/SearchScreen.jsx`). Drawn at 1.15× the strip's own type rung, inked exactly as a

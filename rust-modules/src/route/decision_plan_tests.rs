@@ -502,7 +502,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "mde-p5-copy-client",
     );
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
-    env.dv_capability = Some(crate::webos::caps::DvCapability::Supported);
+    env.dv_capability = Some(crate::devcaps::dv::DvCapability::Supported);
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.dovi = p5();
     env.cached_item = Some(item);
@@ -542,8 +542,8 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
     use std::time::Duration;
 
     for capability in [
-        crate::webos::caps::DvCapability::Unknown,
-        crate::webos::caps::DvCapability::Unsupported,
+        crate::devcaps::dv::DvCapability::Unknown,
+        crate::devcaps::dv::DvCapability::Unsupported,
     ] {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);

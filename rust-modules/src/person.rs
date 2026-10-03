@@ -79,11 +79,14 @@ use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
 
-/// Per-shelf item cap. A `CardRow` owns exactly [`crate::ui::card_row::MAX_ROW_ITEMS`] focus-scale
+/// Per-shelf item cap. A `CardRow` owns exactly `ui::card_row::MAX_ROW_ITEMS` focus-scale
 /// springs and `scale(i)` clamps past the end, so an item beyond the cap would draw with the last
 /// cell's pop and — worse — never pop at all when focused (`update`'s loop can't reach its index).
 /// It is also the perf ceiling the A53 budget wants: a shelf is a horizontal strip, not a grid.
-const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
+/// The data layer cannot name the UI library's constant, so this is [`crate::pms::MAX_SHELF_ITEMS`],
+/// the data layer's own spelling of the same number; `screens::home`'s
+/// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal.
+const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// How many departments the roles line names before it stops. Plex prints every one; on a couch
 /// that turns a one-line kicker into "Actor, Writer, Producer, Composer, Costume Makeup" for a
@@ -775,7 +778,7 @@ fn open(
     }
     // Controlled content uses captured authority and supplied provider replies. The ambient
     // session cache recovers asynchronously and is not an input in that transcript.
-    if !crate::app::bootstrap::stores::active() {
+    if !crate::stores::tape::active() {
         let _ = state.session_watch.changed();
         if let Some(session) = crate::plex::session::peek_settled() {
             state.session_identity = (session.client_id.clone(), session.account_token.clone());
@@ -807,7 +810,7 @@ fn open(
     // here rather than hardcoding `landed: false` is what keeps that rule in one place.
     if let Some(p) = state.current.as_mut() {
         resettle(p);
-        if !crate::app::bootstrap::stores::active() {
+        if !crate::stores::tape::active() {
             seed_dev_profile(p);
         }
     }
@@ -834,11 +837,11 @@ fn open(
 /// It sets `profiled`, which is the flag [`address`] gates the profile fetch on — so a seeded page makes no
 /// provider request at all, rather than racing one that would overwrite the seed a second later.
 /// The invented roles/dates/birthplace are what make the identity line's separator logic visible;
-/// they are as fictional as the rest of the trigger and never reach a release build (`dev::read` is
+/// they are as fictional as the rest of the trigger and never reach a release build (`devtrig::read` is
 /// `None` at compile time without `devtriggers`).
 #[allow(unused_variables)]
 fn seed_dev_profile(p: &mut Person) {
-    let Some(text) = crate::dev::read("personbio") else {
+    let Some(text) = crate::devtrig::read("personbio") else {
         return;
     };
     p.bio = if text.is_empty() {
@@ -861,7 +864,7 @@ fn seed_dev_profile(p: &mut Person) {
     }
     p.profiled = true;
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "person: DEV bio seeded ({}B) — /tmp/plxnative-personbio",
         p.bio.len()
     ));
@@ -889,7 +892,7 @@ about as closer to theatre than to film.\n\n\
 Alongside acting she writes and records her own music, and has been open about the relationship \
 between the two: songs, she has said, are where the parts she plays go when the run ends. She \
 continues to divide her time between London and New York.";
-/// The release build has no sample — `seed_dev_profile` cannot be reached (`dev::read` is `None` at
+/// The release build has no sample — `seed_dev_profile` cannot be reached (`devtrig::read` is `None` at
 /// compile time), and a few hundred bytes of fiction has no business in a shipped binary.
 #[cfg(not(feature = "devtriggers"))]
 const DEV_BIO: &str = "";
@@ -969,7 +972,7 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 impl PersonState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut session_changed = false;
-        if !crate::app::bootstrap::stores::active() && self.session_watch.changed() {
+        if !crate::stores::tape::active() && self.session_watch.changed() {
             if let Some(session) = crate::plex::session::peek_settled() {
                 let identity = (session.client_id.clone(), session.account_token.clone());
                 if self.session_identity != identity {
@@ -991,7 +994,7 @@ impl PersonState {
             // The take releases the single-flight claim with the mail, whatever the landing turns
             // out to be. Under replay it happens on the recorded frame; spawning remains outside
             // that gate so the request still leaves on time.
-            let reply = crate::app::bootstrap::stores::take_store_landing(
+            let reply = crate::stores::tape::take_store_landing(
                 gate, crate::stores::StoreId::Person, "person", i as u32, &adapter.fetch[i]);
             if let Some(reply) = reply {
                 adapter.fetch[i].release();
@@ -1041,9 +1044,9 @@ impl PersonState {
 /// headless capture reaches the strip's scroll and the left edge fade over its cut.
 #[allow(unused_variables)]
 fn seed_dev_credits(state: &mut PersonState) -> bool {
-    let arg = if crate::app::bootstrap::stores::active() {
-        crate::app::bootstrap::stores::credits().map(|v| v.to_string())
-    } else { crate::dev::read("personcredits") };
+    let arg = if crate::stores::tape::active() {
+        crate::stores::tape::credits().map(|v| v.to_string())
+    } else { crate::devtrig::read("personcredits") };
     let Some(arg) = arg else {
         return false;
     };
@@ -1125,13 +1128,13 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
         })
         .collect();
     p.credited = true;
-    // Gated: `personcredits` is a `dev::CONTROLLED` name (a controlled/recorded boot may carry
+    // Gated: `personcredits` is a `devtrig::CONTROLLED` name (a controlled/recorded boot may carry
     // it), and `ci/check-package.py`'s dev-trigger-catalog check greps a release binary for that
     // exact vocabulary. This function is already unreachable without `devtriggers` (`arg` above
     // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still
     // have shipped in the bytes regardless of whether the branch ever ran.
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
         p.credits.len(),
         held.len()
@@ -1206,7 +1209,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             p.birthplace = prof.birth_place;
             p.profiled = true;
             p.profile_tried = true;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: profile guid={} roles='{}' born={} died={} bio={}B",
                 p.guid,
                 p.roles.join(", "),
@@ -1227,7 +1230,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             }
             // The SLOT, never the handle or the address: a plex.tv username is the friend's, and
             // the event log is what users send us.
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: source {} resolve '{}' -> {}",
                 sid.raw(),
                 p.name,
@@ -1248,7 +1251,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             };
             {
                 let s = &mut p.srcs[si];
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "person: source {} '{}' movies={}/{} shows={}/{} joinable={}",
                     sid.raw(),
                     p.name,
@@ -1272,7 +1275,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             true
         }
         Landing::Credits(Some(groups)) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "person: credits guid={} groups={} rows={}",
                 p.guid,
                 groups.len(),
@@ -1414,13 +1417,13 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     // worker matches a credit row by either id space
     let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
-        let controlled = crate::app::bootstrap::stores::active();
+        let controlled = crate::stores::tape::active();
         let session = if controlled { None } else { crate::plex::session::peek_settled() };
         if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
         adapter.fetch[i].claim();
         let worker_adapter = Arc::clone(adapter);
-        let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
+        let spawned = crate::stores::tape::admit(serde_json::json!({
             "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
             crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
@@ -1460,7 +1463,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         .unwrap_or_default();
     adapter.fetch[i].claim();
     let worker_adapter = Arc::clone(adapter);
-    let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
+    let spawned = crate::stores::tape::admit(serde_json::json!({
         "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
         "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
@@ -1989,15 +1992,14 @@ mod tests {
         let _g = crate::testlock::serial();
         struct ResetTape;
         impl Drop for ResetTape {
-            fn drop(&mut self) { crate::app::bootstrap::stores::reset_for_test(); }
+            fn drop(&mut self) { crate::stores::tape::reset_for_test(); }
         }
         for replay in [false, true] {
             let _session = crate::plex::session::TempSession::new("controlled-person-recovery");
             crate::plex::reset_servers_for_test();
             let saved = crate::plex::session::peek();
             crate::plex::session::install_transient_for_test(true);
-            let initial = crate::app::bootstrap::Initial::synthetic_home(23, 32517, None).unwrap();
-            crate::app::bootstrap::stores::init(&initial, replay);
+            crate::stores::tape::init(None, replay);
             let _tape = ResetTape;
             let mut owner = Owner::default();
             owner.open(S0, "1001", "", "Synthetic person", "");
@@ -2013,7 +2015,7 @@ mod tests {
             assert!(!changed);
             assert!(owner.current().unwrap().profiled);
             assert!(owner.current().unwrap().credited);
-            let (requests, failure) = crate::app::bootstrap::stores::finish();
+            let (requests, failure) = crate::stores::tape::finish();
             assert!(requests.is_empty());
             assert_eq!(failure, None);
         }

@@ -6,7 +6,7 @@
 //! mounted and there is no route change — the player route never adopts this engine. ALL of the
 //! page's chrome fades to zero, the action row included, and the page draws a trailer transport
 //! in its place (`screens::detail::trailer`): the `Trailer` kicker over the item's title, the
-//! playbar and the state read-out, drawn from `ui::player_hud`'s own pieces. What a trailer does
+//! playbar and the state read-out, drawn from `appkit::player_hud`'s own pieces. What a trailer does
 //! NOT get is the rest of the HUD — no quality, subtitle, audio or Info control, no tabs and no
 //! track menus: a preview has no PlayQueue, no timeline reporter and no watch state, and a
 //! control that writes one has no business on it. OK and PLAYPAUSE pause and resume it
@@ -101,13 +101,21 @@ pub(crate) enum Start {
     Busy,
 }
 
+/// How much a bound preview multiplies the hero scrim curve: the [`View::field`] of a picture that
+/// is up. 1.35 is the video-bound row the legibility table grades.
+///
+/// `ui::landing_hero::PREVIEW_FIELD` is the same number from the other side: the scrim curve
+/// that consumes it is `ui`'s, and `ui` may not name `player` (nor `player` name `ui`), so each
+/// owns a copy and `screens::detail`'s `preview_plane_tests` pin them equal.
+pub(crate) const PREVIEW_FIELD: f32 = 1.35;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     /// Art texture alpha over the plane. 1 is a still, 0 is picture only.
     pub art: f32,
     /// Meta line and synopsis. Logo, title and the control row do not use this.
     pub prose: f32,
-    /// Raised field strength. 1 until a picture is bound, then [`crate::ui::landing_hero::PREVIEW_FIELD`].
+    /// Raised field strength. 1 until a picture is bound, then [`PREVIEW_FIELD`].
     pub field: f32,
     /// True once a frame has been presented, so hero chrome must not sample the framebuffer.
     pub picture: bool,
@@ -408,7 +416,7 @@ impl Machine {
         View {
             art: 0.0,
             prose: 0.0,
-            field: crate::ui::landing_hero::PREVIEW_FIELD,
+            field: PREVIEW_FIELD,
             picture: true,
             playing: true,
         }
@@ -434,10 +442,10 @@ pub(crate) fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
     loading && !thread_finished
 }
 
-crate::dev::latched_flag!(
+crate::devtrig::latched_flag!(
     /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
     /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
-    /// focus, and a `dev::flag` read is a `stat(2)` syscall per call.
+    /// focus, and a `devtrig::flag` read is a `stat(2)` syscall per call.
     fn nopreview_armed = "nopreview";
 );
 
@@ -774,8 +782,8 @@ pub(crate) fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = crate::app::lifecycle::transport_target(play, crate::app::lifecycle::paused());
-    crate::app::lifecycle::set_transport_paused(pa, want)
+    let want = super::lifecycle::transport_target(play, super::lifecycle::paused());
+    super::lifecycle::set_transport_paused(pa, want)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1031,9 +1039,9 @@ mod tests {
     /// touches engine-level `SHARED` atomics) and by device verification, not by this test.
     ///
     /// Gated on `hostsim`, like `player::engine`'s own `PlayerAdapter`-constructing tests
-    /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): building one at all pulls in the
-    /// Starfish/ACB `dynlib!` symbols, which only resolve under that feature — `make check` runs
-    /// the full suite a second time with it on for exactly this class of test.
+    /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): it needs the simulator's video sink
+    /// (`ffi_host::HostSink`) to hold a native session, which the default build's `NoSink` does
+    /// not — `make check` runs the full suite a second time with it on for exactly this class of test.
     #[test]
     #[cfg(feature = "hostsim")]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {
@@ -1144,7 +1152,7 @@ mod tests {
         assert!(view.picture);
         assert_eq!(view.prose, 0.0);
         assert_eq!(view.art, 0.0);
-        assert!((view.field - crate::ui::landing_hero::PREVIEW_FIELD).abs() < 1e-6);
+        assert!((view.field - PREVIEW_FIELD).abs() < 1e-6);
     }
 
     fn facts(phase: Phase) -> PumpFacts {

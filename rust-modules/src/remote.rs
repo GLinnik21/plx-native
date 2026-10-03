@@ -88,7 +88,7 @@ impl Remote {
         // pointer handler. Not a theoretical hole: `ck:X,Y` clicks replay through the same path
         // as a physical remote. It was ungated on every boot, before the event loop, with no
         // trigger file required to arm it.
-        if !crate::dev::ENABLED {
+        if !crate::devtrig::ENABLED {
             return None;
         }
         // Exact bytes, not `to_string_lossy`: an instance root comes from the environment, and a
@@ -100,7 +100,7 @@ impl Remote {
             libc::mkfifo(path.as_ptr(), 0o666);
             let fd = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK);
             if fd < 0 {
-                // Logged, unlike the `dev::ENABLED` return above — that one is a build behaving
+                // Logged, unlike the `devtrig::ENABLED` return above — that one is a build behaving
                 // as it was built, and a line for it would print on every release boot. This one
                 // is a real failure, and nothing downstream reports it: `app.rs` calls
                 // `Remote::open()` without branching on the answer, so the app runs on and every
@@ -121,7 +121,7 @@ impl Remote {
                 // local BEFORE the path is rebuilt for the message, so nothing runs between the
                 // failed call and the read.
                 let err = std::io::Error::last_os_error();
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "remote: open {} failed ({err}) — no remote control this run",
                     fifo_path().display()
                 ));

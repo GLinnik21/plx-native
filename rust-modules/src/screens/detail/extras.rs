@@ -72,7 +72,7 @@ pub(crate) fn play(d: &Detail, key: u32) -> Option<PlayIntent> {
 
 fn thumb<'a>(d: &'a Detail, extra: &'a Extra) -> Art<'a> {
     Art::Thumb {
-        sid: d.sid,
+        sid: d.sid.raw(),
         key: extra.thumb.as_str(),
         res: (STYLE.w as i32, STYLE.h as i32),
     }
@@ -111,7 +111,7 @@ pub(crate) fn draw(
         &STYLE,
         crate::ui::consts::SCR_W,
         |i| d.extras.get(i).map(|e| thumb(d, e)).unwrap_or(Art::Thumb {
-            sid: d.sid,
+            sid: d.sid.raw(),
             key: "",
             res: (STYLE.w as i32, STYLE.h as i32),
         }),

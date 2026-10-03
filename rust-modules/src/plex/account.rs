@@ -42,15 +42,15 @@ const PLEX_TV: &str = "https://plex.tv";
 /// able to point the account API, and the token it carries, at another host. Read once.
 pub(crate) fn plex_tv() -> &'static str {
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BASE.get_or_init(|| match crate::dev::read("plextv") {
+    BASE.get_or_init(|| match crate::devtrig::read("plextv") {
         Some(v) if loopback_http(&v) => {
             #[cfg(feature = "devtriggers")]
-            crate::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
+            crate::eventlog::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
             v.trim_end_matches('/').to_string()
         }
         Some(_) => {
             #[cfg(feature = "devtriggers")]
-            crate::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            crate::eventlog::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
             PLEX_TV.to_string()
         }
         None => PLEX_TV.to_string(),
@@ -540,11 +540,6 @@ pub enum SwitchOutcome {
 }
 
 #[cfg(test)]
-pub(crate) fn test_refusal_evidence(status: u16, response: Result<crate::net::Resp, crate::net::RequestFailure>) {
-    evidence_tests::assert_refusal_evidence(status, response);
-}
-
-#[cfg(test)]
 mod evidence_tests {
     use super::*;
     use crate::net::{RequestError, RequestFailure, Resp};
@@ -598,7 +593,7 @@ mod evidence_tests {
         }
     }
 
-    pub(super) fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
+    fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
         crate::testlock::assert_held("auth response policy test");
         let failure = response.as_ref().err().copied().expect("incomplete HTTP response");
         set_unreachable_for_test(true);
@@ -622,6 +617,17 @@ mod evidence_tests {
     fn http2_reset_404_remains_gone() { http2_reset_policy(404); }
     #[test]
     fn http2_reset_410_remains_gone() { http2_reset_policy(410); }
+
+    /// The same policy graded on a failure the transport really produced: a CA-trusted HTTP/2
+    /// `RST_STREAM` after the status line, driven by `net`'s fixture (the wire half of this test
+    /// lives in `net`, which cannot name this layer).
+    #[test]
+    fn http2_wire_reset_failure_keeps_the_account_verdict() {
+        let _serial = crate::testlock::serial();
+        for status in [401, 403, 404, 410] {
+            crate::net::with_h2_reset_failure(status, |failure| assert_refusal_evidence(status, Err(failure)));
+        }
+    }
 
     #[test]
     fn incomplete_refusal_survives_real_transport_and_preserves_contact() {
@@ -972,7 +978,7 @@ fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) ->
         // all, `Eof` a truncated one — and the byte count separates "empty" from "a page of
         // something else". The test below pins the reason, so this is not simplified back to `{e}`.
         Err(e) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "account: {verb} {} -> HTTP {} but the body did not parse: {:?} at line {} col {} ({} bytes)",
                 endpoint_shape(url),
                 resp.status,
@@ -1000,7 +1006,7 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
     // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
     // the shape and the two services share this door — `discover.provider.plex.tv` lines would
     // otherwise read as coming from plex.tv proper.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "account: {verb} {} -> HTTP {}{hint}",
         endpoint_shape(url),
         status

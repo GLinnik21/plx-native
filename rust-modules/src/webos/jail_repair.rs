@@ -4,6 +4,7 @@
 //! explicit confirmation. That app-owned attempt survives every screen and session reset,
 //! including timeout: the remote shell may still run after LS2 gives up.
 
+use crate::tv::sandbox::Failure;
 use serde_json::Value;
 use std::path::Path;
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -16,30 +17,6 @@ const BUDGET: Duration = Duration::from_secs(10);
 const OK_MARKER: &str = "PLXNATIVE_JAIL_REPAIR_OK_74";
 const NOT_ROOT_MARKER: &str = "PLXNATIVE_JAIL_REPAIR_NOT_ROOT_74";
 const HBC_ABSENT_TEXT: &str = "Service does not exist: org.webosbrew.hbchannel.service.";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Failure {
-    StartFailed,
-    HbcUnavailable,
-    NotRoot,
-    CommandFailed,
-    // The simulator has no LS2 timeout; development fixtures and tests still construct it.
-    // `devtriggers` is irrelevant here: hostsim's `call_hbc` stub never constructs this variant
-    // either way, so it is dead outside `#[cfg(test)]` in every hostsim build, not only when
-    // `devtriggers` happens to be off.
-    #[cfg_attr(all(feature = "hostsim", not(test)), expect(dead_code))]
-    Timeout,
-    Unreadable,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum State {
-    Idle,
-    Running,
-    Repaired,
-    Failed(Failure),
-}
 
 /// Called only by the PlayerAdapter worker after the owner accepts explicit confirmation.
 pub(crate) fn execute() -> Result<(), Failure> {

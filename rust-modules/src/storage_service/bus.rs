@@ -173,7 +173,7 @@ impl Drop for Bus {
             // A handle that would not unregister is still attached to this loop, so the loop is
             // leaked rather than freed under it — a bounded leak, once per failed teardown,
             // against a use-after-free. Matches `webos::ls2::Registration::drop` in the main app
-            // crate; this bin crate has no `crate::log`, so it logs the same way `backend.rs`'s
+            // crate; this bin crate has no `crate::eventlog::log`, so it logs the same way `backend.rs`'s
             // `stage_error` does, through syslog.
             if let Ok(message) = CString::new(format!(
                 "plxstorage bus: unregister refused — leaking its glib main loop ({})",

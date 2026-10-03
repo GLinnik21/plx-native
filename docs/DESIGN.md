@@ -37,7 +37,7 @@ what job it does. The two layers mirror the external PlxNative Design System pro
 
 ## Size is a scale
 
-From `ui/CLAUDE.md` rule 2, defined in `theme::size`. Nine rungs, and a size is a role rather than a
+From `ui/CLAUDE.md` rule 2, defined in `gfx/tokens.rs`'s `size` and named as `theme::size`. Nine rungs, and a size is a role rather than a
 number:
 
 | Rung | px | What it is for |
@@ -147,7 +147,8 @@ Its contextual answer verbs share one horizontal row, separated from BODY-sized 
 |---|---|
 | any screen | `rust-modules/src/ui/CLAUDE.md`, then `docs/ui-system-migration.md` |
 | adding a screen | `docs/ui-system-migration.md` section (E) |
-| a colour or a size | `rust-modules/src/ui/theme.rs` |
+| a colour | `rust-modules/src/ui/theme.rs` |
+| a size | `rust-modules/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
 | anything behind hero text | `rust-modules/src/ui/landing_hero.rs` and `widgets.rs`'s scrim section, then re-grade the anchor table |
 | a horizontal row | `rust-modules/src/ui/card_row.rs` |
 | playback UI | `rust-modules/src/player/CLAUDE.md` |

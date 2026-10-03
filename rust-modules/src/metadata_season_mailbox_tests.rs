@@ -221,7 +221,13 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
 fn menu_play_season_load_inside_a_frame_still_installs_the_episode_list() {
     use std::io::{Read, Write};
     let _serial = crate::testlock::serial();
-    assert!(crate::net::global_init() && crate::curlio::available());
+    // The season fetch is one blocking `http::request_with` GET, i.e. `net`'s easy API and nothing
+    // of the media plane, so what this needs from the machine is `net`'s own "libcurl is bound and
+    // may be used from several threads" -- not `curlio::available()`, which adds the multi table
+    // only the media transport reads (and `curlio` is not the data layer's to name).
+    assert!(
+        crate::net::global_init() && crate::net::available() && crate::net::threaded_tls_ready()
+    );
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port() as i32;

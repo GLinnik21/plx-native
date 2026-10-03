@@ -273,7 +273,7 @@ belong to no arm:
 Both are now behind **`ui::consts::is_bound(sym, wcode)`**, which is §2's map expressed as one
 predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym is backspace/Clear,
 **or** the **sym** is an ASCII digit — **or**, in a Lab Diagnostics build only, the press is that
-build's configured upload trigger (`crate::lab::is_trigger_key`, `false` at compile time in every
+build's configured upload trigger (`crate::labcfg::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, a webOS-only SDL

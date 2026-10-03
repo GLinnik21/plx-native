@@ -42,7 +42,8 @@ use crate::ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Column, Env, Painter, Rect, ScrollColumn, View};
 
 use super::registry::{
-    AppFx, CardIdentity, CardKeys, CardPageMemory, ContentArg, ContentLike, ContentReq, PageMemory, PersonLike,
+    tile_facts, AppFx, CardIdentity, CardKeys, CardPageMemory, ContentArg, ContentLike, ContentReq, PageMemory,
+    PersonLike,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -954,7 +955,7 @@ impl PersonScreen {
         }
 
         let focused_movie = self.focused_movie_in(p, cur);
-        let k = PageGround::page_target(focused_movie);
+        let k = PageGround::page_target(focused_movie.map(tile_facts::of));
         if self.amb_seeded {
             self.amb.key_target(k, dt);
         } else {
@@ -1112,7 +1113,7 @@ impl PersonScreen {
             .settling(self.shelves[kind].settle_lag(person.shelf(kind).len(), col, &SHELF_STYLE));
         card_row::draw_focused(
             f.painter.alpha(f.page_alpha),
-            Art::Poster(Some(item)),
+            Art::Poster(Some(tile_facts::of(item))),
             placed.rest_rect.scaled(scale),
             scale,
             &SHELF_STYLE,
@@ -1132,7 +1133,7 @@ impl PersonScreen {
             p,
             portrait,
             Art::Person {
-                sid: person.sid,
+                sid: person.sid.raw(),
                 key: &person.thumb,
                 res: PORTRAIT_RES,
             },
@@ -1276,7 +1277,7 @@ impl PersonScreen {
             pitch,
             &SHELF_STYLE,
             SCR_W,
-            |i| Art::Poster(items.get(i)),
+            |i| Art::Poster(items.get(i).map(tile_facts::of)),
             |i| items.get(i).and_then(|m| m.resume_frac()),
             |i| match items.get(i) {
                 Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),

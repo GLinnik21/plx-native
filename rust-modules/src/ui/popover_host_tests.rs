@@ -166,3 +166,39 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
     assert!(held() == Held::Nothing, "the taller card cannot reuse the old panel outline");
     assert_eq!(embedded_alert_frame(true, true), ["page", "scrim", "glass", "title/body/buttons"]);
 }
+
+// Moved here from `gfx.rs`'s tests (module-layers step L5): it drives the popover host's
+// `begin_frame`, which the `gfx` layer may not name, to prove `gfx::dither_for_field` has no motion
+// term to be reached through.
+#[test]
+fn a_field_keeps_its_dither_through_every_motion() {
+    use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
+    use crate::ui::popover::host::begin_frame;
+    let _g = crate::testlock::serial();
+    frame_begin(1.0 / 60.0);
+    begin_frame(false);
+    assert_eq!(crate::gfx::dither_for_field(700.0, 700.0), crate::gfx::DITHER_LSB, "at rest, the field pays");
+
+    // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
+    // `Popover::update` steps every appear spring. The frame is in motion — and the page is not.
+    frame_begin(1.0 / 60.0);
+    let scope = MotionScope::open();
+    note_spring(0.0, 100.0, 0.0);
+    assert!(scope.close(), "the scope saw the spring");
+    assert!(present_moving() && !page_moving());
+    begin_frame(false);
+    assert_eq!(
+        crate::gfx::dither_for_field(700.0, 700.0),
+        crate::gfx::DITHER_LSB,
+        "a field still pays in motion — a focus spring on Settings must not strip its ground"
+    );
+
+    // The page's UNSCOPED springs (Detail updates outside `scoped_motion`) and the SCOPED
+    // verdict app.rs threads in (Home, the Library, Search, the press dip). Both are real page
+    // motion, and neither may reach this decision.
+    frame_begin(1.0 / 60.0);
+    note_spring(0.0, 100.0, 0.0);
+    assert!(page_moving());
+    begin_frame(true);
+    assert_eq!(crate::gfx::dither_for_field(700.0, 700.0), crate::gfx::DITHER_LSB, "page motion is not a field's business");
+}

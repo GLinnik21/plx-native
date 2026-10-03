@@ -32,10 +32,11 @@ pub(crate) struct Player {
     /// The resolved route, the stream URL, the transcode session, the HUD strings and the Up Next
     /// queue — what `route::decision::SESSION` was.
     pub(crate) session: PlaybackSession,
-    /// The webOS app-switch lifecycle (`app::lifecycle`): suspend on background, the exact-attempt
-    /// Load on foreground. Already a machine before phase 9; this moves the `App` field in beside
-    /// the session it drives, because every one of its transitions is about this playback.
-    pub(crate) lifecycle: crate::app::lifecycle::ForegroundLifecycle,
+    /// The webOS app-switch lifecycle (`player::lifecycle`, which `app::lifecycle` re-exports):
+    /// suspend on background, the exact-attempt Load on foreground. Already a machine before
+    /// phase 9; this moves the `App` field in beside the session it drives, because every one of
+    /// its transitions is about this playback.
+    pub(crate) lifecycle: super::lifecycle::ForegroundLifecycle,
     /// This frame's millisecond stamp — see the module doc. Zero before the first frame.
     pub(crate) now_ms: u32,
     /// **Is the hardware video plane bound to our sink?** (spec §9, §4.4, §16 risk 10.)
@@ -60,7 +61,7 @@ impl Player {
     pub(crate) fn new() -> Self {
         Self {
             repair: RepairAttempt::new(),            session: PlaybackSession::IDLE,
-            lifecycle: crate::app::lifecycle::ForegroundLifecycle::IDLE,
+            lifecycle: super::lifecycle::ForegroundLifecycle::IDLE,
             now_ms: 0,
             video_plane_bound: false,
             clock_fp: 0,
@@ -94,7 +95,7 @@ impl Player {
         // ONE line per edge, in the event log. The bit decides the present gate, the opaque
         // region, the capture skip and whether a frame may sample the framebuffer at all — and
         // every one of those is invisible from a log that does not say when the plane arrived.
-        crate::log(if bound {
+        crate::eventlog::log(if bound {
             "videoplane: BOUND — the gate presents unconditionally and no frame may snapshot"
         } else {
             "videoplane: unbound — ordinary idle rules from here"
@@ -128,21 +129,21 @@ impl Default for Player {
 
 /// Logical repair authority; resource handles live in PlayerAdapter. No reset-on-playback API.
 pub(crate) struct RepairAttempt {
-    state: crate::webos::jail_repair::State,
+    state: crate::tv::sandbox::State,
 }
 impl RepairAttempt {
-    pub(crate) const fn new() -> Self { Self { state: crate::webos::jail_repair::State::Idle } }
-    pub(crate) fn state(&self) -> crate::webos::jail_repair::State { self.state }
+    pub(crate) const fn new() -> Self { Self { state: crate::tv::sandbox::State::Idle } }
+    pub(crate) fn state(&self) -> crate::tv::sandbox::State { self.state }
     pub(crate) fn begin(&mut self, supported: bool) -> Option<u64> {
-        use crate::webos::jail_repair::{State, Failure};
+        use crate::tv::sandbox::{State, Failure};
         if self.state != State::Idle { return None; }
         if !supported { self.state = State::Failed(Failure::Unsupported); return None; }
         self.state = State::Running;
         Some(1)
     }
     /// The single issued token can land only once. Wrong/duplicate completions cannot rewrite it.
-    pub(crate) fn complete(&mut self, token: u64, result: Result<(), crate::webos::jail_repair::Failure>) -> bool {
-        use crate::webos::jail_repair::State;
+    pub(crate) fn complete(&mut self, token: u64, result: Result<(), crate::tv::sandbox::Failure>) -> bool {
+        use crate::tv::sandbox::State;
         if token != 1 || self.state != State::Running { return false; }
         self.state = match result { Ok(()) => State::Repaired, Err(e) => State::Failed(e) };
         true
@@ -152,21 +153,10 @@ impl RepairAttempt {
 #[cfg(test)]
 mod repair_tests {
     use super::*;
-    use crate::webos::jail_repair::{Failure, State};
-    #[test]
-    fn repair_survives_screen_and_session_recreation_and_rejects_stale_completions() {
-        let mut player = Player::new();
-        let token = player.repair.begin(true).unwrap();
-        assert!(!player.repair.complete(token + 1, Ok(())));
-        player.session = PlaybackSession::IDLE;
-        let _replacement = crate::screens::player::PlayerScreen::new(crate::ui::machine::EntryId(9));
-        assert_eq!(player.repair.state(), State::Running);
-        assert_eq!(player.repair.begin(true), None);
-        assert!(player.repair.complete(token, Err(Failure::Timeout)));
-        assert!(!player.repair.complete(token, Ok(())));
-        assert_eq!(player.repair.state(), State::Failed(Failure::Timeout));
-        assert_eq!(player.repair.begin(true), None);
-    }
+    use crate::tv::sandbox::Failure;
+    // `repair_survives_screen_and_session_recreation_and_rejects_stale_completions` builds a
+    // `PlayerScreen`, which `player` may not name: it lives in `screens::player`'s
+    // `repair_confirmation_tests`, beside the screen it recreates.
     #[test]
     fn every_terminal_result_spends_the_process_attempt() {
         for result in [Ok(()), Err(Failure::StartFailed), Err(Failure::HbcUnavailable), Err(Failure::NotRoot), Err(Failure::CommandFailed), Err(Failure::Timeout), Err(Failure::Unreadable)] {

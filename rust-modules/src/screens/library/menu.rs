@@ -13,7 +13,7 @@ use crate::ui::screen::{
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
 use crate::ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
-use crate::ui::source_list::{self, Level, SrcTarget, Tail};
+use crate::appkit::source_list::{self, Level, SrcTarget, Tail};
 use crate::ui::table::{Row, TableView};
 use std::convert::Infallible;
 #[cfg(test)]

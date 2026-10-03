@@ -23,4 +23,8 @@ mod render_set;
 pub use budget::*;
 pub use render_set::*;
 
-pub(crate) mod backdrop;
+// The live-backdrop walk lives in `gfx` now (module-layers step L5): `gfx`'s clip, clear, glass and
+// capture paths read and write it, and `gfx` may not name `ui`. Re-exported here at its old path.
+pub(crate) use crate::gfx::backdrop;
+#[cfg(test)]
+mod backdrop_tests; // the walk's tests that build their scene through `ui::Painter`

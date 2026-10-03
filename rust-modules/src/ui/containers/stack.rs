@@ -353,7 +353,7 @@ impl<H: Host> NavStack<H> {
             // for this `(EntryId, GroupId)`, which a `ContainerGroup`'s `Seat::Remembered` would
             // otherwise read back — a page that shares neither entry nor group with anything else
             // does not need the distinction, but `Push` mints a fresh `EntryId` per page here, so
-            // this arm cannot itself observe the leak `FocusTarget`'s doc on `screen.rs`
+            // this arm cannot itself observe the leak `FocusTarget`'s doc on `machine.rs`
             // describes; it is fixed here anyway because `Enter::Fresh` means "never seen" for
             // every caller of this constructor, not just the ones a collision can currently bite.
             focus: FocusTarget::FirstInGroup(focus_group),
@@ -366,7 +366,7 @@ impl<H: Host> NavStack<H> {
     /// placement, or after a boot with no prior focus to glide from — this mint's origin is
     /// always the strip's own currently-focused pill, so `FocusTarget::FirstInGroupAnimated`
     /// reports the same seat as a deliberate directional move (`By::Dir`) rather than a restore
-    /// snap. See the variant's doc on `screen.rs` for the bug this replaced.
+    /// snap. See the variant's doc on `machine.rs` for the bug this replaced.
     fn fresh_tab(focus_group: GroupId) -> Enter<H::Elem> {
         Enter::Fresh {
             focus: FocusTarget::FirstInGroupAnimated(focus_group),

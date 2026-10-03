@@ -174,7 +174,7 @@ impl HttpStream {
 /// `app::diagnostics` applies to the diagnostics panel. The endpoint on its own is what makes a line
 /// diagnosable ("which request failed") and it carries no secret.
 ///
-/// `crate::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
+/// `crate::eventlog::redact_tokens` catches a line that gets this wrong on the way out; the policy is that
 /// nothing built here needs it.
 fn log_endpoint(path: &str) -> &str {
     match path.find('?') {
@@ -248,7 +248,7 @@ pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_er
         hs.chunked != 0,
         recv_err,
     ) {
-        crate::log(&line);
+        crate::eventlog::log(&line);
     }
 }
 
@@ -1289,7 +1289,7 @@ fn http_open_with_timeouts(
                 // The host is on the line because "which name failed to resolve" is the only
                 // question this failure raises, and it is not a secret the way a query string is
                 // (`log_endpoint`) — `player::engine` and `plex::servers` already log `host=…:port`.
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "stream: {method} {} DNS FAILED host={host_s}",
                     log_endpoint(&path_s)
                 ));
@@ -1563,7 +1563,7 @@ unsafe fn perform_http_request(
         //
         // `status=0` is not a code any server sent: it is what the parse above leaves when the
         // status line was not `HTTP/1.x` followed by exactly three digits.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "stream: {method} {} status={}",
             log_endpoint(path_s),
             hs.status

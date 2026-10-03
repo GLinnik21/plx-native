@@ -151,7 +151,7 @@ Three things, and notably no webOS NDK and no nightly:
 Identical to the TV: arm a trigger in the instance root. The catalog is the source, and the
 command that produces it lives in `docs/agent-reference.md` (the "The catalog is the source, not this list"
 bullet) — use that one, not a copy: it has **two** greps, because a single path grep silently
-under-reports the four triggers named nowhere but their `dev::flag`/`dev::read` call. `tv-session`
+under-reports the four triggers named nowhere but their `devtrig::flag`/`devtrig::read` call. `tv-session`
 owns the screen-to-trigger recipes.
 
 ```sh
@@ -192,7 +192,7 @@ past `press::LONG_MS`), and `shot` (simulator only).
 A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
-**`back` at a ROOT is the platform's root press** (`webos::go_home`) — Home's root, the
+**`back` at a ROOT is the platform's root press** (`tv::home::go_home`) — Home's root, the
 who's-watching picker and the QR sign-in — and it does not end the process. **On the simulator it
 is a LOG LINE and nothing else** (`gohome: no LS2 bus off-device …`): there is no webOS launcher to
 hand a Mac window to, so the screen does not change and a `back` too many looks like a key that did

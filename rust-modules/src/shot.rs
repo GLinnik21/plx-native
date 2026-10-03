@@ -127,7 +127,7 @@ pub(crate) fn tick(now: u32, busy: bool) {
     if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
         SETTLE_FIRED.store(true, Ordering::Relaxed);
         SETTLED.store(true, Ordering::Relaxed);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
             now.wrapping_sub(first)
         ));
@@ -190,7 +190,7 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     }
     let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
-        crate::log("shot: viewport is empty — nothing to capture");
+        crate::eventlog::log("shot: viewport is empty — nothing to capture");
         return ends_run;
     }
 
@@ -261,8 +261,8 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
         cfg.path.clone()
     };
     match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
-        Ok(()) => crate::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
-        Err(e) => crate::log(&format!("shot: could not write {}: {e}", out.display())),
+        Ok(()) => crate::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
+        Err(e) => crate::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
     }
 
     ends_run
