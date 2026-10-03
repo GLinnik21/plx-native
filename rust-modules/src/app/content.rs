@@ -152,7 +152,7 @@ pub(super) fn request_play_intent(
             ok
         }
         crate::screens::registry::PlayIntent::Movie(m) =>
-            crate::route::request_play_movie(session, meta, m),
+            crate::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
     }
 }
 
@@ -1477,8 +1477,8 @@ mod library_publication_tests {
             assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(false),
                 "the reviewer race begins from a normally settled page");
             let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
-            crate::app::bootstrap::stores::init(&initial, true);
-            crate::app::bootstrap::stores::begin([
+            crate::stores::tape::init(initial.person_credits(), true);
+            crate::stores::tape::begin([
                 serde_json::json!({
                     "content_resource": true,
                     "request": {
@@ -1534,11 +1534,11 @@ mod library_publication_tests {
             frame_no += 1;
             pages.prune(&report.unmounted);
             assert!(tap.saw_restore && tap.checked_after_restore);
-            let (requests, failure) = crate::app::bootstrap::stores::finish();
+            let (requests, failure) = crate::stores::tape::finish();
             assert_eq!(failure, None);
             assert_eq!(requests.len(), 1,
                 "the synchronous start remains one recorder-visible resource admission");
-            crate::app::bootstrap::stores::reset_for_test();
+            crate::stores::tape::reset_for_test();
         } else {
             frame(&mut pages, &mut rig, &mut frame_no);
         }

@@ -17,7 +17,6 @@ use std::ffi::CStr;
 use std::hash::Hash;
 
 use super::present::{Present, PresentEvent, Provenance};
-use super::screen::{ScreenArg, ScreenEvent};
 
 /// The application bundle a generic `ui/` is compiled against (§3.1). The library is tested with
 /// `FixtureHost` and no Plex type in scope.
@@ -114,6 +113,14 @@ pub enum Chrome {
     None,
 }
 
+/// The application's screen argument (§6.1).
+pub trait ScreenArg: Clone + LogicalState + 'static {
+    fn chrome(&self) -> Chrome;
+    fn id(&self) -> ScreenId;
+    fn title(&self) -> Option<&str>;
+    fn same_instance(&self, other: &Self) -> bool;
+}
+
 /// A `step`'s answer: did the machine consume the event.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Handled {
@@ -182,7 +189,7 @@ pub trait Measure {
     /// A drawable, ellipsised run through this capability. Native fonts may retain fitted runs;
     /// replay and recording use the supplied metrics on every call, including missing-key checks.
     fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
-        crate::text::fit_line_by(self, s, budget, sz, bold)
+        fit_line_by(self, s, budget, sz, bold)
     }
 
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
@@ -210,6 +217,55 @@ pub trait Measure {
     fn live_font(&self) -> bool {
         false
     }
+}
+
+/// The same truncation rule through a supplied metric source (recorded/fixture/native).
+/// Callers cache the result with their render publication; this function owns no cache or font.
+///
+/// Lives here, beside [`Measure::fit_line`] whose default body is built on it, rather than in
+/// `text` (which re-exports it at its old path): the machine runtime may not name the text layer.
+pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) -> f32) -> String {
+    let target = if cont {
+        format!("{s}\u{2026}")
+    } else {
+        s.to_string()
+    };
+    if budget <= 0.0 || measure(&target) <= budget {
+        return target;
+    }
+    // largest char-prefix of `s` whose "prefix…" still fits `budget`
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let cand = chars[..mid]
+            .iter()
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+            + "\u{2026}";
+        if measure(&cand) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars[..lo]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+        + "\u{2026}"
+}
+
+/// [`Measure::fit_line`]'s default: [`elide_by`] over this capability's `width_str`, as a drawable
+/// run. A native capability that memoises fitted runs (`text::TtfMeasure`) and a recording one
+/// (`ui::rec::Measurements`) call it for the part they do not override.
+pub(crate) fn fit_line_by<M: Measure + ?Sized>(
+    measure: &M, s: &str, budget: f32, sz: i32, bold: bool,
+) -> std::rc::Rc<CStr> {
+    std::ffi::CString::new(elide_by(s, budget, false, |text| measure.width_str(text, sz, bold)))
+        .unwrap_or_default().into_boxed_c_str().into()
 }
 
 /// What a machine may read about the press machine (§7.4): the renderer's two numbers.
@@ -371,6 +427,116 @@ pub enum Fx<H: Host> {
     Log(LogLine),
     /// Handed to the application's adapters.
     App(H::Fx),
+}
+
+/// Everything a mounted screen can be told (§6.1).
+pub enum ScreenEvent<H: Host> {
+    Mount,
+    /// Frozen request-time memory, delivered before restored Enter for live and remounted bodies.
+    RestoreMemory(H::Memory),
+    Enter(Enter<H::Elem>),
+    Cover,
+    Uncover,
+    WillLeave(Leave),
+    Unmount,
+    Suspend,
+    Resume,
+    Input(InputEvent<H::Elem>),
+    PressHold(PressId),
+    PressCommit(PressId),
+    Activate(H::Elem),
+    Tick(Tick),
+    Timer(TimerId),
+    Async(RequestId, H::Msg),
+    StoreChanged(StoreOrd, u32),
+    FocusMoved {
+        from: Option<FocusKey<H::Elem>>,
+        to: FocusKey<H::Elem>,
+        by: By,
+    },
+    App(H::Msg),
+}
+
+impl<H: Host> ScreenEvent<H> {
+    /// The event's name for a log line or a recording (`life` records, §5.3).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ScreenEvent::Mount => "mount",
+            ScreenEvent::RestoreMemory(_) => "restore_memory",
+            ScreenEvent::Enter(_) => "enter",
+            ScreenEvent::Cover => "cover",
+            ScreenEvent::Uncover => "uncover",
+            ScreenEvent::WillLeave(_) => "will_leave",
+            ScreenEvent::Unmount => "unmount",
+            ScreenEvent::Suspend => "suspend",
+            ScreenEvent::Resume => "resume",
+            ScreenEvent::Input(_) => "input",
+            ScreenEvent::PressHold(_) => "press_hold",
+            ScreenEvent::PressCommit(_) => "press_commit",
+            ScreenEvent::Activate(_) => "activate",
+            ScreenEvent::Tick(_) => "tick",
+            ScreenEvent::Timer(_) => "timer",
+            ScreenEvent::Async(..) => "async",
+            ScreenEvent::StoreChanged(..) => "store_changed",
+            ScreenEvent::FocusMoved { .. } => "focus_moved",
+            ScreenEvent::App(_) => "app",
+        }
+    }
+}
+
+/// Lifecycle entry (§6.1) — distinct from `Seat`, the focus-entry policy.
+#[derive(Clone, Copy, Debug)]
+pub enum Enter<K> {
+    Fresh { focus: FocusTarget<K> },
+    Restored,
+}
+
+/// "Mount with focus on the strip" is expressible.
+///
+/// `ContainerGroup` and `FirstInGroup` name the SAME group and can resolve through the SAME
+/// `Seat::Remembered` policy, yet they must not be interchangeable: only the container mounting a
+/// page knows whether that page has been seen before. A table's `Seat` is a property of the
+/// GROUP — it says how to seat a cursor that lands there by direction, by a `Link`, or by a plain
+/// re-entry within the still-live screen — and rightly stays `Remembered` for all of those. But
+/// `Enter::Fresh` means the screen is being shown for the first time in this visit, and a
+/// remembered cursor cannot belong to a page nobody has looked at yet: every nested Settings page
+/// shares one `EntryId` with its siblings (the surface's own, `RouteSurface::run_inner`) and every
+/// one of their tables shares `GroupId(0)`, so `Seat::Remembered`'s `(EntryId, GroupId)` key is
+/// literally the SAME key across a push from Root into Legal — pushing OK on Settings' second row
+/// then had Legal open already seated on ITS second row, because `seat_in`'s remembered arm read
+/// the outgoing page's cursor back for the incoming one. `FirstInGroup` is the container's way to
+/// say "ignore whatever is remembered here, this is new" without weakening `Seat::Remembered` for
+/// every ordinary re-entry that still needs it (`ui/focus.rs`'s `enter`, the `FirstInGroup` arm).
+#[derive(Clone, Copy, Debug)]
+pub enum FocusTarget<K> {
+    Elem(FocusKey<K>),
+    /// Seat by the group's own `Seat` policy (`Seat::Remembered` included) — a plain re-entry.
+    ContainerGroup(GroupId),
+    /// Seat at the group's first selectable element, ignoring any remembered cursor for it — a
+    /// page being shown for the first time in this visit, where a remembered cursor cannot be
+    /// ITS memory however the `(EntryId, GroupId)` key happens to compare.
+    FirstInGroup(GroupId),
+    /// The same seat as `FirstInGroup`, reported to `ScreenEvent::FocusMoved` as `By::Dir`
+    /// instead of `By::Restore` — a strip PILL's cover-and-mint (`NavStack`'s `SelectTab`
+    /// arm), never a `Push`/`Root` mint. A tab press always originates FROM the visible strip,
+    /// so the arrival is exactly as deliberate as a directional move into the same group would
+    /// be; reporting `By::Restore` for it read as "the page is being restored to where it was",
+    /// which is false the first time a tab is ever visited, and it silently disabled every
+    /// screen's own "deliberate move" arrival animation (`library::LibraryScreen`'s
+    /// `pop_from_rest`, gated on `By::Dir | By::Pointer`) for that one path only — the reason a
+    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
+    /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
+    /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
+    /// the one constructor; nothing else may produce this variant.
+    FirstInGroupAnimated(GroupId),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum By {
+    Dir,
+    Pointer,
+    Restore,
+    Reconcile,
 }
 
 /// What a `Deliver` carries: a screen event, app message, or identity-bound input operation.
@@ -719,6 +885,21 @@ impl LogicalState for () {
 }
 
 #[cfg(test)]
+mod elide_tests {
+    use super::elide_by;
+
+    #[test]
+    fn supplied_metrics_keep_unicode_boundaries_and_the_existing_zero_budget_rule() {
+        let width = |s: &str| s.chars().count() as f32;
+        assert_eq!(elide_by("абвг", 3.0, false, width), "аб…");
+        assert_eq!(elide_by("a🙂bc", 3.0, false, width), "a🙂…");
+        assert_eq!(elide_by("short", 8.0, false, width), "short");
+        assert_eq!(elide_by("short", 0.0, false, width), "short");
+        assert_eq!(elide_by("short", 8.0, true, width), "short…");
+    }
+}
+
+#[cfg(test)]
 mod canon_tests {
     use super::*;
 
@@ -795,5 +976,68 @@ mod canon_tests {
         drop(fx);
         assert_eq!(buf.len(), 2);
         assert!(buf.iter().all(|s| s.from == MachineId::Nav));
+    }
+}
+
+/// The screen argument a test hands a [`Host`] when the machine under test has no screen of its
+/// own: the session owner's tests, which sit in a layer above this one and so cannot stand on
+/// `ui::fixture`'s `FixtureArg` (that is the UI library's own rig and lives in `ui`).
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BareArg;
+
+#[cfg(test)]
+impl LogicalState for BareArg {
+    fn write(&self, c: &mut Canon) { c.u32(0); }
+    fn probe(&self, out: &mut String) { out.push_str("bare_arg"); }
+}
+
+#[cfg(test)]
+impl ScreenArg for BareArg {
+    fn chrome(&self) -> Chrome {
+        Chrome::None
+    }
+    fn id(&self) -> ScreenId {
+        ScreenId(0)
+    }
+    fn title(&self) -> Option<&str> {
+        None
+    }
+    fn same_instance(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// The text measure a test hands a [`Cx`] when the machine under test draws nothing: a half-em
+/// advance per UTF-8 byte, the answers `ui::fixture::FixtureMeasure` gives.
+#[cfg(test)]
+pub(crate) struct BareMeasure;
+
+#[cfg(test)]
+impl Measure for BareMeasure {
+    fn width(&self, s: &CStr, sz: i32, _bold: bool) -> f32 {
+        s.to_bytes().len() as f32 * sz as f32 * 0.5
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * 0.7
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * 1.2
+    }
+}
+
+/// The host-test text measure over the shipped faces' real advances. The type is `fontcov`'s (base)
+/// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
+/// the one place the orphan rule lets it sit once the layers are crates.
+#[cfg(test)]
+impl Measure for crate::fontcov::advances::ShippedMeasure {
+    fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+        crate::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * 0.73
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * 1.21
     }
 }

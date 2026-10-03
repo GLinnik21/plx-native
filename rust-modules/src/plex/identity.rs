@@ -50,18 +50,18 @@ pub(crate) const VERSION: &str = env!("PLX_VERSION");
 
 pub(crate) const PLATFORM: &str = "webOS";
 
-/// The OS version — the REAL one, read off the set at boot ([`crate::webos`]), because the app
-/// runs on webOS 4 through 11 now and a literal is wrong on every set but one. This was
+/// The OS version — the REAL one, read off the set at boot ([`crate::tv::device`]), because the
+/// app runs on webOS 4 through 11 now and a literal is wrong on every set but one. This was
 /// `const … = "4.5"` while the app was packaged `>=4.0, <5.0`; the webosbrew reviewer flagged it
 /// reporting 4.5 from a 6.5.2 television (issue #22). PMS augments our named Generic profile
 /// from the X-Plex-Client-Profile-Extra we send, so the version is informational today — but it
 /// is also how a server-side profile could ever distinguish firmware generations, and a false
 /// one poisons that forever. The fallback when `os_info.json` is unreadable keeps the literal
 /// this replaces — the exact claim every release so far has made — rather than inventing an
-/// empty-string case no server has ever been shown. Safe by boot order: `webos::probe()` is the
-/// first call in `plex_run`, before SDL exists, so no PMS request can precede the read.
+/// empty-string case no server has ever been shown. Safe by boot order: `tv::probe_device()` runs
+/// before any PMS request, so none can precede the read.
 pub(crate) fn platform_version() -> &'static str {
-    let r = &crate::webos::info().release;
+    let r = &crate::tv::device::info().release;
     if r.is_empty() {
         "4.5"
     } else {

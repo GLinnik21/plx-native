@@ -28,7 +28,7 @@ normal build.
 
 Five pieces of this feature already exist, and the design is mostly wiring them together.
 
-* **One log sink.** Every diagnostic line in the app goes through `crate::log(&str)` in `lib.rs`,
+* **One log sink.** Every diagnostic line in the app goes through `crate::eventlog::log(&str)`,
   which is also where `redact_tokens` already strips `X-Plex-Token=…`. A ring buffer tapped there
   sees *everything* the app knows and inherits the redaction that is already the shipped policy.
 * **One structured state snapshot, already audited for secrets.** `player::Diag` (`player/mod.rs`,
@@ -38,7 +38,7 @@ Five pieces of this feature already exist, and the design is mostly wiring them 
   bool or enum **by rule**: `app/diagnostics.rs`'s module doc is a written no-URL / no-credential /
   no-identity contract for exactly this data, because it is already photographed and posted into
   public issue threads. A snapshot built from `Diag` is redacted by construction.
-* **Device identity.** `webos::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
+* **Device identity.** `tv::device::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
   `devcaps::caps()` (the SoC's own codec table), `paths::app_id()`/`flavour()`,
   `env!("PLX_VERSION")` (the reported app version — `X.Y.Z` for a release build, and the next
   MINOR with the patch reset for every other one, `X.(Y+1).0-dev`; see `rust-modules/build.rs`).
@@ -169,19 +169,20 @@ by forgetting a flag.
 | file | what it owns |
 | --- | --- |
 | `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
-| `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
+| `labcfg/config.rs` | (a `platform` module, so `ui/` and `screens/` can ask `labcfg::is_trigger_key` and `labcfg::menu_row_enabled`) reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
 | `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
-| `diag/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
+| `eventlog/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
 | `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime. Pure and host-testable. |
-| `diag/scrub.rs` | the **redaction pass** (§6), moved out of `lab/snapshot.rs` on 2026-08-29 when `crate::log` became a second caller. Ungated, so its assertions finally run in the default `make check` — under `lab/` they were skipped by every build that did not set the feature. Two exits: `scrub` may refuse a line, `scrub_local` may only rewrite one. |
+| `eventlog/scrub.rs` | the **redaction pass** (§6), moved out of `lab/snapshot.rs` on 2026-08-29 when the event log (then `crate::log`) became a second caller. Ungated, so its assertions finally run in the default `make check` — under `lab/` they were skipped by every build that did not set the feature. Two exits: `scrub` may refuse a line, `scrub_local` may only rewrite one. |
 | `diag/zlib.rs` | the one-symbol `compress2` table and the gzip envelope (§5) |
 | `lab/upload.rs` | gzip (optional, §5) then one `net::post_pinned`, on a `task::spawn_small` worker. Single-flight: a second BLUE while one is in flight is refused, not queued. |
 
-**The tap** is two lines in `lib.rs::log`, after `redact_tokens`:
+**The tap** is two lines in `eventlog::log`, after `redact_tokens`:
 
 ```rust
-let line = diag::scrub::scrub_local(m);   // was: redact_tokens(m)
-lab::record(&line);                        // a no-op without the feature
+let line = crate::eventlog::scrub::scrub_local(m);   // was: redact_tokens(m)
+#[cfg(feature = "lab-diagnostics")]
+crate::eventlog::ring::record(&line);
 ```
 
 so the ring is a strict subset of what the event log already contains — there is no second logging
@@ -205,9 +206,9 @@ budget is declared in `appinfo.json`, which is why both caps exist rather than a
   mattered more when the code was unknown; it still matters, because the measurement is one remote
   on one firmware.
 * **A fallback that needs only the D-pad**, since a Cloud Test Lab virtual remote may not offer
-  colour keys at all: a new row in `ui::account_menu` (`Action::SendDiagnostics`, lab builds only) —
+  colour keys at all: a new row in `screens::account_menu` (`Action::SendDiagnostics`, lab builds only) —
   reachable by ordinary navigation on Home, and a `TableView` row is the idiom that module already
-  is. The player-side twin is a row in `ui::more_menu`, beside Stats for nerds.
+  is. The player-side twin is a row in `appkit::more_menu`, beside Stats for nerds.
 * `ui::consts::is_bound` must answer `true` for the lab key in a lab build, or pressing it also
   wakes the player HUD and aborts an armed click (`docs/remote-keys.md` §6 is that whole story).
 
@@ -260,7 +261,7 @@ buys nothing once the channel is confidential and endpoint-authenticated.
 ## 6. Redaction: three layers, none of which trusts the others
 
 1. **At logging time** — `redact_tokens` in `lib.rs`, already shipped, already unit-tested.
-2. **By construction** — the envelope is built from `Diag`, `webos::Info` and `devcaps::Caps`, all
+2. **By construction** — the envelope is built from `Diag`, `tv::device::Info` and `devcaps::Caps`, all
    of which are numbers/enums/short platform strings. No field of the envelope is a URL, a path, a
    title, an account id, a server name or a `machineIdentifier`. This is `app/diagnostics.rs`'s rule,
    applied to a second consumer, and it is enforced the same way: the envelope is built in one
@@ -329,7 +330,7 @@ which appears nowhere in this tree and is unbound.
   ssh.
 
 The default in `plxnative-lab start` is **489**, the measured BLUE. `406` survives only as a unit
-test's fixture in `lab/config.rs` — it was the original guess (the CEA-2014 / webOS web-runtime
+test's fixture in `labcfg/config.rs` — it was the original guess (the CEA-2014 / webOS web-runtime
 keycode for BLUE) and it was wrong, which is the whole lesson of this section.
 
 ## 8. Receiver — `tools/plxnative-lab`, python3 stdlib only
@@ -474,7 +475,7 @@ not pretending the old filesystem contract exists.
 * **The ARM cross-build**: `make LAB=1 FLAVOR=debug` builds clean through the NDK, and
   `tools/fwcompat.py` is unchanged at OK 4.4.2 → 11.2.0 (see the LAB-ELF note below).
 * **The envelope's device block is real**: `status` read webOS 4.10.2 and the board and model
-  strings off the set, so `webos::device()`'s `device_info.json` parse works on hardware.
+  strings off the set, so `tv::device::device()`'s `device_info.json` parse works on hardware.
 * **The toast renders on the panel**, photographed over the who's-watching screen.
 * **The public leg**, via a phone off the LAN entirely — §12, which is the whole account.
 * And the **`fw-compat-reviewer`** pass `net.rs`'s new option warrants has been done: it found the

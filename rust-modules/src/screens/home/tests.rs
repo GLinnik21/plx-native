@@ -973,7 +973,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
             "offset {} is not in progress",
             m.resume_ms
         );
-        let cap = card_row::focused_caption(&m, true).expect("a Continue Watching episode always captions");
+        let cap = card_row::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
         assert!(
             !cap.to_str().unwrap().contains("left"),
             "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -986,7 +986,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
         "20 minutes into 45 IS in progress"
     );
     assert_eq!(
-        card_row::focused_caption(&mid, true).unwrap().to_str().unwrap(),
+        card_row::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
         "Laura \u{00b7} 25 min left"
     );
 }
@@ -1542,6 +1542,15 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
     assert_eq!(crate::ui::card_row::MAX_ROW_ITEMS, 24);
+}
+
+/// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
+/// that draws them owns `ui::card_row::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
+/// `ui` cannot name the data layer, so there are two constants for one number and this is the only
+/// place that sees both.
+#[test]
+fn the_data_shelf_cap_is_the_card_rows_capacity() {
+    assert_eq!(crate::pms::MAX_SHELF_ITEMS, crate::ui::card_row::MAX_ROW_ITEMS);
 }
 
 #[test]
@@ -2755,7 +2764,7 @@ fn the_first_frame_of_a_manual_flip_draws_only_the_outgoing_and_incoming_backdro
     }
     let tex_of = |i: usize| {
         let h = hero(i);
-        crate::ui::widgets::resolve_tex_wh_on(h.item.sid, &h.item.art, 1280, 720, 0).0
+        crate::ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0).0
     };
     let who = |tex: u32| (0..n).find(|&i| tex_of(i) == tex);
     let tick = hero_tick;

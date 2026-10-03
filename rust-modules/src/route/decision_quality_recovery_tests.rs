@@ -206,7 +206,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         23.976,
         p8(),
         true,
-        crate::webos::caps::DvCapability::Supported,
+        crate::devcaps::dv::DvCapability::Supported,
     ));
     let frozen = stream_dv_decision(&ps);
     assert!(frozen.presentation.declared().is_some());
@@ -258,7 +258,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         23.976,
         p8(),
         false,
-        crate::webos::caps::DvCapability::Supported,
+        crate::devcaps::dv::DvCapability::Supported,
     ));
     clear_output_dv(&mut ps);
     assert_eq!(
@@ -2228,10 +2228,10 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                 fps: 23.976,
                 dovi: p8(),
                 dv_decision: crate::metadata::DvDecision {
-                    capability: crate::webos::caps::DvCapability::Supported,
+                    capability: crate::devcaps::dv::DvCapability::Supported,
                     presentation: p8().presentation(
                         true,
-                        crate::webos::caps::DvCapability::Supported,
+                        crate::devcaps::dv::DvCapability::Supported,
                         true,
                     ),
                 },

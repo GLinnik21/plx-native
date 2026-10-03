@@ -27,7 +27,6 @@ pub(crate) mod card_motion;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
-pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub(crate) mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;
@@ -54,12 +53,9 @@ pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it 
 pub mod form; // declared, ordered rows with stable keys: Form / FormTable (docs/settings-form.md)
 #[cfg(test)]
 mod form_tests;
-pub mod info_panel;
 #[cfg(test)]
 mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
-#[cfg(feature = "lab-diagnostics")]
-pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 #[cfg(feature = "threadcheck")]
 pub(crate) mod runtime_warning;
 pub mod label;
@@ -76,21 +72,18 @@ pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region fo
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub(crate) mod page_stack; // the drill-in page stack Tracks and More share
 pub(crate) mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
-pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
-pub mod player_hud;
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
-pub mod profile;
+pub(crate) use crate::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
 pub(crate) mod route_screen;
 pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
-pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod table;
 pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
 pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
@@ -100,10 +93,7 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub(crate) mod text_lift; // the animated focus treatment (lift + plate + shadow) for a block of prose that is a focus stop but not a card
 pub mod theme;
-pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)
-pub mod track_menu;
 pub(crate) mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
-pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 
@@ -167,156 +157,16 @@ pub fn guard(f: impl FnOnce()) {
         // an already-flooding stream while telling nobody anything new. One line marks that the
         // barrier is what is keeping the app alive; the hook's lines say what is wrong.
         if !GUARD_RECOVERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
+            crate::eventlog::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
         }
     }
 }
 
-/// Where a cover crop ([`Rect::cover_uv`]) keeps a picture that does not share its box's aspect.
-/// A source WIDER than the box always loses its sides evenly; this decides only how a TALLER one
-/// splits its vertical overflow between top and bottom.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Crop {
-    /// Even: art whose subject is wherever the artist put it — posters, stills, extras, avatars.
-    Centre,
-    /// A person's photo. A portrait headshot has the face in its upper third, so an even crop into
-    /// a circle keeps the chest and cuts the forehead; this takes a fifth of the overflow off the
-    /// top and the rest off the bottom, so the kept window rides high on the photo.
-    Headshot,
-}
-
-impl Crop {
-    /// The fraction of a vertical overflow cut from the TOP; the rest comes off the bottom.
-    #[inline]
-    pub const fn top_share(self) -> f32 {
-        match self {
-            Crop::Centre => 0.5,
-            Crop::Headshot => 0.2,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Default, Debug, PartialEq)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-impl Rect {
-    pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
-        Self { x, y, w, h }
-    }
-    pub const FULL: Rect = Rect {
-        x: 0.0,
-        y: 0.0,
-        w: 1920.0,
-        h: 1080.0,
-    };
-    #[inline]
-    pub fn cx(&self) -> f32 {
-        self.x + self.w * 0.5
-    }
-    #[inline]
-    pub fn cy(&self) -> f32 {
-        self.y + self.h * 0.5
-    }
-    #[inline]
-    pub fn contains(&self, px: f32, py: f32) -> bool {
-        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
-    }
-    /// scale about center — reproduces the C card pop exactly (cx = x-(w-W)/2).
-    #[inline]
-    pub fn scaled(&self, s: f32) -> Rect {
-        let (w, h) = (self.w * s, self.h * s);
-        Rect::new(
-            self.x - (w - self.w) * 0.5,
-            self.y - (h - self.h) * 0.5,
-            w,
-            h,
-        )
-    }
-    /// This rect shrunk by `d` on every side (negative grows it).
-    #[inline]
-    pub fn inset(&self, d: f32) -> Rect {
-        Rect::new(self.x + d, self.y + d, self.w - 2.0 * d, self.h - 2.0 * d)
-    }
-    /// This rect FILLED by a `tw × th` source with its aspect preserved and centred — the
-    /// `background-size: cover` rule, and the counterpart of the CONTAIN math
-    /// [`hero_logo::fit`](crate::ui::hero_logo::fit) does (that one keeps a logo INSIDE its column;
-    /// this one overflows a picture PAST its frame so the frame is never
-    /// letterboxed). Full-bleed artwork needs it because [`Painter::tex`] maps UV 0..1 across the
-    /// rect: a source that is not the frame's aspect is SQUASHED, and an episode still is a video
-    /// frame whose aspect we do not control.
-    ///
-    /// A degenerate source (either dimension ≤ 0 — i.e. the texture has not decoded yet, so
-    /// `widgets::resolve_tex_wh` answers 0) returns the frame UNCHANGED, so a caller drawing before
-    /// the size is known gets today's stretch rather than a zero-area quad that blanks the backdrop.
-    ///
-    /// The overflow costs no fill: GL rasterizes only inside the viewport, so the off-panel part of
-    /// the quad generates no fragments.
-    #[inline]
-    pub fn cover(&self, tw: f32, th: f32) -> Rect {
-        if tw <= 0.0 || th <= 0.0 {
-            return *self;
-        }
-        let s = (self.w / tw).max(self.h / th);
-        let (w, h) = (tw * s, th * s);
-        Rect::new(
-            self.x + (self.w - w) * 0.5,
-            self.y + (self.h - h) * 0.5,
-            w,
-            h,
-        )
-    }
-    /// The UV window `(u0, v0, su, sv)` of a `tw × th` source that COVERS this rect with its aspect
-    /// preserved — [`cover`](Self::cover) expressed as a crop of the texture instead of an overflow
-    /// of the quad. That is the form a CLIPPED picture needs: a card's rounded rect or a headshot's
-    /// circle is masked by the rect itself, so the only way to keep the frame fully painted without
-    /// squashing the source is to sample less of it. `crop` says where the kept window sits.
-    ///
-    /// Cover and not contain, deliberately: a letterboxed picture inside a circle or a rounded card
-    /// leaves empty bands that read as a broken image, and the source is never scaled unevenly
-    /// either way. A degenerate source or rect (the texture has not decoded yet) answers
-    /// [`crate::gfx::UV_FULL`], the whole texture, exactly as `cover` returns the frame unchanged.
-    #[inline]
-    pub fn cover_uv(&self, tw: f32, th: f32, crop: Crop) -> [f32; 4] {
-        if tw <= 0.0 || th <= 0.0 || self.w <= 0.0 || self.h <= 0.0 {
-            return crate::gfx::UV_FULL;
-        }
-        let (box_a, src_a) = (self.w / self.h, tw / th);
-        if src_a > box_a {
-            // wider than the box: keep the full height, crop the sides evenly
-            let su = box_a / src_a;
-            [(1.0 - su) * 0.5, 0.0, su, 1.0]
-        } else {
-            // taller (or equal — `sv` is then 1 and the window is the identity)
-            let sv = src_a / box_a;
-            [0.0, (1.0 - sv) * crop.top_share(), 1.0, sv]
-        }
-    }
-    /// The overlap of two rects — the part of `self` that `o` lets through. A miss returns a
-    /// ZERO-SIZE rect (never a negative one), so `w > 0` is a clean "any of this is visible?"
-    /// test. This is how a scissor-clipped strip records what it actually drew: hit-testing the
-    /// clipped rect instead of the laid-out one is what stops an off-screen item staying
-    /// clickable at coordinates it no longer occupies.
-    #[inline]
-    pub fn intersect(&self, o: Rect) -> Rect {
-        let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
-        let (x1, y1) = (
-            (self.x + self.w).min(o.x + o.w),
-            (self.y + self.h).min(o.y + o.h),
-        );
-        Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
-    }
-    /// The smallest rect holding both — a group's extent from its elements (`ui::geom`).
-    #[inline]
-    pub fn union(&self, o: Rect) -> Rect {
-        let (x0, y0) = (self.x.min(o.x), self.y.min(o.y));
-        let (x1, y1) = ((self.x + self.w).max(o.x + o.w), (self.y + self.h).max(o.y + o.h));
-        Rect::new(x0, y0, x1 - x0, y1 - y0)
-    }
-}
+// `Rect`, `Crop` and `Zoom` moved to `gfx::geom` (module-layers step L5): `gfx` and `text` draw with
+// them and the `gfx` layer may not name `ui`. Re-exported here, so every `ui::Rect` / `ui::Crop` /
+// `ui::Zoom` caller names what it always did.
+pub use crate::gfx::{Crop, Rect};
+pub(crate) use crate::gfx::Zoom;
 
 #[derive(Clone, Copy, Default)]
 pub struct Size {
@@ -458,47 +308,6 @@ pub(crate) mod draw_census {
         TEX.with(|l| *l.borrow_mut() = Some(Vec::new()));
         f();
         TEX.with(|l| l.borrow_mut().take()).unwrap_or_default()
-    }
-}
-
-/// A uniform scale `s` about the fixed point `(ox, oy)` — the [`Painter`]'s visual zoom, and the
-/// ONE implementation of "grow a rect about a point" ([`Painter::place`] for every primitive,
-/// `text::draw_text` for a glyph quad, [`text_lift::lifted`] for focus geometry). `s == 1.0` is the
-/// identity and every method returns its input untouched.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct Zoom {
-    pub s: f32,
-    pub ox: f32,
-    pub oy: f32,
-}
-
-impl Zoom {
-    pub(crate) const NONE: Zoom = Zoom { s: 1.0, ox: 0.0, oy: 0.0 };
-
-    /// `s` about the point at fraction `origin` of `r` (`(0.5, 0.5)` centre, `(0.5, 0.0)` top edge).
-    pub(crate) fn about(r: Rect, origin: (f32, f32), s: f32) -> Self {
-        Self { s, ox: r.x + r.w * origin.0, oy: r.y + r.h * origin.1 }
-    }
-    #[inline]
-    pub(crate) fn is_none(self) -> bool {
-        self.s == 1.0
-    }
-    #[inline]
-    pub(crate) fn map(self, r: Rect) -> Rect {
-        if self.is_none() {
-            return r;
-        }
-        Rect::new(
-            self.ox + (r.x - self.ox) * self.s,
-            self.oy + (r.y - self.oy) * self.s,
-            r.w * self.s,
-            r.h * self.s,
-        )
-    }
-    /// The vertical half of [`map`](Self::map), for an absolute screen y (a fade band).
-    #[inline]
-    pub(crate) fn map_y(self, y: f32) -> f32 {
-        if self.is_none() { y } else { self.oy + (y - self.oy) * self.s }
     }
 }
 
@@ -2167,5 +1976,32 @@ mod tests {
         let _walk = backdrop::discover(sources.clone());
         let _surface = backdrop::layer(Z::surface(0), true);
         let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+    }
+}
+
+#[cfg(test)]
+mod spring_tests {
+    //! `Spring`'s own reports to the present gate. They need `testlock`, which the geometry tests
+    //! above do not (`ui::idle`'s gate state is process-wide).
+    use super::Spring;
+    use crate::ui::idle::{frame_begin, note_present, reset_for_test, should_present};
+
+    /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
+    /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
+    /// The gate's half of this (`note_jump`) is graded in `ui::idle`; this is the guard on the
+    /// `Spring` side of it.
+    #[test]
+    fn spring_jump_reports_only_when_it_changes_something() {
+        let _g = crate::testlock::serial();
+        reset_for_test();
+        let mut s = Spring::at(1.0);
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        s.jump(1.0); // already there
+        assert!(!should_present(10_016));
+
+        frame_begin(1.0 / 60.0);
+        s.jump(2.0); // teleported
+        assert!(should_present(10_032));
     }
 }

@@ -253,13 +253,59 @@ struct QrLayout {
 }
 
 /// **The failed read-out's reason.** The session's caption, except that a no-server failure which
-/// carries the account's name says who signed in instead ([`auth::signed_in_reason`], measured
+/// carries the account's name says who signed in instead ([`signed_in_reason`], measured
 /// with the live font here because the sign-in worker has none). A blank name — or none — keeps
 /// the caption, `browse.auth.no_servers`, which needs no name.
 fn failed_reason(error: &str, account: Option<&str>, measure: &dyn Measure) -> String {
     account
-        .and_then(|account| auth::signed_in_reason(account, measure))
+        .and_then(|account| signed_in_reason(account, measure))
         .unwrap_or_else(|| error.to_owned())
+}
+
+/// **The "no server yet" reason, naming the account that signed in** — two sentences on two lines
+/// (`browse.auth.no_servers_signed_in_as`: "Signed in as {account}." over "This Plex account has
+/// no server yet."), the break between them a `\n` the read-out honours
+/// (`StatusOverlay::reason_segments`).
+///
+/// **The first line never wraps and never ends in an ellipsis of its own**: when it is wider than
+/// the read-out's reason column, the NAME is shortened in its middle with an ellipsis
+/// ("Maximilian.Wolf…czyk.MMWW.") and the sentence keeps its words and its final period — a cut
+/// at the name's end would sit against that period as four dots. `None` for a blank name, or when the sentence
+/// leaves the name no room at all — the caller says `browse.auth.no_servers` instead, which needs
+/// no name.
+///
+/// `measure` MUST be the live font and so MAIN-THREAD ONLY on the device; the sign-in worker has
+/// no font to ask, which is why this takes the capability rather than reading one.
+fn signed_in_reason(account: &str, measure: &dyn Measure) -> Option<String> {
+    // A name is one run of text: a control character or a stray line break in it would cut the
+    // first line short of its sentence.
+    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    if account.is_empty() {
+        return None;
+    }
+    let sz = theme::size::BODY;
+    let message = |name: &str| crate::i18n::msg::browse_auth_no_servers_signed_in_as(name);
+    let first_line_w = |text: &str| measure.width_str(text.lines().next().unwrap_or(""), sz, false);
+    let column = StatusOverlay::REASON_W * crate::ui::fit::HEADROOM;
+    let full = message(&account);
+    if first_line_w(&full) <= column {
+        return Some(full);
+    }
+    // The room the name has is the column less the sentence around it; shave a pixel at a time if
+    // the sum of the parts under-reads the whole (kerning across the name's edges).
+    let mut room = column - first_line_w(&message(""));
+    loop {
+        // No room for any of the name: the plain caption says it better than a bare ellipsis.
+        if room <= 0.0 {
+            return None;
+        }
+        let name = crate::text::elide_middle_by(&account, room, |t| measure.width_str(t, sz, false));
+        let out = message(&name);
+        if first_line_w(&out) <= column {
+            return Some(out);
+        }
+        room -= 1.0;
+    }
 }
 
 /// Preserve the QR status mark's existing radius; its dots are part of the measured gutter.
@@ -348,6 +394,28 @@ fn readout_overlay<'a>(
         o = o.action(primary).secondary(labels[1]);
     }
     o
+}
+
+/// The icon a failed sign-in's mark draws as. Telemetry decides WHICH mark a cause earns
+/// (`IncidentContext::readout_glyph`, from the same evidence as the caption); this screen decides
+/// what each mark looks like. One arm per mark and no wildcard, so a new mark cannot draw nothing.
+fn incident_icon(glyph: crate::telemetry::incident::ReadoutGlyph) -> crate::ui::icons::Icon {
+    use crate::telemetry::incident::ReadoutGlyph as G;
+    use crate::ui::icons::Icon;
+    match glyph {
+        G::ClockBadgeAlert => Icon::ClockBadgeAlert,
+        G::CloudBadgeAlert => Icon::CloudBadgeAlert,
+        G::GlobeBadgeMinus => Icon::GlobeBadgeMinus,
+        G::GlobeBadgeQuestion => Icon::GlobeBadgeQuestion,
+        G::KeyBadgeAlert => Icon::KeyBadgeAlert,
+        G::LockBadgeAlert => Icon::LockBadgeAlert,
+        G::PeopleBadgeAlert => Icon::PeopleBadgeAlert,
+        G::PersonBadgeXmark => Icon::PersonBadgeXmark,
+        G::ServerBadgeMinus => Icon::ServerBadgeMinus,
+        G::ServerBadgePlus => Icon::ServerBadgePlus,
+        G::ServerBadgeXmark => Icon::ServerBadgeXmark,
+        G::WifiSlash => Icon::WifiSlash,
+    }
 }
 
 /// The read-out's controls, placed by the WIDGET through the [`Measure`] capability — the same
@@ -680,7 +748,7 @@ struct Note {
 /// on a deduplicated retry even when the report's already-resolved context and receipt stay put.
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     use crate::telemetry::incident::LinkClass;
-    let set = crate::webos::device().set_line();
+    let set = crate::tv::device::device().set_line();
     let set = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device().to_string() } else { set };
     let code = match offer.key.link {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
@@ -701,7 +769,7 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
         "{} {} \u{b7} {} \u{b7} {} \u{b7} {}{} \u{b7} {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
-        crate::webos::info().release_line(),
+        crate::i18n::webos_release_line(crate::tv::device::info()),
         set,
         code,
         discovery,
@@ -1026,7 +1094,7 @@ impl LoginScreen {
                 _ => false,
             };
             if stale
-                && !crate::dev::scenarios::harness_driven()
+                && !harness_driven()
                 && self.report.last_resolve != Some((o.id, revision))
             {
                 self.report.last_resolve = Some((o.id, revision));
@@ -1258,7 +1326,7 @@ impl LoginScreen {
             return crate::ui::icons::Icon::KeyBadgeAlert;
         }
         match self.report.offer.as_ref().and_then(|o| o.readout_context()) {
-            Some(ctx) => ctx.readout_glyph(),
+            Some(ctx) => incident_icon(ctx.readout_glyph()),
             // No incident context to read (should not happen alongside `Phase::Error`, which
             // `auth::output_failed` always pairs with one) — the wait's own clock is the closest
             // honest reading of "something about time or connectivity went wrong".
@@ -1350,7 +1418,7 @@ impl LoginScreen {
         self.report.alert.dismiss();
         if self.report.sheet == Sheet::Details {
             if let Some(o) = self.report.offer.as_ref().filter(|o| send && o.sendable()) {
-                crate::log("login: user sent a sign-in report from Details");
+                crate::eventlog::log("login: user sent a sign-in report from Details");
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::ReportIncident { id: o.id })));
             }
             if self.row().position(DETAILS).is_some() {
@@ -1396,7 +1464,7 @@ impl LoginScreen {
                 // between this screen's last `Tick` and this key), and the event log is the one
                 // place that failure is read from — a claim it did something is exactly the wrong
                 // thing to have written there.
-                crate::log("login: user requested a restart of a stalled sign-in");
+                crate::eventlog::log("login: user requested a restart of a stalled sign-in");
                 if self.pending_restart.is_none() {
                     if let Some(reply) = self.allocate_reply(fx) {
                         self.pending_restart = Some(PendingRestart {
@@ -1794,6 +1862,37 @@ impl LoginScreen {
     }
 }
 
+/// Is a harness driving this boot? The onboarding offer is a modal question, and a scripted run
+/// (a test identity, a forced profile pick, a recording) must not stop on one. **Narrow on
+/// purpose**, where `dev::any_trigger_present` is broad: every other trigger — `plxnative-login`,
+/// `-nowan`, `-signinfail`, the consent state — is how the offer is PUT on screen for a capture,
+/// and a gate that saw them would hide the thing being captured. Read once.
+///
+/// It only reads trigger files, so it lives with its one caller rather than in `dev::scenarios`,
+/// which a screen may not name.
+fn harness_driven() -> bool {
+    if cfg!(test) { return false; }
+    static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DRIVEN.get_or_init(|| {
+        crate::devtrig::read("token").is_some_and(|t| !t.is_empty())
+            || crate::devtrig::read("pickuser").is_some()
+            || recorder_armed()
+    })
+}
+
+/// Is `plxnative-rec` armed (the recorder's mode value present and valid)? The same raw read
+/// `dev::scenarios::rec_trigger` makes for the controlled-boot preflight. Compiled out, not merely
+/// guarded, in a release build: a runtime check would leave the trigger name in the binary's bytes,
+/// where `ci/check-package.py` grades them.
+#[cfg(feature = "devtriggers")]
+fn recorder_armed() -> bool {
+    matches!(crate::ui::rec::mode_value(&crate::devtrig::path("rec")), Ok(Some(_)))
+}
+#[cfg(not(feature = "devtriggers"))]
+fn recorder_armed() -> bool {
+    false
+}
+
 impl LoginScreen {
     /// The same measured geometry serves pre-paint focus, controlled replay and drawing.
     fn alert_rect(&self, elem: u32, measure: &dyn Measure) -> Rect {
@@ -2154,6 +2253,22 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
     // to do anything. Restoring click-anywhere would be a step backward, not a port.
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
+    }
+}
+
+#[cfg(test)]
+mod incident_icon_tests {
+    use super::incident_icon;
+    use crate::telemetry::incident::ReadoutGlyph;
+
+    /// Telemetry's marks and the icon family share names, and the mapping between them is written
+    /// out by hand: a mark that drew a neighbour's icon would put the wrong badge above a verdict
+    /// and still compile.
+    #[test]
+    fn every_incident_mark_draws_the_icon_of_its_own_name() {
+        for glyph in ReadoutGlyph::ALL {
+            assert_eq!(format!("{:?}", incident_icon(glyph)), format!("{glyph:?}"));
+        }
     }
 }
 

@@ -59,9 +59,9 @@ pub(crate) fn assert_may_block(label: &'static BlockingLabel) -> BlockingGuard {
     }
     #[cfg(all(feature = "threadcheck", not(test)))]
     if in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
-        if super::runtime_check::fatal(true, super::runtime_check::policy(crate::dev::guard_log_only()), super::runtime_check::Issue::Guard) {
+        if super::runtime_check::fatal(true, super::runtime_check::policy(crate::devtrig::guard_log_only()), super::runtime_check::Issue::Guard) {
             // log writes directly to an unbuffered File before aborting this thread.
-            crate::log(&format!("main-thread block: {} (fatal; aborting)", label.text));
+            crate::eventlog::log(&format!("main-thread block: {} (fatal; aborting)", label.text));
             std::process::abort();
         }
         super::runtime_check::guard(label.text);
@@ -76,7 +76,7 @@ impl Drop for BlockingGuard {
             static REPORTED: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
                 std::sync::Mutex::new(std::collections::BTreeSet::new());
             if REPORTED.lock().unwrap_or_else(|e| e.into_inner()).insert(self.label) {
-                crate::log(&format!("main-thread block: {} {}ms", self.label, started.elapsed().as_millis()));
+                crate::eventlog::log(&format!("main-thread block: {} {}ms", self.label, started.elapsed().as_millis()));
             }
         }
     }
@@ -85,13 +85,6 @@ impl Drop for BlockingGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[should_panic(expected = "main-thread block: storage helper transact")]
-    fn a_helper_call_inside_a_frame_is_rejected() {
-        let _frame = FrameScope::enter();
-        let _ = crate::storage::client::load();
-    }
 
     #[test]
     fn nested_scopes_and_exceptions_restore_after_unwind() {

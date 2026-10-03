@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Module-cycle ratchet: the app crate's top-level module cycle may lose members, never gain them.
 
-`rust-modules/src` has ~57 top-level modules (the non-test `mod` lines of lib.rs). The intended
-layering is gfx/text/i18n < ui < screens < app and plex < route/player < app, but a handful of thin
-upward references (ui -> screens, ui -> app, gfx/text -> ui, plex -> route) close one strongly
-connected component holding nearly all of the code. Untangling that is separate work; THIS gate
-only stops it absorbing more modules. It holds MEMBERSHIP, not edges: another reference between two
+`rust-modules/src` has ~63 top-level modules (the non-test `mod` lines of lib.rs). The intended
+layering is gfx/text/i18n < ui < screens < app and plex < route/player < app. A handful of thin
+upward references (ui -> screens, ui -> app, gfx/text -> ui, plex -> route) once closed one
+strongly connected component holding 44 of them; the module-layer migration (docs/module-layers.md,
+gated per reference by ci/check-module-layers.py) cut it to 13 by step L14 (the set since is recorded in
+ci/module-cycle-baseline.json), whose remaining edges are ones that
+gate allows (this tool sees `ui` and `diag` as one node each). THIS gate only stops the cycle
+absorbing more modules. It holds MEMBERSHIP, not edges: another reference between two
 modules that are already on the cycle (a sixth `ui` -> `screens`) does not fail it.
 `ci/module-cycle-baseline.json` records the modules that sit on the cycle today, and this script
 fails when

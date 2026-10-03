@@ -285,7 +285,7 @@ fn with<R>(f: impl FnOnce(&mut Tracker, u64, u64) -> R) -> R {
 
 fn log_all(lines: Vec<String>) {
     for l in lines {
-        crate::log(&l);
+        crate::eventlog::log(&l);
     }
 }
 

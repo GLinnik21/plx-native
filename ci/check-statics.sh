@@ -13,7 +13,7 @@
 #                                  legacy FILE, matched by path alone; it shrinks with each phase
 #                                  and is EMPTY at phase 12. A stale entry (a path with no static
 #                                  left) fails, so a deletion must also delete its entry.
-# Every `static mut` under ui/, screens/, person.rs, metadata.rs, metadata/, pms.rs and stores/,
+# Every `static mut` under ui/, appkit/, screens/, person.rs, metadata.rs, metadata/, pms.rs and stores/,
 # plus the two named globals, must match one of the two. search/ is scanned with Required 1's
 # wider spelling (`^\s*(pub(\(crate\))? )?static `, not just `static mut`) because that module
 # holds `recents.rs`'s two `Mutex`-guarded persistence-seam statics (STORE, PENDING) — real
@@ -34,7 +34,7 @@ ok()   { echo "  ok — $*"; }
 # silently drop out of the gate the way `"$SRC/person"` (never a real path — Person is the file
 # `person.rs`) used to. `2>/dev/null` on the grep itself is gone for the same reason: a missing
 # path is now a loud gate failure, not a swallowed scan of nothing.
-GATED_MUT_PATHS=("$SRC/ui" "$SRC/screens" "$SRC/person.rs" "$SRC/metadata.rs" "$SRC/metadata" "$SRC/pms.rs" "$SRC/stores")
+GATED_MUT_PATHS=("$SRC/ui" "$SRC/appkit" "$SRC/screens" "$SRC/person.rs" "$SRC/metadata.rs" "$SRC/metadata" "$SRC/pms.rs" "$SRC/stores")
 GATED_WIDE_PATHS=("$SRC/search")
 for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$SRC/route/decision.rs" "$SRC/player/engine.rs" "$SRC/ui/press.rs"; do
   [ -e "$p" ] || fail "gated path missing: $p — the statics gate would silently scan nothing here"

@@ -209,12 +209,12 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
             // this is `Seat::First`'s own arm, reused rather than reinvented, because the
             // question here ("ignore what's remembered") is the container's, not the group's
             // policy, and only the container knows a page has never been seen (`FocusTarget`'s
-            // doc on `screen.rs`).
+            // doc on `machine.rs`).
             //
             // `FirstInGroupAnimated` is the same seat reported as `By::Dir` instead of
             // `By::Restore`: a strip pill's cover-and-mint always arrives FROM the visible strip,
             // so it is exactly as deliberate as a directional move into the same group — see the
-            // variant's doc on `screen.rs` for why `By::Restore` there was the tab-switch
+            // variant's doc on `machine.rs` for why `By::Restore` there was the tab-switch
             // focus-jump bug. Both are "never seen", so both take the empty-page arm below.
             (None, FocusTarget::FirstInGroup(g) | FocusTarget::FirstInGroupAnimated(g)) => {
                 let Some(spec) = resolve_group(&groups, g) else {
@@ -1230,7 +1230,7 @@ mod tests {
 
     /// **Regression: a PUSH must not read a group's remembered cursor.** Traced to the Settings
     /// family, where every nested page shares one `EntryId` (the surface's own) and every page's
-    /// table shares `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `screen.rs`).
+    /// table shares `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `machine.rs`).
     /// A push used to ask `enter` for `FocusTarget::ContainerGroup`, whose `Seat::Remembered` arm
     /// in `seat_in` reads `remembered_in(entry, group)` back unconditionally — the OUTGOING
     /// page's row, because the incoming page presents the identical `(EntryId, GroupId)` key. On

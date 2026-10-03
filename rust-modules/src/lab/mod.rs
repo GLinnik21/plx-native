@@ -20,13 +20,14 @@
 //!    default set at all**, so a release build cannot acquire it by forgetting a flag. Without the
 //!    feature every entry point below is a compile-time no-op: no ring, no allocation, no key arm,
 //!    no config read, no socket, no thread.
-//! 2. **Call sites carry no `#[cfg]`.** `lib.rs`'s log tap, `app.rs`'s key ladder,
-//!    `ui::consts::is_bound` and the two menus all call plain functions that fold away. That is
-//!    `crate::dev`'s shape and it is deliberate: hand-written `#[cfg]` PAIRS at call sites are the
-//!    one hazard `.claude/hooks/release-config-check.py` exists for, and the gating lives in ONE
-//!    file instead of eight.
+//! 2. **Call sites carry no `#[cfg]`.** The event log's tap, `app.rs`'s key ladder,
+//!    `ui::consts::is_bound` and the two menus all call plain functions that fold away (`labcfg`'s
+//!    two answers, for `ui/`, `appkit/` and `screens/`). That is `crate::devtrig`'s shape and it is
+//!    deliberate: hand-written `#[cfg]` PAIRS at call sites are the one hazard
+//!    `.claude/hooks/release-config-check.py` exists for, and the gating lives in two files
+//!    (`lab/mod.rs`, `labcfg/mod.rs`) instead of eight.
 //! 3. **Nothing enters the payload that is not already allowed on a photograph.** The envelope is
-//!    built from `Diag`, `webos::Info` and `devcaps::Caps` — numbers, bools, enums and short
+//!    built from `Diag`, `tv::device::Info` and `devcaps::Caps` — numbers, bools, enums and short
 //!    platform strings — under the same no-URL / no-credential / no-identity rule `app::diagnostics`
 //!    states at length, and every ring record passes [`snapshot::scrub`] on the way out on top of
 //!    the `redact_tokens` it already passed on the way in. See [`snapshot`].
@@ -38,12 +39,17 @@
 //! shell, read a file, call an arbitrary URL or control webOS outside this SDL process. Both
 //! directions are initiated by the television as pinned, authenticated HTTPS POSTs.
 
+// `lab.json`'s reader, `is_trigger_key` and `menu_row_enabled` live in `crate::labcfg` (platform):
+// `ui/` and `screens/` ask those two questions and may not name this module.
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) mod config;
+use crate::labcfg::config;
+
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod control;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod snapshot;
+#[cfg(feature = "lab-diagnostics")]
+pub(crate) mod toast; // the upload read-out; it moved here from `ui/` because only this module draws it
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod upload;
 
@@ -65,18 +71,18 @@ pub(crate) struct ControlCommand {
 pub(crate) fn boot() {
     #[cfg(feature = "lab-diagnostics")]
     {
-        crate::diag::ring::start_clock();
+        crate::eventlog::ring::start_clock();
         match config::get() {
-            Some(c) => crate::log(&format!(
+            Some(c) => crate::eventlog::log(&format!(
                 "lab: armed session={} endpoint={} control={} triggers={:?} ring={}rec/{}KiB",
                 c.session,
                 c.endpoint,
                 if c.control { "on" } else { "off" },
                 c.trigger_wcodes,
-                crate::diag::ring::MAX_RECORDS,
-                crate::diag::ring::MAX_BYTES / 1024
+                crate::eventlog::ring::MAX_RECORDS,
+                crate::eventlog::ring::MAX_BYTES / 1024
             )),
-            None => crate::log(&format!("lab: INERT — {}", config::why_not())),
+            None => crate::eventlog::log(&format!("lab: INERT — {}", config::why_not())),
         }
     }
 }
@@ -103,29 +109,6 @@ pub(crate) fn command_done(_id: u32, _ok: bool) {
     control::finish(_id, _ok);
 }
 
-/// The log tap. Called by `crate::log` for every line, after `redact_tokens`.
-///
-/// Takes `&str` rather than the `Cow` so the caller's borrow is unambiguous, and copies: the ring
-/// outlives the caller's frame by construction.
-#[inline]
-pub(crate) fn record(_line: &str) {
-    #[cfg(feature = "lab-diagnostics")]
-    crate::diag::ring::record(_line);
-}
-
-/// Is this press the configured lab trigger? Consulted by `ui::consts::is_bound` so that pressing
-/// it does not ALSO wake the player HUD and abort an armed click — the unsupported-key invariant
-/// in `docs/remote-keys.md` §6, seen from the side of a key that is genuinely bound in this build.
-#[inline]
-pub(crate) fn is_trigger_key(_sym: u32, _wcode: u32) -> bool {
-    #[cfg(feature = "lab-diagnostics")]
-    {
-        return config::get().is_some_and(|c| c.is_trigger(_sym, _wcode));
-    }
-    #[cfg(not(feature = "lab-diagnostics"))]
-    false
-}
-
 /// The key ladder's lab arm: `true` when the press was taken and the ladder must `continue`.
 ///
 /// It sits at the TOP of the chain, above every modal, on purpose — the screen a tester most
@@ -134,7 +117,7 @@ pub(crate) fn is_trigger_key(_sym: u32, _wcode: u32) -> bool {
 pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &crate::route::PlaybackSession) -> bool {
     #[cfg(feature = "lab-diagnostics")]
     {
-        if is_trigger_key(_sym, _wcode) {
+        if crate::labcfg::is_trigger_key(_sym, _wcode) {
             request_upload("key", _ps);
             return true;
         }
@@ -156,18 +139,6 @@ pub(crate) fn request_upload(_reason: &str, _ps: &crate::route::PlaybackSession)
     upload::request(_reason, _ps);
 }
 
-/// Should the lab entry appear in the account menu / player overflow? False in every build that
-/// does not have a working lab configuration, so the row cannot be a dead control.
-#[inline]
-pub(crate) fn menu_row_enabled() -> bool {
-    #[cfg(feature = "lab-diagnostics")]
-    {
-        return config::get().is_some();
-    }
-    #[cfg(not(feature = "lab-diagnostics"))]
-    false
-}
-
 /// The app's current route, by the name the heartbeat uses. Stored for the next snapshot's
 /// envelope; called once per frame from the tail of the loop.
 #[inline]
@@ -180,7 +151,7 @@ pub(crate) fn note_route(_r: &'static str) {
 #[inline]
 pub(crate) fn update(_now: u32) {
     #[cfg(feature = "lab-diagnostics")]
-    crate::ui::lab_toast::update(_now);
+    toast::update(_now);
 }
 
 /// Draw the toast, over everything, on every route. `stats` is the diagnostics read-out's frame
@@ -188,5 +159,5 @@ pub(crate) fn update(_now: u32) {
 #[inline]
 pub(crate) fn draw(_stats: Option<crate::ui::Rect>) {
     #[cfg(feature = "lab-diagnostics")]
-    crate::ui::lab_toast::draw(_stats);
+    toast::draw(_stats);
 }

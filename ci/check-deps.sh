@@ -14,6 +14,8 @@
 #   present  — the present gate's worker door: ONE atomic static in ui/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
+#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs and port.rs
+#              (step L15: the Starfish/ACB verbs are the player's alone).
 #
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
@@ -123,7 +125,8 @@ grep_code_owner() {
 # escaped character inside a string counts as one blanked character pair) and everything from an
 # unquoted `//` to end of line dropped. Used by gates (`frame`, `tmppath`) that must not fire on a
 # call SHAPE that only appears as message text or as a self-test's own expected-string literal —
-# `ui/idle.rs` compares against `app/run.rs`'s source as a string, which is exactly that shape.
+# a host test that compares against `app/run.rs`'s source as a string (the loop pins in `app/run.rs`
+# and `ui/fixture.rs`) is exactly that shape.
 # This is character-by-character rather than a same-line regex heuristic for the reason both those
 # gates' own comments give: a `//` or a `"` that is itself inside a string must not end the scan
 # early, and a multi-token call spelled across a `"..."` boundary must not be reassembled by luck.
@@ -547,7 +550,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC"
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/appkit" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -602,7 +605,7 @@ while IFS= read -r f; do
 # ...over the files that name a mutator at all. The per-file pass only subtracts (a `#[cfg(test)] mod`
 # block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
 # that can produce a hit.
-done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/appkit" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
@@ -674,7 +677,7 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
   grep_code '(crate|super)::app::' "$SRC/screens" | sed 's/^/    /'
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
-gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
+gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui" "$SRC/appkit"
 # uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
 # `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
 # injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
@@ -788,7 +791,7 @@ gate_zero() {
     fail "$rule: $(echo "$hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
   fi
 }
-gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC/screens"
+gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC/ui" "$SRC/appkit" "$SRC/screens"
 
 # hittest: the narrowed raw hit-tester call shape, zero in app/ once the player's HUD registers
 # its stops through DrawFrame::stop (D2) instead of app/run.rs testing raw coordinates against
@@ -799,17 +802,18 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # frame: the three privileged OS-primitive calls, ZERO-TOLERANCE outside `app/run.rs` (D4) — no
 # allowlist file, because there is exactly one legitimate home once D1 lands: `app/run.rs` is the
 # frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
-# `rig_clear_opaque_region` (a one-line pass-through) rather than naming `crate::system::` itself,
+# `rig_clear_opaque_region` (a one-line pass-through) rather than naming `crate::tv::window::` itself,
 # which is what keeps this gate's text out of bridge.rs without splitting the `impl Rig<AppHost>
 # for Bridge` block (a trait's impl for a type is one syntactic unit; it carries two dozen other
-# methods beside these three). `ui/idle.rs`'s self-test spells two of the three call shapes as
-# STRING LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy
-# of the exact line it expects, which is data, not a call — so a hit inside a `"…"` literal is
-# stripped before matching (the same double-quote-depth tracking `tmppath` below uses), rather
-# than exempting the file by name: an actual call typed into idle.rs, outside a string, still
-# fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
+# methods beside these three). A self-test that spells two of the three call shapes as STRING
+# LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy of the
+# exact line it expects, which is data, not a call (`app/run.rs`'s own `video_plane_gate_tests`
+# today, `ui/idle.rs`'s before the machine layer left `ui/`) — must not trip this gate in any file
+# that is not exempt, so a hit inside a `"…"` literal is stripped before matching (the same
+# double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
+# actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
-frame_pat='crate::system::(ls2_pump|opaque_route|clear_opaque_region)\('
+frame_pat='crate::tv::window::(pump_bus|opaque_route|clear_opaque_region)\('
 frame_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC/app/run.rs" ] && continue
@@ -829,6 +833,22 @@ done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
+# sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
+# `player/` (including `player/ffi*.rs`, which implement the trait), `port.rs` (which installs one)
+# and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; every other module reaches
+# the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
+# `#[cfg(test)]` blocks. Zero, no allowlist.
+sink_bad=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  p="${line%%:*}"
+  case "$p" in "$SRC"/player/*|"$SRC"/tv/*|"$SRC"/tv.rs|"$SRC"/port.rs) continue ;; esac
+  if is_wholly_test "$p"; then continue; fi
+  echo "    $line"; sink_bad=$((sink_bad+1))
+done < <(grep_code 'tv::sink::installed|\bVideoSink\b' "$SRC")
+if [ "$sink_bad" -eq 0 ]; then ok "sink"
+else fail "sink: $sink_bad line(s) naming the video sink outside player/, port.rs, tv.rs and tv/"; fi
+
 # route: `Route::` in app/ = 0, and `enum Route` gone from the whole tree (D1/D4). No allowlist:
 # the type is meant to be retired, not narrowed.
 route_app=$(grep_code 'Route::' "$SRC/app")
@@ -841,7 +861,8 @@ else
   fail "route: enum Route re-declared — the page alphabet is \`AppArg\` (D1)"
 fi
 
-# fnlen: app/run.rs::run <= 200 lines, plex_run (app/mod.rs) <= 10 lines (D4) — counted by brace
+# fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
+# plex_run (port.rs: install, then hand over) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body
@@ -857,9 +878,12 @@ fn_body_lines() {
 run_len=$(fn_body_lines "$SRC/app/run.rs" 'run')
 if [ -n "$run_len" ] && [ "$run_len" -le 200 ]; then ok "fnlen: app/run.rs::run ($run_len lines)"
 else fail "fnlen: app/run.rs::run is ${run_len:-unknown} lines, budget 200 — a phase of the frame belongs in its own function (see run.rs's own doc)"; fi
-plexrun_len=$(fn_body_lines "$SRC/app/mod.rs" 'plex_run')
-if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run ($plexrun_len lines)"
-else fail "fnlen: plex_run is ${plexrun_len:-unknown} lines, budget 10"; fi
+runapp_len=$(fn_body_lines "$SRC/app/mod.rs" 'run_application')
+if [ -n "$runapp_len" ] && [ "$runapp_len" -le 10 ]; then ok "fnlen: run_application (app/mod.rs) ($runapp_len lines)"
+else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, budget 10"; fi
+plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
+if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
+else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 10"; fi
 
 # testmod: `#[cfg(test)] mod` count in app/mod.rs = 0 (D4/D8) — every test module named in D8's
 # table is meant to have moved to its subject's own file by the time this gate is added.
@@ -921,15 +945,15 @@ else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared 
 # treating a `//` inside a string as one; (2) tracks whether each character is inside a `"…"`
 # string literal, honouring `\"` so an escaped quote does not end it early; (3) as it goes,
 # maintains a stack of the CALL NAME behind every currently-open, not-yet-closed `(` (the token
-# immediately before it) — which is what lets a match inside `crate::log(&format!("…"))` see BOTH
-# enclosing calls, `format!` innermost and `crate::log` beneath it, across as many lines as the
+# immediately before it) — which is what lets a match inside `crate::eventlog::log(&format!("…"))`
+# see BOTH enclosing calls, `format!` innermost and the log call beneath it, across as many lines as the
 # call spans. A hit is a `/tmp/plxnative-` match that is NOT inside a string, or is inside one but
-# no enclosing call on that stack is `log`/`crate::log`/`log!` — i.e. exactly the two exemptions
+# no enclosing call on that stack is `log`/`crate::eventlog::log`/`log!` — i.e. exactly the two exemptions
 # D4 names, comment and log-message text, and nothing else (a bare `let s = "/tmp/plxnative-x";`
 # with no log() around it is a hit, deliberately, even though it opens nothing — the spec's own
 # wording is "any literal…unless", not "any literal that is also an open"). `dev.rs` is the one
 # structural exemption; a second category ("the log sinks") is named in the spec but resolves to
-# NOTHING in this tree today — `lib.rs::events_log`/`app/boot.rs`'s crash-log open both build the
+# NOTHING in this tree today — `eventlog::events_log`/`app/boot.rs`'s crash-log open both build the
 # path through `paths::in_runtime_dir("plxnative-…")`, a bare filename with no `/tmp/` prefix, so
 # neither one is a `/tmp/plxnative-` literal in the first place and there is no second file to
 # name here (re-verify this if a log sink is ever given a hardcoded `/tmp/` path).
@@ -939,7 +963,7 @@ import os, sys
 src = sys.argv[1]
 exempt_files = {os.path.join(src, "dev.rs")}
 needle = "/tmp/plxnative-"
-log_names = {"log", "crate::log", "log!"}
+log_names = {"log", "crate::eventlog::log", "log!"}
 
 def scan(path, text):
     hits = []

@@ -1,5 +1,5 @@
-//! Every dev-trigger ARM — the code that reads `/tmp/plxnative-*` through [`super::flag`] /
-//! [`super::read`] / [`super::latched_flag!`] and reacts to it — gathered on one file (UI
+//! Every dev-trigger ARM — the code that reads `/tmp/plxnative-*` through [`crate::devtrig::flag`] /
+//! [`crate::devtrig::read`] / [`crate::devtrig::latched_flag!`] and reacts to it — gathered on one file (UI
 //! restructure spec v4 §3.3 step 2 / §11, phase 10 lane P). A PURE MOVE: no trigger was renamed,
 //! no timing changed, no ordering changed. Before this phase the arms were spread across four
 //! loop files — `app/boot.rs` (read-once boot flags), `app/run.rs`'s `dev_scripts` and the
@@ -172,7 +172,7 @@ pub(crate) struct Scenarios {
 /// so a playback test photographs the same ABR/pipeline evidence on every automated run rather
 /// than depending on a previous manual toggle surviving into this session.
 pub(crate) fn pre_boot() {
-    if crate::dev::flag("stats") {
+    if crate::devtrig::flag("stats") {
         crate::app::diagnostics::open();
     }
 }
@@ -186,20 +186,20 @@ pub(crate) fn pre_boot() {
 
 /// `/tmp/plxnative-novsync` — uncap the swap interval so `fps=` reports the true GPU render rate.
 pub(crate) fn novsync_armed() -> bool {
-    crate::dev::flag("novsync")
+    crate::devtrig::flag("novsync")
 }
 
 /// `/tmp/plxnative-login` — force the QR login screen even with a usable session.
 pub(crate) fn login_forced() -> bool {
-    crate::dev::flag("login")
+    crate::devtrig::flag("login")
 }
 
 /// `/tmp/plxnative-token` — the harness/headless test identity, read once. Never logged.
 pub(crate) fn dev_token() -> String {
-    match crate::dev::read("token") {
+    match crate::devtrig::read("token") {
         Some(s) if !s.is_empty() => {
             #[cfg(feature = "devtriggers")]
-            crate::log("token: using /tmp/plxnative-token (test identity)");
+            crate::eventlog::log("token: using /tmp/plxnative-token (test identity)");
             s
         }
         _ => String::new(),
@@ -209,173 +209,39 @@ pub(crate) fn dev_token() -> String {
 /// Optional primary endpoint for a synthetic PMS fixture. Used only with the explicitly
 /// injected dev token; a persisted account is never redirected. Absent in shipping builds.
 pub(crate) fn pms_origin() -> Option<crate::plex::Origin> {
-    crate::dev::read("pms-origin").and_then(|s| crate::plex::Origin::parse(s.trim()))
+    crate::devtrig::read("pms-origin").and_then(|s| crate::plex::Origin::parse(s.trim()))
 }
 
-crate::dev::latched_flag! { pub(crate) fn imagecache_stats_armed = "imagecache-stats"; }
-crate::dev::latched_flag! {
+crate::devtrig::latched_flag! { pub(crate) fn imagecache_stats_armed = "imagecache-stats"; }
+crate::devtrig::latched_flag! {
     /// `/tmp/plxnative-imgtrace` — per-image poster timeline and every picture-lost event
     /// (`app/adapters/poster/trace.rs`). Absent in shipping builds.
     pub(crate) fn imgtrace_armed = "imgtrace";
 }
-crate::dev::latched_flag! {
+crate::devtrig::latched_flag! {
     /// RAM-only control leg for cache performance comparisons; absent in shipping builds.
     pub(crate) fn imagecache_bypass_armed = "imagecache-bypass";
 }
 
 /// `/tmp/plxnative-pickuser=<index>` — force the boot picker and auto-select that roster tile.
 pub(crate) fn pickuser_index() -> Option<usize> {
-    crate::dev::read("pickuser").and_then(|s| s.parse().ok())
-}
-
-/// `/tmp/plxnative-readout=<case>` — boot straight into a chosen page-filling `Failed` read-out
-/// for the read-out glyph work's own visual verification (spec "1A"), with NO network call and no
-/// account touched: paired with `plxnative-login` (which already forces `BootTo::Login` with no
-/// session), `login_worker_with_output` reads this ONCE at the top of the worker thread and, for
-/// every case named here, skips straight to `auth::output_failed_naming` with a canned caption,
-/// [`crate::telemetry::incident::IncidentContext`] and (`discovery_no_servers` only) a canned account name instead of minting a PIN or discovering
-/// anything — the exact same terminal path a real failure reaches, so `LoginScreen`'s `Phase::
-/// Error` draw, `readout_kind` and `readout_glyph` are exercised UNMODIFIED. Every value below is
-/// the one `auth::discovery_failure`'s table would have built for the same cause; see that
-/// function and `telemetry::incident::IncidentContext::readout_glyph`'s doc for why each case maps
-/// to the glyph it does. `Home`, `Library` and `ProfileSwitch` read-outs are NOT covered by this
-/// trigger — they are not reached through the sign-in worker, and short-circuiting their own
-/// stores/session state the same way needs plumbing this pass did not reach; verify a glyph in
-/// that family through `StatusOverlay`'s host geometry tests and its shared `page()` code path
-/// instead (the same function every case here also draws through).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadoutCase {
-    PinCreate,
-    PinExpired,
-    Authorization,
-    DiscoveryNoServers,
-    DiscoveryRefused,
-    DiscoveryServersSilent,
-    DiscoveryPlexTvDns,
-    DiscoveryPlexTvTls,
-    DiscoveryPlexTvAnswered,
-    DiscoveryPlexTvOther,
-    DiscoveryInsecureOnly,
-    SaveFailed,
-}
-
-pub(crate) fn readout_case() -> Option<ReadoutCase> {
-    crate::dev::read("readout").and_then(|s| match s.trim() {
-        "pin_create" => Some(ReadoutCase::PinCreate),
-        "pin_expired" => Some(ReadoutCase::PinExpired),
-        "authorization" => Some(ReadoutCase::Authorization),
-        "discovery_no_servers" => Some(ReadoutCase::DiscoveryNoServers),
-        "discovery_refused" => Some(ReadoutCase::DiscoveryRefused),
-        "discovery_servers_silent" => Some(ReadoutCase::DiscoveryServersSilent),
-        "discovery_plextv_dns" => Some(ReadoutCase::DiscoveryPlexTvDns),
-        "discovery_plextv_tls" => Some(ReadoutCase::DiscoveryPlexTvTls),
-        "discovery_plextv_answered" => Some(ReadoutCase::DiscoveryPlexTvAnswered),
-        "discovery_plextv_other" => Some(ReadoutCase::DiscoveryPlexTvOther),
-        "discovery_insecure_only" => Some(ReadoutCase::DiscoveryInsecureOnly),
-        "save_failed" => Some(ReadoutCase::SaveFailed),
-        _ => None,
-    })
-}
-
-/// The mock account the canned `discovery_no_servers` read-out says it signed in as, unless
-/// `/tmp/plxnative-readout-account=<name>` names another (an empty file shows the nameless
-/// `browse.auth.no_servers` fallback). A canned name, never a real account's.
-const MOCK_ACCOUNT: &str = "alexandra";
-
-impl ReadoutCase {
-    /// The account name the canned failure carries to the screen (`LoginProgress::Failed::account`),
-    /// the way a real no-server sign-in does: composed and measured there, not here. Only
-    /// `discovery_no_servers` has one.
-    pub(crate) fn canned_account(self) -> Option<String> {
-        if self != Self::DiscoveryNoServers { return None; }
-        Some(crate::dev::read("readout-account").unwrap_or_else(|| MOCK_ACCOUNT.to_string()))
-            .filter(|name| !name.trim().is_empty())
-    }
-    /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
-    /// `login_worker_with_output` feeds `output_failed_naming` (with [`Self::canned_account`]) in place of the real network calls — see
-    /// [`readout_case`]'s doc.
-    pub(crate) fn canned_login_failure(
-        self,
-    ) -> (std::borrow::Cow<'static, str>, crate::telemetry::incident::IncidentContext) {
-        use crate::i18n::msg;
-        use crate::telemetry::incident::{
-            DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger, IncidentContext,
-            IncidentKind, LinkClass,
-        };
-        fn ctx(kind: IncidentKind) -> IncidentContext {
-            IncidentContext::new(kind, None)
-        }
-        fn plextv(target: DiscoveryTarget) -> DiscoveryEvidence {
-            DiscoveryEvidence { trigger: DiscoveryTrigger::Login, target: Some(target) }
-        }
-        match self {
-            Self::PinCreate => (msg::browse_auth_plex_unreachable().into(), ctx(IncidentKind::PinCreate)),
-            Self::PinExpired => (msg::browse_auth_timeout().into(), ctx(IncidentKind::PinExpired)),
-            Self::Authorization => (msg::browse_auth_signin_refused().into(), ctx(IncidentKind::Authorization)),
-            Self::DiscoveryNoServers => (
-                msg::browse_auth_no_servers().into(),
-                ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)),
-            ),
-            Self::DiscoveryRefused => (
-                msg::browse_auth_refused().into(),
-                ctx(IncidentKind::Discovery(DiscoveryClass::Refused)),
-            ),
-            Self::DiscoveryServersSilent => {
-                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
-                c.discovery = Some(plextv(DiscoveryTarget::Servers));
-                (msg::browse_auth_servers_unreachable().into(), c)
-            }
-            Self::DiscoveryPlexTvDns => {
-                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
-                c.link = LinkClass::Dns;
-                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (msg::browse_auth_plex_dns_retry(1).into(), c)
-            }
-            Self::DiscoveryPlexTvTls => {
-                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
-                c.link = LinkClass::Tls;
-                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (msg::browse_auth_plex_tls().into(), c)
-            }
-            Self::DiscoveryPlexTvAnswered => {
-                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
-                c.link = LinkClass::Answered5xx;
-                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (msg::browse_auth_plex_unavailable().into(), c)
-            }
-            Self::DiscoveryPlexTvOther => {
-                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
-                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
-                (msg::browse_auth_plex_connect_retry(1).into(), c)
-            }
-            Self::DiscoveryInsecureOnly => (
-                msg::browse_auth_insecure().into(),
-                ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)),
-            ),
-            // The real "Couldn't save your sign-in" warning arrives through a different path
-            // (`persistence_warning`, drawn by `LoginScreen::draw_warning`) — this case takes the
-            // ordinary `Phase::Error` route instead, which draws a different caption ("Couldn't
-            // sign in") but the SAME page-placed `Failed` layout and the SAME `KeyBadgeAlert`
-            // glyph, which is the only thing this trigger exists to show.
-            Self::SaveFailed => (msg::browse_login_failed().into(), ctx(IncidentKind::SaveFailed)),
-        }
-    }
+    crate::devtrig::read("pickuser").and_then(|s| s.parse().ok())
 }
 
 /// `/tmp/plxnative-logintest` — validate the plex.tv account path end to end on the device.
 pub(crate) fn arm_logintest() {
-    if crate::dev::flag("logintest") {
+    if crate::devtrig::flag("logintest") {
         let _ = crate::task::spawn_small("logintest", || {
             let sess = crate::plex::session::load();
             let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
             match ac.create_pin() {
-                Ok(p) => crate::log(&format!(
+                Ok(p) => crate::eventlog::log(&format!(
                     "logintest: create_pin ok id={} code_len={} authToken_null={}",
                     p.id,
                     p.code.len(),
                     p.auth_token.is_none()
                 )),
-                Err(evidence) => crate::log(&format!("logintest: create_pin FAILED ({})",
+                Err(evidence) => crate::eventlog::log(&format!("logintest: create_pin FAILED ({})",
                     crate::plex::account::describe_evidence(&evidence))),
             }
         });
@@ -389,62 +255,62 @@ pub(crate) fn arm_stillclock() {
 
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
 pub(crate) fn arm_anim() {
-    if crate::dev::flag("anim") {
+    if crate::devtrig::flag("anim") {
         crate::ui::anim::set_enabled(true);
     }
 }
 
 /// `/tmp/plxnative-glassload` — the backdrop-glass LOAD DIAL.
 pub(crate) fn arm_glassload(glass: &mut crate::ui::frame::glass::GlassPlan) {
-    if let Some(v) = crate::dev::read("glassload") {
+    if let Some(v) = crate::devtrig::read("glassload") {
         glass.configure_dial(&v);
     }
 }
 
 /// `/tmp/plxnative-navblur` — the blurred-route-transition prototype.
 pub(crate) fn arm_navblur(glass: &mut crate::ui::frame::glass::GlassPlan) {
-    if let Some(v) = crate::dev::read("navblur") {
+    if let Some(v) = crate::devtrig::read("navblur") {
         glass.configure_navblur(&v);
     }
 }
 
 /// `/tmp/plxnative-overdraw` — the CPU-side per-draw-class overdraw ledger.
 pub(crate) fn arm_overdraw() {
-    if crate::dev::flag("overdraw") {
+    if crate::devtrig::flag("overdraw") {
         crate::ui::overdraw::set_ledger(true);
     }
 }
 
 /// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes.
 pub(crate) fn arm_drawmask() {
-    if let Some(spec) = crate::dev::read("drawmask") {
+    if let Some(spec) = crate::devtrig::read("drawmask") {
         crate::ui::overdraw::set_mask(&spec);
     }
 }
 
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
 pub(crate) fn arm_heroground() {
-    if crate::dev::flag("heroground") {
+    if crate::devtrig::flag("heroground") {
         crate::ui::widgets::set_hero_ground(true);
         #[cfg(feature = "devtriggers")]
-        crate::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
+        crate::eventlog::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
     }
 }
 
 /// `/tmp/plxnative-profile` / `/tmp/plxnative-hwcnt` — the two GPU-time profilers. Both present
 /// is refused; either alone arms its mode.
 ///
-/// Gated on `devtriggers` at the item level rather than left to `dev::read` folding to `None`:
-/// `dev::read` already makes this whole function inert in a release build, but the disabled-both
+/// Gated on `devtriggers` at the item level rather than left to `devtrig::read` folding to `None`:
+/// `devtrig::read` already makes this whole function inert in a release build, but the disabled-both
 /// diagnostic line below spells out both trigger names in full, and a compiled-but-unreachable
 /// function still carries its own string literals into `--no-default-features` bytes. Compiling
 /// the function out entirely is what actually keeps `plxnative-profile`/`plxnative-hwcnt` out of
 /// the binary `ci/check-package.py`'s dev-trigger-catalog check inspects.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn arm_profile_hwcnt() {
-    match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
+    match (crate::devtrig::read("profile"), crate::devtrig::read("hwcnt")) {
         (Some(_), Some(_)) => {
-            crate::log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
+            crate::eventlog::log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
         }
         (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
         (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
@@ -456,17 +322,17 @@ pub(crate) fn arm_profile_hwcnt() {}
 
 /// `/tmp/plxnative-cpuprof` — the render thread's own per-phase CPU clock.
 pub(crate) fn arm_cpuprof() {
-    if crate::dev::flag("cpuprof") {
+    if crate::devtrig::flag("cpuprof") {
         crate::ui::profile::set_cpu_enabled();
     }
 }
 
 /// `/tmp/plxnative-noidle` — turn the whole-frame present gate off.
 pub(crate) fn arm_noidle() {
-    if crate::dev::flag("noidle") {
+    if crate::devtrig::flag("noidle") {
         crate::ui::idle::set_enabled(false);
         #[cfg(feature = "devtriggers")]
-        crate::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
+        crate::eventlog::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
     }
 }
 
@@ -491,7 +357,7 @@ pub(crate) fn arm_noidle() {
 /// both at once, and a value this test-only can grow a second name later without breaking the
 /// existing ones). An unrecognised value is ignored rather than guessed at.
 pub(crate) fn arm_audio_enhancements() {
-    let Some(v) = crate::dev::read("audioenh") else { return };
+    let Some(v) = crate::devtrig::read("audioenh") else { return };
     let a = match v.trim() {
         "off" => crate::plex::AudioEnhancements::NONE,
         "boost" => crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
@@ -499,13 +365,13 @@ pub(crate) fn arm_audio_enhancements() {
         #[allow(unused_variables)]
         other => {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("audioenh: unrecognised value {other:?} — ignored"));
+            crate::eventlog::log(&format!("audioenh: unrecognised value {other:?} — ignored"));
             return;
         }
     };
     crate::player::set_audio_enhancements(a);
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "audioenh: forced boost_dialog={} normalize_loudness={} by /tmp/plxnative-audioenh",
         a.boost_dialog, a.normalize_loudness,
     ));
@@ -520,78 +386,78 @@ pub(crate) fn arm_audio_enhancements() {
 /// `plxnative-drawmask` is: an A/B whose two legs boot to different screens has measured the
 /// screen.
 pub(crate) fn nobudget_armed() -> bool {
-    crate::dev::flag("nobudget")
+    crate::devtrig::flag("nobudget")
 }
 
 /// `/tmp/plxnative-detailosc`.
 pub(crate) fn detailosc_armed() -> bool {
-    crate::dev::flag("detailosc")
+    crate::devtrig::flag("detailosc")
 }
 /// `/tmp/plxnative-homeosc`.
 pub(crate) fn homeosc_armed() -> bool {
-    crate::dev::flag("homeosc")
+    crate::devtrig::flag("homeosc")
 }
 /// `/tmp/plxnative-heroosc`.
 pub(crate) fn heroosc_armed() -> bool {
-    crate::dev::flag("heroosc")
+    crate::devtrig::flag("heroosc")
 }
 /// `/tmp/plxnative-homefoldosc`.
 pub(crate) fn homefoldosc_armed() -> bool {
-    crate::dev::flag("homefoldosc")
+    crate::devtrig::flag("homefoldosc")
 }
 /// `/tmp/plxnative-libosc`.
 pub(crate) fn libosc_armed() -> bool {
-    crate::dev::flag("libosc")
+    crate::devtrig::flag("libosc")
 }
 /// `/tmp/plxnative-libswitch`.
 pub(crate) fn libswitch_armed() -> bool {
-    crate::dev::flag("libswitch")
+    crate::devtrig::flag("libswitch")
 }
 /// `/tmp/plxnative-searchosc`.
 pub(crate) fn searchosc_armed() -> bool {
-    crate::dev::flag("searchosc")
+    crate::devtrig::flag("searchosc")
 }
 /// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|picker-quality|…>`.
 pub(crate) fn settings_boot_value() -> Option<String> {
-    crate::dev::read("settings")
+    crate::devtrig::read("settings")
 }
 /// `/tmp/plxnative-settingsosc`.
 pub(crate) fn settingsosc_armed() -> bool {
-    crate::dev::flag("settingsosc")
+    crate::devtrig::flag("settingsosc")
 }
 /// `/tmp/plxnative-modalosc`.
 pub(crate) fn modalosc_armed() -> bool {
-    crate::dev::flag("modalosc")
+    crate::devtrig::flag("modalosc")
 }
 /// `/tmp/plxnative-legaldoc`.
 pub(crate) fn legaldoc_armed() -> bool {
-    crate::dev::flag("legaldoc")
+    crate::devtrig::flag("legaldoc")
 }
 /// `/tmp/plxnative-alert`.
 pub(crate) fn alert_armed() -> bool {
-    crate::dev::flag("alert")
+    crate::devtrig::flag("alert")
 }
 /// `/tmp/plxnative-acctosc`.
 pub(crate) fn acctosc_armed() -> bool {
-    crate::dev::flag("acctosc")
+    crate::devtrig::flag("acctosc")
 }
 /// `/tmp/plxnative-consentosc`.
 pub(crate) fn consentosc_armed() -> bool {
-    crate::dev::flag("consentosc")
+    crate::devtrig::flag("consentosc")
 }
 /// `/tmp/plxnative-onboardosc`.
 pub(crate) fn onboardosc_armed() -> bool {
-    crate::dev::flag("onboardosc")
+    crate::devtrig::flag("onboardosc")
 }
 /// `/tmp/plxnative-navosc[=<ratingKey>]`.
 pub(crate) fn navosc_value() -> Option<String> {
-    crate::dev::read("navosc")
+    crate::devtrig::read("navosc")
 }
 /// `/tmp/plxnative-pushbench[=<n>[,<ratingKey>]]` — `(n, ratingKey)`, defaulting `n` to 100 and
 /// `ratingKey` to empty (the empty case is resolved against `navosc`'s own value by the caller,
 /// `app::boot::boot`, before `bench::PushBench::new` ever sees it).
 pub(crate) fn pushbench_value() -> Option<(u32, String)> {
-    crate::dev::read("pushbench").map(|v| {
+    crate::devtrig::read("pushbench").map(|v| {
         let v = v.trim();
         if v.is_empty() {
             return (bench::DEFAULT_BENCH_N, String::new());
@@ -609,7 +475,7 @@ pub(crate) fn pushbench_value() -> Option<(u32, String)> {
 /// `plxnative-navosc=<rk>` with no `plxnative-modalbench` value still works; a scene wanting the
 /// item menu WITHOUT navosc's bounce sets its own `<rk>` here instead.
 pub(crate) fn modalbench_value() -> Option<(u32, String)> {
-    crate::dev::read("modalbench").map(|v| {
+    crate::devtrig::read("modalbench").map(|v| {
         let v = v.trim();
         if v.is_empty() {
             return (bench::DEFAULT_BENCH_N, String::new());
@@ -625,7 +491,7 @@ pub(crate) fn modalbench_value() -> Option<(u32, String)> {
 /// all runs zero cycles (`bench::DeepBench::new`'s own doc says why) rather than falling back to
 /// anything.
 pub(crate) fn deepbench_value() -> Option<(u32, String)> {
-    crate::dev::read("deepbench").map(|v| {
+    crate::devtrig::read("deepbench").map(|v| {
         let v = v.trim();
         if v.is_empty() {
             return (bench::DEFAULT_BENCH_N, String::new());
@@ -643,27 +509,27 @@ fn parse_bench_n(v: &str) -> u32 {
 }
 /// `/tmp/plxnative-framedrop[=<ms>]`.
 pub(crate) fn framedrop_value() -> Option<String> {
-    crate::dev::read("framedrop")
+    crate::devtrig::read("framedrop")
 }
 /// `/tmp/plxnative-framering[=<ms>]` — the frame-drop detector's context ring
 /// (`diag::heartbeat::FrameRing`): write only frames of `<ms>` or more (default 17) and their
 /// neighbours, instead of every frame. `None` when unarmed.
 pub(crate) fn framering_ms() -> Option<f64> {
-    crate::dev::read("framering").map(|s| s.parse().ok().filter(|v: &f64| *v > 0.0).unwrap_or(17.0))
+    crate::devtrig::read("framering").map(|s| s.parse().ok().filter(|v: &f64| *v > 0.0).unwrap_or(17.0))
 }
 /// `/tmp/plxnative-firstrun`.
 pub(crate) fn firstrun_armed() -> bool {
-    crate::dev::flag("firstrun")
+    crate::devtrig::flag("firstrun")
 }
 /// `/tmp/plxnative-acct[=<ms>]` — auto-open the profile menu (headless capture of the popover).
 /// `None` when unarmed; `Some(None)` opens it as soon as Home is up; `Some(Some(ms))` waits until
 /// the screen has been at rest for `ms` first (simulator only — see `acct_arm`).
 pub(crate) fn acct_armed() -> Option<Option<u32>> {
-    crate::dev::read("acct").map(|v| v.parse().ok())
+    crate::devtrig::read("acct").map(|v| v.parse().ok())
 }
 /// `/tmp/plxnative-replay[=N]`'s raw content, for [`crate::app::boot::replay_budget`].
 pub(crate) fn replay_trigger_value() -> Option<String> {
-    crate::dev::read("replay")
+    crate::devtrig::read("replay")
 }
 
 // =================================================================================================
@@ -711,11 +577,11 @@ impl ContentBoot {
             sid,
             rk,
             season: None,
-            down: crate::dev::read("detailsec").and_then(|s| s.parse().ok()).unwrap_or(0),
-            right: crate::dev::read("detailcol").and_then(|s| s.parse().ok()).unwrap_or(0),
-            activate: crate::dev::flag("detailok") || crate::dev::flag("detailplay"),
-            filmography: crate::dev::flag("filmography"),
-            bio: crate::dev::flag("bio"),
+            down: crate::devtrig::read("detailsec").and_then(|s| s.parse().ok()).unwrap_or(0),
+            right: crate::devtrig::read("detailcol").and_then(|s| s.parse().ok()).unwrap_or(0),
+            activate: crate::devtrig::flag("detailok") || crate::devtrig::flag("detailplay"),
+            filmography: crate::devtrig::flag("filmography"),
+            bio: crate::devtrig::flag("bio"),
             waiting_person: false,
             ready_seen: false,
         }
@@ -731,7 +597,7 @@ impl ContentBoot {
 /// `/tmp/plxnative-detailplay` — whether the headless Play from the content walk pins the HUD for
 /// a headless capture (`HUD_HEADLESS_MS`) rather than the ordinary linger duration.
 pub(crate) fn detailplay_forces_headless_hud() -> bool {
-    crate::dev::flag("detailplay")
+    crate::devtrig::flag("detailplay")
 }
 
 pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
@@ -820,7 +686,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // headless capture reaches page 2 at all. It goes through the same door the Languages
             // press does (`bridge::open_content_panel`), so the trigger cannot present a panel the
             // page would refuse: availability is the PAGE's answer about the page's own item.
-            if let Some(pg) = app.boot_initial.is_none().then(|| crate::dev::read("tracks")).flatten() {
+            if let Some(pg) = app.boot_initial.is_none().then(|| crate::devtrig::read("tracks")).flatten() {
                 let host = app.pages.top_page();
                 let meta = app.bridge.metadata_view();
                 let available = app
@@ -853,7 +719,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // footer's FIRST column, four sections down a page whose section count depends on the
             // item, so a `down`/`right` script that reached it on one film would miss it on the
             // next — and `fps:about-panel` needs the same screen every run.
-            if app.boot_initial.is_none() && crate::dev::flag("about") {
+            if app.boot_initial.is_none() && crate::devtrig::flag("about") {
                 if let Some(host) = app.pages.top_page() {
                     let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
@@ -921,7 +787,7 @@ mod content_boot_tests {
 /// The `/tmp/plxnative-search[=<query>]` trigger's seed-and-stand. A host test can drive the
 /// exact effects the trigger causes rather than re-typing them by hand — see
 /// `app::search_owned_tests::a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync`,
-/// which calls this function directly and does NOT drive [`super::read`] itself (that one line is
+/// which calls this function directly and does NOT drive [`crate::devtrig::read`] itself (that one line is
 /// not covered by a host test; a full `App`/SDL frame would be needed to reach it).
 pub(crate) fn apply_search_boot_trigger(
     q: &str,
@@ -1016,13 +882,13 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
         && fr.now.wrapping_sub(app.t0) > 2000
     {
         app.scenarios.auto_tried = true;
-        let playurl = crate::dev::flag("playurl");
-        if crate::dev::flag("autoplay") || playurl {
-            let requested = if playurl || crate::dev::flag("h265") {
+        let playurl = crate::devtrig::flag("playurl");
+        if crate::devtrig::flag("autoplay") || playurl {
+            let requested = if playurl || crate::devtrig::flag("h265") {
                 crate::route::clear_url(&mut app.player.session);
                 true
             } else {
-                let pidx = crate::dev::read("playidx")
+                let pidx = crate::devtrig::read("playidx")
                     .and_then(|s| s.parse::<c_int>().ok())
                     .unwrap_or(0);
                 let snapshot = app.bridge.hubs_snapshot();
@@ -1031,7 +897,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                     snapshot.view().hub(hub).and_then(|h| h.items.get(col))
                 });
                 if let Some(pmm) = pmm {
-                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm);
+                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm, &crate::app::playback::movie_ctx(pmm));
                     if requested {
                         // ASYNC (phase 11): nothing here reads `metadata::current()` — the play
                         // plan came from the catalog row itself. The detail is wanted only so the
@@ -1065,11 +931,11 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
     if !app.scenarios.grid_tried && _fr.now.wrapping_sub(app.t0) > 400 {
         app.scenarios.grid_tried = true;
         // `grid` alone (or `itemmenu`) seats the first card; `grid=<row>,<col>` any other.
-        if let Some(v) = crate::dev::read("grid").or_else(|| crate::dev::flag("itemmenu").then(String::new)) {
+        if let Some(v) = crate::devtrig::read("grid").or_else(|| crate::devtrig::flag("itemmenu").then(String::new)) {
             let (row, col) = screenshot::parse_cell(&v).unwrap_or((0, 0));
             app.bridge.home_command(HomeCmd::FocusGrid { row, col });
         }
-        if let Some(s) = crate::dev::read("library") {
+        if let Some(s) = crate::devtrig::read("library") {
             let kind = match s.parse::<usize>().unwrap_or(0) {
                 1 => crate::stores::browse::SecKind::Show,
                 _ => crate::stores::browse::SecKind::Movie,
@@ -1079,17 +945,17 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             // so this is `SelectTab`, not a `Root` that would discard it.
             crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Library);
         }
-        if let Some(q) = crate::dev::read("search") {
+        if let Some(q) = crate::devtrig::read("search") {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
-        if let Some(s) = crate::dev::read("heroidx") {
+        if let Some(s) = crate::devtrig::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
                 app.bridge.home_command(HomeCmd::SelectHero(n));
             }
         }
         // `/tmp/plxnative-heropin=<n>` — `heroidx`, then HOLD that billboard (no auto-advance):
         // the screenshot pipeline's pin, so a settled capture shows the slot its scene named.
-        if let Some(s) = crate::dev::read("heropin") {
+        if let Some(s) = crate::devtrig::read("heropin") {
             if let Ok(n) = s.parse::<c_int>() {
                 app.bridge.home_command(HomeCmd::PinHero(n));
             }
@@ -1116,14 +982,14 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "audio" => crate::screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]
-                    crate::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
+                    crate::eventlog::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
                     crate::screens::family::SettingsPage::Root
                 }
             };
             crate::app::bridge::open_settings_at(&mut app.pages, page);
         } else if fr.now.wrapping_sub(app.t0) > 12_000 {
             app.scenarios.settings_tried = true;
-            crate::log("settings: boot target timed out before Home became available");
+            crate::eventlog::log("settings: boot target timed out before Home became available");
         }
     }
 }
@@ -1131,7 +997,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
 fn press_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.press_tried && fr.now.wrapping_sub(app.t0) > 1600 {
         app.scenarios.press_tried = true;
-        if crate::dev::flag("press")
+        if crate::devtrig::flag("press")
             && ((matches!(app.route(), AppArg::Home) && app.bridge.home_grid_focused(&app.pages))
                 || (matches!(app.route(), AppArg::Library) && crate::app::bridge::Bridge::library_card_focused(&app.pages)))
         {
@@ -1194,7 +1060,7 @@ fn acct_arm(app: &mut App, fr: &mut Frame) {
 /// retrying forever on a boot that never reaches a grid at all.
 fn itemmenu_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.itemmenu_tried && fr.now.wrapping_sub(app.t0) > 1800 {
-        if crate::dev::flag("itemmenu") && matches!(app.route(), AppArg::Home) {
+        if crate::devtrig::flag("itemmenu") && matches!(app.route(), AppArg::Home) {
             app.bridge.request_home_menu(&app.pages);
             app.scenarios.itemmenu_tried = crate::app::bridge::item_menu_up(&app.pages)
                 || fr.now.wrapping_sub(app.t0) > 12_000;
@@ -1222,20 +1088,20 @@ fn itemmenu_arm(app: &mut App, fr: &mut Frame) {
 fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
     if !app.scenarios.detail_tried && fr.now.wrapping_sub(app.t0) > 500 {
         app.scenarios.detail_tried = true;
-        if let Some(rk) = crate::dev::read("detail") {
+        if let Some(rk) = crate::devtrig::read("detail") {
             let rk = rk.as_str();
             if !rk.is_empty() {
                 let sid = match crate::app::boot::direct_trigger_server() {
                     Ok(sid) => sid,
                     Err(_e) => {
                         #[cfg(feature = "devtriggers")]
-                        crate::log(&format!("plxnative-detail: refused: {_e}"));
+                        crate::eventlog::log(&format!("plxnative-detail: refused: {_e}"));
                         return false;
                     }
                 };
                 app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 #[cfg(feature = "devtriggers")]
-                crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
+                crate::eventlog::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
                 // dip would fade the page up out of nothing and read as a slow app rather than a
                 // navigated one. `push_detail` + `seed_node` in one call.
@@ -1252,12 +1118,12 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
 fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     if app.scenarios.collection_tried || fr.now.wrapping_sub(app.t0) <= 500 { return true; }
     app.scenarios.collection_tried = true;
-    let Some(rk) = crate::dev::read("collection").filter(|rk| !rk.is_empty()) else { return true };
+    let Some(rk) = crate::devtrig::read("collection").filter(|rk| !rk.is_empty()) else { return true };
     let sid = match crate::app::boot::direct_trigger_server() {
         Ok(sid) => sid,
         Err(_e) => {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("plxnative-collection: refused: {_e}"));
+            crate::eventlog::log(&format!("plxnative-collection: refused: {_e}"));
             return false;
         }
     };
@@ -1265,7 +1131,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
         crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef::by_rk(
             sid, &rk, 0, crate::i18n::msg::browse_collection_kind()))));
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));
+    crate::eventlog::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));
     true
 }
 
@@ -1296,20 +1162,20 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
         && fr.now.wrapping_sub(app.t0) > 500
     {
         app.scenarios.play_tried = true;
-        if let Some(rk) = crate::dev::read("play") {
+        if let Some(rk) = crate::devtrig::read("play") {
             let rk = rk.as_str();
             if !rk.is_empty() {
                 let sid = match crate::app::boot::direct_trigger_server() {
                     Ok(sid) => sid,
                     Err(_e) => {
                         #[cfg(feature = "devtriggers")]
-                        crate::log(&format!("plxnative-play: refused: {_e}"));
+                        crate::eventlog::log(&format!("plxnative-play: refused: {_e}"));
                         return false;
                     }
                 };
                 app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 #[cfg(feature = "devtriggers")]
-                crate::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
+                crate::eventlog::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
                 app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
             }
         }
@@ -1345,7 +1211,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         if settled || expired {
             app.scenarios.play_await = None;
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "plxnative-play: rk={rk} server={} — no detail landed ({})",
                 sid.raw(),
                 if settled { "the fetch settled without it" } else { "12s" }
@@ -1356,11 +1222,11 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     app.scenarios.play_await = None;
     if part.is_empty() {
         #[cfg(feature = "devtriggers")]
-        crate::log(&format!("plxnative-play: rk={rk} server={} — nothing playable on it", sid.raw()));
+        crate::eventlog::log(&format!("plxnative-play: rk={rk} server={} — nothing playable on it", sid.raw()));
         return;
     }
     #[cfg(feature = "devtriggers")]
-    crate::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
+    crate::eventlog::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
     if crate::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
         let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
         crate::app::playback::start_playback(&mut app.player.session,
@@ -1382,7 +1248,7 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
         && fr.now.wrapping_sub(app.t0) > 12000
     {
         app.scenarios.seek_tried = true;
-        if let Some(s) = crate::dev::read("autoseek") {
+        if let Some(s) = crate::devtrig::read("autoseek") {
             let mut steps: Vec<String> = s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
             let mut first_delay_ms = 0u32;
             loop {
@@ -1418,7 +1284,7 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
             step.parse::<i64>().unwrap_or(140) * 1_000_000_000
         }.max(0);
         app.scenarios.seek_script_last = t;
-        crate::log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, app.scenarios.seek_script.len()));
+        crate::eventlog::log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, app.scenarios.seek_script.len()));
         crate::app::playback::request_seek(t);
     }
 }
@@ -1449,7 +1315,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
     {
         let q = app.scenarios.quality_script.remove(0);
         app.scenarios.quality_script_at = fr.now;
-        crate::log(&format!("quality: switch → {} ({} left)", super::quality_wire_name(q), app.scenarios.quality_script.len()));
+        crate::eventlog::log(&format!("quality: switch → {} ({} left)", super::quality_wire_name(q), app.scenarios.quality_script.len()));
         crate::route::set_quality(&mut app.player.session, q);
     }
 }
@@ -1475,7 +1341,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "autopause: Pause accepted hold={}ms",
                     hold_ms.map_or_else(|| "forever".to_string(), |ms| ms.to_string()),
                 ));
@@ -1490,7 +1356,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
     if let Some(resume_at) = app.scenarios.pause_resume_at {
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, resume_at, 0) {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, false) {
-                crate::log("autopause: Resume accepted");
+                crate::eventlog::log("autopause: Resume accepted");
                 app.scenarios.pause_resume_at = None;
             }
         }
@@ -1500,7 +1366,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
 fn menu_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.menu_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
         app.scenarios.menu_tried = true;
-        if let Some(t) = crate::dev::read("menu") {
+        if let Some(t) = crate::devtrig::read("menu") {
             crate::app::bridge::open_player_overlay(&mut app.player.session,
                 app.bridge.metadata_view(),
                 &mut app.pages,
@@ -1508,15 +1374,15 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             );
             pin_headless_hud(app, fr.now, None);
         }
-        if crate::dev::flag("more") {
+        if crate::devtrig::flag("more") {
             crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
             pin_headless_hud(app, fr.now, None);
         }
-        if crate::dev::flag("info") {
+        if crate::devtrig::flag("info") {
             crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
             pin_headless_hud(app, fr.now, Some(0));
         }
-        if crate::dev::flag("chapters") {
+        if crate::devtrig::flag("chapters") {
             crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Chapters);
             pin_headless_hud(app, fr.now, Some(1));
         }
@@ -1525,7 +1391,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 
 /// `/tmp/plxnative-menupick=<tab>,<target>`: `target` is either an absolute `TableView` row
 /// number (the original contract), on the Audio tab a NAMED target — `"boost"`/`"loudness"` —
-/// resolved through the panel's own [`crate::ui::track_menu::TrackRow`] identities
+/// resolved through the panel's own [`crate::appkit::track_menu::TrackRow`] identities
 /// (`TrackMenuState::row_for_audio_target`), or on the Subtitles tab `"track:N"`, the N-th track in
 /// page order (root tracks, then those behind Other languages), committed by its own index
 /// (`TrackMenuState::sub_track_for_target` / `commit_sub_track`). A name survives a track-count change a hand-written
@@ -1536,7 +1402,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 fn menupick_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.menupick_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 7000 {
         app.scenarios.menupick_tried = true;
-        if let Some(s) = crate::dev::read("menupick") {
+        if let Some(s) = crate::devtrig::read("menupick") {
             let mut it = s.split(',');
             let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
             let target = it.next().map(|x| x.trim().to_string()).unwrap_or_else(|| "0".to_string());
@@ -1550,7 +1416,7 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
             Some(surface) => match surface.resolve_menupick_track(&target) {
                 Some(i) => match surface.pick_sub_track(meta, i) {
                     Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
-                    None => crate::log(&format!("menupick: track {i} gave no commit")),
+                    None => crate::eventlog::log(&format!("menupick: track {i} gave no commit")),
                 },
                 None => match surface.resolve_menupick_row(&target) {
                     Some(row) => match surface.pick_track_row(meta, row) {
@@ -1559,9 +1425,9 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
                         // commit, no route transition line. Without this, a manifest case whose row
                         // no longer differs from the start pick (e.g. #210's file-default rule) fails
                         // downstream as "no route transition" with nothing pointing back at menupick.
-                        None => crate::log(&format!("menupick: row {row} already active — no commit")),
+                        None => crate::eventlog::log(&format!("menupick: row {row} already active — no commit")),
                     },
-                    None => crate::log(&format!("menupick: unknown target {target:?} — no commit")),
+                    None => crate::eventlog::log(&format!("menupick: unknown target {target:?} — no commit")),
                 },
             },
             None => app.scenarios.menupick_target = Some(target),
@@ -1586,7 +1452,7 @@ pub(crate) struct SubmenuOsc {
 /// What one tick of the drill-in oscillator does: seat the cursor on a row (if any), then press `key`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SubmenuStep {
-    seat: Option<crate::ui::track_menu::TrackRow>,
+    seat: Option<crate::appkit::track_menu::TrackRow>,
     key: Key,
     next: u8,
 }
@@ -1598,7 +1464,7 @@ struct SubmenuStep {
 /// dropped) pops a page or restarts the cycle rather than pressing blind, so it re-syncs instead
 /// of drifting. `Other languages` is skipped when the item has none.
 fn submenuosc_next(step: u8, tab: c_int, depth: usize, has_other: bool) -> SubmenuStep {
-    use crate::ui::track_menu::{StyleField, TrackRow};
+    use crate::appkit::track_menu::{StyleField, TrackRow};
     let press = |seat: Option<TrackRow>, key: Key, next: u8| SubmenuStep { seat, key, next };
     let left = Key::Left;
     let right = Key::Right;
@@ -1628,7 +1494,7 @@ fn submenuosc_next(step: u8, tab: c_int, depth: usize, has_other: bool) -> Subme
 /// to measure interrupted ones; the manifest scene uses 900 ms.
 fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
     let period = *app.scenarios.submenu_osc.period.get_or_insert_with(|| {
-        crate::dev::read("submenuosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
+        crate::devtrig::read("submenuosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
     });
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
@@ -1654,11 +1520,11 @@ fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
     if let Some(row) = step.seat {
         if let Some(surface) = crate::app::bridge::player_overlay_mut(&mut app.pages) {
             if !surface.seat_track_row(row) {
-                crate::log(&format!("submenuosc: no row {row:?} on tab {tab} depth {depth} — skipping the step"));
+                crate::eventlog::log(&format!("submenuosc: no row {row:?} on tab {tab} depth {depth} — skipping the step"));
             }
         }
     }
-    crate::log(&format!("submenuosc: step {} -> {} tab={tab} depth={depth} key={:?}", app.scenarios.submenu_osc.step, step.next, step.key));
+    crate::eventlog::log(&format!("submenuosc: step {} -> {} tab={tab} depth={depth} key={:?}", app.scenarios.submenu_osc.step, step.next, step.key));
     app.scenarios.submenu_osc.step = step.next;
     app.inputs.extend(crate::app::bridge::script_key(step.key, Tick { ms: fr.now, dt_us: 0 }));
 }
@@ -1675,7 +1541,7 @@ fn moreosc_next(depth: usize) -> (bool, Key) {
 /// A More dismissed under it is reopened at the root.
 fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     let period = *app.scenarios.more_osc.period.get_or_insert_with(|| {
-        crate::dev::read("moreosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
+        crate::devtrig::read("moreosc").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
     });
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
@@ -1697,11 +1563,11 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
         let seated = crate::app::bridge::player_overlay_mut(&mut app.pages).is_some_and(|s| s.seat_more_quality());
         if !seated {
             // Nothing to push: say so, rather than let the scene grade a panel that never moved.
-            crate::log("moreosc: no Quality row");
+            crate::eventlog::log("moreosc: no Quality row");
             return;
         }
     }
-    crate::log(&format!("moreosc: depth={depth} key={key:?}"));
+    crate::eventlog::log(&format!("moreosc: depth={depth} key={key:?}"));
     app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: fr.now, dt_us: 0 }));
 }
 
@@ -1803,18 +1669,18 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
             step => {
                 app.scenarios.subtiming.pending = None;
                 if step == SubtimingStep::OpenMismatch {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "subtiming: opened (sid mismatch cur={cur_sid} want={want_sid})"
                     ));
                 } else {
-                    crate::log("subtiming: opened");
+                    crate::eventlog::log("subtiming: opened");
                 }
                 open_timing(app);
             }
         }
         return;
     }
-    if app.scenarios.subtiming.tried || !crate::dev::flag("subtiming") {
+    if app.scenarios.subtiming.tried || !crate::devtrig::flag("subtiming") {
         return;
     }
     if !matches!(app.route(), AppArg::Player)
@@ -1830,7 +1696,7 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
         .position(|s| !is_image_sub_codec(&s.codec) && s.lang_code == "eng")
         .or_else(|| item.subs.iter().position(|s| !is_image_sub_codec(&s.codec)));
     let Some(i) = idx else {
-        crate::log("subtiming: no text sub");
+        crate::eventlog::log("subtiming: no text sub");
         app.scenarios.subtiming.tried = true;
         return;
     };
@@ -1838,15 +1704,15 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     let render_ordinal = crate::metadata::sub_render_ordinal(&item.subs, i);
     app.scenarios.subtiming.tried = true;
     if crate::route::cur_sub_sid(&app.player.session) == stream_id {
-        crate::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
+        crate::eventlog::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
         open_timing(app);
         return;
     }
-    crate::log(&format!("subtiming: committed sid={stream_id}"));
+    crate::eventlog::log(&format!("subtiming: committed sid={stream_id}"));
     app.scenarios.subtiming.pending = Some(SubtimingPending { sid: stream_id, armed_at: fr.now });
     crate::app::playback::commit_track(
         &mut app.player.session,
-        crate::ui::track_menu::TrackCommit::Subtitle {
+        crate::appkit::track_menu::TrackCommit::Subtitle {
             render_ordinal,
             stream_id,
             sidecar_key: None,
@@ -1944,7 +1810,7 @@ mod subtiming_step_tests {
 
 fn marker_arm(app: &mut App, _fr: &mut Frame) {
     if !app.scenarios.marker_tried && matches!(app.route(), AppArg::Player) && crate::player::is_playing(&mut app.player.session) {
-        match crate::dev::read("marker") {
+        match crate::devtrig::read("marker") {
             Some(s) => {
                 let want = if s.eq_ignore_ascii_case("intro") {
                     crate::metadata::MarkerKind::Intro
@@ -1957,10 +1823,10 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                     app.scenarios.marker_tried = true;
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {
                         let t = (m.start_ms - 5_000).max(0) * 1_000_000;
-                        crate::log(&format!("marker trigger: seek to {}s (5s before {:?})", t / 1_000_000_000, want));
+                        crate::eventlog::log(&format!("marker trigger: seek to {}s (5s before {:?})", t / 1_000_000_000, want));
                         crate::app::playback::request_seek(t);
                     } else {
-                        crate::log(&format!("marker trigger: item has no {want:?} marker"));
+                        crate::eventlog::log(&format!("marker trigger: item has no {want:?} marker"));
                     }
                 }
             }
@@ -1983,13 +1849,13 @@ fn should_replay_after_eos(handed_off_to_up_next: bool, replay_left: u32, playur
 /// a real exit (see [`should_replay_after_eos`]). Re-arming `auto_tried` sends the next frame back
 /// through the `playurl` entry, which calls `route::clear_url()` and lets `start_bufferfeed` read
 /// the trigger again. The trigger is read once at boot (`replay_left`), so this cannot become an
-/// endless loop from a file appearing mid-run, and `dev::flag` is `false` at COMPILE time in a
+/// endless loop from a file appearing mid-run, and `devtrig::flag` is `false` at COMPILE time in a
 /// release build.
 pub(crate) fn maybe_replay_after_eos(app: &mut App, handed_off_to_up_next: bool) {
-    if should_replay_after_eos(handed_off_to_up_next, app.scenarios.replay_left, crate::dev::flag("playurl")) {
+    if should_replay_after_eos(handed_off_to_up_next, app.scenarios.replay_left, crate::devtrig::flag("playurl")) {
         app.scenarios.replay_left -= 1;
         app.scenarios.auto_tried = false;
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "replay: starting the finished stream again ({} left)", app.scenarios.replay_left
         ));
     }
@@ -2009,14 +1875,6 @@ mod replay_after_eos_tests {
         assert!(should_replay_after_eos(false, 1, true));
         assert!(!should_replay_after_eos(false, 0, true), "no budget left");
         assert!(!should_replay_after_eos(false, 1, false), "trigger not armed");
-    }
-}
-
-/// Publish the jail read-out fixture on the same session fact the owned confirmation reads.
-/// Only ordinary development scenarios call this; controlled replay never reads this trigger.
-pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
-    if super::read("failtest").is_some_and(|arm| arm.trim() == "jail") {
-        session.jail_load_blocked = true;
     }
 }
 
@@ -2059,7 +1917,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     moreosc_arm(app, fr);
     marker_arm(app, fr);
     if crate::app::bridge::player(&app.pages).is_some() {
-        failure_fixture(&mut app.player.session);
+        crate::player::failure_fixture(&mut app.player.session);
     }
     true
 }
@@ -2107,13 +1965,13 @@ pub(crate) fn pickuser_tick(app: &mut App) {
     // refuses here rather than attempting a PIN-less switch plex.tv would refuse anyway.
     let protected = app.bridge.auth_read().0.users.get(idx).map(|u| u.protected).unwrap_or(false);
     if protected {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "pickuser: roster index {idx} is PROTECTED — refusing rather than attempting \
              a PIN-less switch plex.tv would refuse anyway; this trigger has no door onto \
              the owned picker's own PIN pad yet"
         ));
     } else {
-        crate::log(&format!("pickuser: auto-selecting roster index {idx}"));
+        crate::eventlog::log(&format!("pickuser: auto-selecting roster index {idx}"));
         crate::app::bridge::execute_session_command(&mut app.pages,
             crate::auth::SessionCmd::SelectProfile { index: idx, pin: None });
     }
@@ -2304,7 +2162,7 @@ pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
 /// The once-per-bench `bench: kind=<k> settled` line — how long boot took to go still before the
 /// first press, or that the cap ran out and the bench started on a page that never did.
 fn log_bench_settled(kind: &str, waited_ms: u32, capped: bool) {
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "bench: kind={kind} settled after_ms={waited_ms}{}",
         if capped { " capped=1 (the root page never went still; cycle 1 may include boot)" } else { "" }
     ));
@@ -2331,7 +2189,7 @@ fn push_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
                 let b = app.scenarios.push_bench.as_mut().unwrap();
                 if !b.person_fallback_logged {
                     b.person_fallback_logged = true;
-                    crate::log("bench: push cycle wanted Person but no cast data has landed yet \
+                    crate::eventlog::log("bench: push cycle wanted Person but no cast data has landed yet \
                         — opening Library instead this cycle");
                 }
                 push_bench_open(app, bench::PushTarget::Library)
@@ -2410,14 +2268,14 @@ pub(crate) fn push_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Report(cycle) => {
             let b = app.scenarios.push_bench.as_ref().unwrap();
             let c = &b.clock;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "bench: kind=push cycle={}/{} target={} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
                 cycle + 1, c.n, b.opened.name(), c.worst_ms(), c.frames(),
                 now.wrapping_sub(c.cycle_start), read_rss_kb(), tex_field(), c.fields(),
             ));
         }
         bench::BenchStep::Done(n) => {
-            crate::log(&format!("bench: kind=push done cycles={n}"));
+            crate::eventlog::log(&format!("bench: kind=push done cycles={n}"));
             app.scenarios.push_bench = None;
         }
     }
@@ -2483,14 +2341,14 @@ pub(crate) fn modal_bench_tick(app: &mut App, now: u32) {
             let b = app.scenarios.modal_bench.as_ref().unwrap();
             let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
             let c = &b.clock;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "bench: kind=modal cycle={}/{} target={} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
                 cycle + 1, c.n, target.name(), c.worst_ms(), c.frames(),
                 now.wrapping_sub(c.cycle_start), read_rss_kb(), tex_field(), c.fields(),
             ));
         }
         bench::BenchStep::Done(n) => {
-            crate::log(&format!("bench: kind=modal done cycles={n}"));
+            crate::eventlog::log(&format!("bench: kind=modal done cycles={n}"));
             app.scenarios.modal_bench = None;
         }
     }
@@ -2544,7 +2402,7 @@ fn deep_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
                 let b = app.scenarios.deep_bench.as_mut().unwrap();
                 if !b.person_fallback_logged {
                     b.person_fallback_logged = true;
-                    crate::log("bench: deep push step wanted Person but no cast data has landed \
+                    crate::eventlog::log("bench: deep push step wanted Person but no cast data has landed \
                         yet — re-pushing Detail instead this step (Library is not a safe fallback \
                         here, see DeepBench::targets's doc)");
                 }
@@ -2600,7 +2458,7 @@ pub(crate) fn deep_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Settle(cycle) => {
             let b = app.scenarios.deep_bench.as_ref().unwrap();
             let c = &b.clock;
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "bench: kind=deep cycle={}/{} target={} dir={} depth={} worst_ms={:.1} \
                  frames={} dur_ms={} rss_kb={} {}",
                 cycle + 1, c.n, b.opened.name(), b.dir.name(), b.stack.len(), c.worst_ms(),
@@ -2610,7 +2468,7 @@ pub(crate) fn deep_bench_tick(app: &mut App, now: u32) {
         // A one-way clock never reports a round trip.
         bench::BenchStep::Report(_) => {}
         bench::BenchStep::Done(n) => {
-            crate::log(&format!("bench: kind=deep done cycles={n} rss_root_kb={}", read_rss_kb()));
+            crate::eventlog::log(&format!("bench: kind=deep done cycles={n} rss_root_kb={}", read_rss_kb()));
             app.scenarios.deep_bench = None;
         }
     }
@@ -2707,7 +2565,7 @@ pub(crate) fn detail_osc_tick(app: &mut App, now: u32) {
 /// automated boot. Read by `app::input::maybe_ask_consent`, which stays production code with this
 /// one dev-only branch: presenting the real consent screen is not itself a dev arm.
 pub(crate) fn consent_override() -> Option<String> {
-    crate::dev::read("consent")
+    crate::devtrig::read("consent")
 }
 
 /// `/tmp/plxnative-rec` — read by controlled-bootstrap preflight. The recorder/replay MECHANISM
@@ -2719,7 +2577,7 @@ pub(crate) fn consent_override() -> Option<String> {
 /// names in the binary's bytes, where `ci/check-package.py` grades them.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&super::path("rec")).map_err(|_| "invalid recorder trigger")
+    crate::ui::rec::mode_value(&crate::devtrig::path("rec")).map_err(|_| "invalid recorder trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
@@ -2729,7 +2587,7 @@ pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
 #[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    crate::ui::rec::mode_value(&super::path("recplay")).map_err(|_| "invalid replay trigger")
+    crate::ui::rec::mode_value(&crate::devtrig::path("recplay")).map_err(|_| "invalid replay trigger")
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
@@ -2741,8 +2599,8 @@ pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
 /// release build); `Some(Err)` when it is present but unreadable. See [`rec_trigger`].
 #[cfg(feature = "devtriggers")]
 pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
-    crate::dev::flag("app-init").then(|| {
-        crate::ui::rec::initial_value(&super::path("app-init"))
+    crate::devtrig::flag("app-init").then(|| {
+        crate::ui::rec::initial_value(&crate::devtrig::path("app-init"))
             .map_err(|_| "invalid explicit initial input")
     })
 }
@@ -2751,109 +2609,8 @@ pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>
     None
 }
 
-// =================================================================================================
-// onboarding report arms — sign-in trouble and the consent decision, for the ui-sim captures of
-// the incident offer. Both produce REAL state through the production seams: the sign-in trouble
-// is evidence handed to the same producers a failed request feeds, and the consent state is a
-// real record installed at boot. Nothing here paints a screen directly.
-// =================================================================================================
-
-/// The synthetic failure `plxnative-signinfail` stands for: a name that did not resolve, the
-/// commonest way a television "has no internet". A `net::RequestFailure` like the one libcurl's
-/// `CURLE_COULDNT_RESOLVE_HOST` produces, planted only into the one call it replaces — never into
-/// `net`'s own records, which other callers read as real evidence (0.6.6's reason, kept).
-fn synthetic_dns_failure() -> crate::net::RequestFailure {
-    crate::net::RequestFailure {
-        cause: crate::net::RequestError::Transport,
-        status: None,
-        body_limit: None,
-        curl_rc: Some(6),
-    }
-}
-
-fn signinfail_spec() -> Option<String> {
-    if cfg!(test) { return None; }
-    crate::dev::read("signinfail")
-}
-
-/// `/tmp/plxnative-signinfail[=error]` — every sign-in code request fails as an unresolvable
-/// plex.tv would. Re-read at each attempt, so *Try again* fails the same way until it is removed.
-/// `None` means "make the real request".
-pub(crate) fn signin_trouble_create()
-    -> Option<Result<crate::plex::account::Pin, crate::plex::account::CallEvidence>> {
-    match signinfail_spec()?.as_str() {
-        "" | "error" => {
-            crate::log("dev: signinfail — the sign-in code request fails (synthetic DNS failure)");
-            Some(Err(Err(synthetic_dns_failure())))
-        }
-        _ => None,
-    }
-}
-
-/// `/tmp/plxnative-signinfail=stall` — the code is real, but every poll of it goes unanswered, so
-/// the wait reaches the stalled rule (`auth::LINK_TROUBLE_AFTER`) exactly as a dropped link would.
-pub(crate) fn signin_trouble_poll() -> Option<crate::plex::account::PinPoll> {
-    (signinfail_spec()?.as_str() == "stall")
-        .then(|| crate::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
-}
-
-/// `/tmp/plxnative-signinfail=resources|resources-blip` — fail the plex.tv resource listing on
-/// every attempt, or on its first attempt only. The latter exercises the in-place retry while the
-/// sign-in screen remains in Discovering.
-pub(crate) fn signin_trouble_resources()
-    -> Option<Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence>> {
-    static BLIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    match signinfail_spec()?.as_str() {
-        "resources" => Some(Err(Err(synthetic_dns_failure()))),
-        "resources-blip" if !BLIPPED.swap(true, std::sync::atomic::Ordering::AcqRel) =>
-            Some(Err(Err(synthetic_dns_failure()))),
-        _ => None,
-    }
-}
-
-/// `/tmp/plxnative-consentstate=unset|yes4|yes7|no` — boot with this consent record instead of
-/// the stored one: never asked, error reports allowed at scope 4 (before the onboarding report
-/// existed) or 7, or declined. Installed through `consent::install` like a real load, and written
-/// nowhere. `None` without the trigger or with an unknown value (which is logged). Unused under
-/// test, where `telemetry::capture_initial` never consults it.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn consent_state_override() -> Option<crate::telemetry::consent::Consent> {
-    use crate::telemetry::consent::{Consent, ONBOARDING_REPORT_SCOPE, POLICY_VERSION};
-    let spec = crate::dev::read("consentstate")?;
-    // An answered record as `consent::apply` would have written it: errors on at `scope` with a
-    // freshly minted Crash report ID, or errors off with nothing kept.
-    let answered = |errors: bool, scope: u32| Consent {
-        asked_version: POLICY_VERSION,
-        errors,
-        errors_scope: if errors { scope } else { 0 },
-        errors_id: errors.then(crate::telemetry::mint_id).flatten(),
-        ..Consent::default()
-    };
-    let consent = match spec.as_str() {
-        "unset" => Consent::default(),
-        "yes4" => answered(true, 4),
-        "yes7" => answered(true, ONBOARDING_REPORT_SCOPE),
-        "no" => answered(false, 0),
-        other => {
-            crate::log(&format!("dev: consentstate — unknown value {other:?}, ignored"));
-            return None;
-        }
-    };
-    crate::log(&format!("dev: consentstate={spec} — booting with that consent record"));
-    Some(consent)
-}
-
-/// Is a harness driving this boot? The onboarding offer is a modal question, and a scripted run
-/// (a test identity, a forced profile pick, a recording) must not stop on one. **Narrow on
-/// purpose**, where `dev::any_trigger_present` is broad: every other trigger — `plxnative-login`,
-/// `-nowan`, `-signinfail`, the consent state — is how the offer is PUT on screen for a capture,
-/// and a gate that saw them would hide the thing being captured. Read once.
-pub(crate) fn harness_driven() -> bool {
-    if cfg!(test) { return false; }
-    static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DRIVEN.get_or_init(|| {
-        crate::dev::read("token").is_some_and(|t| !t.is_empty())
-            || crate::dev::read("pickuser").is_some()
-            || matches!(rec_trigger(), Ok(Some(_)))
-    })
-}
+// The sign-in trouble arms (`plxnative-signinfail`, `plxnative-readout`), the consent-state boot
+// override (`plxnative-consentstate`) and the harness-driven test are READ by modules below this
+// layer — `auth`, `telemetry`, the login screen — and only read trigger files, so their reads
+// moved down beside them (`auth::scripted`, `telemetry::consent::state_override`,
+// `screens::login::harness_driven`) instead of being reached up into from here.

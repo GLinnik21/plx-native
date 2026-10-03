@@ -1,8 +1,8 @@
 //! The `Client` (immutable origin/token + identity) and the four centralisation
 //! choke points every op file routes through:
 //!   * `with_token` — the ONLY place `X-Plex-Token` is appended.
-//!   * `enc` / `QueryBuilder` — the ONLY place a value is percent-encoded (via
-//!     `crate::pms::urlenc_str`) or a query string is assembled.
+//!   * `urlenc_str` / `QueryBuilder` — the ONLY place a value is percent-encoded or a query
+//!     string is assembled.
 //!   * `get_json`/`get_bytes`/`get_void`/`put`/`post` — the ONLY code that issues a PMS request.
 //!     They went straight at the raw socket in `crate::stream` until this layer learned to speak
 //!     to a server that is not on the LAN; they go through [`crate::http`] now, which dispatches
@@ -588,7 +588,7 @@ impl Client {
                 //
                 // The ENDPOINT only — never the built path, which carries `X-Plex-Token`. Serde's
                 // own message names a type and an offset and quotes no content.
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "pms: GET {} answered {} bytes that will not parse — {e}",
                     path_no_token.split('?').next().unwrap_or(path_no_token),
                     body.len()
@@ -609,7 +609,7 @@ impl Client {
             match serde_json::from_slice::<Envelope>(&reply.body) {
                 Ok(envelope) => Some(envelope.media_container),
                 Err(error) => {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "pms: GET {} answered {} bytes that will not parse — {error}",
                         path_no_token.split('?').next().unwrap_or(path_no_token),
                         reply.body.len()
@@ -644,7 +644,7 @@ impl Client {
                     match serde_json::from_slice::<Envelope>(&reply.body) {
                         Ok(envelope) => Some(envelope.media_container),
                         Err(error) => {
-                            crate::log(&format!(
+                            crate::eventlog::log(&format!(
                                 "pms: GET {} answered {} bytes that will not parse — {error}",
                                 path_no_token.split('?').next().unwrap_or(path_no_token),
                                 reply.body.len()
@@ -828,12 +828,25 @@ impl Client {
 // their exact signatures there and mean "the CURRENT server", so no call site outside `plex`
 // changed.
 
-// ---- enc + QueryBuilder — the percent-encoding choke point ----
+// ---- urlenc_str + QueryBuilder — the percent-encoding choke point ----
 
-/// RFC3986-unreserved passthrough; everything else → %XX. Delegates to the shared
-/// `crate::pms::urlenc_str` so the encoder lives in exactly one place.
-pub(super) fn enc(src: &str) -> String {
-    crate::pms::urlenc_str(src)
+/// RFC3986-unreserved passthrough; everything else → %XX, into a `String`. THE percent-encoder:
+/// [`QueryBuilder`] and every other Rust caller that needs one value encoded (re-exported as
+/// `crate::plex::urlenc_str`) come here, so the encoder lives in exactly one place. It began as
+/// `pms::urlenc_str` and moved down when the data layer stopped being nameable from `plex`.
+pub(crate) fn urlenc_str(src: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(src.len());
+    for &ch in src.as_bytes() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.' | b'~') {
+            out.push(ch as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(ch >> 4) as usize] as char);
+            out.push(HEX[(ch & 15) as usize] as char);
+        }
+    }
+    out
 }
 
 /// Builds `path?k=enc(v)&k2=42…`. `.str` percent-encodes the value; `.int` does not
@@ -856,7 +869,7 @@ impl QueryBuilder {
         }
     }
     pub(super) fn str(mut self, k: &str, v: &str) -> Self {
-        self.parts.push(format!("{k}={}", enc(v)));
+        self.parts.push(format!("{k}={}", urlenc_str(v)));
         self
     }
     pub(super) fn int(mut self, k: &str, v: i64) -> Self {

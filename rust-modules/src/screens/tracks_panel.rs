@@ -52,7 +52,7 @@
 //!
 //! **2. Codecs are named TECHNICALLY here, and that is deliberate.** `AC3`, `EAC3`, `MOV_TEXT`,
 //! `HEVC` — not `metadata::friendly_codec`'s "Dolby Digital". The two surfaces are asking
-//! different questions: `ui::track_menu` is a CHOOSER, where the friendly name is what a viewer
+//! different questions: `appkit::track_menu` is a CHOOSER, where the friendly name is what a viewer
 //! recognises, and this is a file INSPECTOR, where the container's own spelling is the answer. The
 //! mock spells them this way for the same reason, and `track_menu`'s own trailing badge already
 //! uses `codec.to_uppercase()`, so this is not a new spelling in the app.
@@ -60,7 +60,7 @@
 //! **3. Language names are the SERVER's, so they are not English.** The wire sends
 //! `language: "Русский"` and `"Українська"` for this file; the mock's `renderVals` writes
 //! "Russian" and "Ukrainian" because its author normalised them by hand. We render what the server
-//! said, which is what `ui::track_menu` already does with the same tracks — the app must not name
+//! said, which is what `appkit::track_menu` already does with the same tracks — the app must not name
 //! one track two ways on two screens — and `appfont.ttf` (Inter) covers Cyrillic in full.
 #[cfg_attr(not(test), allow(unused_imports))]
 use crate::metadata::{self, Detail, Stream};
@@ -217,11 +217,11 @@ pub(crate) fn fmt_bitrate(kbps: i64) -> Option<String> {
     }
 }
 
-/// `"HEVC (Main 10)"` — the video codec in the spelling `ui::info_panel` already uses, with its
+/// `"HEVC (Main 10)"` — the video codec in the spelling `appkit::info_panel` already uses, with its
 /// profile Title-Cased in brackets. A codec with no profile is the bare name; no codec at all is
 /// no row.
 pub(crate) fn fmt_codec_profile(codec: &str, profile: &str) -> Option<String> {
-    let name = crate::ui::info_panel::video_codec_name(codec);
+    let name = crate::appkit::info_panel::video_codec_name(codec);
     if name.is_empty() {
         return None;
     }

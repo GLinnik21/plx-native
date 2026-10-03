@@ -88,7 +88,7 @@ if not os.path.isabs(SIM):
 # because at a screen's root it EXITS the app" — which described neither the list (there was no
 # `back` in it to be last) nor the behaviour. A root BACK has not quit since 2026-08-21, and since
 # 2026-09-03 it does not ask either: it hands the screen to the television's own Home
-# (`webos::go_home`) with the app still running. Adding it is a real and worthwhile option — `home`
+# (`tv::home::go_home`) with the app still running. Adding it is a real and worthwhile option — `home`
 # is in SCREENS, and the ladder's whole BACK cascade is currently uncharacterised — but it costs a
 # re-record of `tests/keytable.json`, and a script whose run reaches a root has to relaunch before
 # the next screen's, because the app is no longer the foreground surface.

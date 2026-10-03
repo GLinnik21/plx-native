@@ -2,7 +2,7 @@
 //!
 //! Replaces every hand-built Plex path/query string in the app with a typed `Client`
 //! method (see `docs/plex-api-design.md` + `docs/plex-api-catalog.md`). Percent-encoding
-//! (`crate::pms::urlenc_str`), the `X-Plex-Token` injection, and the origin-aware HTTP(S)
+//! (`urlenc_str`), the `X-Plex-Token` injection, and the origin-aware HTTP(S)
 //! transport (`crate::http`) are centralised in `client.rs`, so no op file can bypass them.
 //! Response bodies deserialize into `serde` DTOs (`models.rs`).
 //!
@@ -79,9 +79,16 @@ pub(crate) mod pins;
 // `impl AccountClient` block (same pattern as the PMS op files above).
 pub(crate) mod discover;
 
+// The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
+// shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
+// them under their historical names.
+pub(crate) mod retry;
+
 // The re-exports are the public surface the call sites import.
 pub(crate) use client::ArtFetch;
 pub(crate) use client::JsonDeadlineOutcome;
+// The one percent-encoder (RFC 3986 unreserved passthrough) — see its doc.
+pub(crate) use client::urlenc_str;
 // The one link/IP ⇄ u8 encode/decode pair — shared by `Client`'s own atomics and
 // `player::report`'s packed attempt snapshot, so the two never keep a private copy each.
 pub(crate) use client::{decode_ip, decode_link, encode_ip, encode_link};
@@ -214,8 +221,9 @@ pub(crate) use servers::{
 // rest of `timeline` is reached through `Client`'s methods and needs none).
 #[allow(unused_imports)]
 pub use timeline::{queue_index_of, QueueRow};
-// DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
-// table — normal routing and its profile read the same codec and channel limits.
+// DP_AUDIO_CODECS is defined in `devcaps`, which intersects it with the device's own codec
+// table, and re-exported here — normal routing and its profile read the same codec and channel
+// limits.
 // `DP_SUBTITLE_CODECS` / `is_dp_subtitle` are the subtitle twin: the profile's `subtitleCodec=`
 // list and route's MDE `subtitleStreamID` gate, so a selected PGS cannot be advertised in one
 // and omitted from the other.

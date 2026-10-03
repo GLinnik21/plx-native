@@ -47,7 +47,7 @@ use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use super::clock_readout::ClockWatch;
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    tile_facts, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -211,7 +211,7 @@ impl Backdrop {
         snap: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
-            h.map(|h| crate::ui::widgets::resolve_tex_wh_on(h.item.sid, &h.item.art, 1280, 720, 0))
+            h.map(|h| crate::ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0))
                 .unwrap_or((0, 0.0, 0.0))
         };
         if snap < HERO_ART_CULL {
@@ -978,7 +978,7 @@ impl HomeScreen {
         );
         let neighbours = || order[..count].iter().filter_map(|&i| view.hero(i as usize));
         for hero in neighbours() {
-            crate::ui::widgets::resolve_tex_wh_on(hero.item.sid, &hero.item.art, 1280, 720, 0);
+            crate::ui::widgets::resolve_tex_wh_on(hero.item.sid.raw(), &hero.item.art, 1280, 720, 0);
         }
         if !(prefetch_armed(self.snap.pos, self.outgoing.is_some())
             && crate::ui::tex::source_idle())
@@ -1094,7 +1094,7 @@ impl HomeScreen {
                 self.hero_slide.jump(1.0);
                 if matches!(command, HomeCmd::PinHero(_)) {
                     self.hero_pinned = true;
-                    crate::log(&format!("home: hero pinned at slot {index}"));
+                    crate::eventlog::log(&format!("home: hero pinned at slot {index}"));
                 }
                 fx.invalidate(Provenance::Input);
             }
@@ -1407,7 +1407,7 @@ impl HomeScreen {
                 let (rect, scale) = self.drawn_card_geometry(row, col, 1.0);
                 card_row::draw_tile(
                     p,
-                    Art::Poster(Some(item)),
+                    Art::Poster(Some(tile_facts::of(item))),
                     rect,
                     scale,
                     &RowStyle::HOME,
@@ -1443,14 +1443,14 @@ impl HomeScreen {
         } else {
             card_row::TileLabel::title(&item.title)
         };
-        label.caption = card_row::focused_caption(item, cw);
+        label.caption = card_row::focused_caption(&tile_facts::of(item), cw);
         let count = hub.items.len().min(MAX_ITEMS);
         // The grid draws at `scroll_x * snap` ([`Grid::eff_scroll`]), so the lag it still owes does too.
         let lag = self.grid.shelves[row].settle_lag(count, col, &RowStyle::HOME) * self.snap.pos;
         let label = label.revealed(self.grid.shelves[row].band_reveal()).settling(lag);
         card_row::draw_focused(
             p,
-            Art::Poster(Some(item)),
+            Art::Poster(Some(tile_facts::of(item))),
             rect,
             scale,
             &RowStyle::HOME,
@@ -2574,7 +2574,7 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
 fn display_source(real: &str) -> &str {
     static OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     OVERRIDE
-        .get_or_init(|| crate::dev::read("shared"))
+        .get_or_init(|| crate::devtrig::read("shared"))
         .as_deref()
         .unwrap_or(real)
 }
@@ -2678,7 +2678,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
         .map(|v| theme::space::SM + v.measure_h(HERO_COL_W))
         .unwrap_or(0.0);
     let mut y = hero_stack_top(title_h, meta_h, synopsis_h);
-    HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero)
+    HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), title, LogoRung::Hero)
         .draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, title_h), measure);
     y += title_h + theme::space::MD;
     meta_view.draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, 0.0));

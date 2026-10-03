@@ -53,7 +53,7 @@ pub(crate) fn note_renderer(renderer: Option<&str>) {
     let software = renderer.is_some_and(software_renderer);
     SOFTWARE_GL.store(software, Ordering::Release);
     if software {
-        crate::log("threadcheck: software GL renderer; time in GL work does not count toward the hang kill");
+        crate::eventlog::log("threadcheck: software GL renderer; time in GL work does not count toward the hang kill");
     }
 }
 

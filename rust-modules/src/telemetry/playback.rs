@@ -1,13 +1,32 @@
 //! Handled playback errors for Sentry: one terminal event, preceded by a bounded typed trace.
 //!
 //! This is deliberately not a log uploader. Every value accepted here is a closed enum from
-//! `player::report`; there is no title, URL, rating key, playhead, duration, measured bitrate or
+//! [`super::classes`]; there is no title, URL, rating key, playhead, duration, measured bitrate or
 //! free-text error slot. Sparse transitions are retained in memory only while error reporting is
 //! enabled, and nothing is queued unless the viewer actually reaches `PlaybackState::Error`.
 
-use crate::player::report::{PlaybackErrorContext, TraceEvent, TraceStep};
-use crate::player::FailureKind;
+use super::classes::{FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcome, TraceStep};
 use serde_json::{Map, Value};
+
+/// How telemetry erases the in-memory trace the player keeps for the current attempt. The trace
+/// lives in the player's shared state, which this layer cannot name, so the player's eraser is
+/// installed at boot (`player::report::install_trace_eraser`, from `app::enter_application`),
+/// before this layer first loads a decision and before anything can play. Not when the first full
+/// attempt arms a trace: a failed detail-page preview seals a trace without ever arming one.
+static CLEAR_ERROR_TRACE: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Register the function [`clear_error_trace`] calls. The first registration wins.
+pub(crate) fn install_error_trace_clear(clear: fn()) {
+    let _ = CLEAR_ERROR_TRACE.set(clear);
+}
+
+/// Forget the in-memory playback trace immediately, as error reporting is withdrawn or the account
+/// that consented ends. A no-op until the eraser is installed, which a booted app does first.
+pub(crate) fn clear_error_trace() {
+    if let Some(clear) = CLEAR_ERROR_TRACE.get() {
+        clear();
+    }
+}
 
 fn put(data: &mut Map<String, Value>, key: &'static str, value: &'static str) {
     data.insert(key.to_string(), Value::String(value.to_string()));
@@ -63,11 +82,11 @@ fn breadcrumb(step: TraceStep) -> Value {
                 "Original check phase",
                 if matches!(
                     outcome,
-                    crate::player::report::TraceOutcome::Deadline
-                        | crate::player::report::TraceOutcome::Transport
-                        | crate::player::report::TraceOutcome::Inconclusive
-                        | crate::player::report::TraceOutcome::ServerState
-                        | crate::player::report::TraceOutcome::Refused
+                    TraceOutcome::Deadline
+                        | TraceOutcome::Transport
+                        | TraceOutcome::Inconclusive
+                        | TraceOutcome::ServerState
+                        | TraceOutcome::Refused
                 ) {
                     "error"
                 } else {
@@ -104,7 +123,7 @@ pub(crate) fn event_body(
     event_id: &str,
     dist: &str,
     errors_id: Option<&str>,
-    kind: FailureKind,
+    kind: FailureClass,
     context: PlaybackErrorContext,
     trace: &[TraceStep],
 ) -> Vec<u8> {
@@ -181,12 +200,12 @@ pub(crate) fn event_body(
 
 /// Queue one handled event and ask the existing background sender to flush it. No network work is
 /// performed on the render thread.
-pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, trace: &[TraceStep]) {
+pub(crate) fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[TraceStep]) {
     if !super::consent::allows_errors() || !super::sender::has_sentry() {
         return;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
-        crate::log("telemetry: no /dev/urandom — handled playback error was not queued");
+        crate::eventlog::log("telemetry: no /dev/urandom — handled playback error was not queued");
         return;
     };
     let body = event_body(
@@ -206,7 +225,7 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
     match super::spool::append_if(&record, super::consent::allows_errors) {
         Some(true) => super::flush_soon(),
         Some(false) => {
-            crate::log("telemetry: handled playback error did not fit the durable spool")
+            crate::eventlog::log("telemetry: handled playback error did not fit the durable spool")
         }
         None => {} // consent changed while the event was being shaped
     }
@@ -216,7 +235,7 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
 /// runtime-build values are visible placeholders; the other values are representative members of
 /// the closed domains disclosed beside the preview. No consent-time identifier is minted.
 pub(crate) fn preview_event() -> Vec<u8> {
-    use crate::player::report::{
+    use crate::telemetry::classes::{
         AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
         OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
         TraceAge, TraceDirection, TraceOutcome, VideoCodecClass,
@@ -272,7 +291,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
         TraceStep {
             age: TraceAge::S30To120,
             event: TraceEvent::Failed {
-                kind: FailureKind::PlaybackInterrupted,
+                kind: FailureClass::PlaybackInterrupted,
             },
         },
     ];
@@ -280,7 +299,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
         "<random per-error event id>",
         "<running ELF build id>",
         Some(super::native::PREVIEW_USER_ID),
-        FailureKind::PlaybackInterrupted,
+        FailureClass::PlaybackInterrupted,
         PlaybackErrorContext {
             delivery: DeliveryClass::Hls,
             selected: QualityClass::Auto,
@@ -320,13 +339,13 @@ fn codes<T: Copy>(values: &[T], code: fn(T) -> &'static str) -> String {
 /// same enum `code()` methods as the serializer, so the consent screen does not imply that its one
 /// sample value is the only possible one.
 pub(crate) fn preview_domains() -> String {
-    use crate::player::report::{
+    use crate::telemetry::classes::{
         BufferClass as B, DeliveryClass as D, DeliveryReason as W, HttpClass as H,
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
     };
-    use crate::player::report::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
-    use FailureKind as F;
+    use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
+    use FailureClass as F;
     use crate::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
     let domains: [(&str, String); 17] = [
@@ -463,7 +482,7 @@ pub(crate) fn preview_domains() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::report::{
+    use crate::telemetry::classes::{
         AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, HttpClass,
         OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
         TraceAge, TraceOutcome, VideoCodecClass,
@@ -516,7 +535,7 @@ mod tests {
             TraceStep {
                 age: TraceAge::S30To120,
                 event: TraceEvent::Failed {
-                    kind: FailureKind::OriginalRollback,
+                    kind: FailureClass::OriginalRollback,
                 },
             },
         ];
@@ -524,7 +543,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            FailureKind::OriginalRollback,
+            FailureClass::OriginalRollback,
             context(),
             &trace,
         ))
@@ -552,7 +571,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            FailureKind::PlaybackInterrupted,
+            FailureClass::PlaybackInterrupted,
             context(),
             &[],
         ))
@@ -621,7 +640,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             None,
-            FailureKind::OriginalRollback,
+            FailureClass::OriginalRollback,
             context(),
             &[],
         ))
@@ -631,7 +650,7 @@ mod tests {
 
     #[test]
     fn handled_error_schema_keys_are_exact_for_every_breadcrumb_shape() {
-        use crate::player::report::{DeliveryReason, TraceDirection};
+        use crate::telemetry::classes::{DeliveryReason, TraceDirection};
 
         fn keys(v: &Value) -> Vec<&str> {
             let mut out: Vec<_> = v
@@ -672,7 +691,7 @@ mod tests {
                 outcome: TraceOutcome::Inconclusive,
             },
             TraceEvent::Failed {
-                kind: FailureKind::OriginalRollback,
+                kind: FailureClass::OriginalRollback,
             },
         ]
         .map(|event| TraceStep {
@@ -683,7 +702,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            FailureKind::OriginalRollback,
+            FailureClass::OriginalRollback,
             context(),
             &trace,
         ))
@@ -809,7 +828,7 @@ mod tests {
             &"a".repeat(32),
             "0123456789abcdef",
             Some(&"e".repeat(32)),
-            FailureKind::DecisionRefused,
+            FailureClass::DecisionRefused,
             ctx,
             &[],
         ))
@@ -860,7 +879,7 @@ mod tests {
 
     #[test]
     fn consent_preview_and_privacy_name_every_refusal_domain_value() {
-        use crate::player::report::{AudioCodecClass, DecisionCodeClass, VideoCodecClass};
+        use crate::telemetry::classes::{AudioCodecClass, DecisionCodeClass, VideoCodecClass};
         let legend = preview_domains();
         let privacy = include_str!("../../../PRIVACY.md");
         let mut values: Vec<&str> = Vec::new();

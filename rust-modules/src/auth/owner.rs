@@ -2815,6 +2815,17 @@ mod tests {
         assert_eq!(retained.read().0.delete_leftovers, 3, "retained reads stay coherent");
     }
 
+    // Moved from `i18n`'s tests: it grades `SessionInit`'s recorded hash, and `i18n` (a layer
+    // below `auth`) cannot name `SessionInit`.
+    #[test]
+    fn captured_language_changes_the_recorded_session_hash() {
+        use crate::ui::machine::LogicalState;
+        let a = SessionInit::captured(PersistedSession::default());
+        let mut b = a.clone();
+        b.persisted.language = crate::i18n::Preference::Be;
+        assert_ne!(a.hash(), b.hash());
+    }
+
     #[test]
     fn scalar_and_noop_transitions_do_not_temporarily_rebuild_shared_payloads() {
         let mut init = captured_session();
@@ -2856,7 +2867,7 @@ mod tests {
 
     struct OwnerHost;
     impl crate::ui::machine::Host for OwnerHost {
-        type Arg = crate::ui::fixture::FixtureArg;
+        type Arg = crate::ui::machine::BareArg;
         type Fx = SessionFx;
         type Msg = SessionEvent;
         type Elem = u32;
@@ -2872,7 +2883,7 @@ mod tests {
         use crate::ui::machine::{Cx, Effects, Fx, InputOwner, EntryId, Machine, Tick};
         let publication = owner.publication();
         let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
-            measure: &crate::ui::fixture::FixtureMeasure, press: Default::default(),
+            measure: &crate::ui::machine::BareMeasure, press: Default::default(),
             focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
         let mut present = crate::ui::present::Present::new();
         let mut effects = Vec::new();
@@ -4898,45 +4909,26 @@ mod tests {
         }).expect("the late profile roster must commit")
     }
 
-    /// **Blink C** (owner trace, 2026-09-30, who's-watching picker path): a SECOND `plex: 2
-    /// server(s) revoked — profile changed` 4-6 s after Home was drawn, with the picked profile
-    /// still seated — every poster `HIDDEN cause=grant_epoch`, every hub refetched. The switch's
-    /// own late `ProfileRoster` re-committed the already-seated profile as another `Switch`.
-    #[test]
-    fn a_late_profile_roster_for_the_seated_profile_keeps_resident_art() {
-        let _g = crate::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        crate::plex::grant::reset_for_test();
+    /// The session half of **Blink C** (`a_late_profile_roster_for_the_seated_profile_keeps_resident_art`,
+    /// which lives in `app/session_roster_art_tests.rs` beside the poster it grades): the owner
+    /// seats a picked profile, then takes the switch's own late `ProfileRoster` for that same
+    /// profile. Returns the seated server's slot and the plan that late roster commits. The caller
+    /// holds [`crate::testlock::serial`] and has reset the server table and the grants.
+    pub(crate) fn late_roster_of_the_seated_profile() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, req, epoch, primary) = picker_switch_seated();
         let sid = crate::plex::id_of_machine("a").expect("the switch installed the seated server");
         let seated = super::super::SessionIdentity::of(&owner.state.persisted);
         let plan = late_profile_roster(&mut owner, req, epoch, &primary, seated);
-        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
-            for p in &plan.registry {
-                assert!(super::super::execute_session_registry(p, "synthetic-client"));
-            }
-        });
-        assert!(kept, "the late roster of the already-seated profile revoked its art");
-        assert!(matches!(&plan.registry[0],
-            RegistryPlan::Install { commit: RosterCommit::Refresh { same_identity: true }, .. }),
-            "the seated profile's own roster is a same-identity refresh, not a second switch");
-        crate::plex::grant::reset_for_test();
-        crate::plex::reset_servers_for_test();
+        (sid, plan)
     }
 
-    /// **Blink B** (owner trace, 2026-09-30, ~11.6 s into an ordinary stored-session launch):
-    /// `plex: 2 server(s) revoked — profile changed` with nobody touching the profile, then every
-    /// poster on Home `HIDDEN` and every hub refetched. The boot's admin roster refresh found the
-    /// same seated profile's server under plex.tv's current grant (a token string different from
-    /// the stored one) and committed that as a PROFILE SWITCH — blanking every live client.
-    /// A refresh of the seated profile's roster is not a change of identity: the stored server's
-    /// resident art must survive the whole commit.
-    #[test]
-    fn an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art() {
-        const ROTATED_GRANT: &str = "plex-tv-grant-for-the-same-owner";
-        let _g = crate::testlock::serial();
-        crate::plex::reset_servers_for_test();
-        crate::plex::grant::reset_for_test();
+    /// The session half of **Blink B** (`an_admin_boot_refresh_of_the_seated_profile_keeps_resident_art`,
+    /// which lives in `app/session_roster_art_tests.rs` beside the poster it grades): the stored
+    /// session's registry is installed, then discovery reaches the same server and user under
+    /// plex.tv's current `grant`. Returns the stored server's slot and the plan the refresh
+    /// commits. The caller holds [`crate::testlock::serial`] and has reset the server table and the
+    /// grants.
+    pub(crate) fn admin_boot_refresh_of_the_seated_profile(grant: &str) -> (crate::plex::ServerId, CommitPlan) {
         let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
             title: "Owner".into(), admin: true, ..Default::default() }];
         let mut owner = roster_refresh_fixture("u-owner", users);
@@ -4949,7 +4941,7 @@ mod tests {
 
         // Discovery reaches the same server, same address, same user — under plex.tv's grant.
         let mut reached = stored[0].clone();
-        reached.token = ROTATED_GRANT.into();
+        reached.token = grant.into();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         let epoch = owner.state.epoch;
@@ -4974,18 +4966,7 @@ mod tests {
         let plan = effects.iter().find_map(|effect| match effect {
             SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
         }).expect("a rotated grant is persisted");
-
-        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
-            for p in &plan.registry {
-                assert!(super::super::execute_session_registry(p, "synthetic-client"));
-            }
-        });
-        assert!(kept, "a same-profile roster refresh revoked the stored server's art");
-        let c = crate::plex::client_for(sid).unwrap();
-        assert!(c.image_transcode_path("/t", 2, 2, false).ends_with(&format!("X-Plex-Token={ROTATED_GRANT}")),
-            "the refresh must still install plex.tv's current grant");
-        crate::plex::grant::reset_for_test();
-        crate::plex::reset_servers_for_test();
+        (sid, plan)
     }
 
     /// The seated profile is the Home ADMIN, but the account signed in on this television is a
@@ -5017,13 +4998,13 @@ mod tests {
         (owner, sid, members_view)
     }
 
-    /// Review finding on the Refresh commit: `admin` is not "the account holder". The terminal
-    /// reconcile of [`member_account_on_admin_seat`] installs the member's grants over the admin's
-    /// live tokens; nothing proves the two are one identity, so the art claimed under the admin
-    /// must not survive into the member-token session.
-    #[test]
-    fn a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
-        let _g = crate::testlock::serial();
+    /// The session half of the review finding on the Refresh commit
+    /// (`a_refresh_under_another_accounts_token_does_not_keep_the_seated_profiles_art`, which
+    /// lives in `app/session_roster_art_tests.rs` beside the poster it grades): `admin` is not
+    /// "the account holder". The terminal reconcile of [`member_account_on_admin_seat`] installs
+    /// the member's grants over the admin's live tokens. Returns the admin server's slot and the
+    /// plan that reconcile commits. The caller holds [`crate::testlock::serial`].
+    pub(crate) fn refresh_under_another_accounts_token() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, sid, members_view) = member_account_on_admin_seat();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
@@ -5049,21 +5030,16 @@ mod tests {
         let plan = effects.iter().find_map(|effect| match effect {
             SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
         }).expect("the changed roster commits");
-        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
-            for p in &plan.registry {
-                assert!(super::super::execute_session_registry(p, "synthetic-client"));
-            }
-        });
-        assert!(!kept, "another account's grants were installed as a same-identity refresh");
-        crate::plex::grant::reset_for_test();
-        crate::plex::reset_servers_for_test();
+        (sid, plan)
     }
 
-    /// The same gap one observation earlier: the roster worker's `Activate` progress for the
-    /// admin's server, carrying the member's grant, re-tokens the admin's live slot in place.
-    #[test]
-    fn an_activation_under_another_accounts_token_does_not_keep_the_seated_profiles_art() {
-        let _g = crate::testlock::serial();
+    /// The session half of the same gap one observation earlier
+    /// (`an_activation_under_another_accounts_token_does_not_keep_the_seated_profiles_art`, which
+    /// lives in `app/session_roster_art_tests.rs` beside the poster it grades): the roster worker's
+    /// `Activate` progress for the admin's server, carrying the member's grant, re-tokens the
+    /// admin's live slot in place. Returns that slot and the plan the activation commits. The
+    /// caller holds [`crate::testlock::serial`].
+    pub(crate) fn activation_under_another_accounts_token() -> (crate::plex::ServerId, CommitPlan) {
         let (mut owner, sid, members_view) = member_account_on_admin_seat();
         let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
@@ -5089,14 +5065,7 @@ mod tests {
         let plan = effects.iter().find_map(|effect| match effect {
             SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
         }).expect("the activation reaches the commit boundary");
-        let kept = crate::app::adapters::poster::resident_art_survives_for_test(sid, || {
-            for p in &plan.registry {
-                assert!(super::super::execute_session_registry(p, "synthetic-client"));
-            }
-        });
-        assert!(!kept, "another account's grant was activated as a same-identity retoken");
-        crate::plex::grant::reset_for_test();
-        crate::plex::reset_servers_for_test();
+        (sid, plan)
     }
 
     #[test]
@@ -5184,7 +5153,7 @@ mod tests {
 
             let publication = owner.publication();
             let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
-                measure: &crate::ui::fixture::FixtureMeasure, press: Default::default(),
+                measure: &crate::ui::machine::BareMeasure, press: Default::default(),
                 focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
             let mut present = crate::ui::present::Present::new();
             let _ = present.take(0); // the spinner's last frame has been presented
@@ -5450,3 +5419,11 @@ mod tests {
             "the published fact and BACK's own decision are one answer");
     }
 }
+
+// The session halves of the roster-art scenarios: the app layer's tests drive these and then grade
+// the poster that sits above this layer (`app/session_roster_art_tests.rs`).
+#[cfg(test)]
+pub(crate) use tests::{
+    activation_under_another_accounts_token, admin_boot_refresh_of_the_seated_profile,
+    late_roster_of_the_seated_profile, refresh_under_another_accounts_token,
+};

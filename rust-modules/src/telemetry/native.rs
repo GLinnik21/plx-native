@@ -283,7 +283,7 @@ const USER_FIELDS: &[&str] = &["id"];
 const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
 const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
-/// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`crate::webos::rtkmem_context`]) and `install`
+/// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`crate::tv::sandbox::context`]) and `install`
 /// (`devmode`/`homebrew`/`unknown`, from [`crate::paths::install_kind`]) ride on every native
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
 /// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
@@ -752,7 +752,7 @@ fn read_pending_in(dir: &Path) -> Vec<PendingNative> {
         }
     }
     if rejected != 0 || deferred != 0 {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "telemetry: native crash envelopes rejected={rejected} deferred={deferred}"
         ));
     }
@@ -770,7 +770,7 @@ fn import_all() {
         }
     }
     if queued != 0 {
-        crate::log(&format!("telemetry: native crash envelopes queued={queued}"));
+        crate::eventlog::log(&format!("telemetry: native crash envelopes queued={queued}"));
     }
 }
 
@@ -876,18 +876,18 @@ mod sdk {
         let Some(dist) = cstring(super::super::sentry::build_id()) else {
             return;
         };
-        let webos = crate::webos::info();
+        let webos = crate::tv::device::info();
         let webos_name = cstring(webos.name.as_bytes());
         let webos_release = cstring(webos.release.as_bytes());
         let webos_codename = cstring(webos.codename.as_bytes());
         let webos_api = cstring(webos.api.as_bytes());
-        let hardware = crate::webos::device();
+        let hardware = crate::tv::device::device();
         let model = cstring(hardware.model.as_bytes());
         let soc = cstring(hardware.board.as_bytes());
         let hardware_revision = cstring(hardware.hw_revision.as_bytes());
         // issue #74: the same two closed-enum sandbox facts the PostHog envelope carries, so a
         // native crash report can be graded by chassis AND sandbox without a second dashboard.
-        let rtkmem = cstring(crate::webos::rtkmem_context().as_bytes());
+        let rtkmem = cstring(crate::tv::sandbox::context().as_bytes());
         let install = cstring(crate::paths::install_kind().as_bytes());
         let ptr = |value: &Option<CString>| {
             value
@@ -929,10 +929,10 @@ mod sdk {
                 // After ACTIVE, because `set_user` refuses to touch a backend that is not running;
                 // still inside `start`, so no caller can observe an active backend with no id.
                 set_user(super::super::consent::errors_id().as_deref());
-                crate::log("telemetry: native ARM crash capture active");
+                crate::eventlog::log("telemetry: native ARM crash capture active");
             } else {
                 // `sentry_init` takes ownership even when backend startup fails.
-                crate::log(
+                crate::eventlog::log(
                     "telemetry: native crash capture unavailable; C fallback remains active",
                 );
             }

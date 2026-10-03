@@ -390,11 +390,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   every edit to a `rust-modules/src/**.rs`; it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
-  swallows a neighbour's attribute — `dev::latched_flag!` exists to avoid most of them.
+  swallows a neighbour's attribute — `devtrig::latched_flag!` exists to avoid most of them.
 - **`LAB=1`** adds a THIRD cargo feature, `lab-diagnostics` — the **Cloud Lab bridge** that gets
   logs off and app-level commands onto a television in **LG Cloud Test Lab**, where there is no
   ssh, no console, no stdout and no way to download a file, so the entire `/tmp` trigger surface
-  and every recipe in this file is unreachable. In a lab build `crate::log` also feeds a bounded in-memory ring (4000
+  and every recipe in this file is unreachable. In a lab build `crate::eventlog::log` also feeds a bounded in-memory ring (4000
   records / 768 KiB), a configured remote key or a **Send diagnostics** row in the account /
   player-overflow menu snapshots it together with `player::Diag`, `webos` and `devcaps`, scrubs it
   again, gzips it and POSTs it over **pinned** TLS to `tools/plxnative-lab` on the dev Mac. An
@@ -570,7 +570,7 @@ Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, draw
 over the hardware **VIDEO overlay plane** (decoded frames). The UI plane is made non-opaque so
 video shows through.
 
-**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `app/mod.rs` after `app/boot.rs::boot()`):** SDL2 window + GLES2
+**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `port.rs`, which installs the port and runs `app::run_application`, after `app/boot.rs::boot()`):** SDL2 window + GLES2
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
@@ -598,10 +598,13 @@ which the linking section explains is load-bearing rather than tidy.
 
 ### Module-cycle ratchet (`ci/check-module-cycle.py`)
 
-The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app, but a few
-thin upward references (`ui` -> `screens`/`app`, `gfx`/`text` -> `ui`, `plex` -> `route`) close one
-strongly connected component of top-level modules that holds nearly all of the code. The gate does
-not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
+The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app
+(`ci/module-layers.ini` is the full target, gated per reference by `ci/check-module-layers.py`). A
+few thin upward references once closed one strongly connected component of top-level modules
+holding 44 of them; the module-layer migration (`docs/module-layers.md`) cut it to 13 by step L14
+(`ci/module-cycle-baseline.json` has the current set), which is this tool's coarse view of edges
+the layer gate allows: it sees `ui` and `diag` as one node each, while `ui::machine`/`ui::idle`/`ui::overdraw` and `diag::{zlib,spans,heartbeat}` sit in lower
+layers. The gate does not untangle it; it stops it absorbing more modules. It builds the module graph from production code only (the
 module tree walked from `lib.rs`, `#[cfg(test)]` items and test-only files skipped, comments and
 strings blanked; the docstring lists what it cannot see), compares the cycle's members with
 `ci/module-cycle-baseline.json`, and **fails** when a module outside the baseline lands on a cycle
@@ -622,8 +625,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
   (one header tree, not the old dual one), TV ssh creds.
 - `src/main.c` — the **boot shim** (event-log/stderr setup, process bring-up); calls the Rust
-  `plex_run()`. `src/crashtrace.c` (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so
-  the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
+  `plex_run()` (`rust-modules/src/port.rs`, which runs `app::run_application`). `src/crashtrace.c`
+  (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
@@ -634,7 +637,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   panics inside an `extern "C"` callback, and `unwind` panics straight in `crash_on_purpose` so the
   unwind crosses `plex_run`'s own frame (`rust-modules/src/dev.rs`'s `crash_on_purpose` doc comment
   has the detail).
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -646,9 +649,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and, since phase 9 (Player was the last), no legacy screens at all — every route mounts an owned
-  screen under `screens/`; `player_hud.rs`/`track_menu.rs`/`info_panel.rs`/`chapters_panel.rs`/
-  `up_next.rs`/`more_menu.rs` are drawing/state modules `screens::player` composes, the same
-  relationship `widgets.rs` has to other screens. **`rust-modules/src/ui/CLAUDE.md` is the
+  screen under `screens/`. The player's drawing/state modules (`appkit/player_hud.rs`,
+  `track_menu.rs`, `info_panel.rs`, `chapters_panel.rs`, `up_next.rs`, `more_menu.rs`,
+  `timing_capsule.rs`, `skip_pill.rs`) and the Sources row model (`appkit/source_list.rs`) live in
+  `rust-modules/src/appkit/`, the layer between `ui/` and `screens/` for widgets several screens
+  share — they name application types, so not `ui/`, and the `sibling` gate keeps them out of
+  `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -664,7 +670,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `rust-modules/src/diag/` — **the redaction pass and the diagnostic plumbing every off-device
-  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::log` runs
+  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::eventlog::log` runs
   `scrub_local` on every line in every build, so credentials, hosts, bare addresses, Plex GUIDs,
   search queries and this household's names are rewritten **before the write**, not on the way out.
   **Two exits, differing in exactly one respect** — `scrub` (network) may DROP a line it cannot
@@ -992,8 +998,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   composited origin to whole pixels via `gfx::snap` (a fractional origin + GL_LINEAR smears strokes),
   and fonts open with FreeType **light** hinting (`text.rs::font_at` — the default NORMAL hinting
   lets Arial's bytecode round horizontal bars up a pixel, inverting stem/bar weights). Never snap
-  scaled content (posters). Full rationale: the "Rasterization contract" note above `theme.rs`'s
-  size ladder; after a font swap re-verify with `tools/font-hint-audit.py` (host-side, freetype-py).
+  scaled content (posters). Full rationale: the "Rasterization contract" note above the size
+  ladder in `gfx/tokens.rs` (`theme::size` re-exports it); after a font swap re-verify with `tools/font-hint-audit.py` (host-side, freetype-py).
 - **SAM keeps stale "running" state after a hard kill**, so a launch is a silent no-op relaunch
   unless you close-first — `make run`/`kill` do the `closeByAppId` first (and `luna-send -i` must
   stay subscribed for the launch to take).
@@ -1708,7 +1714,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   to grade `fps=`/`worstframe=` at all) armed**;
   take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
   milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
-  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
+  instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `gfx::profile::phase` (spelled `ui::profile::phase` at most call sites; `ui` re-exports it since module-layers step L5) on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
   prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
   2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus
@@ -1738,19 +1744,19 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   tool here reports as "no line found", i.e. exactly like a total regression. Why any of it:
   **`docs/two-installs.md`**.
   **The catalog is the source, not this list** — get the real one with
-  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sed 's|.*/||'; grep -rhoE 'dev::(flag|read)\("[a-z0-9]+"' rust-modules/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
+  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sed 's|.*/||'; grep -rhoE 'devtrig::(flag|read)\("[a-z0-9]+"' rust-modules/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
   **Both halves are needed**: a path literal only ever appears in a COMMENT now, and four triggers
-  (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `dev::flag`/`dev::read` call, so
+  (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `devtrig::flag`/`devtrig::read` call, so
   the path grep alone silently under-reports. This line carried that grep alone and called it
   complete.
   **Since UI restructure phase 10 the ARMS live in `rust-modules/src/dev/scenarios.rs`, not
-  scattered through `app/{boot,run,content,mod}.rs`** — `dev.rs` stays the one door onto `/tmp`
-  itself, and the catalog command above is unaffected because every `dev::flag`/`dev::read` call
-  moved with its spelling unchanged.
-  **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
-  read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
-  builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
-  `dev::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
+  scattered through `app/{boot,run,content,mod}.rs`** — `rust-modules/src/devtrig.rs` is the one
+  door onto `/tmp` itself (a base-layer module; `dev.rs` keeps the application-layer half), and the
+  catalog command above names its `devtrig::flag`/`devtrig::read` calls.
+  **Every read goes through `rust-modules/src/devtrig.rs`, gated on the `devtriggers` cargo feature —
+  read that module's doc (and `dev.rs`'s) before adding a trigger, and never open a `/tmp` path
+  directly.** Default builds are unchanged; `RELEASE=1` drops the feature, and then
+  `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
   logs (`capture::init` is compiled out, so there is no listener on ANY port — a compile-time fact;
   device-verified on the stable install: no FIFO and nothing on `:8910`. This line used to assert
   the device measurement alone, which could only ever have probed the one port it knew about). The same feature gates `Remote::open` and
@@ -1857,7 +1863,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-nopass` for the PLEX PASS capsule line. Every arm but `jail` feeds the real
   `player::error_shape` (`jail` is the one `ErrorShape` `error_shape` never produces, so it calls
   the sibling `jail_error_shape` directly instead), and forces the STATE only at
-  `player_hud::busy` — never at `player::state()`, which the pump acts on),
+  `appkit::player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
   (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
   `solid:<deg>[:L*]`), drawn as page content so it is exactly what the tab track samples and what
@@ -1984,7 +1990,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
   at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
-  (`app::input::back_at_root` → `webos::go_home`), with the app still running — which is what the
+  (`app::input::back_at_root` → `tv::home::go_home`), with the app still running — which is what the
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
@@ -1995,7 +2001,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   distinguish "stepped back a stage" from "the platform took the screen" — so the loop's BACK arm
   had nothing to key the root press on. The owned replacement (`screens::consent.rs`) answers with
   a request instead of a bool: BACK at the first stage asks the loop for `LoopReq::BackAtRoot`
-  (`app::input::back_at_root` → `webos::go_home`, the same call the other three roots use) rather
+  (`app::input::back_at_root` → `tv::home::go_home`, the same call the other three roots use) rather
   than stepping or dismissing, and doing so does NOT answer or dismiss the question — selecting the
   app's tile again lands straight back on it, exactly as Home, the picker and QR sign-in do at
   theirs (`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`

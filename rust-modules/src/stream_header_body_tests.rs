@@ -249,7 +249,7 @@ fn chunked_is_recognised_however_the_header_is_spelled() {
 fn a_chunked_body_spelled_without_a_space_is_still_decoded() {
     let (port, h) = one_shot_server(
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n".to_vec());
-    let r = loopback_get(port).expect("a 200 must open");
+    let r = loopback_get(port);
     assert_eq!(
         (r.status, r.body.as_slice()),
         (200, &b"abcdefg"[..]),
@@ -266,8 +266,7 @@ fn a_chunked_body_spelled_without_a_space_is_still_decoded() {
 fn a_truncated_body_is_still_returned_to_the_caller() {
     let (port, h) =
         one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
-    let r = loopback_get(port)
-        .expect("a truncated body is still a body — this must not become None");
+    let r = loopback_get(port);
     assert_eq!(
         r.body.as_slice(),
         b"abcd",
@@ -290,8 +289,8 @@ fn a_truncated_body_is_still_returned_to_the_caller() {
 fn a_401_reaches_the_caller_as_a_status_and_not_as_a_transport_failure() {
     let (port, h) =
         one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec());
-    let r = loopback_get(port).expect("the server ANSWERED — that is not a transport failure");
-    assert_eq!(r.status, 401);
+    let r = loopback_get(port);
+    assert_eq!(r.status, 401, "the server ANSWERED — its code must survive the refused open");
     assert!(!r.ok(), "…and it is still not a success");
     h.join().unwrap();
 }
@@ -347,16 +346,21 @@ fn a_500_response_remains_a_status_after_its_deadline_passes() {
     );
 }
 
-/// Nothing listening is the OTHER outcome, and it must not wear a status. `0` is what
-/// `http_open`'s parser leaves when no `HTTP/1.x NNN` line ever arrived, and `crate::http`
-/// turns that into `None` so a caller cannot read it as a refusal (`classify` would score it
-/// `Unreachable` either way, but by luck rather than by decision).
+/// Nothing listening is the OTHER outcome, and the primitives must report it as one: the open
+/// fails and the status stays `0`, the value `http_open`'s parser leaves when no `HTTP/1.x NNN`
+/// line ever arrived — never a code some server could have sent. `crate::http`'s plaintext arm
+/// turns exactly that `0` into `None`, so a caller cannot read it as a refusal (`classify` would
+/// score it `Unreachable` either way, but by luck rather than by decision); that half is graded
+/// in `http`'s tests.
 #[test]
-fn a_connection_that_never_answers_is_none_rather_than_a_status_of_zero() {
+fn a_connection_that_never_answers_leaves_no_status_rather_than_a_code() {
     // Bind and drop, so the port is one nothing is listening on any more.
     let port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         l.local_addr().expect("addr").port()
     };
-    assert!(loopback_get(port).is_none());
+    let (mut hs, opened) = open_against(port);
+    assert_ne!(opened, 0, "nothing is listening, so the open must fail");
+    assert_eq!(hs_status(&*hs), 0, "a refused connection must not wear a status");
+    http_close(&mut *hs);
 }

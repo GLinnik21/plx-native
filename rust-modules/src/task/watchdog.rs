@@ -232,12 +232,12 @@ impl LoopWatch {
                 // fwcompat inventories export both symbols at GLIBC_2.4 across all releases:
                 // libpthread on older firmware, libc after the glibc pthread merge.
                 let main_thread = unsafe { libc::pthread_self() } as usize;
-                let log_only = crate::dev::guard_log_only();
+                let log_only = crate::devtrig::guard_log_only();
                 super::spawn("main-thread watchdog", move || observe_loop(main_thread, log_only)).is_some()
             };
             #[cfg(not(feature = "threadcheck"))]
             let started = super::spawn("main-thread watchdog", observe_loop).is_some();
-            if !started { crate::log("main-thread watchdog: unavailable; hang detection disabled"); }
+            if !started { crate::eventlog::log("main-thread watchdog: unavailable; hang detection disabled"); }
             started
         });
         if !started { return Self::disabled(); }
@@ -304,7 +304,7 @@ fn observe_loop(
         #[cfg(not(feature = "threadcheck"))]
         let event = detector.observe(now, progress, label);
         if let Some(event) = event {
-            crate::log(&event.line());
+            crate::eventlog::log(&event.line());
             #[cfg(feature = "threadcheck")]
             match event {
                 Event::Began { ms, label } => super::runtime_check::hang(ms, label),
@@ -314,7 +314,7 @@ fn observe_loop(
         #[cfg(feature = "threadcheck")]
         {
             if observation.kill {
-                crate::log(&format!("main-thread hang fatal: {}ms in {}; sending SIGABRT to main thread", observation.elapsed.unwrap(), label));
+                crate::eventlog::log(&format!("main-thread hang fatal: {}ms in {}; sending SIGABRT to main thread", observation.elapsed.unwrap(), label));
                 // Recheck progress after logging: recovery while the observer was delayed must
                 // not kill a healthy loop. The loop owner is the process-lifetime main thread.
                 // Logging can itself be delayed by a process stop. Do not signal using a
@@ -322,7 +322,7 @@ fn observe_loop(
                 let sample_age = origin.elapsed().as_millis().saturating_sub(now as u128);
                 if sample_age <= MAX_POLL_GAP_MS as u128 && SIGNALS.progress() == progress {
                     let rc = unsafe { libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGABRT) };
-                    if rc != 0 { crate::log(&format!("main-thread hang: pthread_kill failed: {rc}")); }
+                    if rc != 0 { crate::eventlog::log(&format!("main-thread hang: pthread_kill failed: {rc}")); }
                 }
             }
         }

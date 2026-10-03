@@ -87,7 +87,7 @@
 //! was before; the two things instruments read with no borrow of the plan in hand — the live step
 //! index and whether anything is armed — are PUBLISHED snapshots the dial writes on change
 //! (spec §2.3). Every entry point is a no-op when the trigger is absent, and in a
-//! `--no-default-features` build `dev::read` is `None` at compile time, so nothing here can be
+//! `--no-default-features` build `devtrig::read` is `None` at compile time, so nothing here can be
 //! reached at all.
 
 use crate::ui::consts::{SCR_H, SCR_W};
@@ -282,7 +282,7 @@ const NCARD_TEX: usize = 4;
 
 pub(crate) struct Dial {
     sweep: Option<Sweep>,
-    /// Which step is live, or -1 when the dial is disarmed. Mirrored into [`STEP_PUB`] on every
+    /// Which step is live, or -1 when the dial is disarmed. Mirrored into `gfx::profile` on every
     /// change, because the heartbeat and every HWCNT phase record read it with no `&App` in hand.
     step: i32,
     /// Presented frames since the current step began — the cadence clock.
@@ -300,14 +300,13 @@ pub(crate) struct Dial {
     card_tex: [u32; NCARD_TEX],
 }
 
-/// **The live step index, PUBLISHED** (spec §2.3): the dial owns the decision and writes this on
-/// every change; instruments read it freely. `ui/profile.rs` tags every HWCNT phase record with
-/// it from inside an arbitrary draw closure and has no borrow of the plan to ask through, and a
-/// cycled run that could not be split by step after the fact reports a mean over configurations
-/// that never occurred.
-static STEP_PUB: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-/// Whether anything in this module is armed, published for the same readers and the same reason.
-static ARMED_PUB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// **The live step index and the armed flag are PUBLISHED** (spec §2.3): the dial owns the decision
+// and writes them on every change; instruments read them freely. `gfx::profile` tags every HWCNT
+// phase record with the step from inside an arbitrary draw closure and has no borrow of the plan to
+// ask through, and a cycled run that could not be split by step after the fact reports a mean over
+// configurations that never occurred. The two values are stored in `gfx::profile` (the `gfx` layer
+// reads them and may not name `ui`); [`Dial::publish`] is their one writer and [`step_index`] /
+// [`armed`] their readers here.
 
 impl Dial {
     pub(crate) const fn new() -> Self {
@@ -328,9 +327,7 @@ impl Dial {
     /// the publication — constructing a plan therefore publishes too, which is what keeps a host
     /// test that arms one from leaving the instruments armed for every test after it.
     pub(crate) fn publish(&self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        STEP_PUB.store(self.step, Relaxed);
-        ARMED_PUB.store(self.armed(), Relaxed);
+        crate::gfx::profile::publish_dial(self.step, self.armed());
     }
 
     /// Arm the dial from `/tmp/plxnative-glassload`'s content. Logs what it will actually run, because
@@ -376,7 +373,7 @@ impl Dial {
                         }
                     })
                     .collect();
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "GLASSLOAD armed hold={}ms steps=[{}]",
                     s.hold_ms,
                     list.join(" ")
@@ -385,7 +382,7 @@ impl Dial {
                 self.step = 0;
                 self.publish();
             }
-            None => crate::log(&format!(
+            None => crate::eventlog::log(&format!(
                 "GLASSLOAD spec {spec:?} not understood — dial disarmed"
             )),
         }
@@ -410,7 +407,7 @@ pub(crate) fn parse_navblur(spec: &str) -> Option<(u32, u32, bool)> {
 impl Dial {
     pub(crate) fn configure_navblur(&mut self, spec: &str) {
         let Some((mode, cad, pin)) = parse_navblur(spec) else {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "NAVBLUR spec {spec:?} not understood — prototype off"
             ));
             return;
@@ -422,7 +419,7 @@ impl Dial {
         // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
         // riding form replaces the dip.
         crate::ui::nav::set_blur_dissolve(!pin);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
         ));
     }
@@ -456,13 +453,13 @@ impl Dial {
 /// published snapshot, since neither caller holds the plan.
 #[inline]
 pub(crate) fn step_index() -> i32 {
-    STEP_PUB.load(std::sync::atomic::Ordering::Relaxed)
+    crate::gfx::profile::dial_step()
 }
 
 /// Is anything in this module armed? The published half of [`Dial::armed`], for the same readers.
 #[inline]
 pub(crate) fn armed() -> bool {
-    ARMED_PUB.load(std::sync::atomic::Ordering::Relaxed)
+    crate::gfx::profile::dial_armed()
 }
 
 /// Advance the dial one presented frame, BEFORE the page draws.
@@ -490,8 +487,8 @@ impl Dial {
             self.step = idx;
             self.presents = 0;
             self.publish();
-            crate::gfx::blur_invalidate();
-            crate::log(&format!("GLASSLOAD step={idx}"));
+            crate::ui::popover::host::blur_invalidate();
+            crate::eventlog::log(&format!("GLASSLOAD step={idx}"));
             return;
         }
         self.presents = self.presents.wrapping_add(1);
@@ -500,7 +497,7 @@ impl Dial {
             .as_ref()
             .map_or(0, |s| s.steps[idx as usize].cadence);
         if cad > 0 && self.presents % cad == 0 {
-            crate::gfx::blur_invalidate();
+            crate::ui::popover::host::blur_invalidate();
         }
     }
 
@@ -653,7 +650,7 @@ impl Dial {
         // the fade is the only thing that makes the backdrop stale.
         self.presents = self.presents.wrapping_add(1);
         if self.navblur_cadence > 0 && self.presents % self.navblur_cadence == 0 {
-            crate::gfx::blur_invalidate();
+            crate::ui::popover::host::blur_invalidate();
         }
         let p = Painter::root();
         let full = Rect::new(
@@ -675,7 +672,7 @@ impl Dial {
         // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
         // the whole chain again — which is precisely the cost a second cache would have.
         if self.navblur >= 2 {
-            crate::gfx::blur_invalidate();
+            crate::ui::popover::host::blur_invalidate();
         }
         let cap = nav_capsule();
         if p.backdrop_blur(

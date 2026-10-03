@@ -423,14 +423,14 @@ fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
         match curlmulti::load(None) {
             crate::dynlib::Loaded::Ok(soname) => {
-                crate::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
+                crate::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);
             }
             crate::dynlib::Loaded::NoLibrary => {
-                crate::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
+                crate::eventlog::log("curlio: no libcurl on this device — https streaming unavailable (sign-in is unaffected)");
             }
             crate::dynlib::Loaded::Incomplete(soname, n) => {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "curlio: {soname} is missing {n} curl_multi_* symbol(s) — https streaming unavailable \
                      (sign-in is unaffected; this table is separate from net.rs's for exactly that reason)"
                 ));
@@ -966,7 +966,7 @@ impl CurlSource {
             }
             // TLS verification ON, both halves, by default — the certificate is issued for the
             // `plex.direct` NAME, which is the entire reason an Origin is parsed from a URL and
-            // never rebuilt from an address (`plex/origin.rs`). Turning either of these off would
+            // never rebuilt from an address (`net/origin.rs`). Turning either of these off would
             // make an https URL "work" against the wrong server. Only the key-mode block below
             // may lower `VERIFYPEER`, and only behind a key pin libcurl accepted
             // (`keypin::apply`); `VERIFYHOST` is never lowered.
@@ -1929,6 +1929,11 @@ enum Attempt {
     /// libcurl refused the key-mode options; the handle was discarded unrelaxed.
     KeyRefused,
 }
+
+/// Issue #378's media-plane half: key mode through a real `CurlSource` handshake.
+#[cfg(test)]
+#[path = "curlio_keymode_tests.rs"]
+mod keymode_tests;
 
 #[cfg(test)]
 mod tests {

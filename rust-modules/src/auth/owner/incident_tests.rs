@@ -9,7 +9,7 @@ use crate::telemetry::incident::{IncidentContext, IncidentKind, InternalClass, L
 
 struct OwnerHost;
 impl crate::ui::machine::Host for OwnerHost {
-    type Arg = crate::ui::fixture::FixtureArg;
+    type Arg = crate::ui::machine::BareArg;
     type Fx = SessionFx;
     type Msg = SessionEvent;
     type Elem = u32;
@@ -29,7 +29,7 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
     let cx = Cx::<OwnerHost> {
         views: publication.read(),
         tick: Tick::default(),
-        measure: &crate::ui::fixture::FixtureMeasure,
+        measure: &crate::ui::machine::BareMeasure,
         press: Default::default(),
         focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)),

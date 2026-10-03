@@ -1,6 +1,5 @@
 //! Plex library fetch/parse into the private catalog (was src/pms.c), read by the UI
-//! via the retained publication (`hubs_snapshot()` → `HubsView`) and movie()/hub_item(), plus
-//! urlenc_str (shared by posters/route).
+//! via the retained publication (`hubs_snapshot()` → `HubsView`) and movie()/hub_item().
 //! The fetch + JSON parse go through the typed `crate::plex` client (serde DTOs) — no
 //! hand-built paths or `Value` scraping here.
 //!
@@ -261,22 +260,6 @@ fn clean(s: &str) -> String {
     s.chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect()
-}
-
-/// percent-encode into a String (Rust callers, e.g. app::adapters::poster::built_key)
-pub(crate) fn urlenc_str(src: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(src.len());
-    for &ch in src.as_bytes() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.' | b'~') {
-            out.push(ch as char);
-        } else {
-            out.push('%');
-            out.push(HEX[(ch >> 4) as usize] as char);
-            out.push(HEX[(ch & 15) as usize] as char);
-        }
-    }
-    out
 }
 
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
@@ -1241,21 +1224,16 @@ impl Landing {
     pub(crate) fn request_id(&self) -> u32 { self.seq }
 }
 
-/// The retained Browse directory's semantic pin fingerprint as of the last merge. The field keeps
-/// its historical name because `pms::initial` records and restores it, but an owner-local section
-/// generation alone aliases independent Browse stores. Zero remains the empty standalone scope.
-/// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
-/// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
-/// that still recovers within half a minute of the server coming back.
-const RETRY_MIN_S: f32 = 2.0;
-const RETRY_MAX_S: f32 = 30.0;
-
-/// Wait before attempt `fails + 1`: 2s, 4s, 8s, 16s, then 30s forever. Pure — host-tested.
-pub(crate) fn backoff_secs(fails: u32) -> f32 {
-    crate::plex::account::backoff(fails.saturating_sub(1),
-        std::time::Duration::from_secs_f32(RETRY_MIN_S),
-        std::time::Duration::from_secs_f32(RETRY_MAX_S)).as_secs_f32()
-}
+// The retained Browse directory's semantic pin fingerprint as of the last merge. The field keeps
+// its historical name because `pms::initial` records and restores it, but an owner-local section
+// generation alone aliases independent Browse stores. Zero remains the empty standalone scope.
+//
+// The backoff ladder (`backoff_secs`: 2s, 4s, 8s, 16s, then 30s forever) and its ends live in
+// `plex::retry` — the plaintext grant's upgrade retry steps the same ladder, and `plex` cannot name
+// this module. Home's fetch and Browse's section hubs keep reading it through here.
+pub(crate) use crate::plex::retry::backoff_secs;
+#[cfg(test)]
+use crate::plex::retry::RETRY_MIN_S;
 
 /// Home's fetch state, folded from every source — what the loading / empty / error read-out reads.
 ///
@@ -1573,7 +1551,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     // indistinguishable in the log from one still in flight — "hubs: source 1 fetching" with
     // nothing after it says only that the worker started. The SLOT, never the handle (a plex.tv
     // username is the friend's, and the event log is what users send us).
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "hubs: source {} ok — {} shelves, {} in CW",
         s.sid.raw(),
         b.shelves.len(),
@@ -1593,7 +1571,7 @@ fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     // the ONE line that says a dead source is dead ON PURPOSE and is coming back — without it the
     // whole recovery is invisible in the event log. The SLOT, never the handle: a plex.tv username
     // is the friend's, and the event log is what users send us.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "hubs: source {} FAILED (attempt {}) — retrying in {:.0}s",
         s.sid.raw(),
         s.retry_n,
@@ -1640,7 +1618,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
         s.fetching = false;
         Some(landed_fail(s))
     } else {
-        crate::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
+        crate::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
         None
     }
 }
@@ -1959,7 +1937,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     }
     if let Some(build) = build {
         let n = commit(state, build);
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "hubs: landed — {n} items, {} shelves",
             hub_count(state)
         ));
@@ -2243,7 +2221,7 @@ mod multi_source_merge_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.
-impl crate::ui::tile::Tile for PmsMovie {
+impl crate::tile::Tile for PmsMovie {
     fn title(&self) -> &str {
         &self.title
     }

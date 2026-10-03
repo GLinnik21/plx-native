@@ -14,7 +14,7 @@
 //! and denial selects the mode-0600 fallback.
 
 use crate::b64;
-use serde::{Deserialize, Serialize};
+use crate::tv::secure::{Backend, Sealed};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -23,21 +23,6 @@ const UNKNOWN: u8 = 0;
 const MODERN: u8 = 1;
 const UNAVAILABLE: u8 = 3;
 static SELECTED: AtomicU8 = AtomicU8::new(UNKNOWN);
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Backend {
-    Keymanager3,
-    PalmKeymanager,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub(crate) struct Sealed {
-    pub backend: Backend,
-    pub key: String,
-    pub iv: String,
-    pub data: String,
-}
 
 pub(crate) fn seal(plain: &[u8]) -> Option<Sealed> {
     match SELECTED.load(Ordering::Relaxed) {
@@ -54,12 +39,12 @@ pub(crate) fn seal(plain: &[u8]) -> Option<Sealed> {
     if modern_key_ready() {
         if let Some(sealed) = modern_crypt(plain, None) {
             SELECTED.store(MODERN, Ordering::Relaxed);
-            crate::log("session protection: keymanager3");
+            crate::eventlog::log("session protection: keymanager3");
             return Some(sealed);
         }
     }
     SELECTED.store(UNAVAILABLE, Ordering::Relaxed);
-    crate::log("session protection: no usable key manager; using the 0600 file fallback");
+    crate::eventlog::log("session protection: no usable key manager; using the 0600 file fallback");
     None
 }
 
@@ -98,7 +83,7 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
-    crate::log("session protection: host tests use the 0600 plaintext fixture");
+    crate::eventlog::log("session protection: host tests use the 0600 plaintext fixture");
 }
 
 // Synthetic LS2 transport for host persistence tests; never compiled into a device build.
@@ -260,7 +245,7 @@ mod platform {
                     dead: false,
                 })
                 .map_err(|e| {
-                    crate::log(&format!("keymanager: LS2 {e}"));
+                    crate::eventlog::log(&format!("keymanager: LS2 {e}"));
                 })
         }
 
@@ -273,14 +258,14 @@ mod platform {
                 Ok(reply) => Ok(reply),
                 Err(crate::webos::ls2::Fail::Timeout) => {
                     self.dead = true;
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "keymanager: no reply in {} ms — this client asks nothing more",
                         started.elapsed().as_millis()
                     ));
                     Err(())
                 }
                 Err(crate::webos::ls2::Fail::Setup { stage, detail, .. }) => {
-                    crate::log(&format!("keymanager: call failed stage={stage} ({detail})"));
+                    crate::eventlog::log(&format!("keymanager: call failed stage={stage} ({detail})"));
                     Err(())
                 }
             }
@@ -290,7 +275,10 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use super::{b64, open, remove, Backend, Sealed, MODERN, SELECTED, UNKNOWN};
+    use super::{
+        b64, open, remove, reset_for_test, seal, Backend, Sealed, MODERN, RPC_FOR_TEST, SELECTED,
+        UNKNOWN,
+    };
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -323,5 +311,32 @@ mod tests {
             data: b64::encode(b"attacker-controlled ciphertext"),
         };
         assert!(open(&sealed).is_none());
+    }
+
+    /// The protocol round trip, over a synthetic LS2 transport that returns what it was given: it
+    /// does not claim to test cryptography or firmware availability, only that `seal` and `open`
+    /// walk generateKey, begin and finish in order and agree on the envelope.
+    #[test]
+    fn a_synthetic_keymanager3_round_trips_through_seal_and_open() {
+        let _guard = crate::testlock::serial();
+        reset_for_test();
+        RPC_FOR_TEST.with(|hook| hook.set(Some(|uri, payload| {
+            let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
+            let response = if uri.ends_with("/generateKey") {
+                serde_json::json!({"returnValue":true})
+            } else if uri.ends_with("/begin") {
+                serde_json::json!({"returnValue":true,"handle":"synthetic","iv":"synthetic-iv"})
+            } else if uri.ends_with("/finish") {
+                serde_json::json!({"returnValue":true,"output":payload["data"]})
+            } else { panic!("unexpected synthetic keymanager operation"); };
+            Ok(response.to_string())
+        })));
+        let sealed = seal(b"secret").expect("the synthetic transport seals");
+        assert_eq!(sealed.backend, Backend::Keymanager3);
+        assert_eq!(sealed.key, super::KEY_NAME);
+        assert_eq!(sealed.iv, "synthetic-iv");
+        assert_eq!(open(&sealed).as_deref(), Some(&b"secret"[..]));
+        RPC_FOR_TEST.with(|hook| hook.set(None));
+        reset_for_test();
     }
 }

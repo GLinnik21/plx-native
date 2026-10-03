@@ -409,11 +409,6 @@ const FAN_NAME_SHADOW_DY: f32 = 2.0;
 /// ascent-over-cap-height, about 0.15.
 const NAME_CAP_DROP: f32 = 0.15;
 
-/// Whether `key` is a server composite — the thumb the poster store bakes into our fan.
-pub(crate) fn is_fan(key: &str) -> bool {
-    crate::plex::collections::composite_parts(key).is_some()
-}
-
 /// Where a fitted fan name's cap top sits on a `rest` tile, from the tile's top: its INK (line 0's
 /// cap top to the last baseline) centred in [`fan_band`], equal air above and below — one line in
 /// the middle of the band, a full block filling it, and (by [`fit_name`]'s room) never closer than
@@ -428,11 +423,12 @@ pub(crate) fn fan_name_top(rest: Rect, fit: &FittedName, m: &dyn Measure) -> f32
 ///
 /// `rest` is the tile's RESTING rect and `r` the rect it is drawn at (popped when focused). The
 /// fit comes from `rest`, so a focus pop never re-wraps; the block's centre rides `r`'s scale so it
-/// moves with the art. Does nothing when `key` is not a fan.
-pub(crate) fn draw_fan_name(p: Painter, rest: Rect, r: Rect, key: &str, name: &str) {
-    if !is_fan(key) {
-        return;
-    }
+/// moves with the art.
+///
+/// **The caller has already decided the thumb IS a baked fan** — whether a path is the server's
+/// generated composite is the application's fact (`TileFacts::composite_thumb`), so this draws the
+/// name unconditionally. A custom poster is artwork and carries no name: the caller does not call.
+pub(crate) fn draw_fan_name(p: Painter, rest: Rect, r: Rect, name: &str) {
     let fit = fitted(name, &FAN_NAME, rest, fan_band(rest).1);
     if fit.lines.is_empty() {
         return;
@@ -500,13 +496,6 @@ mod tests {
             .collect();
         assert!(sizes.len() <= 2, "a 1.08 pop spans at most two cached masks: {sizes:?}");
         assert!(sizes.iter().all(|px| px % 4 == 0));
-    }
-
-    #[test]
-    fn only_a_server_composite_is_a_fan() {
-        assert!(is_fan("/library/collections/7/composite/1700000000?width=400"));
-        assert!(!is_fan("/library/metadata/7/thumb/1700000000"));
-        assert!(!is_fan(""));
     }
 
     /// The mock's type is fixed px: 24/1.08 with 18px insets on BOTH its 200-wide header (C1) and

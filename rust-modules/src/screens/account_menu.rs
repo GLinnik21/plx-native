@@ -64,7 +64,7 @@ pub(crate) enum Action {
     /// button (BLUE, `wcode` 489 on the dev set), and an LG Cloud Test Lab virtual remote may not
     /// offer colour buttons at all — nor is that code guaranteed on a set nobody here has touched
     /// (`docs/lab-diagnostics.md` §7). Never offered in any other build —
-    /// [`crate::lab::menu_row_enabled`] is `false` at compile time.
+    /// [`crate::labcfg::menu_row_enabled`] is `false` at compile time.
     SendDiagnostics,
 }
 
@@ -105,7 +105,7 @@ struct AccountInputs {
     /// *Change profile* is on offer: plex.tv can serve a roster and the Session has not refused this
     /// identity one (`switch_refused`, [`crate::auth::owner::SessionSnapshot::switch_refused`]).
     can_switch: bool,
-    /// The lab-only *Send diagnostics* row ([`crate::lab::menu_row_enabled`], compile-time `false`
+    /// The lab-only *Send diagnostics* row ([`crate::labcfg::menu_row_enabled`], compile-time `false`
     /// outside lab builds).
     lab: bool,
 }
@@ -125,7 +125,7 @@ impl AccountInputs {
             name: acc.name.clone(),
             signed_in: acc.signed_in,
             can_switch: acc.can_switch && !switch_refused,
-            lab: crate::lab::menu_row_enabled(),
+            lab: crate::labcfg::menu_row_enabled(),
         }
     }
 }

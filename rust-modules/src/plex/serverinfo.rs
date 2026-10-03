@@ -187,7 +187,7 @@ pub(super) fn refresh(id: ServerId) {
 fn fetch_once(id: ServerId, c: &Client) {
     let Some(i) = slot(id) else { return };
     let Some(mc) = c.server_root() else {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "pms: server {i} info unavailable (GET / failed) — subscription stays unknown"
         ));
         return;
@@ -198,10 +198,10 @@ fn fetch_once(id: ServerId, c: &Client) {
     // capsule, the stats Server row) is otherwise unreachable on the only TV we own. It applies
     // to EVERY server, deliberately: it is a "what does a free server look like" switch, not a
     // per-server override. Checked here, once per fetch, rather than in `subscription()` — that
-    // accessor is on per-frame paths and `dev::flag` is a filesystem stat.
-    if crate::dev::flag("nopass") {
+    // accessor is on per-frame paths and `devtrig::flag` is a filesystem stat.
+    if crate::devtrig::flag("nopass") {
         #[cfg(feature = "devtriggers")]
-        crate::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
+        crate::eventlog::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
         sub = Subscription::No;
     }
     store(id, sub, &mc.version);
@@ -210,7 +210,7 @@ fn fetch_once(id: ServerId, c: &Client) {
     // `machineIdentifier` that really identifies one is a permanent household fingerprint
     // (`servers::register` keeps it out of the log for the same reason), and the address is the
     // owner's. The token never appears: the URL is built and consumed inside `get_json`.
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "pms: server {i} version={} plexPass={}",
         if mc.version.is_empty() {
             "unknown"

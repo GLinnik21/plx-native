@@ -1,6 +1,7 @@
 //! Shared fixtures and helpers for the `ui::widgets` test modules split out below.
 
 use super::*;
+use crate::ui::tile::Resume;
 
 /// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
 /// beside it — through **`gfx`'s own `blur_region` and `blur_region_union`**, not a copy of them.
@@ -36,16 +37,18 @@ pub(super) fn band_region(w: f32) -> f32 {
 // where this has been wrong before: the mark used to say "unwatched" in amber, which is the
 // opposite claim, and the bar/disc precedence is only observable on an item PMS reports as both.
 
-/// A MOVIE row at a given watched state. `dur_ns` is 100 min, so `resume_ms` reads as a
-/// percentage of the way in. For a LEAF the two flags really are each other's negation — which
-/// is exactly what stops being true for a container, hence the show cases below.
-pub(super) fn row(watched: bool, resume_ms: i64) -> PmsMovie {
-    let mut m = PmsMovie::default();
-    m.dur_ns = 100 * 60 * 1000 * 1_000_000;
-    m.watched = watched;
-    m.unwatched = !watched;
-    m.resume_ms = resume_ms;
-    m
+/// A MOVIE's facts at a given watched state, `in_progress` being the application's answer to its
+/// resume rule (30 of 100 minutes in, when it is). For a LEAF the two flags really are each
+/// other's negation — which is exactly what stops being true for a container, hence the show cases
+/// below. The resume rule's own edges (an offset past the end, no runtime) are the application's
+/// and are graded where it applies them, in `screens::registry::tile_facts`.
+pub(super) fn row(watched: bool, in_progress: bool) -> TileFacts<'static> {
+    TileFacts {
+        watched,
+        unwatched: !watched,
+        resume: in_progress.then_some(Resume { frac: 0.3, left_ms: 70 * 60 * 1000 }),
+        ..Default::default()
+    }
 }
 
 // ── PageGround: the policy every browsing screen shares ────────────────────────────────────

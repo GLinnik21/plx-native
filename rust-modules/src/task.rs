@@ -102,7 +102,7 @@ impl MainThread {
 const SMALL_STACK: usize = 256 * 1024;
 
 fn refused(what: &str, e: &io::Error) {
-    crate::log(&format!(
+    crate::eventlog::log(&format!(
         "task: spawn '{what}' REFUSED ({e}) — this work is dropped"
     ));
 }
@@ -182,12 +182,12 @@ pub(crate) fn join(what: &str, h: JoinHandle<()>) {
     if outcome.is_err() {
         // Previously swallowed by `let _ = t.join()`. A worker that died holding its socket or an
         // armed in-flight flag is the first thing worth knowing at teardown.
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "task: worker '{what}' PANICKED (joined after {ms}ms)"
         ));
     }
     if ms >= STALL_MS {
-        crate::log(&format!("THREADJOIN {what} {ms}ms STALL"));
+        crate::eventlog::log(&format!("THREADJOIN {what} {ms}ms STALL"));
     }
 }
 

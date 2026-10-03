@@ -125,7 +125,7 @@ mod tests {
             "…and only that one — a second plan is still disarmed"
         );
         // The instruments' half is a PUBLISHED snapshot of the last plan to change, not a borrow
-        // (spec §2.3): `ui/profile.rs` reads it from inside an arbitrary draw closure.
+        // (spec §2.3): `gfx/profile.rs` reads it from inside an arbitrary draw closure.
         assert_eq!(crate::ui::glassload::step_index(), 0);
         assert!(crate::ui::glassload::armed());
         // Leave the process-wide publication as a fresh plan would: this is a measuring

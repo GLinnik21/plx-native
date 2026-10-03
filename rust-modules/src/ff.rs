@@ -753,9 +753,12 @@ unsafe fn poke_i64(base: *mut c_void, off: usize, v: i64) {
 /// The AVIO write side: raw TS bytes -> the mpeg client's socket. Boxed so the
 /// opaque pointer stays stable; `fd` is refreshed by capture.rs before each
 /// encode, `failed` reports a dead socket back without panicking inside FFmpeg.
+/// `send` is the socket-write policy `capture` hands to [`Venc::open`] (`ff` sits below
+/// `capture` and may not name it).
 struct VencSink {
     fd: c_int,
     failed: bool,
+    send: fn(c_int, &[u8]) -> bool,
 }
 
 extern "C" fn venc_write_cb(op: *mut c_void, data: *mut u8, n: c_int) -> c_int {
@@ -765,8 +768,9 @@ extern "C" fn venc_write_cb(op: *mut c_void, data: *mut u8, n: c_int) -> c_int {
             s.failed = true;
             return -1;
         }
-        // one socket-write policy for the whole feature (partial writes, MSG_NOSIGNAL)
-        if !crate::capture::send_all(s.fd, std::slice::from_raw_parts(data, n as usize)) {
+        // one socket-write policy for the whole feature (partial writes, MSG_NOSIGNAL), supplied by
+        // the capture tap that owns the socket
+        if !(s.send)(s.fd, std::slice::from_raw_parts(data, n as usize)) {
             s.failed = true;
             return -1;
         }
@@ -810,24 +814,33 @@ impl Venc {
     /// count and MPEG1 has no intra prediction, so a detailed screen at 960x540 can cost
     /// 50-110ms/frame on this CPU where 480x270 stays near 15-25ms; the caller rebuilds
     /// the session when the geometry changes.
-    pub(crate) fn open(w: c_int, h: c_int, bitrate_bps: i64) -> Option<Box<Venc>> {
+    ///
+    /// `send` writes every byte of a slice to a socket fd and says whether it all went (capture's
+    /// `send_all`: partial writes, `MSG_NOSIGNAL`). The muxer's AVIO write callback calls it, and
+    /// it is a parameter because the dev capture tap that owns the socket is above this module.
+    pub(crate) fn open(
+        w: c_int,
+        h: c_int,
+        bitrate_bps: i64,
+        send: fn(c_int, &[u8]) -> bool,
+    ) -> Option<Box<Venc>> {
         ensure_registered(); // the file's ONE network-init guard
         if !SWS_OK.load(Ordering::Relaxed) {
-            crate::log("venc: libswscale is not loaded (RELEASE build) — mpeg1 capture off");
+            crate::eventlog::log("venc: libswscale is not loaded (RELEASE build) — mpeg1 capture off");
             return None;
         }
         unsafe {
             let cname = b"mpeg1video\0".as_ptr() as *const c_char;
             let codec = avcodec_find_encoder_by_name(cname);
             if codec.is_null() {
-                crate::log("venc: mpeg1video encoder absent");
+                crate::eventlog::log("venc: mpeg1video encoder absent");
                 return None;
             }
             let fmt_yuv = av_get_pix_fmt(b"yuv420p\0".as_ptr() as *const c_char);
             let fmt_rgba = av_get_pix_fmt(b"rgba\0".as_ptr() as *const c_char);
             let fmt_nv12 = av_get_pix_fmt(b"nv12\0".as_ptr() as *const c_char);
             if fmt_yuv < 0 || fmt_rgba < 0 || fmt_nv12 < 0 {
-                crate::log("venc: pix fmt lookup failed");
+                crate::eventlog::log("venc: pix fmt lookup failed");
                 return None;
             }
             let ctx = avcodec_alloc_context3(codec);
@@ -845,6 +858,7 @@ impl Venc {
                 sink: Box::new(VencSink {
                     fd: -1,
                     failed: false,
+                    send,
                 }),
                 st_tb: AVRational { num: 1, den: 90000 },
                 pts: 0,
@@ -886,7 +900,7 @@ impl Venc {
             set(b"dct\0", "fastint".into());
             let r = avcodec_open2(ctx, codec, std::ptr::null_mut());
             if r < 0 {
-                crate::log(&format!("venc: avcodec_open2 failed ({r})"));
+                crate::eventlog::log(&format!("venc: avcodec_open2 failed ({r})"));
                 return None; // Drop frees ctx
             }
             // Runtime ABI self-check: the options set above must round-trip through the
@@ -901,7 +915,7 @@ impl Venc {
             // our model stays a read-only PREFIX, which is all it was ever used as.
             let par = avcodec_parameters_alloc();
             if par.is_null() {
-                crate::log("venc: avcodec_parameters_alloc failed");
+                crate::eventlog::log("venc: avcodec_parameters_alloc failed");
                 return None;
             }
             let ok = avcodec_parameters_from_context(par, ctx) >= 0
@@ -909,7 +923,7 @@ impl Venc {
                 && (*par).height == h
                 && (*par).format == fmt_yuv;
             if !ok {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "venc: ABI self-check FAILED (par {}x{} fmt {} vs {}x{} fmt {}) — mpeg off",
                     (*par).width,
                     (*par).height,
@@ -934,7 +948,7 @@ impl Venc {
             poke_i32(frame, OFF_FRAME_HEIGHT, h);
             poke_i32(frame, OFF_FRAME_FORMAT, fmt_yuv);
             if av_frame_get_buffer(frame, 32) < 0 {
-                crate::log("venc: frame buffer alloc failed");
+                crate::eventlog::log("venc: frame buffer alloc failed");
                 return None;
             }
             v.sws = sws_getContext(
@@ -950,7 +964,7 @@ impl Venc {
                 std::ptr::null(),
             );
             if v.sws.is_null() {
-                crate::log("venc: sws_getContext failed");
+                crate::eventlog::log("venc: sws_getContext failed");
                 return None;
             }
             // ---- muxer over custom AVIO ----
@@ -962,7 +976,7 @@ impl Venc {
                 std::ptr::null(),
             );
             if r < 0 || oc.is_null() {
-                crate::log(&format!("venc: no mpegts muxer in this build ({r})"));
+                crate::eventlog::log(&format!("venc: no mpegts muxer in this build ({r})"));
                 return None;
             }
             v.oc = oc;
@@ -1000,7 +1014,7 @@ impl Venc {
             // sink.fd is still -1 here: header bytes buffer in the 32KB AVIO buffer and
             // reach the socket with the first flushed frame.
             if avformat_write_header(oc, std::ptr::null_mut()) < 0 {
-                crate::log("venc: write_header failed");
+                crate::eventlog::log("venc: write_header failed");
                 return None;
             }
             v.st_tb = stream_time_base(st);
@@ -1008,7 +1022,7 @@ impl Venc {
             if v.pkt.is_null() {
                 return None;
             }
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "venc: mpeg1/ts up {}x{} @{}bps (st_tb {}/{})",
                 w, h, bitrate_bps, v.st_tb.num, v.st_tb.den
             ));
@@ -1078,7 +1092,7 @@ impl Venc {
             self.pts += 1;
             let r = avcodec_send_frame(self.ctx, self.frame);
             if r < 0 {
-                crate::log(&format!("venc: send_frame failed ({r})"));
+                crate::eventlog::log(&format!("venc: send_frame failed ({r})"));
                 return false;
             }
             loop {
@@ -1087,7 +1101,7 @@ impl Venc {
                     break;
                 }
                 if r < 0 {
-                    crate::log(&format!("venc: receive_packet failed ({r})"));
+                    crate::eventlog::log(&format!("venc: receive_packet failed ({r})"));
                     return false;
                 }
                 av_packet_rescale_ts(self.pkt, VENC_TB, self.st_tb);
@@ -1104,7 +1118,7 @@ impl Venc {
             self.t_enc_us += t1.elapsed().as_micros() as u64;
             self.t_n += 1;
             if self.t_last_log.elapsed().as_secs_f32() >= 5.0 && self.t_n > 0 {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "venc: {} frm, sws {:.1}ms enc {:.1}ms avg",
                     self.t_n,
                     self.t_sws_us as f32 / self.t_n as f32 / 1000.0,
@@ -1444,18 +1458,18 @@ fn load_libraries() -> bool {
     ] {
         match verdict {
             crate::dynlib::Loaded::Ok(soname) => {
-                crate::log(&format!("ff: bound {what} -> {soname}"))
+                crate::eventlog::log(&format!("ff: bound {what} -> {soname}"))
             }
             crate::dynlib::Loaded::NoLibrary => {
                 ok = false;
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ff: {what} is MISSING from the app directory — the bundled FFmpeg did not \
                      deploy. Playback will refuse; reinstall the package."
                 ));
             }
             crate::dynlib::Loaded::Incomplete(soname, n) => {
                 ok = false;
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "ff: {soname} is missing {n} symbol(s) we need — named above"
                 ));
             }
@@ -1469,10 +1483,10 @@ fn load_libraries() -> bool {
     match swscale::load(dir) {
         crate::dynlib::Loaded::Ok(soname) => {
             SWS_OK.store(true, Ordering::Relaxed);
-            crate::log(&format!("ff: bound swscale -> {soname}"));
+            crate::eventlog::log(&format!("ff: bound swscale -> {soname}"));
         }
         _ => {
-            crate::log("ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off")
+            crate::eventlog::log("ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off")
         }
     }
     ok
@@ -1517,7 +1531,7 @@ pub(crate) fn boot() {
     crate::curlio::boot();
     if !load_libraries() {
         ABI_OK.store(false, std::sync::atomic::Ordering::Relaxed);
-        crate::log("ff: FFmpeg unavailable — the app runs, playback will refuse");
+        crate::eventlog::log("ff: FFmpeg unavailable — the app runs, playback will refuse");
         return;
     }
     unsafe {
@@ -1543,7 +1557,7 @@ pub(crate) fn boot() {
         let bad = (fmt >> 16, cod >> 16, utl >> 16) != (63, 63, 61);
         ABI_OK.store(!bad, Ordering::Relaxed);
         if bad {
-            crate::log(
+            crate::eventlog::log(
                 "ff: BUNDLED FFmpeg is not the one this build expects (want avformat 63 / \
                  avcodec 63 / avutil 61) — the app directory holds a stale or foreign \
                  libav*-plx; refusing to demux",
@@ -1552,7 +1566,7 @@ pub(crate) fn boot() {
     }
     // Phase A dev trigger: /tmp/plxnative-ffprobe holds a media URL to open + dump streams,
     // confirming the FFmpeg-3.3 struct offsets against known media before we build on them.
-    if let Some(u) = crate::dev::read("ffprobe") {
+    if let Some(u) = crate::devtrig::read("ffprobe") {
         if !u.is_empty() {
             probe(&u);
         }
@@ -2747,6 +2761,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     range_from: Some(target),
                     deadline: None,
                     same_origin_only: false,
+                    credential_gate: crate::http::credential_transport_allowed,
                 };
                 match crate::stream::redirect::open_following(
                     *hs,
@@ -3550,6 +3565,7 @@ fn hls_open_plain(
         deadline,
         // The HLS contract (`crate::hls`): every request stays on the PMS origin.
         same_origin_only: true,
+        credential_gate: crate::http::credential_transport_allowed,
     };
     let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3635,6 +3651,7 @@ fn open_plain_progressive(
         range_from: None,
         deadline: None,
         same_origin_only: false,
+        credential_gate: crate::http::credential_transport_allowed,
     };
     match crate::stream::redirect::open_following(hs_p, &req, &mut crate::checkpoint::NoCheckpoint)
     {
@@ -6142,7 +6159,7 @@ fn hls_demux(
         // where the re-seed happens, is what turns that from an argument about source into a
         // before/after a device run can show. `abr: steady` on either side of the seek carries the
         // matching slow/fast/unc/n. Nothing is repaired here; that is increment I8.
-        let pin = crate::dev::abr_pin();
+        let pin = crate::abr::abr_pin();
         let mut controller =
             crate::abr::Controller::starting_at(initial, prior, catalog).pinned_to(pin);
         if let Some((variant, evidence_kbps)) = control.initial_observed {
@@ -7661,7 +7678,7 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
 /// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
-/// (`plex/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
+/// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub(crate) fn demux(
     origin: crate::plex::Origin,

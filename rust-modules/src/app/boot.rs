@@ -95,6 +95,74 @@ pub(crate) fn install_panic_logger() {
     }));
 }
 
+/// **Hand `plex` the two answers it cannot name.** The Plex layer sits beneath `route` and
+/// `telemetry`, so what it needs from them reaches it as hooks installed here, once, first thing in
+/// [`enter_application`] — before the controlled/replay split and before anything can load the
+/// session:
+///
+/// * `plex::session::install_auto_quality_ready` — `route::auto_quality_ready`, the gate a fresh
+///   session record's default quality is seeded from (unset, `plex` reads `true`, the gate's value);
+/// * `plex::session::install_account_clear_cleanup` — `telemetry::cleanup_after_account_clear`, the
+///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
+///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
+pub(crate) fn install_plex_seams() {
+    crate::plex::session::install_auto_quality_ready(crate::route::auto_quality_ready);
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    crate::plex::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
+}
+
+#[cfg(test)]
+mod seam_order_tests {
+    /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
+    /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
+    /// before anything can play. It was installed by `player::report::requested`, which a
+    /// detail-page preview never passes, so a failed preview's trace outlived a withdrawal. This
+    /// reads the source, like `storage::diagnostics`'s boot-order test, because no host test can
+    /// run `enter_application`; what the eraser reaches is graded by `player::report`'s
+    /// `a_failed_preview_trace_is_erased_through_telemetrys_hook`.
+    #[test]
+    fn the_trace_eraser_is_installed_before_telemetry_loads_or_anything_plays() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("fn enter_application(")
+            .expect("enter_application")
+            .1
+            .split_once("/// The ten-line public skeleton")
+            .expect("end of enter_application")
+            .0;
+        let eraser = body
+            .find("crate::player::report::install_trace_eraser();")
+            .expect("enter_application must install telemetry's error-trace eraser");
+        let telemetry = body
+            .find(".then(pre_boot_diagnostics)")
+            .expect("telemetry's boot load");
+        let boot = body.find("boot(pms_host").expect("application boot");
+        assert!(
+            eraser < telemetry && eraser < boot,
+            "the eraser must be installed before telemetry loads and before anything can play"
+        );
+    }
+
+    /// `construct` hands the transport its `User-Agent` before `net::global_init` makes HTTPS
+    /// available. `net` reads it only once a request has passed `available()`, so with this order
+    /// no request can leave without one; the other order sends the first ones bare.
+    #[test]
+    fn the_user_agent_is_installed_before_libcurl_is_made_available() {
+        // The needles are split with `concat!` so this test's own text, which `include_str!`
+        // reads too and which sits above `construct`, can never be what they match.
+        let source = include_str!("boot.rs");
+        let body = source
+            .split_once(concat!("pub(crate) unsafe fn ", "construct("))
+            .expect("construct")
+            .1;
+        let user_agent = body
+            .find(concat!("crate::net::", "set_user_agent("))
+            .expect("construct must install the User-Agent");
+        let init = body.find(concat!("crate::net::", "global_init()")).expect("construct's libcurl init");
+        assert!(user_agent < init, "set_user_agent must come before net::global_init");
+    }
+}
+
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
 /// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
 ///
@@ -325,6 +393,9 @@ pub(crate) unsafe fn boot(
     mt: crate::task::MainThread,
     preflight: super::bootstrap::Preflight,
 ) -> Result<App, c_int> {
+    // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
+    // so it is handed over here, before any playback can land. Replay boots take it too.
+    crate::route::install_up_next_still_warm(super::playback::warm_up_next_still);
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {
@@ -359,7 +430,7 @@ pub(crate) unsafe fn construct(
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
-        super::bootstrap::stores::init(initial, preflight.replay());
+        crate::stores::tape::init(initial.person_credits(), preflight.replay());
         initial.home.restore(&mt).map_err(|_| 1)?;
         crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
@@ -493,9 +564,9 @@ pub(crate) unsafe fn construct(
     // thread (`egl::current_with`), which is what makes it safe on a GLX-backed Linux simulator.
     crate::egl::probe();
     crate::textinput::bind(win);
-    // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
+    // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    crate::webos::bind_window(win);
+    crate::tv::window::bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -504,15 +575,18 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    crate::system::sys_grab_wayland(win);
+    crate::tv::window::grab(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    crate::system::opaque_region_init();
+    crate::tv::window::arm_opaque_region();
     crate::gfx::init_gl();
     crate::text::init_text();
     crate::gfx::init_image();
     crate::gfx::init_blur();
+    // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
+    // over before any request can be made, so the first one already carries it.
+    crate::net::set_user_agent(crate::plex::identity::user_agent());
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
@@ -878,7 +952,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!crate::dev::listed(&initial.triggers, "noidle"));
+        crate::ui::idle::set_enabled(!crate::devtrig::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -1173,7 +1247,7 @@ pub(crate) unsafe fn construct(
     // Why the app needs this at all: the synthetic tier boots with NO Plex session, so after a
     // stream ends there is no detail page, no Play control and no key path back into the
     // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
-    // real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
+    // real stop, and `engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever
     // `route::url()` is empty — so a replay is a second trip through the entry below.
     let replay_left: u32 = if controlled { 0 } else { replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref()) };
     let grid_tried = false;
@@ -1230,7 +1304,7 @@ pub(crate) unsafe fn construct(
         fps_shown,
         play_prev,
         running,
-        window_activity: crate::system::WindowActivity::new(),
+        window_activity: super::window_activity::WindowActivity::new(),
         #[cfg(feature = "devtools")]
         buffer_flip_count,
         down_sym,
@@ -1362,7 +1436,7 @@ pub(crate) unsafe fn construct(
     if app.scenarios.dev.nobudget {
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
         #[cfg(feature = "devtriggers")]
-        crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
+        crate::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");

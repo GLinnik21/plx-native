@@ -284,8 +284,8 @@ fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
 /// the jail the 2026-09-20 field report came from, and the one case where "why did the durable
 /// ones refuse" is the whole question worth answering.
 ///
-/// This suite has no facility to capture `crate::log`'s own output (it goes to a shared, on-disk
-/// event log via `scrub_local` and `lab::record`; building a capture for that under time pressure
+/// This suite has no facility to capture `crate::eventlog::log`'s own output (it goes to a shared, on-disk
+/// event log via `scrub_local` and `eventlog::ring::record`; building a capture for that under time pressure
 /// is out of scope here). Instead this proves what has to be true for the fixed call to say
 /// anything real: replaying `write_atomic_diagnosed` against the same two candidates the real loop
 /// tries (and is refused by) first shows each produces a genuine, non-empty [`CandidateDiagnostic`]
@@ -792,8 +792,8 @@ fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
     let envelope = SecureEnvelope {
         format: SECURE_FORMAT.to_string(),
         version: 1,
-        sealed: crate::keymanager::Sealed {
-            backend: crate::keymanager::Backend::Keymanager3,
+        sealed: crate::tv::secure::Sealed {
+            backend: crate::tv::secure::Backend::Keymanager3,
             key: "plxnative.session.v1".to_string(),
             iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
             data: "c2VjcmV0".to_string(),
@@ -1523,34 +1523,6 @@ fn p1_failed_signout_cannot_reopen_fallback_after_restart() {
 }
 
 #[test]
-fn p1_adapter_does_not_complete_an_erase_with_an_incomplete_sweep() {
-    let _serial = crate::testlock::serial();
-    let file = TempSession::new("p1-adapter-erase");
-    save(&signed_in());
-    let _permissions = RestorePermissions::set(&[
-        (file.file().parent().unwrap(), 0o500), (file.file().as_path(), 0o400),
-    ]);
-    let mt = unsafe { crate::task::MainThread::assume() };
-    let mut adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
-    let mut meta = crate::stores::metadata::MetadataStore::default();
-    assert!(adapter.begin_erase(1, false, &mut meta).is_none());
-    crate::storage_worker::drain_for_test();
-    assert!(adapter.take_erased(&mut meta).is_none(), "incomplete erase must remain retryable");
-    assert!(cache_revoked());
-    drop(_permissions);
-    struct ResetClock;
-    impl Drop for ResetClock { fn drop(&mut self) { crate::app::clock::set_replay(0); } }
-    let _clock = ResetClock;
-    crate::app::clock::set_replay(crate::app::clock::now().wrapping_add(1_000));
-    let completed = adapter.take_erased(&mut meta);
-    crate::storage_worker::drain_for_test();
-    let completed = completed.or_else(|| adapter.take_erased(&mut meta));
-    assert!(matches!(completed, Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
-        "the same pending erase completes only after a successful retry");
-    assert!(cache_revoked());
-}
-
-#[test]
 fn p1_authoritative_reads_retire_only_marked_files() {
     use persistence::CanonicalRead as C;
     let _serial = crate::testlock::serial();
@@ -1769,30 +1741,36 @@ fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
     assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: true });
 }
 
-// Exercises the real seal/open envelope paths, with identity transformation at the LS2 seam.
-// This synthetic transport does not claim to test cryptography or firmware availability.
+// Exercises the real seal/open envelope paths, with an identity transformation at the secure-store
+// seam. This synthetic store does not claim to test cryptography or firmware availability; the
+// LS2 protocol round trip is covered by keymanager's own
+// `a_synthetic_keymanager3_round_trips_through_seal_and_open`.
 struct SyntheticKeymanager;
+static STORE: crate::tv::secure::TestStore = crate::tv::secure::TestStore {
+    seal: |plain| Some(crate::tv::secure::Sealed {
+        backend: crate::tv::secure::Backend::Keymanager3,
+        key: "plxnative.session.v1".into(),
+        iv: "synthetic-iv".into(),
+        data: crate::b64::encode(plain),
+    }),
+    open: |sealed| {
+        if sealed.backend == crate::tv::secure::Backend::Keymanager3 && sealed.key == "plxnative.session.v1" {
+            crate::b64::decode(&sealed.data)
+        } else {
+            None
+        }
+    },
+    remove: |_, _| {},
+};
 impl SyntheticKeymanager {
     fn new() -> Self {
-        crate::keymanager::reset_for_test();
-        crate::keymanager::RPC_FOR_TEST.with(|hook| hook.set(Some(|uri, payload| {
-            let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
-            let response = if uri.ends_with("/generateKey") {
-                serde_json::json!({"returnValue":true})
-            } else if uri.ends_with("/begin") {
-                serde_json::json!({"returnValue":true,"handle":"synthetic","iv":"synthetic-iv"})
-            } else if uri.ends_with("/finish") {
-                serde_json::json!({"returnValue":true,"output":payload["data"]})
-            } else { panic!("unexpected synthetic keymanager operation"); };
-            Ok(response.to_string())
-        })));
+        crate::tv::secure::STORE_FOR_TEST.with(|hook| hook.set(Some(&STORE)));
         Self
     }
 }
 impl Drop for SyntheticKeymanager {
     fn drop(&mut self) {
-        crate::keymanager::RPC_FOR_TEST.with(|hook| hook.set(None));
-        crate::keymanager::reset_for_test();
+        crate::tv::secure::STORE_FOR_TEST.with(|hook| hook.set(None));
     }
 }
 

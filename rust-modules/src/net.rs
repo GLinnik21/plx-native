@@ -33,6 +33,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// `Origin`, `Scheme`, `ResolvePin`, `url_host`: the address types the transport reads, which the
+/// Plex layer re-exports (`plex::origin`). They live here so this layer names nothing above it.
+pub(crate) mod origin;
+
 type CURL = c_void;
 pub(crate) type curl_slist = c_void;
 
@@ -159,7 +163,7 @@ const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 pub(crate) const CURLOPT_CAINFO: c_int = 10065;
 /// `CURLOPTTYPE_SLISTPOINT + 203`: a `curl_slist` of `host:port:address` entries that pre-populate
 /// the DNS cache, so the named host is never resolved. Present since 7.21.3; the entry syntax the
-/// television's 7.53.1 parses is documented on [`crate::plex::ResolvePin::entry`]. See [`resolve`].
+/// television's 7.53.1 parses is documented on [`origin::ResolvePin::entry`]. See [`resolve`].
 const CURLOPT_RESOLVE: c_int = 10203;
 /// `CURLE_UNKNOWN_OPTION` — what `curl_easy_setopt` answers for an option id this libcurl was
 /// built without. The one `setopt` result in this module that is NOT fatal: see [`resolve`].
@@ -384,6 +388,22 @@ pub(crate) fn threaded_tls_ready() -> bool {
     CURL_THREADED_TLS_OK.load(Ordering::Acquire)
 }
 
+/// The `User-Agent` every easy request sends. The transport does not know who the client is — that
+/// is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once, with
+/// [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it. Unset
+/// (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by default.
+static USER_AGENT: OnceLock<String> = OnceLock::new();
+
+/// Install the process's `User-Agent`. The first call wins; it is one value per process.
+pub(crate) fn set_user_agent(user_agent: String) {
+    let _ = USER_AGENT.set(user_agent);
+}
+
+/// The installed `User-Agent` as the `CString` curl takes: `Ok(None)` while none is installed.
+fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
+    USER_AGENT.get().map(|ua| CString::new(ua.as_str())).transpose()
+}
+
 /// One-time process init (call on the main thread at boot before any request; curl's implicit
 /// init isn't thread-safe). Idempotent on the curl side. Returns false if libcurl could not be
 /// bound at all, in which case nothing else in this module may be called.
@@ -424,12 +444,12 @@ pub fn global_init() -> bool {
             } else {
                 "no"
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
                  threaded-tls={threaded} legacy-locks={locks:?}"
             ));
             if legacy && !threaded {
-                crate::log(
+                crate::eventlog::log(
                     "net: legacy OpenSSL concurrency unavailable — serialized HTTPS control \
                      remains available; concurrent HTTPS media is disabled",
                 );
@@ -438,14 +458,14 @@ pub fn global_init() -> bool {
             true
         }
         crate::dynlib::Loaded::NoLibrary => {
-            crate::log(
+            crate::eventlog::log(
                 "net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — \
                  account calls and HTTPS PMS control unavailable",
             );
             false
         }
         crate::dynlib::Loaded::Incomplete(soname, n) => {
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "net: {soname} is missing {n} symbol(s) — account calls and HTTPS PMS control unavailable"
             ));
             false
@@ -1189,9 +1209,58 @@ mod loopback_pms {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind dead-port probe");
         listener.local_addr().unwrap().port()
     }
+
+    // The wrong-clock key-mode fixtures (issue #378), shared by the control-plane tests in
+    // `auth_discovery_tests.rs` and the media-plane ones in `curlio_keymode_tests.rs`.
+
+    /// libcurl is bound and usable on this host; says so, and answers false, when it is not.
+    pub(crate) fn curl_ready() -> bool {
+        let ready = super::global_init() && super::available();
+        if !ready {
+            eprintln!("curl unavailable on this host; skipping");
+        }
+        ready
+    }
+
+    /// `request_result_evidence` against one loopback TLS answer, the way the identity probe makes it.
+    pub(crate) fn identity_request(port: u16, scheme: &str, learn_pin: bool) -> Result<super::Resp, super::RequestFailure> {
+        super::request_result_evidence(
+            &format!("{scheme}://127.0.0.1:{port}/identity"),
+            &[],
+            "GET",
+            None,
+            super::API,
+            false,
+            None,
+            None,
+            learn_pin,
+        )
+    }
+
+    /// A CA-issued leaf for `names` whose dates ended a month ago.
+    pub(crate) fn expired_leaf(names: &[&str]) -> Arc<TestCert> {
+        Arc::new(mint_ca_issued_cert(names, ymd_from_now(-90), ymd_from_now(-30)))
+    }
+
+    /// Remember `cert`'s key for the loopback server on `port`, until the returned guard drops.
+    pub(crate) fn remember(port: u16, cert: &TestCert) -> super::keypin::Scoped {
+        super::keypin::Scoped::new(key_of_port(port), &leaf_pin(cert))
+    }
+
+    /// The key table's key for the loopback server on `port`.
+    pub(crate) fn key_of_port(port: u16) -> String {
+        super::keypin::key_of("127.0.0.1", i32::from(port))
+    }
+
+    /// The `sha256//…` pin of `cert`'s key.
+    pub(crate) fn leaf_pin(cert: &TestCert) -> String {
+        crate::spki::pin_from_spki_der(&cert.spki_der)
+    }
 }
 #[cfg(test)]
 pub(crate) use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, ymd_from_now, TestCaGuard, TestCert};
+#[cfg(test)]
+pub(crate) use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember};
 
 /// **How the peer is verified.** Three modes, and they are an enum rather than an
 /// `Option<&str>` for one reason: the pinned one turns CA verification OFF, so "pinned" and
@@ -1242,8 +1311,8 @@ pub(crate) fn request_tls(
 }
 
 /// `resolve` is a ready-made `CURLOPT_RESOLVE` entry (`host:port:address`, see
-/// [`crate::plex::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
-/// answer. Every request whose origin carries a [`crate::plex::ResolvePin`] passes one; plex.tv
+/// [`origin::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
+/// answer. Every request whose origin carries a [`origin::ResolvePin`] passes one; plex.tv
 /// calls pass `None`, and that is the difference the `nowan` trigger grades (see [`refuse_name`]).
 #[allow(clippy::too_many_arguments)]
 fn request_tls_result(
@@ -1292,11 +1361,9 @@ fn request_tls_evidence(
     // The offline reproduction: with `/tmp/plxnative-nowan` armed, a name reaches the wire only
     // with a pin. This is the ONE place every easy request passes (`request_result` enters here
     // directly), which is why the gate is here and not on `request_tls`.
-    if resolve.is_none() && refuse_name(crate::plex::url_host(url), t.connect_s) {
+    if resolve.is_none() && refuse_name(origin::url_host(url), t.connect_s) {
         return Err(RequestError::Transport.into());
     }
-    let ua =
-        CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
     let verified_https = peer_pin_wanted(url, &tls, follow_redirects);
     let read_peer_pin = learn_pin && verified_https;
     let tls_c = match tls {
@@ -1315,6 +1382,9 @@ fn request_tls_evidence(
     if !available() {
         return Err(RequestError::Transport.into());
     }
+    // Read only past that gate: boot installs the User-Agent before `global_init` publishes
+    // `CURL_OK` (`app::boot::construct`), so a request that gets this far always finds it.
+    let ua = user_agent_c().map_err(|_| RequestError::Transport)?;
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
     // but only one easy request at a time. The normal installed/existing-callback path never takes
     // this mutex, and curlio remains disabled in the degraded state.
@@ -1354,7 +1424,7 @@ fn request_tls_evidence(
                 ($call:expr, $name:literal) => {{
                     let rc = $call;
                     if rc != 0 {
-                        crate::log(&format!(
+                        crate::eventlog::log(&format!(
                             "net: libcurl refused security option {} (rc={rc}); request cancelled",
                             $name
                         ));
@@ -1434,7 +1504,7 @@ fn request_tls_evidence(
                 TlsCfg::CaBundle(p) => {
                     let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
                     if rc != 0 {
-                        crate::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
+                        crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
                         return Err(RequestError::Transport.into());
                     }
                 }
@@ -1445,7 +1515,7 @@ fn request_tls_evidence(
                         p.as_ptr() as *const c_void,
                     );
                     if rc != 0 {
-                        crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
+                        crate::eventlog::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
                         return Err(RequestError::Transport.into());
                     }
                     require_setopt!(
@@ -1464,7 +1534,7 @@ fn request_tls_evidence(
             // falls back to the strict failure it already had (or, if none, to a strict attempt).
             if let Some(pin) = &pin_c {
                 if let Err(rc) = keypin::apply(easy.0, pin) {
-                    crate::log(&format!(
+                    crate::eventlog::log(&format!(
                         "net: this libcurl refuses the key-mode options (rc={rc}) — the request stays strict"
                     ));
                     return Ok(None);
@@ -1483,7 +1553,9 @@ fn request_tls_evidence(
             }
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
-            curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
+            if let Some(ua) = &ua {
+                curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
+            }
 
             // request headers — keep the CStrings alive until after perform.
             let mut slist = HeaderList(ptr::null_mut());
@@ -1555,7 +1627,7 @@ fn request_tls_evidence(
             }
 
             if sink.overflowed {
-                crate::log(&format!(
+                crate::eventlog::log(&format!(
                     "net: response exceeded {} byte body limit",
                     max_body.unwrap_or(0)
                 ));
@@ -1641,7 +1713,7 @@ fn request_tls_evidence(
         // A key-mode pin mismatch has its own line ([`keypin::key_refused`]); this one would call
         // it a stale lab session.
         if !(matches!(final_mode, keypin::Mode::Key { .. }) && rc == keypin::PIN_MISMATCH) {
-            crate::log(&format!("net: curl rc={rc} — {why}"));
+            crate::eventlog::log(&format!("net: curl rc={rc} — {why}"));
         }
     }
     finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
@@ -1907,8 +1979,8 @@ pub(crate) fn post_ca(url: &str, headers: &[String], body: &[u8], t: Timeouts) -
     // between sends, and a line per upload would drown the log it is written into.
     static SAID: std::sync::Once = std::sync::Once::new();
     SAID.call_once(|| match &bundle {
-        Some(p) => crate::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
-        None => crate::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
+        Some(p) => crate::eventlog::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
+        None => crate::eventlog::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
     });
     let tls = match bundle.as_deref() {
         Some(p) => Tls::CaBundle(p),
@@ -1959,7 +2031,7 @@ pub fn https_get_public(url: &str) -> Option<Resp> {
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
 pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
-    let Some(nw) = crate::dev::no_wan() else {
+    let Some(nw) = crate::devtrig::no_wan() else {
         return false;
     };
     let bare = host
@@ -1972,10 +2044,10 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
     if nw.slow {
         std::thread::sleep(std::time::Duration::from_secs(connect_s.max(0) as u64));
     }
-    // `host=`, not a bare `{host}` interpolation, so `diag::scrub::scrub_local`'s host clause
+    // `host=`, not a bare `{host}` interpolation, so `eventlog::scrub::scrub_local`'s host clause
     // catches it — a private hostname reaching this line unredacted is the exact device leak
     // `stream.rs`'s DNS-failure line had.
-    crate::log(&format!("net: nowan — refused name host={host}"));
+    crate::eventlog::log(&format!("net: nowan — refused name host={host}"));
     true
 }
 
@@ -1997,7 +2069,7 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
 /// The table holds one entry per server address this process has ever pinned — a handful.
 pub(crate) mod resolve {
     use super::{c_int, Mutex, Ordering, CURLE_UNKNOWN_OPTION};
-    use crate::plex::ResolvePin;
+    use super::origin::ResolvePin;
 
     static PINS: Mutex<Vec<ResolvePin>> = Mutex::new(Vec::new());
 
@@ -2048,14 +2120,14 @@ pub(crate) mod resolve {
             static REPORTED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !REPORTED.swap(true, Ordering::Relaxed) {
-                crate::log(
+                crate::eventlog::log(
                     "net: resolve pin not applied (rc=48, this libcurl has no CURLOPT_RESOLVE); \
                      names resolve through DNS",
                 );
             }
-            return if crate::dev::no_wan().is_some() { Err(()) } else { Ok(()) };
+            return if crate::devtrig::no_wan().is_some() { Err(()) } else { Ok(()) };
         }
-        crate::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
+        crate::eventlog::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
         Err(())
     }
 
@@ -2268,7 +2340,7 @@ pub(crate) mod keypin {
     /// The same reading of a URL the media plane's resolve lookup uses, so the two tables agree.
     pub(crate) fn key_of_url(url: &str) -> Option<String> {
         url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")).then(|| {
-            let (origin, _) = crate::plex::origin::split(url);
+            let (origin, _) = crate::net::origin::split(url);
             key_of(origin.host(), origin.port())
         })
     }
@@ -2391,7 +2463,7 @@ pub(crate) mod keypin {
             }
         }
         drop(st);
-        crate::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
+        crate::eventlog::log("net: a synthetic key-mode fact was planted by the clockfact dev trigger");
     }
 
     /// The mode a request starts in: key mode while the host is latched and the latch is live,
@@ -2530,7 +2602,7 @@ pub(crate) mod keypin {
             }
         }
         if let Some(year) = told_year {
-            crate::log(&engaged_line(verify, year));
+            crate::eventlog::log(&engaged_line(verify, year));
         }
     }
 
@@ -2538,7 +2610,7 @@ pub(crate) mod keypin {
     /// key mode, publish it ([`Blocked::KeyChanged`]) and say why.
     pub(super) fn key_refused(key: &str) {
         key_changed(key);
-        crate::log("net: the server presented a different key than the remembered one — refusing");
+        crate::eventlog::log("net: the server presented a different key than the remembered one — refusing");
     }
 
     /// The one line logged when a host first goes into key mode. Built on [`tls_verify_why`] so it
@@ -2697,6 +2769,14 @@ pub(crate) fn with_test_response(reply: Vec<u8>, stall: bool, check: impl FnOnce
     request_tests::with_response(reply, stall, check);
 }
 
+/// The wire half of the HTTP/2 reset tests: a real request against the local fixture that resets
+/// the stream after the status line. `check` gets the transport's failure; the tests of the layers
+/// above grade what they make of one (`plex::account`'s evidence tests).
+#[cfg(test)]
+pub(crate) fn with_h2_reset_failure(status: u16, check: impl FnOnce(RequestFailure)) {
+    request_tests::with_h2_reset_failure(status, check);
+}
+
 /// Test-only input at the curl completion boundary, not a simulated wire exchange.
 #[cfg(test)]
 pub(crate) fn test_response_failure(rc: c_int, info_rc: c_int, code: c_long, redirects: bool)
@@ -2773,11 +2853,12 @@ mod request_tests {
         }
     }
 
-    #[test]
-    fn ca_trusted_http2_wire_reset_retains_refusal() {
+    /// One real HTTP/2 `RST_STREAM` exchange for `status` against the local Python/OpenSSL fixture,
+    /// with libcurl trusting its CA. Hands the transport's failure to `check` while the fixture is
+    /// still up, then lets the fixture finish. The caller holds `crate::testlock::serial()`.
+    pub(super) fn with_h2_reset_failure(status: u16, check: impl FnOnce(RequestFailure)) {
         use std::io::{BufRead, Write};
         use std::process::{Command, Stdio};
-        let _serial = crate::testlock::serial();
         assert!(global_init() && available());
         struct Peer(std::process::Child);
         impl Drop for Peer {
@@ -2786,27 +2867,33 @@ mod request_tests {
                 let _ = self.0.wait();
             }
         }
+        let mut peer = Peer(Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/net/h2_reset_fixture.py"))
+            .arg(status.to_string()).stdin(Stdio::piped()).stdout(Stdio::piped())
+            .stderr(Stdio::inherit()).spawn().expect("local Python/OpenSSL H2 fixture"));
+        let mut output = std::io::BufReader::new(peer.0.stdout.take().unwrap());
+        let mut ready = String::new(); output.read_line(&mut ready).unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&ready).expect("fixture startup");
+        let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
+        let response = request_tls_evidence(&url, &[], "GET", None,
+            Timeouts { total_s: 5, ..API }, false, None,
+            Tls::CaBundle(ready["ca"].as_str().unwrap()), None, false);
+        let mut sent = String::new(); output.read_line(&mut sent).unwrap();
+        assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
+        let failure = response.err().expect("reset transfer cannot expose a partial body");
+        assert_eq!(failure.status, Some(status));
+        assert_eq!(failure.cause, RequestError::Transport);
+        assert_eq!(failure.body_limit, None);
+        check(failure);
+        peer.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+        assert!(peer.0.wait().unwrap().success());
+    }
+
+    #[test]
+    fn ca_trusted_http2_wire_reset_retains_refusal() {
+        let _serial = crate::testlock::serial();
         for status in [401, 403, 404, 410] {
-            let mut peer = Peer(Command::new("python3")
-                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/net/h2_reset_fixture.py"))
-                .arg(status.to_string()).stdin(Stdio::piped()).stdout(Stdio::piped())
-                .stderr(Stdio::inherit()).spawn().expect("local Python/OpenSSL H2 fixture"));
-            let mut output = std::io::BufReader::new(peer.0.stdout.take().unwrap());
-            let mut ready = String::new(); output.read_line(&mut ready).unwrap();
-            let ready: serde_json::Value = serde_json::from_str(&ready).expect("fixture startup");
-            let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
-            let response = request_tls_evidence(&url, &[], "GET", None,
-                Timeouts { total_s: 5, ..API }, false, None,
-                Tls::CaBundle(ready["ca"].as_str().unwrap()), None, false);
-            let mut sent = String::new(); output.read_line(&mut sent).unwrap();
-            assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
-            let failure = response.err().expect("reset transfer cannot expose a partial body");
-            assert_eq!(failure.status, Some(status));
-            assert_eq!(failure.cause, RequestError::Transport);
-            assert_eq!(failure.body_limit, None);
-            crate::plex::account::test_refusal_evidence(status, Err(failure));
-            peer.0.stdin.take().unwrap().write_all(b"\n").unwrap();
-            assert!(peer.0.wait().unwrap().success());
+            with_h2_reset_failure(status, |_| {});
         }
     }
 
@@ -3027,14 +3114,14 @@ mod request_tests {
             return;
         }
         let ran = with_ok_server("[::1]:0", |port, accepts| {
-            let pin = crate::plex::ResolvePin::for_test(
+            let pin = origin::ResolvePin::for_test(
                 "no-such-host.invalid",
                 port as i32,
                 "::1".parse().unwrap(),
             );
             let entry = resolve::entry_of(&pin);
             assert_eq!(
-                curl_version_num() >= crate::plex::origin::CURL_RESOLVE_BRACKETS_SINCE,
+                curl_version_num() >= origin::CURL_RESOLVE_BRACKETS_SINCE,
                 entry.ends_with(":[::1]"),
                 "entry {entry:?} for curl {:#x}",
                 curl_version_num()

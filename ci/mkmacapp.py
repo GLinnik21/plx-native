@@ -121,7 +121,7 @@ def build_binary(tdir: Path) -> Path:
     `--no-default-features` drops `devtools` (the on-screen counter) and `devtriggers` (the whole
     `/tmp/plxnative-*` surface, the remote FIFO and the capture listener). A binary somebody was
     sent must not take instructions from a world-writable directory — and with the feature off
-    there is nothing to take: `dev::flag` is `false` and `dev::read` is `None` at COMPILE time.
+    there is nothing to take: `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time.
     """
     print("==> building plxnative-sim (release, no dev features)")
     run("cargo", "build", "--manifest-path", REPO / "rust-modules/Cargo.toml",

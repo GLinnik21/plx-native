@@ -19,7 +19,7 @@ extern "C" {
     fn free(ptr: *mut c_void);
 }
 
-use crate::log;
+use crate::eventlog::log;
 
 /// The decode budget, sized for THIS device. `image`'s defaults are not one: `max_image_width` and
 /// `max_image_height` default to `None` — no dimension cap at all — and `max_alloc` to **512 MiB**,
@@ -34,7 +34,7 @@ use crate::log;
 /// | `ui/detail.rs` hero art | 1920×1080 |
 /// | `screens/home` hero backdrop | 1280×720 |
 /// | `app/adapters/poster.rs` clearLogo (PNG) | 600×240 (`app::adapters::poster::LOGO_REQ_W`/`LOGO_REQ_H`) |
-/// | `ui/info_panel.rs` episode still | 480×270 |
+/// | `appkit/info_panel.rs` episode still | 480×270 |
 /// | `ui/widgets.rs` catalog poster | 250×375 |
 ///
 /// — plus the plex.tv sign-in QR PNG, a few hundred pixels square. 1920×1080 is thus the largest

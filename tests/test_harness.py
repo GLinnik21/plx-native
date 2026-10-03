@@ -1660,7 +1660,7 @@ class PipelineTier(unittest.TestCase):
 
         `apply_triggers` now quotes arbitrary apostrophes too, so this is no longer the command's
         security boundary; the no-apostrophe property remains useful for copied case headers and
-        has a twin in rust-modules/src/dev.rs.
+        has a twin in rust-modules/src/player/playurl.rs (`the_harness_payload_carries_no_apostrophe`).
         """
         for c in self._pipeline_cases():
             files = run.triggers_for_case(c, url_base="http://192.0.2.10:8020")
@@ -5645,17 +5645,39 @@ impl PersonOwnerGateFixture {
 
     def test_tmppath_gate_exempts_a_log_message_mention(self):
         """D4's own exemption: a `/tmp/plxnative-` literal that is only message text passed to
-        `log`/`crate::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
+        `log`/`crate::eventlog::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
         `format!` the way most real call sites spell it, must leave `tmppath` (and the whole
         script) green."""
         r = self._plant(
             "_check_deps_selftest_tmppath_log.rs",
-            'pub fn mention_it(n: u32) {\n    crate::log(&format!(\n'
+            'pub fn mention_it(n: u32) {\n    crate::eventlog::log(&format!(\n'
             '        "selftest: see /tmp/plxnative-selftest ({n})"\n    ));\n}\n',
         )
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — tmppath", out)
+
+    def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
+        """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
+        `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
+        r = self._plant(
+            "_check_deps_selftest_sink_out.rs",
+            "pub fn pause_it() {\n    let _ = crate::tv::sink::installed();\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("sink:", out)
+        self.assertIn("_check_deps_selftest_sink_out.rs", out)
+
+    def test_sink_gate_allows_the_player_to_name_the_video_sink(self):
+        """GREEN: the same call from a file under `player/` leaves `sink` (and the script) green."""
+        r = self._plant(
+            "player/_check_deps_selftest_sink_in.rs",
+            "pub fn pause_it() {\n    let _ = crate::tv::sink::installed();\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — sink", out)
 
     def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
         """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw
@@ -5771,6 +5793,15 @@ impl PersonOwnerGateFixture {
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
+        # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
+        # upward references that existed when the target crate graph was declared, 2026-10-02 (231),
+        # less step L1's 72, which moved the event log out of lib.rs in the same change, less the
+        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
+        # declared (step L15), and the 42 (file, member) pairs that name it from outside became
+        # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
+        # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
+        # 44 - 44 = 0.
+        "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,

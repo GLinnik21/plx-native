@@ -13,7 +13,7 @@
 //! and [`GAP`] apart, so a screenshot can be timed against the log (a toast lives only a few
 //! seconds). Read once at boot; absent from shipping builds with the rest of the trigger surface.
 
-use crate::webos::toast::{probe_line, send, Identity};
+use crate::tv::toast::{probe_line, send, Identity};
 use std::time::Duration;
 
 /// Boot settle time before the first attempt, so the first toast is not behind the splash.
@@ -23,10 +23,10 @@ const GAP: Duration = Duration::from_secs(8);
 
 /// Called once from `app::boot`. A no-op without the trigger or with an empty value.
 pub(crate) fn arm_at_boot() {
-    let Some(text) = crate::dev::read("toast").filter(|t| !t.is_empty()) else { return };
-    crate::log("toast-probe armed");
+    let Some(text) = crate::devtrig::read("toast").filter(|t| !t.is_empty()) else { return };
+    crate::eventlog::log("toast-probe armed");
     if crate::task::spawn("toast-probe", move || run(&text)).is_none() {
-        crate::log("toast-probe IGNORED — the worker thread could not start");
+        crate::eventlog::log("toast-probe IGNORED — the worker thread could not start");
     }
 }
 
@@ -39,6 +39,6 @@ fn run(text: &str) {
         if i > 0 {
             std::thread::sleep(GAP);
         }
-        crate::log(&probe_line(label, &send(text, identity)));
+        crate::eventlog::log(&probe_line(label, &send(text, identity)));
     }
 }

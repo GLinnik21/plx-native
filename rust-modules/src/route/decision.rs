@@ -2,7 +2,7 @@
 //! [`PlayerControl`], PMS/native I/O, and the encoder/scrobble/timeline machinery — everything
 //! [`super::plan`] is not. `PlaybackSession` is the main-thread projection used to build URLs/payloads;
 //! [`PLAYER_CONTROL`] is the synchronized authority for route ownership and route-changing
-//! intents. The player engine reads the URL/session through the accessors here; ui::player_hud
+//! intents. The player engine reads the URL/session through the accessors here; appkit::player_hud
 //! reads the HUD strings through title_cptr()/ctxline_cptr(). This file is exempt from the
 //! `wall` gate that `plan.rs` must pass — a network/adapter effect is allowed to read wall time —
 //! but as of this split it still contains none: the one wall-clock field this module owned
@@ -83,7 +83,7 @@ pub(crate) struct PlaybackSession {
     /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
     pub(crate) jail_load_blocked: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
-    pub(crate) repair_status: crate::webos::jail_repair::State,
+    pub(crate) repair_status: crate::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -384,7 +384,7 @@ impl PlaybackSession {
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        repair_status: crate::webos::jail_repair::State::Idle,
+        repair_status: crate::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -3218,7 +3218,7 @@ pub(crate) fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWa
 /// off only where the transition itself is what is being graded, and give that case a
 /// `network_profile` that starves for real. Removing the candidate is load-bearing: otherwise a
 /// loopback source probe can escape to Original before a request-indexed HLS cliff occurs.
-/// [`crate::dev::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
+/// [`crate::player::playurl::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
 /// source rate no link could carry and relying on a starvation horizon that did not check whether
 /// the reserve was draining.
 pub(crate) fn arm_auto_fixture(
@@ -3241,7 +3241,7 @@ pub(crate) fn arm_auto_fixture(
         // `tests/serve_fixtures.py` served no 22000 rung, so such a candidate would 404 and read
         // on the television as a rejected encoder — a fixture gap standing in for a policy, and
         // the thing that kept the plan's I9 blocked. The server answers 22000 now, so the caller
-        // declares it (`dev::PlayUrl::source_raster`) and the default is still 1080p.
+        // declares it (`player::playurl::PlayUrl::source_raster`) and the default is still 1080p.
         s.cur_src = (
             i64::from(source_kbps),
             i64::from(source_raster.0),
@@ -3281,7 +3281,7 @@ pub(crate) fn arm_auto_fixture(
         return None;
     }
     // Install exactly the state `fallback_auto_to_hls` leaves behind, at the bootstrap rung, and
-    // hand the caller the playlist to open. See `dev::PlayUrl::auto_start_hls` for why this exists
+    // hand the caller the playlist to open. See `player::playurl::PlayUrl::auto_start_hls` for why this exists
     // at all: the alternative was declaring a source rate no link could carry and relying on the
     // starvation horizon to fire on a reserve that was visibly FILLING.
     let rung = crate::abr::Rung::P480;
@@ -3478,7 +3478,7 @@ fn install_auto_hls(
         crate::player::report::note_delivery_requested_for(
             playback_trace_generation(),
             crate::player::report::DeliveryClass::Hls,
-            crate::player::report::QualityClass::from_rung(rung),
+            crate::player::report::rung_quality_class(rung),
             reason,
         );
         Some(url)
@@ -4564,7 +4564,7 @@ pub(crate) fn set_stream_source_raster(ps: &mut PlaybackSession, w: u16, h: u16)
 }
 
 /// The whole Load-payload DECLARATION for a stream the app did not SELECT — the pipeline test
-/// tier's `/tmp/plxnative-playurl` ([`crate::dev::PlayUrl`]), whose entire point is that no PMS
+/// tier's `/tmp/plxnative-playurl` ([`crate::player::playurl::PlayUrl`]), whose entire point is that no PMS
 /// chose anything and so `apply_plan` never runs.
 ///
 /// ONE write for the same reason [`set_server_output_declaration`] is one write and [`apply_plan`]
@@ -4592,7 +4592,7 @@ pub(crate) fn set_stream_declaration(
         fps,
         dovi,
         immersive,
-        crate::webos::caps::capability(),
+        crate::devcaps::dv::capability(),
     )
 }
 
@@ -4603,7 +4603,7 @@ fn set_stream_declaration_with_capability(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> bool {
     let decision = crate::metadata::DvDecision {
         capability,
@@ -4640,7 +4640,7 @@ pub(crate) fn set_stream_declaration_for_test(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> bool {
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
@@ -4768,7 +4768,7 @@ impl ScrobbleWork {
                     })
                 })
             };
-            crate::log(&format!(
+            crate::eventlog::log(&format!(
                 "timeline stopped t={}s/{}s ok={}",
                 t_ms / 1000,
                 d_ms / 1000,
@@ -4785,7 +4785,7 @@ impl ScrobbleWork {
             let ok = self
                 .client
                 .is_some_and(|c| c.transcode_stop(&self.transcode_session));
-            crate::log(&format!("transcode stopped ok={}", ok as i32));
+            crate::eventlog::log(&format!("transcode stopped ok={}", ok as i32));
         }
     }
 }
@@ -5329,7 +5329,7 @@ pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
 }
 
 /// What the player does at an episode's credits when a successor is queued — install-wide, like
-/// [`DIRECT_PLAY_MODE`]. Read by `ui::player_hud::slot` every frame and by `finish_playback` at
+/// [`DIRECT_PLAY_MODE`]. Read by `appkit::player_hud::slot` every frame and by `finish_playback` at
 /// the end of the stream.
 static NEXT_EPISODE_MODE: AtomicU8 = AtomicU8::new(0); // NextEpisodeMode::Countdown's index
 
@@ -5360,7 +5360,7 @@ pub(crate) fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
 }
 
 /// How far one Left/Right press jumps in the player and the trailer transport — install-wide,
-/// like [`NEXT_EPISODE_MODE`]. Read per press by `ui::player_hud::scrub_step_ns`.
+/// like [`NEXT_EPISODE_MODE`]. Read per press by `appkit::player_hud::scrub_step_ns`.
 static SKIP_INTERVAL: AtomicU8 = AtomicU8::new(1); // SkipInterval::Seconds10's index
 
 pub(crate) fn skip_interval() -> SkipInterval {
@@ -5426,7 +5426,7 @@ pub(crate) fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::log("subtitle size: durable write failed (live value kept for this session)");
+            crate::eventlog::log("subtitle size: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -5459,7 +5459,7 @@ pub(crate) fn select_subtitle_position(position: SubtitlePosition, reply: Option
             .is_some_and(|write| matches!(write.classify(),
                 crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
-            crate::log("subtitle position: durable write failed (live value kept for this session)");
+            crate::eventlog::log("subtitle position: durable write failed (live value kept for this session)");
         }
         if let Some(reply) = reply {
             let _ = reply.send(saved);
@@ -5477,7 +5477,7 @@ pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channe
 }
 
 /// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
-/// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
+/// playback — it is a preference, not session state — and because `appkit::more_menu` reads it to draw
 /// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
 ///
 /// Seeded to Original even before the boot gate restores the session: no call path may turn a
@@ -6204,7 +6204,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
 
 fn playback_preview_with_capability(
     d: &crate::metadata::Detail,
-    capability: Option<crate::webos::caps::DvCapability>,
+    capability: Option<crate::devcaps::dv::DvCapability>,
 ) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
@@ -6260,7 +6260,7 @@ fn playback_preview_with_capability(
 #[cfg(test)]
 pub(crate) fn playback_preview_with_capability_for_test(
     d: &crate::metadata::Detail,
-    capability: crate::webos::caps::DvCapability,
+    capability: crate::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
     playback_preview_with_capability(d, Some(capability))
 }
@@ -6744,17 +6744,14 @@ fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<
 /// network work runs on a worker and the caller flips the route THIS frame; an empty or Busy request
 /// returns `false` and leaves the current route alone. `app.rs` drains `pump_play` once a frame and
 /// starts the engine when the plan lands.
-pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie) -> bool {
+///
+/// `ctx` is the HUD's context line (`year · rating · runtime`). The caller formats it
+/// (`app::playback::movie_ctx`) because the runtime string is `ui::fmt`'s and `route` sits below
+/// `ui`.
+pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie, ctx: &str) -> bool {
     if m.part.is_empty() {
         return false;
     }
-    let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
-    let ctx = format!(
-        "{} \u{b7} {} \u{b7} {}",
-        m.year,
-        rating,
-        crate::ui::fmt::dur_short(m.dur_ns / 1_000_000)
-    );
     // **The ITEM's server, not the browsed one.** This passed `surface_sid()` — i.e. whichever
     // server happens to be current — while the row has carried its own `sid` since item identity
     // became a `(server, key)` pair. Starting a borrowed film therefore sent that film's
@@ -6774,7 +6771,7 @@ pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::sto
         &m.vcodec,
         &m.acodec,
         &m.title,
-        &ctx,
+        ctx,
     )
 }
 
@@ -6798,9 +6795,10 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 /// clone (`route::up_next().cloned()`); the signature is what forces them to.
 ///
 /// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
-/// pre-roll doesn't change shape underneath the user when it does.
-pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext) -> bool {
-    let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
+/// pre-roll doesn't change shape underneath the user when it does. `ctx` is the context line, the
+/// episode kicker (`ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)`): the caller formats it
+/// before handing `u` over, because `route` sits below `ui`.
+pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
     let title = if u.show_title.is_empty() {
         &u.ep_title
     } else {
@@ -6814,7 +6812,7 @@ pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::s
     } else {
         surface_sid()
     };
-    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
+    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, ctx)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -6832,6 +6830,18 @@ pub(crate) fn cancel_play(ps: &mut PlaybackSession) {
     if let Some(landing) = abandoned {
         retire_abandoned_plan(landing.plan);
     }
+}
+
+/// What [`pump_play`] does with the next episode's still: start its fetch, nothing else. Installed
+/// once at boot by `app` (`app::playback::warm_up_next_still`), because the texture cache it
+/// warms is `ui`'s and `route` sits below `ui`. Unset, the landing warms nothing — which is also
+/// what the host suite gets, where [`pump_play`] never calls it.
+static UP_NEXT_STILL_WARM: std::sync::OnceLock<fn(ServerId, &str)> = std::sync::OnceLock::new();
+
+/// Register the Up Next still prefetch ([`UP_NEXT_STILL_WARM`]). Called once, before the loop;
+/// a second registration is ignored.
+pub(crate) fn install_up_next_still_warm(warm: fn(ServerId, &str)) {
+    let _ = UP_NEXT_STILL_WARM.set(warm);
 }
 
 /// MAIN THREAD, once a frame. Returns the generation-owned resume point when a playable fresh plan
@@ -6900,21 +6910,21 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::meta
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
-    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex_wh_on`: this wants
-    // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
-    // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
+    // exactly the moment it appears in front of the user. The prefetch itself is `app`'s
+    // ([`install_up_next_still_warm`]): a texture warm is `ui`'s and `route` sits below it.
     //
     // It sits HERE, in the once-a-frame pump, rather than inside `apply_plan`: that function's
     // contract is that it is the sole WRITER OF THE SESSION, and a texture prefetch is not part of
     // it. Keeping the two apart also keeps the install reachable from the host suite —
-    // `warm_tex` pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
+    // the warm pulls in the poster cache and, through it, a GL call the dev Mac cannot link.
     // The host test binary has no GL symbols; this prefetch is visual-only and production-only.
     // Keeping it out of cfg(test) makes the generation/resource transaction above testable
     // without pretending a desktop unit test can exercise the poster texture path.
     #[cfg(not(test))]
     if let Some(u) = up_next(ps) {
-        crate::ui::widgets::warm_tex_on(item_sid(cur_sid(ps)), &u.thumb, 480, 270, 0);
+        if let Some(warm) = UP_NEXT_STILL_WARM.get() {
+            warm(item_sid(cur_sid(ps)), &u.thumb);
+        }
     }
     ok.then_some(resume_ns)
 }
@@ -6989,7 +6999,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            repair_status: crate::webos::jail_repair::State::Idle,
+            repair_status: crate::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,
@@ -8438,7 +8448,7 @@ pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
 
 /// **Test-only session builder for the Audio tab's enhancement rows (issue #266 PR 4).** Every
 /// `PlaybackSession` field is private to this module by design (see `PlaybackSession::IDLE`'s own
-/// doc), so `ui::track_menu`'s tests — which live outside `route` and see only this module's
+/// doc), so `appkit::track_menu`'s tests — which live outside `route` and see only this module's
 /// `pub(crate)` surface — cannot build one field-by-field the way this module's own tests do.
 /// This is the one door: it drives every input `audio_enhancements_offered_live`/
 /// `displayed_audio_enhancements` read (I1-I7), registers a throwaway server carrying the given
@@ -8547,7 +8557,7 @@ pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSessio
         },
         dv_decision: if route.dv_declared {
             crate::metadata::DvDecision {
-                capability: crate::webos::caps::DvCapability::Supported,
+                capability: crate::devcaps::dv::DvCapability::Supported,
                 presentation: crate::metadata::DvPresentation::Declare(crate::metadata::DolbyHdrInfo {
                     profile_id: 8,
                     track_type: "single",
@@ -8855,7 +8865,7 @@ pub(crate) fn report_timeline(
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
     // already on that line and this runs at 0.1 Hz, so only the silence needs a line of its own.
     if !ok {
-        crate::log(&format!(
+        crate::eventlog::log(&format!(
             "timeline post failed rk={} state={} t={}s",
             report.rating_key,
             report.state.as_str(),

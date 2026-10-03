@@ -193,13 +193,13 @@ impl Scene {
                     Target::Grid => format!("{}@grid", stage.name),
                     Target::Hero => format!("{}@hero", stage.name),
                 }).collect();
-                crate::log(&format!("poster-gate: kind={} phase=planned content={content:?} stages={}", mode.word(), targets.join(",")));
+                crate::eventlog::log(&format!("poster-gate: kind={} phase=planned content={content:?} stages={}", mode.word(), targets.join(",")));
                 self.plan = plan;
                 true
             }
             Err(Unfit { what, have, need }) => {
                 self.finished = true;
-                crate::log(&format!("poster-gate: kind={} phase=unfit what={what} have={have} need={need}", mode.word()));
+                crate::eventlog::log(&format!("poster-gate: kind={} phase=unfit what={what} have={have} need={need}", mode.word()));
                 false
             }
         }
@@ -207,7 +207,7 @@ impl Scene {
     fn arm(&mut self) {
         if self.checked { return; }
         self.checked = true;
-        self.mode = match crate::dev::read("postergate").as_deref().map(str::trim) {
+        self.mode = match crate::devtrig::read("postergate").as_deref().map(str::trim) {
             Some("settle") => Some(Mode::Settle), Some("eviction") => Some(Mode::Eviction), Some("dive") => Some(Mode::Dive), _ => None,
         };
         if let Some(mode) = self.mode {
@@ -217,7 +217,7 @@ impl Scene {
             // transition, not a test setter manufacturing P_EVICTED slots. The eviction scene
             // tightens it to its measured window once warm (pressure_ceiling).
             if mode != Mode::Settle { crate::ui::tex::scene_residency_budget(PRESSURE_MIB << 20); }
-            crate::log(&format!("poster-gate: kind={} phase=armed budget_mib={}", mode.word(), if mode == Mode::Settle { crate::ui::tex::TEX_RESIDENT_BYTES_MAX >> 20 } else { PRESSURE_MIB }));
+            crate::eventlog::log(&format!("poster-gate: kind={} phase=armed budget_mib={}", mode.word(), if mode == Mode::Settle { crate::ui::tex::TEX_RESIDENT_BYTES_MAX >> 20 } else { PRESSURE_MIB }));
         }
     }
     fn positioned(app: &App, target: Target) -> bool {
@@ -273,7 +273,7 @@ impl Scene {
             // The final report includes the last completed present. Later draws
             // are outside this finite scene; there is no successor to reset for.
             self.finished = true;
-            crate::log(&format!("poster-gate: kind={} phase=done", self.mode.unwrap().word()));
+            crate::eventlog::log(&format!("poster-gate: kind={} phase=done", self.mode.unwrap().word()));
         } else {
             // advance() reports before this iteration draws. Transfer ownership
             // now: waiting until the next tick would erase the intervening
@@ -309,7 +309,7 @@ impl Scene {
         report(mode.word(), stage.name, elapsed, stats, ready, self.witness, window);
         if !ready {
             self.finished = true;
-            crate::log(&format!("poster-gate: kind={} phase=failed reason=target-or-art", mode.word()));
+            crate::eventlog::log(&format!("poster-gate: kind={} phase=failed reason=target-or-art", mode.word()));
             return;
         }
         if mode == Mode::Eviction && self.stage == 0 {
@@ -317,14 +317,14 @@ impl Scene {
             // Still the real cache's byte-LRU: the seeds' own uploads are what evict.
             let ceiling = pressure_ceiling(window);
             crate::ui::tex::scene_residency_budget(ceiling);
-            crate::log(&format!("poster-gate: kind={} phase=ceiling window_kib={} budget_kib={}", mode.word(), window >> 10, ceiling >> 10));
+            crate::eventlog::log(&format!("poster-gate: kind={} phase=ceiling window_kib={} budget_kib={}", mode.word(), window >> 10, ceiling >> 10));
         }
         self.finish_stage(now);
     }
 }
 fn report(kind: &str, phase: &str, ms: u32, s: Stats, complete: bool, witness: Option<Witness>, window: usize) {
     let w = witness.unwrap_or(Witness::new([0.0; 3]));
-    crate::log(&format!("poster-gate: kind={kind} phase={phase} ms={ms} frames={} draws={} ready={} moving={} moving_frames={} moving_ms={} unknown={} requested={} requested_moving={} refused_new={} refused_evicted={} refused_retry={} rearmed={} uploads={} lost={} last_draws={} last_ready={} complete={} snap_begin_milli={} snap_end_milli={} shelf_start_px={} shelf_end_px={} shelf_span_px={} shelf_v_milli={} window_kib={} resident_kib={}",
+    crate::eventlog::log(&format!("poster-gate: kind={kind} phase={phase} ms={ms} frames={} draws={} ready={} moving={} moving_frames={} moving_ms={} unknown={} requested={} requested_moving={} refused_new={} refused_evicted={} refused_retry={} rearmed={} uploads={} lost={} last_draws={} last_ready={} complete={} snap_begin_milli={} snap_end_milli={} shelf_start_px={} shelf_end_px={} shelf_span_px={} shelf_v_milli={} window_kib={} resident_kib={}",
         s.frames, s.draws, s.ready, s.moving, s.moving_frames, s.moving_last_ms.wrapping_sub(s.moving_first_ms), s.unknown,
         s.requested, s.requested_moving, s.refused_new, s.refused_evicted, s.refused_retry, s.rearmed, s.uploads, s.lost, s.last_draws, s.last_ready, complete as u8,
         (w.snap_begin * 1000.0).round() as i32, (w.snap_end * 1000.0).round() as i32,

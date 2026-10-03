@@ -110,7 +110,7 @@ impl PlaintextQuestion {
     pub(crate) fn answer(&mut self, alert: &mut DecisionAlert, allow: bool) -> Option<SessionCmd> {
         alert.dismiss();
         let subject = self.subject.take()?;
-        crate::log(if allow {
+        crate::eventlog::log(if allow {
             "plaintext: user allowed an unencrypted connection on this network"
         } else {
             "plaintext: user declined an unencrypted connection"
@@ -454,5 +454,49 @@ pub(crate) fn settings_detail(on: bool, connected: bool) -> &'static str {
         (false, _) => crate::i18n::msg::settings_plaintext_denied(),
         (true, true) => crate::i18n::msg::settings_plaintext_connected(),
         (true, false) => crate::i18n::msg::settings_plaintext_allowed(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaintextQuestion;
+    use crate::ui::decision_alert::BUTTON_W;
+    use crate::ui::theme;
+    use crate::ui::widgets::Button;
+
+    /// **Every answer fits its pill, in every shipped language.** The pill is `BUTTON_W` wide
+    /// whatever it says and `Button` centres its label without clipping, so a long translation
+    /// spills past both ends — Belarusian *Даслаць справаздачу* ran out of the sign-in report
+    /// question's panel. Measured with the device's whole-pixel advances.
+    ///
+    /// (Moved from `ui::decision_alert`'s tests: two of the nine answers are this module's, so
+    /// the UI library cannot name them.)
+    #[test]
+    fn every_answer_fits_its_pill_in_every_language() {
+        use crate::fontcov::advances::ShippedMeasure;
+        use crate::ui::fit::HEADROOM;
+        use crate::i18n::{language_on_this_thread_for_test, msg, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let answers = [
+                msg::settings_cancel_c(),
+                msg::settings_delete_c(),
+                msg::settings_plaintext_not_now_c(),
+                msg::settings_login_send_report_c(),
+                msg::settings_login_close_c(),
+                msg::settings_playback_enable_force_c(),
+                msg::widgets_repair_action_c(),
+                PlaintextQuestion::verbs().0,
+                PlaintextQuestion::verbs().1,
+            ];
+            for label in answers {
+                let w = Button::pill_w_measured(label, theme::size::BODY, false, false, &ShippedMeasure);
+                if w > BUTTON_W * HEADROOM {
+                    out.push(format!("{}: {label:?} needs {w:.0}px of a {BUTTON_W}px pill", language.tag()));
+                }
+            }
+        }
+        assert!(out.is_empty(), "answers wider than their pill:\n  {}", out.join("\n  "));
     }
 }

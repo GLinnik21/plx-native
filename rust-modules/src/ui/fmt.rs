@@ -252,14 +252,25 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
     }
 }
 
+/// The units a review score is quoted in — the one thing about a provider the formatters need.
+/// The caller maps its own notion of a provider onto this (`screens::detail` maps
+/// `metadata::RatingArt`), so the library names no provider and no application type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RatingScale {
+    /// Out of ten, one decimal, with a trailing "/10" — IMDb ("7.4").
+    OutOfTen,
+    /// A whole percentage — Rotten Tomatoes and TMDB ("91%").
+    Percent,
+}
+
 /// A review score, in the shape its own provider publishes it. PMS normalises every provider onto
 /// one 0–10 scale, which is not how any of them are quoted: Rotten Tomatoes and TMDB are
 /// PERCENTAGES (9.1 → "91%") and IMDb is out of ten ("7.4"). Printing the raw 9.1 beside a tomato
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
-pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> String {
-    match art {
-        crate::metadata::RatingArt::Imdb => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
-        _ => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
+pub(crate) fn rating_score(scale: RatingScale, value: f64) -> String {
+    match scale {
+        RatingScale::OutOfTen => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        RatingScale::Percent => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
     }
 }
 
@@ -317,12 +328,12 @@ pub(crate) fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
 
 /// The unit that trails a score, set a rung down in tertiary ink — see `widgets::RatingCell`.
 ///
-/// Only IMDb has one. A percentage carries its `%` inside [`rating_score`] because there the sign
+/// Only an out-of-ten score (IMDb's) has one. A percentage carries its `%` inside [`rating_score`] because there the sign
 /// is part of the number, whereas "/10" is a note about the SCALE: it is what stops an 8.1 being
 /// read against the 69% beside it, and it is the reason the two can share a row at all.
-pub(crate) fn rating_suffix(art: crate::metadata::RatingArt) -> &'static str {
-    match art {
-        crate::metadata::RatingArt::Imdb => "/10",
-        _ => "",
+pub(crate) fn rating_suffix(scale: RatingScale) -> &'static str {
+    match scale {
+        RatingScale::OutOfTen => "/10",
+        RatingScale::Percent => "",
     }
 }

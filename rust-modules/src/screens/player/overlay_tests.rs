@@ -23,9 +23,9 @@ use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE
     WCODE_PLAYPAUSE, WCODE_STOP};
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::form::FormId;
-use crate::ui::more_menu::{Action as MoreAction, MoreRow, MorePage};
+use crate::appkit::more_menu::{Action as MoreAction, MoreRow, MorePage};
 use crate::ui::page_stack::TITLE_KEY;
-use crate::ui::track_menu::{StyleField, TrackPage, TrackRow};
+use crate::appkit::track_menu::{StyleField, TrackPage, TrackRow};
 use crate::ui::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
@@ -571,7 +571,7 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     assert!(!dismissed, "a Style pick keeps the panel open");
     assert!(reqs.iter().any(|r| matches!(
         r,
-        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleTone(
+        PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleTone(
             crate::plex::session::SubtitleTone::Silver
         ))
     )));
@@ -781,7 +781,7 @@ fn english_audio_with_subs(ps: &crate::route::PlaybackSession, subs: Vec<crate::
 }
 
 /// **The Timing hand-off.** Selecting the Subtitles menu's own Timing row while a subtitle is
-/// active returns `TrackOk::OpenTiming` (`ui::track_menu`'s own
+/// active returns `TrackOk::OpenTiming` (`appkit::track_menu`'s own
 /// `timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off`); `activate`'s
 /// Tracks arm spends that by dismissing the Tracks panel and asking for the capsule to open in its
 /// place, WITHOUT the read-time `ExtendHud` every ordinary commit raises — the capsule owns its own
@@ -842,14 +842,14 @@ fn timing_left_and_right_commit_subtitle_offset() {
     assert!(!dismissed);
     assert_eq!(
         reqs,
-        vec![PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(100))],
+        vec![PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleOffset(100))],
         "RIGHT steps +100ms",
     );
 
     let (_, reqs, _) = press(&mut page, crate::ui::consts::SDLK_LEFT, 0, Edge::Down);
     assert_eq!(
         reqs,
-        vec![PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(0))],
+        vec![PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::SubtitleOffset(0))],
         "LEFT steps back down",
     );
 }
@@ -1079,7 +1079,7 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
     let second = TrackRow::Sub(1).key().0;
     let (_, reqs, dismissed) = activate(&mut page, second);
     assert!(dismissed, "a track pick closes the panel");
-    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::Subtitle { .. }))));
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(crate::appkit::track_menu::TrackCommit::Subtitle { .. }))));
     // (the harness host's metadata view is empty, so the commit carries no stream id; the id the
     // panel resolved the key to is what it records as the checked track)
     let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };

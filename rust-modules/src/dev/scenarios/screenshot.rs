@@ -11,7 +11,7 @@
 //! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
 //! fails loudly instead of capturing the wrong screen.
 //!
-//! Dev-only, like every arm in [`super`]: the reads go through `dev::read`, which is `None` at
+//! Dev-only, like every arm in [`super`]: the reads go through `devtrig::read`, which is `None` at
 //! compile time without the `devtriggers` feature.
 
 use crate::app::run::Frame;
@@ -65,10 +65,10 @@ impl ScreenshotArms {
 /// the body rather than a second, empty twin of this function.
 pub(crate) fn arm_stillclock() {
     #[cfg(feature = "devtriggers")]
-    if let Some(v) = crate::dev::read("stillclock") {
+    if let Some(v) = crate::devtrig::read("stillclock") {
         let ms = v.parse().unwrap_or(0);
         crate::ui::motion::hold_phase_clocks(Some(ms));
-        crate::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
+        crate::eventlog::log(&format!("motion: free-running clocks held at {ms} ms by /tmp/plxnative-stillclock"));
     }
 }
 
@@ -130,23 +130,23 @@ pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libtype_done {
         return;
     }
-    let Some(v) = crate::dev::read("libtype") else {
+    let Some(v) = crate::devtrig::read("libtype") else {
         app.scenarios.shots.libtype_done = true;
         return;
     };
     let Some(kind) = parse_type(&v) else {
         #[cfg(feature = "devtriggers")]
-        crate::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
+        crate::eventlog::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
         app.scenarios.shots.libtype_done = true;
         return;
     };
     if crate::app::bridge::Bridge::library_listed(&app.pages) == Some(kind) {
-        crate::log(&format!("libtype: listing {}", v.trim()));
+        crate::eventlog::log(&format!("libtype: listing {}", v.trim()));
         app.scenarios.shots.libtype_done = true;
         return;
     }
     if fr.now.wrapping_sub(app.t0) > CEILING_MS {
-        crate::log(&format!("libtype: gave up; the listing never became {}", v.trim()));
+        crate::eventlog::log(&format!("libtype: gave up; the listing never became {}", v.trim()));
         app.scenarios.shots.libtype_done = true;
         return;
     }
@@ -164,7 +164,7 @@ pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
     }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libgrid;
-    let Some((row, col)) = arm.pending("libgrid", || crate::dev::read("libgrid"), "focus seated at row {0} col {1}",
+    let Some((row, col)) = arm.pending("libgrid", || crate::devtrig::read("libgrid"), "focus seated at row {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_grid_position(&app.pages)) else { return };
     if on_library && arm.resend(fr.now) {
         crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::FocusGrid { row, col });
@@ -181,7 +181,7 @@ pub(crate) fn libshelf_arm(app: &mut App, fr: &Frame) {
     }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libshelf;
-    let Some((shelf, col)) = arm.pending("libshelf", || crate::dev::read("libshelf"), "focus seated on shelf {0} col {1}",
+    let Some((shelf, col)) = arm.pending("libshelf", || crate::devtrig::read("libshelf"), "focus seated on shelf {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_shelf_position(&app.pages)) else { return };
     if on_library && arm.resend(fr.now) {
         crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::FocusShelf { shelf, col });
@@ -212,18 +212,18 @@ impl SeatArm {
         };
         let Some(cell) = parse_cell(&v) else {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("BADTRIGGER {name} {v:?}: expected <a>,<b>"));
+            crate::eventlog::log(&format!("BADTRIGGER {name} {v:?}: expected <a>,<b>"));
             self.done = true;
             return None;
         };
         let say = |text: &str| text.replace("{0}", &cell.0.to_string()).replace("{1}", &cell.1.to_string());
         if at() == Some(cell) {
-            crate::log(&format!("{name}: {}", say(reached)));
+            crate::eventlog::log(&format!("{name}: {}", say(reached)));
             self.done = true;
             return None;
         }
         if fr.now.wrapping_sub(t0) > CEILING_MS {
-            crate::log(&format!("{name}: gave up; focus never reached {}", say("{0},{1}")));
+            crate::eventlog::log(&format!("{name}: gave up; focus never reached {}", say("{0},{1}")));
             self.done = true;
             return None;
         }
@@ -247,7 +247,7 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libmenu_done || !app.scenarios.shots.libgrid.done {
         return;
     }
-    let Some(v) = crate::dev::read("libmenu") else {
+    let Some(v) = crate::devtrig::read("libmenu") else {
         app.scenarios.shots.libmenu_done = true;
         return;
     };
@@ -258,18 +258,18 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         "type" => LibraryMenuKind::Type,
         _other => {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
+            crate::eventlog::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
             app.scenarios.shots.libmenu_done = true;
             return;
         }
     };
     if crate::app::bridge::library_menu_up(&app.pages) {
-        crate::log(&format!("libmenu: {name} menu up"));
+        crate::eventlog::log(&format!("libmenu: {name} menu up"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
     if fr.now.wrapping_sub(app.t0) > CEILING_MS {
-        crate::log(&format!("libmenu: gave up; the {name} menu never opened"));
+        crate::eventlog::log(&format!("libmenu: gave up; the {name} menu never opened"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
@@ -292,10 +292,10 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
     {
         let arms = &mut app.scenarios.shots;
         if arms.clockstop.is_none() {
-            arms.clockstop = Some(crate::dev::read("clockstop").map(|v| match v.parse::<u32>() {
+            arms.clockstop = Some(crate::devtrig::read("clockstop").map(|v| match v.parse::<u32>() {
                 Ok(ms) => Some(ms),
                 Err(_) => {
-                    crate::log(&format!("BADTRIGGER clockstop {v:?}: expected <ms>"));
+                    crate::eventlog::log(&format!("BADTRIGGER clockstop {v:?}: expected <ms>"));
                     None
                 }
             }).unwrap_or(None));
@@ -312,11 +312,11 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
         }
         if crate::app::playback::playpos() >= at {
             arms.clockstop_reached = true;
-            crate::log(&format!("clockstop: clock held at {ms} ms, still playing"));
+            crate::eventlog::log(&format!("clockstop: clock held at {ms} ms, still playing"));
         } else if fr.now.wrapping_sub(app.t0) > CLOCKSTOP_CEILING_MS {
             // Reached or not, the arm stops holding the capture back (`pending`).
             arms.clockstop_reached = true;
-            crate::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
+            crate::eventlog::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
         }
     }
     #[cfg(not(feature = "hostsim"))]

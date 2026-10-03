@@ -285,7 +285,7 @@ coexist in one tree — so the usual case is caught for you. That tree is **`$TM
 crate's own `target/`: this checkout can live on a network mount, and cargo cannot take its
 incremental-session lock there (`os error 45`), which failed EVERY edit with a "RELEASE-CONFIG
 BREAK" that was really a filesystem answer. Set `CARGO_TARGET_DIR` to override. Confirm it is wired in `.claude/settings.json` before relying on it, run
-the command by hand before shipping regardless, and prefer `crate::dev::latched_flag!` over
+the command by hand before shipping regardless, and prefer `crate::devtrig::latched_flag!` over
 hand-rolling a `#[cfg]`/`#[cfg(not)]` pair.
 
 **Packaging.** Two ipk bugs shipped undetected until 2026-08-02 — a missing

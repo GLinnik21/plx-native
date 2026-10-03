@@ -514,26 +514,11 @@ pub(crate) mod advances {
         })
     }
 
-    /// The share of a column a line may fill under [`ShippedMeasure`]. The measure models the
-    /// device's whole-pixel advances but not its kerning or hinting quirks, so a line that clears
-    /// its column by one pixel here (731 of 732 was a real Belarusian Settings candidate) is left
-    /// no margin at all on the set.
-    pub(crate) const HEADROOM: f32 = crate::ui::fit::HEADROOM;
-
-    /// A [`crate::ui::machine::Measure`] over the shipped faces' real advances.
+    /// The text measure over the shipped faces' real advances: `ui::machine::Measure` is
+    /// implemented for it beside the trait, in `ui/machine.rs` (the lowest layer that names both
+    /// the trait and this type), and the share of a column a line may fill under it is
+    /// `ui::fit::HEADROOM`, which the callers name.
     pub(crate) struct ShippedMeasure;
-
-    impl crate::ui::machine::Measure for ShippedMeasure {
-        fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
-            shipped(bold).width(&s.to_string_lossy(), sz)
-        }
-        fn cap_h(&self, sz: i32) -> f32 {
-            sz as f32 * 0.73
-        }
-        fn line_h(&self, sz: i32) -> f32 {
-            sz as f32 * 1.21
-        }
-    }
 }
 
 // ------------------------------------------------------------------------------------------------

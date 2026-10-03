@@ -346,7 +346,7 @@ impl RouteSurface {
     /// libraries → Done/Cancel). Both are correct at the depth the ROOT surface puts them at —
     /// pushed over the Settings root, so the pop reveals it — and both empty the stack when the
     /// surface was booted ROOTED at that page, which `/tmp/plxnative-settings=privacy|home` does
-    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `dev::read` out and always
+    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and always
     /// roots at `SettingsPage::Root`, so this was never a shipping bug — but a Pop with nothing
     /// under it is a statement the page means ("close me"), not an accident to be guarded against
     /// at each emitter, and the surface is the only thing that knows there is nothing under it.
@@ -398,7 +398,7 @@ impl RouteSurface {
             self.push.open = true;
         }
         // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
-        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `screen.rs`).
+        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
         // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
         // Privacy and every other page here — harmless on a POP, where the key IS meant to name
         // whichever page is being returned to and the `remembered` list above already looked up
@@ -1360,7 +1360,7 @@ impl RootPage {
                 }
                 // OFF is immediate: `grant::record` withdraws the grant NOW, before the
                 // preferences write lands, and records the revocation for this account.
-                crate::log("settings: unencrypted connections turned off for one server");
+                crate::eventlog::log("settings: unencrypted connections turned off for one server");
                 let account = crate::plex::grant::account_key(&self.session_snapshot.account_token);
                 if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
                     self.pending_plaintext = Some((machine, false));

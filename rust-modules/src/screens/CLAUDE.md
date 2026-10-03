@@ -12,8 +12,9 @@ they do not: the rules that span screens.
 
 ## The layer rule is the thing that will bite you
 
-A screen may name `ui/`, `stores/`, the data crates and this directory's `registry` — **never
-`app/`, and never a sibling screen module**. `ci/check-deps.sh`'s `layer` and `sibling` gates have
+A screen may name `ui/`, `appkit/` (the widgets several screens share — `player_hud`,
+`track_menu`, `source_list` and the rest of the player's panels), `stores/`, the data crates and
+this directory's `registry` — **never `app/`, and never a sibling screen module**. `ci/check-deps.sh`'s `layer` and `sibling` gates have
 held this since restructure phase 10, so a violation fails CI rather than review.
 
 Two consequences worth stating, because both look like the obvious thing to do:

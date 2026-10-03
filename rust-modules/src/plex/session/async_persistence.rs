@@ -917,11 +917,11 @@ impl CompletionGuard {
 
     fn finish_outcome(&mut self, outcome: CompletionOutcome) -> CompletionOutcome {
         match outcome {
-            CompletionOutcome::Uncertain { stage, errno, helper } => crate::log(&format!(
+            CompletionOutcome::Uncertain { stage, errno, helper } => crate::eventlog::log(&format!(
                 "session: async persistence uncertain revision={} stage={stage:?} errno={errno} helper={helper:?}",
                 self.revision
             )),
-            CompletionOutcome::Failed(failure) => crate::log(&format!(
+            CompletionOutcome::Failed(failure) => crate::eventlog::log(&format!(
                 "session: async persistence failed revision={} failure={failure:?}",
                 self.revision
             )),

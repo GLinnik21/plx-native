@@ -5,6 +5,7 @@
 //! cycle and is *reset*, never freed. Native callbacks additionally carry the exact `Load` epoch:
 //! retirement drains an event already inside that epoch and rejects every later event, so stable
 //! storage is not mistaken for permission to mutate the next playback.
+use crate::metadata::track_names::TrackNames;
 use crate::stream::HttpStream;
 use std::ffi::CString;
 use std::sync::atomic::{
@@ -12,48 +13,6 @@ use std::sync::atomic::{
 };
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
-
-/// **The names the CONTAINER gives its audio and subtitle tracks**, each list in file order.
-///
-/// Published once by the demuxer when it opens a part ([`crate::ff`]), read by the in-player track
-/// menu. Both `Vec`s are dense — a track the file does not name contributes an EMPTY string rather
-/// than being skipped — because position is the whole join: the N-th entry is the N-th stream of
-/// that type, which is the ordinal `metadata::sub_render_ordinal` resolves a menu row to. Skipping
-/// unnamed tracks would silently shift every name after the first untagged one onto its neighbour,
-/// which is worse than showing none: a wrong name is indistinguishable from a right one.
-#[derive(Default)]
-pub(crate) struct TrackNames {
-    pub audio: Vec<String>,
-    pub subs: Vec<String>,
-}
-
-impl TrackNames {
-    /// `Default`, but callable from `Shared::new`, which is a `const fn`.
-    pub const fn new() -> Self {
-        Self {
-            audio: Vec::new(),
-            subs: Vec::new(),
-        }
-    }
-    /// The name of the `i`-th subtitle stream in file order, or `""` — `i` is what
-    /// `metadata::sub_render_ordinal` answers, and its `-1` (an external sidecar, which is not in
-    /// the container at all) can be passed straight in.
-    pub fn sub(&self, i: i32) -> &str {
-        usize::try_from(i)
-            .ok()
-            .and_then(|i| self.subs.get(i))
-            .map(String::as_str)
-            .unwrap_or("")
-    }
-    /// The same for audio — `metadata::audio_ordinal`'s answer.
-    pub fn audio(&self, i: i32) -> &str {
-        usize::try_from(i)
-            .ok()
-            .and_then(|i| self.audio.get(i))
-            .map(String::as_str)
-            .unwrap_or("")
-    }
-}
 
 /// Exact conservation certificate accumulated while the native media clock is held.
 ///
@@ -540,7 +499,7 @@ pub(crate) struct Shared {
     /// `frames` deliberately does not: `pump` zeroes `frames` as *part of applying* a seek, which
     /// makes "we have never shown a frame" and "we just seeked" indistinguishable through it. The
     /// HUD's one rule for which surface owns the "pipeline is working" read-out keys on this bit;
-    /// see `ui::player_hud::busy_surface`. Monotone within a session (false→true only), which is
+    /// see `appkit::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
     pub load_completed: AtomicBool,          // bf_loaded signal

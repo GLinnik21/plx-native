@@ -2,16 +2,64 @@
 
 use super::*;
 
-/// One `GET /x` at a loopback port, through the door the control plane actually uses.
+/// What [`loopback_get`] saw: the status the server sent and the body bytes that arrived.
+pub(super) struct LoopbackReply {
+    pub(super) status: i32,
+    pub(super) body: Vec<u8>,
+}
+
+impl LoopbackReply {
+    /// 2xx.
+    pub(super) fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
+/// One `GET /x` at a loopback port through this module's own primitives, in the order the
+/// control plane calls them: open, read the status BEFORE anything else (a non-2xx open has
+/// already closed the socket, and the code survives on the struct), drain the body, report a
+/// short one, close. The status is handed back raw: `0` is what `http_open`'s parser leaves when
+/// no `HTTP/1.x NNN` line ever arrived.
 ///
 /// These assertions used to call `stream::http_get`, and they outlived it: what they grade —
-/// that a chunked body is decoded on the READ path, and that a truncated one still reaches its
-/// caller — is a property of `http_open`/`http_read`, not of the wrapper that wrapped them. Now
-/// they grade it through `crate::http`'s plaintext arm, i.e. through the composition that runs
-/// in production, which is strictly more than the wrapper could say.
-pub(super) fn loopback_get(port: u16) -> Option<crate::http::Reply> {
-    let o = crate::plex::Origin::http("127.0.0.1", port as i32);
-    crate::http::request(&o, "/x", crate::http::Method::Get, &[], None)
+/// that a chunked body is decoded on the READ path, that a truncated one still reaches its caller,
+/// that a refused open still leaves the server's code readable — is a property of
+/// `http_open`/`http_read`, not of the wrapper that wrapped them. What the production composition
+/// above this layer makes of the same four sockets (`crate::http`'s plaintext arm: a `0` becomes
+/// `None`, a 401 stays a response) is graded against a real socket in `http`'s own tests.
+pub(super) fn loopback_get(port: u16) -> LoopbackReply {
+    let host = std::ffi::CString::new("127.0.0.1").unwrap();
+    let path = std::ffi::CString::new("/x").unwrap();
+    let extra = std::ffi::CString::new("Connection: close\r\n").unwrap();
+    let mut hs = http_stream_boxed();
+    let opened = http_open(
+        &mut *hs,
+        host.as_ptr(),
+        port as c_int,
+        path.as_ptr(),
+        extra.as_ptr(),
+        "GET",
+    );
+    let status = hs_status(&*hs);
+    let mut body = Vec::new();
+    if opened == 0 {
+        let mut recv_err = false;
+        let mut chunk = vec![0u8; 65536];
+        loop {
+            let n = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
+            if n < 0 {
+                recv_err = true;
+                break;
+            }
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n as usize]);
+        }
+        note_short_body("GET", "/x", &hs, recv_err);
+    }
+    http_close(&mut *hs);
+    LoopbackReply { status, body }
 }
 
 /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;

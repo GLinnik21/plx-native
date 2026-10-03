@@ -522,7 +522,7 @@ impl Engine {
             self.source = Some(request.source.clone());
             if let Some(error) = self.error {
                 self.native = None;
-                crate::log(&format!("subtitle: ASS refused: {error:?}"));
+                crate::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
             }
         }
         if let Some(error) = self.error {
@@ -582,7 +582,7 @@ impl Engine {
             }
             Err(error) => {
                 self.error = Some(error);
-                crate::log(&format!("subtitle: ASS render failed: {error:?}"));
+                crate::eventlog::log(&format!("subtitle: ASS render failed: {error:?}"));
                 error_frame(key, error)
             }
         };

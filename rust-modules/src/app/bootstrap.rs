@@ -7,7 +7,6 @@ use crate::ui::rec::Recording;
 use serde::{Deserialize, Serialize};
 pub(crate) const CONTENT_SHAPE: &str = "ContentInitialV1{detail:str,detailsec:u32,detailok:bool,filmography:bool,personcredits:u32,nowan:bool};ContentResourcesV2{admission:Metadata(sid,rk,gen,client)|MetadataCancel(boundary,retired:DetailBatch)|Person(slot,gen,arg,guid,local?,client?,sid?),admitted:bool;result:DetailBatch(seq,req,terminal,Data(key,Option<Detail>)|Dropped(req)|Refused(req))|Person(slot,Mail(gen,Resolve|Media|Profile|Credits|Roles));PersonTerminal:slot+gen+kind-bound;DetailFloats:bits;ContentEffectsV1:complete_nav_store_request_return_memory}";
 pub(crate) mod effects;
-pub(crate) mod stores;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -180,6 +179,11 @@ pub(crate) struct ContentInitial {
 }
 
 impl Initial {
+    /// The Filmography credit count the controlled content domain was booted with: what
+    /// `crate::stores::tape::init` is armed with (`None` outside the controlled content domain).
+    pub(crate) fn person_credits(&self) -> Option<u32> {
+        self.content.as_ref().map(|v| v.personcredits)
+    }
     #[cfg(any(test, feature = "hostsim"))]
     pub(crate) fn synthetic_home(seed: u32, port: u16, settings: Option<String>)
         -> Result<Self, &'static str> {
@@ -255,7 +259,7 @@ impl Initial {
             return Err("unsupported initial Settings input");
         }
         if self.settings.is_some()
-            != crate::dev::listed(&self.triggers, "settings") {
+            != crate::devtrig::listed(&self.triggers, "settings") {
             return Err("incoherent initial Settings input");
         }
         let content_triggers = ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"];
@@ -267,7 +271,7 @@ impl Initial {
             }
         }
         for name in content_triggers {
-            if self.content.is_some() != crate::dev::listed(&self.triggers, name) {
+            if self.content.is_some() != crate::devtrig::listed(&self.triggers, name) {
                 return Err("incoherent initial content input");
             }
         }
@@ -278,7 +282,7 @@ impl Initial {
                 return Err("initial seed mismatch"),
             _ => {}
         }
-        if !self.triggers.iter().all(|trigger| crate::dev::controlled_trigger(trigger)) {
+        if !self.triggers.iter().all(|trigger| crate::devtrig::controlled_trigger(trigger)) {
             return Err("unsupported initial developer input");
         }
         Ok(())

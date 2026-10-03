@@ -1,5 +1,6 @@
 //! Paint from the instance and its retained frame views. No live Search/roster/focus reads.
 use super::*;
+use crate::screens::registry::tile_facts;
 use crate::search::scope::{ScopeSource, SourceScopeSnapshot};
 use crate::ui::card_row::{self, TileLabel};
 use crate::ui::consts::{MARGIN_X, SCR_H, SCR_W};
@@ -451,7 +452,7 @@ pub(super) fn tile<H: SearchLike>(
         card_row::draw_tile(p, art, rect, scale, &style, resume);
     }
     if let (Kind::Episode, Item::Media(media)) = (model.kind, item) {
-        crate::ui::widgets::still_overlay(p, media, rect, style.tile_radius(rect, scale), false, f.measure);
+        crate::ui::widgets::still_overlay(p, &tile_facts::of(media), rect, style.tile_radius(rect, scale), false, f.measure);
     }
     stop(
         screen,
@@ -473,17 +474,17 @@ pub(super) fn tile<H: SearchLike>(
 /// already a thumb-less collection row by the time it lands (`search::CollectionHit::from_tag`).
 fn tile_art(kind: Kind, item: &Item) -> Art<'_> {
     match (kind, item) {
-        (Kind::Episode, Item::Media(media)) => Art::Still(Some(media)),
-        (_, Item::Media(media)) => Art::Poster(Some(media)),
-        (_, Item::Collection(hit)) => Art::Poster(Some(&hit.item)),
+        (Kind::Episode, Item::Media(media)) => Art::Still(Some(tile_facts::of(media))),
+        (_, Item::Media(media)) => Art::Poster(Some(tile_facts::of(media))),
+        (_, Item::Collection(hit)) => Art::Poster(Some(tile_facts::of(&hit.item))),
         (Kind::Person, Item::Tag(tag)) => Art::Person {
-            sid: tag.sid,
+            sid: tag.sid.raw(),
             key: &tag.thumb,
             res: (300, 300),
         },
         (_, Item::Tag(tag)) if tag.thumb.is_empty() => Art::Poster(None),
         (_, Item::Tag(tag)) => Art::Thumb {
-            sid: tag.sid,
+            sid: tag.sid.raw(),
             key: &tag.thumb,
             res: (250, 375),
         },
@@ -1342,7 +1343,7 @@ mod tests {
             tag: 7,
         });
         assert!(matches!(tile_art(Kind::Collection, &full),
-            Art::Poster(Some(m)) if m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()
+            Art::Poster(Some(m)) if m.kind == crate::ui::tile::TileKind::Collection && m.thumb.is_empty()
                 && m.title == "Shorts"));
         let with_art = Item::Collection(crate::search::CollectionHit {
             item: crate::pms::PmsMovie { thumb: "/library/metadata/50007/thumb/1".into(),

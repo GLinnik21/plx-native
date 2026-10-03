@@ -61,7 +61,8 @@ impl ClockWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+    use crate::fontcov::advances::ShippedMeasure;
+    use crate::ui::fit::HEADROOM;
     use crate::i18n::{language_on_this_thread_for_test, msg};
     use crate::net::keypin;
     use crate::ui::widgets::StatusOverlay;
